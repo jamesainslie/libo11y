@@ -11,7 +11,7 @@
 //
 // Three protections exist, from weakest to strictest:
 //
-//   - mask: an equal-length run of 'X', preserving only the value's shape
+//   - mask: a run of 'X' of equal rune count, preserving only the value's shape
 //   - redact: the literal "REDACTED"
 //   - omit: the field is absent entirely
 //
