@@ -98,3 +98,17 @@ func TestDebugLogsCaptured(t *testing.T) {
 		t.Errorf("debug record not captured; harness should default to Debug level")
 	}
 }
+
+func TestAssertConformsPasses(t *testing.T) {
+	rec := o11ytest.Start(t)
+	// The harness SDK carries the required tier-0 identity by default.
+	rec.AssertConforms(t)
+}
+
+func TestAssertCorrelatedPasses(t *testing.T) {
+	rec := o11ytest.Start(t)
+	ctx, span := rec.SDK.TracerProvider().Tracer("svc").Start(context.Background(), "op")
+	rec.SDK.Logger().InfoContext(ctx, "inside")
+	span.End()
+	rec.AssertCorrelated(t)
+}

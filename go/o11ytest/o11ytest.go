@@ -22,6 +22,7 @@ import (
 	"sync"
 	"testing"
 
+	"go.opentelemetry.io/otel/attribute"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -29,6 +30,8 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	o11y "github.com/jamesainslie/libo11y/go"
+	"github.com/jamesainslie/libo11y/go/internal/spectables"
+	"github.com/jamesainslie/libo11y/go/spec"
 )
 
 // Recorder gives access to the telemetry recorded by a harness SDK.
@@ -81,6 +84,7 @@ func Start(tb testing.TB, opts ...o11y.Option) *Recorder {
 
 	base := []o11y.Option{
 		o11y.WithServiceName(tb.Name()),
+		o11y.WithEnvironment(spec.EnvironmentTest),
 		o11y.WithLogLevel(slog.LevelDebug),
 		o11y.WithSpanProcessor(spans),
 		o11y.WithMetricReader(reader),
@@ -135,6 +139,56 @@ func (r *Recorder) MetricNames() []string {
 // Logs returns all log records captured so far, in emission order.
 func (r *Recorder) Logs() []LogRecord {
 	return r.logs.snapshot()
+}
+
+// AssertConforms fails the test if the harness SDK's resource is missing
+// any attribute the specification requires at tier 0, or if any recorded
+// log record carries a secret-classified attribute in the clear. It is the
+// consumer-facing conformance gate: a service can prove in its own suite
+// that it satisfies the libo11y specification.
+func (r *Recorder) AssertConforms(tb testing.TB) {
+	tb.Helper()
+
+	present := map[attribute.Key]bool{}
+	for _, kv := range r.SDK.Resource().Attributes() {
+		present[kv.Key] = true
+	}
+	for _, key := range spectables.RequiredTier0 {
+		if !present[key] {
+			tb.Errorf("o11ytest: resource missing required tier-0 attribute %q", key)
+		}
+	}
+
+	for _, record := range r.Logs() {
+		record.Record.Attrs(func(a slog.Attr) bool {
+			if spectables.SensitivityOf[attribute.Key(a.Key)] == spectables.Secret {
+				tb.Errorf("o11ytest: log record %q carries secret-classified attribute %q in the clear",
+					record.Record.Message, a.Key)
+			}
+			return true
+		})
+	}
+}
+
+// AssertCorrelated fails the test unless every log record emitted inside a
+// span carries that span's trace identity, closing the log-to-trace leg of
+// the correlation triangle. Records emitted outside any span are ignored.
+func (r *Recorder) AssertCorrelated(tb testing.TB) {
+	tb.Helper()
+	for _, record := range r.Logs() {
+		if !record.SpanContext.IsValid() {
+			continue
+		}
+		traceID, ok := record.Attr("trace_id")
+		if !ok {
+			tb.Errorf("o11ytest: correlated record %q has no trace_id attribute", record.Record.Message)
+			continue
+		}
+		if traceID != record.SpanContext.TraceID().String() {
+			tb.Errorf("o11ytest: record %q trace_id %q does not match its span %q",
+				record.Record.Message, traceID, record.SpanContext.TraceID())
+		}
+	}
 }
 
 // Exemplar is one metric exemplar in harness form: the trace identity and

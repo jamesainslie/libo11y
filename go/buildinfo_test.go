@@ -27,11 +27,11 @@ func TestBuildInfoAttrs(t *testing.T) {
 	}
 	got := attrMap(buildInfoAttrs(info))
 
+	// The spec renames the bare Go build keys to their semconv/o11y forms.
 	want := map[string]string{
-		"service.version": "v1.2.3",
-		"vcs.revision":    "abc123def456",
-		"vcs.time":        "2026-07-06T12:00:00Z",
-		"vcs.modified":    "false",
+		"service.version":       "v1.2.3",
+		"vcs.ref.head.revision": "abc123def456",
+		"o11y.build.time":       "2026-07-06T12:00:00Z",
 	}
 	for key, wantValue := range want {
 		if got[key] != wantValue {
@@ -40,6 +40,20 @@ func TestBuildInfoAttrs(t *testing.T) {
 	}
 	if _, present := got["CGO_ENABLED"]; present {
 		t.Error("non-VCS build setting leaked into resource attributes")
+	}
+
+	// o11y.build.modified is a boolean attribute.
+	var foundModified bool
+	for _, kv := range buildInfoAttrs(info) {
+		if string(kv.Key) == "o11y.build.modified" {
+			foundModified = true
+			if kv.Value.AsBool() {
+				t.Errorf("o11y.build.modified = true, want false")
+			}
+		}
+	}
+	if !foundModified {
+		t.Error("o11y.build.modified absent")
 	}
 }
 

@@ -4,12 +4,17 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"sort"
+	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/propagation"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/exemplar"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+
+	"github.com/jamesainslie/libo11y/go/internal/spectables"
+	"github.com/jamesainslie/libo11y/go/spec"
 )
 
 // ConsoleFormat selects the encoding of the console log stream.
@@ -40,9 +45,14 @@ type ErrorHandler func(error)
 type Option func(*settings)
 
 type settings struct {
-	serviceName    string
-	serviceVersion string
-	resourceAttrs  []attribute.KeyValue
+	serviceName       string
+	serviceVersion    string
+	serviceNamespace  string
+	environment       spec.Environment
+	extraEnvironments map[string]bool
+	strictIdentity    bool
+	versionFallback   bool
+	resourceAttrs     []attribute.KeyValue
 
 	logLevel        slog.Leveler
 	consoleWriter   io.Writer
@@ -79,6 +89,7 @@ func newSettings(opts []Option) *settings {
 		installSlogDefault: true,
 		buildInfo:          true,
 		startupSummary:     true,
+		strictIdentity:     true,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -97,6 +108,65 @@ func WithServiceName(name string) Option {
 // WithServiceVersion sets the service.version resource attribute.
 func WithServiceVersion(version string) Option {
 	return func(s *settings) { s.serviceVersion = version }
+}
+
+// WithServiceNamespace sets the service.namespace resource attribute, the
+// grouping key that disambiguates services across teams or domains.
+func WithServiceNamespace(namespace string) Option {
+	return func(s *settings) { s.serviceNamespace = namespace }
+}
+
+// WithEnvironment sets the deployment.environment.name resource attribute.
+// It is required at init (like the service name): [New] and [Setup] fail
+// with [ErrNoEnvironment] when no environment resolves from this option or
+// the standard OTEL_RESOURCE_ATTRIBUTES variable, and with
+// [ErrInvalidEnvironment] when the value is outside the allowed set. The
+// base set is production, staging, development, and test; extend it with
+// [WithEnvironmentValues].
+func WithEnvironment(env spec.Environment) Option {
+	return func(s *settings) { s.environment = env }
+}
+
+// WithEnvironmentValues extends the set of accepted deployment environments
+// beyond the spec's base values, for organizations that run additional
+// environments (for example qa or perf).
+func WithEnvironmentValues(values ...spec.Environment) Option {
+	return func(s *settings) {
+		if s.extraEnvironments == nil {
+			s.extraEnvironments = map[string]bool{}
+		}
+		for _, v := range values {
+			s.extraEnvironments[string(v)] = true
+		}
+	}
+}
+
+// WithoutStrictIdentity downgrades the tier-0 identity requirements (service
+// name and deployment environment) from init errors to observed schema
+// violations. Intended for migration and for tests; production services
+// should let identity be enforced.
+func WithoutStrictIdentity() Option {
+	return func(s *settings) { s.strictIdentity = false }
+}
+
+// environmentAllowed reports whether env is in the base or extended set of
+// accepted deployment environments.
+func (s *settings) environmentAllowed(env string) bool {
+	return spectables.EnvironmentValues[env] || s.extraEnvironments[env]
+}
+
+// allowedEnvironmentList renders the accepted environments for error
+// messages.
+func (s *settings) allowedEnvironmentList() string {
+	values := make([]string, 0, len(spectables.EnvironmentValues)+len(s.extraEnvironments))
+	for env := range spectables.EnvironmentValues {
+		values = append(values, env)
+	}
+	for env := range s.extraEnvironments {
+		values = append(values, env)
+	}
+	sort.Strings(values)
+	return strings.Join(values, ", ")
 }
 
 // WithResourceAttributes adds attributes to the telemetry resource. They

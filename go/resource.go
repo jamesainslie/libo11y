@@ -7,25 +7,48 @@ import (
 	"runtime/debug"
 	"strings"
 
+	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/resource"
 	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
+
+	"github.com/jamesainslie/libo11y/go/spec"
 )
 
+// instanceIDNamespace is the semconv-sanctioned UUIDv5 namespace for
+// deriving service.instance.id from a stable inherent identifier.
+var instanceIDNamespace = uuid.MustParse("4d63009a-8d0f-11ee-aad7-4c796ed8e320")
+
+// serviceVersionFallback is recorded (with a startup-summary flag) when no
+// version is resolvable, so version absence degrades telemetry rather than
+// blocking startup.
+const serviceVersionFallback = "0.0.0-unknown"
+
 // buildResource composes the telemetry resource from detectors and explicit
-// options. Precedence, lowest to highest: build info, telemetry SDK
-// identity, host, process runtime, and container detectors, then the
-// environment (OTEL_RESOURCE_ATTRIBUTES, OTEL_SERVICE_NAME), then explicit
-// option attributes. Detected values are library defaults, so the
-// environment must override them per the documented
-// option-over-environment-over-default contract.
+// options, enforces the tier-0 identity contract, derives service.instance.id,
+// and stamps the single libo11y schema URL.
+//
+// Precedence, lowest to highest: build info, telemetry SDK identity, host,
+// process runtime, and container detectors, then the environment
+// (OTEL_RESOURCE_ATTRIBUTES, OTEL_SERVICE_NAME), then explicit option
+// attributes. Detected values are library defaults, so the environment
+// overrides them per the documented option-over-environment-over-default
+// contract.
 func buildResource(ctx context.Context, s *settings) (*resource.Resource, error) {
-	explicit := make([]attribute.KeyValue, 0, len(s.resourceAttrs)+2)
+	explicit := make([]attribute.KeyValue, 0, len(s.resourceAttrs)+4)
+	versionResolved := false
 	if name := strings.TrimSpace(s.serviceName); name != "" {
 		explicit = append(explicit, semconv.ServiceName(name))
 	}
-	if s.serviceVersion != "" {
-		explicit = append(explicit, semconv.ServiceVersion(s.serviceVersion))
+	if v := strings.TrimSpace(s.serviceVersion); v != "" {
+		explicit = append(explicit, semconv.ServiceVersion(v))
+		versionResolved = true
+	}
+	if ns := strings.TrimSpace(s.serviceNamespace); ns != "" {
+		explicit = append(explicit, semconv.ServiceNamespace(ns))
+	}
+	if env := strings.TrimSpace(string(s.environment)); env != "" {
+		explicit = append(explicit, semconv.DeploymentEnvironmentNameKey.String(env))
 	}
 	explicit = append(explicit, s.resourceAttrs...)
 
@@ -52,16 +75,84 @@ func buildResource(ctx context.Context, s *settings) (*resource.Resource, error)
 			return nil, fmt.Errorf("o11y: building resource: %w", err)
 		}
 	}
+
+	res, err = enforceIdentity(res, s)
+	if err != nil {
+		return nil, err
+	}
+	res, s.versionFallback = ensureServiceVersion(res, versionResolved)
+	res = ensureInstanceID(res)
+
+	// Stamp exactly one schema URL, whatever the detectors carried, so
+	// resource merges downstream are never undefined.
+	return resource.NewWithAttributes(spec.SchemaURL, res.Attributes()...), nil
+}
+
+// enforceIdentity applies the tier-0 identity contract: a usable
+// service.name and a valid deployment.environment.name, unless strict
+// identity is disabled (in which case violations are left for the emit-time
+// validator to observe).
+func enforceIdentity(res *resource.Resource, s *settings) (*resource.Resource, error) {
 	if !hasServiceName(res) {
-		return nil, ErrNoServiceName
+		if s.strictIdentity {
+			return nil, ErrNoServiceName
+		}
+	}
+
+	env := resourceString(res, semconv.DeploymentEnvironmentNameKey)
+	switch {
+	case env == "":
+		if s.strictIdentity {
+			return nil, ErrNoEnvironment
+		}
+	case !s.environmentAllowed(env):
+		if s.strictIdentity {
+			return nil, fmt.Errorf("%w: %q (allowed: %s)", ErrInvalidEnvironment, env, s.allowedEnvironmentList())
+		}
 	}
 	return res, nil
 }
 
+// ensureServiceVersion records the fallback version when none resolved,
+// reporting whether the fallback was used.
+func ensureServiceVersion(res *resource.Resource, resolved bool) (*resource.Resource, bool) {
+	if resolved || resourceString(res, semconv.ServiceVersionKey) != "" {
+		return res, false
+	}
+	merged, err := resource.Merge(res, resource.NewSchemaless(semconv.ServiceVersion(serviceVersionFallback)))
+	if err != nil {
+		return res, true
+	}
+	return merged, true
+}
+
+// ensureInstanceID derives service.instance.id when absent: UUIDv5 over the
+// Kubernetes pod identity (from the Downward API resource attributes) when
+// present, else a random UUIDv4 per process.
+func ensureInstanceID(res *resource.Resource) *resource.Resource {
+	if resourceString(res, semconv.ServiceInstanceIDKey) != "" {
+		return res
+	}
+	var id string
+	if podUID := resourceString(res, "k8s.pod.uid"); podUID != "" {
+		id = uuid.NewSHA1(instanceIDNamespace, []byte(podUID)).String()
+	} else if podName := resourceString(res, "k8s.pod.name"); podName != "" {
+		ns := resourceString(res, "k8s.namespace.name")
+		id = uuid.NewSHA1(instanceIDNamespace, []byte(ns+"/"+podName)).String()
+	} else {
+		id = uuid.NewString()
+	}
+	merged, err := resource.Merge(res, resource.NewSchemaless(semconv.ServiceInstanceID(id)))
+	if err != nil {
+		return res
+	}
+	return merged
+}
+
 // buildInfoDetector records the compiled binary's identity from the Go
-// build info embedded by the toolchain: the main module version (as
-// service.version, when it carries a real version) and the VCS stamp
-// (vcs.revision, vcs.time, vcs.modified).
+// build info: the main module version (as service.version) and the VCS
+// stamp under the spec's names (vcs.ref.head.revision, o11y.build.time,
+// o11y.build.modified).
 type buildInfoDetector struct{}
 
 // Detect implements [resource.Detector].
@@ -80,9 +171,17 @@ func buildInfoAttrs(info *debug.BuildInfo) []attribute.KeyValue {
 	}
 	for _, setting := range info.Settings {
 		switch setting.Key {
-		case "vcs.revision", "vcs.time", "vcs.modified":
+		case "vcs.revision":
 			if setting.Value != "" {
-				attrs = append(attrs, attribute.String(setting.Key, setting.Value))
+				attrs = append(attrs, attribute.String("vcs.ref.head.revision", setting.Value))
+			}
+		case "vcs.time":
+			if setting.Value != "" {
+				attrs = append(attrs, spec.BuildTime(setting.Value))
+			}
+		case "vcs.modified":
+			if setting.Value != "" {
+				attrs = append(attrs, spec.BuildModified(setting.Value == "true"))
 			}
 		}
 	}
@@ -93,15 +192,21 @@ func buildInfoAttrs(info *debug.BuildInfo) []attribute.KeyValue {
 // identity: non-blank after trimming and not the SDK's unknown_service
 // fallback shape, regardless of which channel supplied it.
 func hasServiceName(res *resource.Resource) bool {
-	for _, kv := range res.Attributes() {
-		if kv.Key != semconv.ServiceNameKey {
-			continue
-		}
-		name := strings.TrimSpace(kv.Value.AsString())
-		if name == "" || name == "unknown_service" || strings.HasPrefix(name, "unknown_service:") {
-			return false
-		}
-		return true
+	name := strings.TrimSpace(resourceString(res, semconv.ServiceNameKey))
+	if name == "" || name == "unknown_service" || strings.HasPrefix(name, "unknown_service:") {
+		return false
 	}
-	return false
+	return true
+}
+
+func resourceString(res *resource.Resource, key attribute.Key) string {
+	if res == nil {
+		return ""
+	}
+	for _, kv := range res.Attributes() {
+		if kv.Key == key {
+			return kv.Value.AsString()
+		}
+	}
+	return ""
 }

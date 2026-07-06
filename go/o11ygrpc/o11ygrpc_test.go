@@ -11,6 +11,7 @@ import (
 
 	o11y "github.com/jamesainslie/libo11y/go"
 	"github.com/jamesainslie/libo11y/go/o11ygrpc"
+	"github.com/jamesainslie/libo11y/go/spec"
 )
 
 func newSDK(t *testing.T) (*o11y.SDK, *tracetest.SpanRecorder, *sdkmetric.ManualReader) {
@@ -19,6 +20,7 @@ func newSDK(t *testing.T) (*o11y.SDK, *tracetest.SpanRecorder, *sdkmetric.Manual
 	reader := sdkmetric.NewManualReader()
 	sdk, err := o11y.New(context.Background(),
 		o11y.WithServiceName("o11ygrpc-test"),
+		o11y.WithEnvironment(spec.EnvironmentTest),
 		o11y.WithSpanProcessor(recorder),
 		o11y.WithMetricReader(reader),
 		o11y.WithoutLogExport(),

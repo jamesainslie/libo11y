@@ -12,11 +12,13 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	o11y "github.com/jamesainslie/libo11y/go"
+	"github.com/jamesainslie/libo11y/go/spec"
 )
 
 func hermeticOptions(name string) []o11y.Option {
 	return []o11y.Option{
 		o11y.WithServiceName(name),
+		o11y.WithEnvironment(spec.EnvironmentTest),
 		o11y.WithSpanProcessor(tracetest.NewSpanRecorder()),
 		o11y.WithMetricReader(sdkmetric.NewManualReader()),
 		o11y.WithoutLogExport(),

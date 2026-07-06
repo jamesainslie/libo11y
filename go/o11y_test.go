@@ -14,6 +14,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	o11y "github.com/jamesainslie/libo11y/go"
+	"github.com/jamesainslie/libo11y/go/spec"
 )
 
 // newHermetic builds an SDK with every external pipeline replaced by an
@@ -25,6 +26,7 @@ func newHermetic(t *testing.T, extra ...o11y.Option) (*o11y.SDK, *tracetest.Span
 	var console bytes.Buffer
 	opts := append([]o11y.Option{
 		o11y.WithServiceName("libo11y-test"),
+		o11y.WithEnvironment(spec.EnvironmentTest),
 		o11y.WithSpanProcessor(recorder),
 		o11y.WithMetricReader(reader),
 		o11y.WithoutLogExport(),
@@ -92,6 +94,7 @@ func newHermeticNamed(t *testing.T) (*o11y.SDK, *tracetest.SpanRecorder, *sdkmet
 	reader := sdkmetric.NewManualReader()
 	var console bytes.Buffer
 	sdk, err := o11y.New(context.Background(),
+		o11y.WithEnvironment(spec.EnvironmentTest),
 		o11y.WithSpanProcessor(recorder),
 		o11y.WithMetricReader(reader),
 		o11y.WithoutLogExport(),
@@ -172,6 +175,7 @@ func TestRuntimeMetricsDefaultOn(t *testing.T) {
 	reader := sdkmetric.NewManualReader()
 	sdk, err := o11y.New(context.Background(),
 		o11y.WithServiceName("rt-test"),
+		o11y.WithEnvironment(spec.EnvironmentTest),
 		o11y.WithSpanProcessor(tracetest.NewSpanRecorder()),
 		o11y.WithMetricReader(reader),
 		o11y.WithoutLogExport(),
@@ -222,6 +226,7 @@ func TestHistogramBucketsView(t *testing.T) {
 	buckets := []float64{0.1, 1, 10}
 	sdk, err := o11y.New(context.Background(),
 		o11y.WithServiceName("buckets-test"),
+		o11y.WithEnvironment(spec.EnvironmentTest),
 		o11y.WithSpanProcessor(tracetest.NewSpanRecorder()),
 		o11y.WithMetricReader(reader),
 		o11y.WithoutLogExport(),
@@ -267,6 +272,7 @@ func TestShutdownIdempotent(t *testing.T) {
 	recorder := tracetest.NewSpanRecorder()
 	sdk, err := o11y.New(context.Background(),
 		o11y.WithServiceName("shutdown-test"),
+		o11y.WithEnvironment(spec.EnvironmentTest),
 		o11y.WithSpanProcessor(recorder),
 		o11y.WithMetricReader(sdkmetric.NewManualReader()),
 		o11y.WithoutLogExport(),
@@ -294,6 +300,7 @@ func TestSpansEndAfterShutdownAreDropped(t *testing.T) {
 	recorder := tracetest.NewSpanRecorder()
 	sdk, err := o11y.New(context.Background(),
 		o11y.WithServiceName("post-shutdown"),
+		o11y.WithEnvironment(spec.EnvironmentTest),
 		o11y.WithSpanProcessor(recorder),
 		o11y.WithMetricReader(sdkmetric.NewManualReader()),
 		o11y.WithoutLogExport(),
