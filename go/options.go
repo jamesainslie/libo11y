@@ -59,6 +59,8 @@ type settings struct {
 
 	installSlogDefault bool
 	errorHandler       ErrorHandler
+	buildInfo          bool
+	startupSummary     bool
 
 	spanExporter  sdktrace.SpanExporter
 	spanProcessor sdktrace.SpanProcessor
@@ -73,6 +75,8 @@ func newSettings(opts []Option) *settings {
 		logExport:          true,
 		runtimeMetrics:     true,
 		installSlogDefault: true,
+		buildInfo:          true,
+		startupSummary:     true,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -189,6 +193,23 @@ func WithHistogramBuckets(instrumentName string, boundaries []float64) Option {
 // collected by default.
 func WithoutRuntimeMetrics() Option {
 	return func(s *settings) { s.runtimeMetrics = false }
+}
+
+// WithoutBuildInfo disables the build-info resource detector, which
+// otherwise records the compiled binary's module version (as
+// service.version when no explicit version is configured) and VCS stamp
+// (vcs.revision, vcs.time, vcs.modified) from the Go build info.
+func WithoutBuildInfo() Option {
+	return func(s *settings) { s.buildInfo = false }
+}
+
+// WithoutStartupSummary prevents [Setup] from emitting its startup summary
+// record. The summary doubles as an initialization canary: it is forced
+// through the whole log pipeline, and a sink failure fails Setup rather
+// than surfacing later in production. The resolved configuration remains
+// available from [SDK.EffectiveConfig].
+func WithoutStartupSummary() Option {
+	return func(s *settings) { s.startupSummary = false }
 }
 
 // WithoutSlogDefault prevents [Setup] from installing the SDK logger as the

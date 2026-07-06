@@ -255,6 +255,29 @@ func TestReplacerNotCalledForCorrelation(t *testing.T) {
 	}
 }
 
+func TestForceEmitBypassesAllLevelGates(t *testing.T) {
+	var buf bytes.Buffer
+	level := new(slog.LevelVar)
+	level.Set(slog.LevelError)
+	handler := fanout.New(fanout.Config{
+		// The sink has its own strict gate too; force must bypass both.
+		Legs:  []slog.Handler{slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError})},
+		Level: level,
+	})
+	logger := slog.New(handler)
+
+	logger.Info("filtered")
+	logger.InfoContext(fanout.WithForce(context.Background()), "forced through")
+
+	records := parseJSONLines(t, &buf)
+	if len(records) != 1 {
+		t.Fatalf("got %d records, want 1 (only the forced one)", len(records))
+	}
+	if got, want := records[0]["msg"], "forced through"; got != want {
+		t.Errorf("msg = %v, want %v", got, want)
+	}
+}
+
 func TestLevelGate(t *testing.T) {
 	var buf bytes.Buffer
 	level := new(slog.LevelVar)

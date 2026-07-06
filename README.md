@@ -37,9 +37,11 @@ native logging facade, and everything is correlated and exported over OTLP.
 6. **Safe in the dark.** With no configuration at all, applications run
    normally: telemetry degrades gracefully instead of crashing the host.
 
-See [`docs/DESIGN.md`](docs/DESIGN.md) for the cross-language design contract
-and [`docs/CONVENTIONS.md`](docs/CONVENTIONS.md) for naming, versioning, and
-configuration conventions.
+See [`docs/DESIGN.md`](docs/DESIGN.md) for the cross-language design
+contract, [`docs/CONVENTIONS.md`](docs/CONVENTIONS.md) for naming,
+versioning, and configuration conventions, and
+[`docs/PARITY.md`](docs/PARITY.md) for the feature-parity matrix across
+implementations.
 
 ## Quick start (Go)
 

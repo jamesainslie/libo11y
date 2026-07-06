@@ -73,6 +73,21 @@ func (c correlated) WithGroup(name string) slog.Handler {
 // group names enclosing the attribute. Returning a zero Attr drops it.
 type ReplaceFunc func(groups []string, attr slog.Attr) slog.Attr
 
+type forceKey struct{}
+
+// WithForce marks ctx so records emitted with it bypass every level gate:
+// the Handler reports Enabled for any level and dispatches to all sinks
+// regardless of their own gates. Used for records that must always emit,
+// such as audit events and the startup canary.
+func WithForce(ctx context.Context) context.Context {
+	return context.WithValue(ctx, forceKey{}, true)
+}
+
+func isForced(ctx context.Context) bool {
+	forced, ok := ctx.Value(forceKey{}).(bool)
+	return ok && forced
+}
+
 // Config assembles a Handler.
 type Config struct {
 	// Legs are the sinks that receive flattened records.
@@ -109,8 +124,12 @@ func New(cfg Config) *Handler {
 	}
 }
 
-// Enabled reports whether records at level should be emitted.
-func (h *Handler) Enabled(_ context.Context, level slog.Level) bool {
+// Enabled reports whether records at level should be emitted. Records in a
+// [WithForce] context are always enabled.
+func (h *Handler) Enabled(ctx context.Context, level slog.Level) bool {
+	if isForced(ctx) {
+		return true
+	}
 	minLevel := slog.LevelInfo
 	if h.level != nil {
 		minLevel = h.level.Level()
@@ -161,9 +180,10 @@ func (h *Handler) Handle(ctx context.Context, record slog.Record) error {
 	flat := slog.NewRecord(record.Time, record.Level, record.Message, record.PC)
 	flat.AddAttrs(out...)
 
+	forced := isForced(ctx)
 	var errs []error
 	for _, leg := range h.legs {
-		if !leg.Enabled(ctx, record.Level) {
+		if !forced && !leg.Enabled(ctx, record.Level) {
 			continue
 		}
 		if err := leg.Handle(ctx, flat.Clone()); err != nil {

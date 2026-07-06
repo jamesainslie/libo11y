@@ -66,6 +66,9 @@ type SDK struct {
 	errorHandler   ErrorHandler
 	global         bool
 
+	effectiveConfig string
+	summaryAttrs    []slog.Attr
+
 	shutdownOnce sync.Once
 	shutdownErr  error
 }
@@ -131,7 +134,7 @@ func newSDK(ctx context.Context, s *settings) (_ *SDK, err error) {
 		errorHandler = newRateLimitedErrorHandler(nil)
 	}
 
-	return &SDK{
+	sdk := &SDK{
 		res:            res,
 		tracerProvider: tracerProvider,
 		meterProvider:  meterProvider,
@@ -140,7 +143,9 @@ func newSDK(ctx context.Context, s *settings) (_ *SDK, err error) {
 		handler:        handler,
 		logger:         slog.New(handler),
 		errorHandler:   errorHandler,
-	}, nil
+	}
+	sdk.summaryAttrs, sdk.effectiveConfig = buildSummary(s, sdk)
+	return sdk, nil
 }
 
 func buildTracerProvider(ctx context.Context, s *settings, res *resource.Resource) (*sdktrace.TracerProvider, error) {

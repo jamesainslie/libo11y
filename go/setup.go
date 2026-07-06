@@ -2,6 +2,7 @@ package o11y
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 
@@ -35,6 +36,16 @@ func Setup(ctx context.Context, opts ...Option) (*SDK, error) {
 	sdk, err := newSDK(ctx, s)
 	if err != nil {
 		return nil, err
+	}
+
+	// The startup summary doubles as the initialization canary: it is
+	// forced through the full pipeline before any global is installed, so
+	// a rejecting sink fails Setup instead of dropping records later.
+	if s.startupSummary {
+		if err := sdk.emitStartupSummary(ctx, sdk.summaryAttrs); err != nil {
+			_ = sdk.Shutdown(ctx) // best effort: the canary error is what matters
+			return nil, fmt.Errorf("o11y: startup canary rejected by log pipeline: %w", err)
+		}
 	}
 	sdk.global = true
 

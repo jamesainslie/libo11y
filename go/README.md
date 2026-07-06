@@ -49,8 +49,16 @@ setup call.
   `slog.Handler` contract (verified against `testing/slogtest`), including
   `WithGroup`, and correlation attributes never nest inside groups.
 - **Service identity, enforced.** `service.name` must come from an option
-  or the environment; Setup refuses to ship `unknown_service`. Host and
-  process runtime detectors fill in the rest.
+  or the environment; Setup refuses to ship `unknown_service`. Host,
+  process runtime, container, and build-info detectors fill in the rest:
+  the binary's VCS stamp (`vcs.revision`, `vcs.time`, `vcs.modified`) and
+  module version are recorded automatically (`WithoutBuildInfo` to opt
+  out).
+- **A verified start.** `Setup` forces one summary record (the resolved
+  configuration) through the entire log pipeline before installing any
+  global; a sink that rejects it fails Setup instead of dropping records
+  silently in production. The same information is available from
+  `sdk.EffectiveConfig()`, and `WithoutStartupSummary` disables the record.
 - **Runtime metrics** (`go.*`) on by default, exemplars on by default
   (trace-based), histogram buckets adjustable per instrument with
   `WithHistogramBuckets`.
@@ -66,6 +74,7 @@ setup call.
 | `o11y` (root) | `Setup`, `New`, the `SDK` handle, options |
 | `o11yhttp` | net/http server middleware and client transport (otelhttp, stable HTTP semconv, route-aware span names) |
 | `o11ygrpc` | gRPC stats handlers for servers and clients (otelgrpc) |
+| `o11ygin` | Gin middleware (separate module, so non-Gin users skip its dependencies) |
 | `o11ytest` | hermetic in-memory harness for asserting emitted telemetry |
 | `redact` | capture-time redaction: `Secret`, `Masked`, tag-driven `Struct` |
 
@@ -91,6 +100,33 @@ link rather than adopt untrusted context.
 ```go
 server := grpc.NewServer(grpc.StatsHandler(o11ygrpc.ServerHandler()))
 conn, err := grpc.NewClient(target, grpc.WithStatsHandler(o11ygrpc.ClientHandler()))
+```
+
+Gin (module `github.com/jamesainslie/libo11y/go/o11ygin`):
+
+```go
+router := gin.New()
+router.Use(o11ygin.Middleware("api", o11ygin.WithIgnorePaths("/healthz")))
+```
+
+## Audit events and lifecycle helpers
+
+Records that must always be emitted regardless of the configured level
+(audit trails, security events) use a force-emit context; redaction and
+correlation still apply:
+
+```go
+slog.InfoContext(o11y.ForceEmit(ctx), "role changed",
+    "actor", actorID, "subject", subjectID, "role", role)
+```
+
+For the common daemon shape, `ShutdownOnSignals` blocks until SIGINT or
+SIGTERM, then flushes with the usual bounded deadline; a second signal
+terminates immediately:
+
+```go
+go server.Run()
+return sdk.ShutdownOnSignals(ctx)
 ```
 
 ## Redaction

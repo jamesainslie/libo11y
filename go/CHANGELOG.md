@@ -31,3 +31,10 @@ and the module adheres to [Semantic Versioning](https://semver.org/).
 - `o11ytest`: hermetic in-memory test harness recording spans, metrics,
   and correlated log records, safe under `t.Parallel()`.
 - Runnable HTTP server example.
+- Rust-client parity features: `ForceEmit` context marker for always-emit
+  audit records; startup summary record doubling as an initialization
+  canary (sink failures fail `Setup`) with `SDK.EffectiveConfig` accessor;
+  build-info resource detector (module version and `vcs.*` stamp) and
+  container detector; `SDK.ShutdownOnSignals` lifecycle helper;
+  `o11ygin` Gin middleware as a nested module. Parity matrix in
+  `docs/PARITY.md`.
