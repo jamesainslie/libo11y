@@ -2,6 +2,7 @@ package o11y
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"runtime/debug"
 
@@ -41,7 +42,12 @@ func buildResource(ctx context.Context, s *settings) (*resource.Resource, error)
 
 	res, err := resource.New(ctx, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("o11y: building resource: %w", err)
+		// A partial resource (a detector failed, the rest succeeded) is
+		// usable telemetry identity; refusing to start over a missing
+		// container ID would violate the never-break-the-host contract.
+		if res == nil || !errors.Is(err, resource.ErrPartialResource) {
+			return nil, fmt.Errorf("o11y: building resource: %w", err)
+		}
 	}
 	if !hasServiceName(res) {
 		return nil, ErrNoServiceName

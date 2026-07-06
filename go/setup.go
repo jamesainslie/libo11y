@@ -43,7 +43,10 @@ func Setup(ctx context.Context, opts ...Option) (*SDK, error) {
 	// a rejecting sink fails Setup instead of dropping records later.
 	if s.startupSummary {
 		if err := sdk.emitStartupSummary(ctx, sdk.summaryAttrs); err != nil {
-			_ = sdk.Shutdown(ctx) // best effort: the canary error is what matters
+			// Safe under the held setupMu: sdk.global is still false, so
+			// this Shutdown will not call releaseSetupGuard and re-enter
+			// the mutex. Best effort: the canary error is what matters.
+			_ = sdk.Shutdown(ctx)
 			return nil, fmt.Errorf("o11y: startup canary rejected by log pipeline: %w", err)
 		}
 	}

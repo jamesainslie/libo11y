@@ -144,6 +144,9 @@ func WithAttrReplacer(replace AttrReplacer) Option {
 // WithExtraLogHandler adds an additional [slog.Handler] as a log sink
 // alongside the console and OTLP sinks. Records it receives are already
 // flattened: correlation attributes are added and group nesting is resolved.
+//
+// The handler runs synchronously on every emit, including the startup
+// summary during [Setup]; it must not block.
 func WithExtraLogHandler(handler slog.Handler) Option {
 	return func(s *settings) { s.extraLogHandler = append(s.extraLogHandler, handler) }
 }
@@ -205,9 +208,11 @@ func WithoutBuildInfo() Option {
 
 // WithoutStartupSummary prevents [Setup] from emitting its startup summary
 // record. The summary doubles as an initialization canary: it is forced
-// through the whole log pipeline, and a sink failure fails Setup rather
-// than surfacing later in production. The resolved configuration remains
-// available from [SDK.EffectiveConfig].
+// through the whole log pipeline, and a synchronously-rejecting sink
+// (console writer, extra handlers) fails Setup rather than dropping
+// records silently later. The OTLP sink batches asynchronously, so the
+// canary does not verify collector connectivity. The resolved
+// configuration remains available from [SDK.EffectiveConfig].
 func WithoutStartupSummary() Option {
 	return func(s *settings) { s.startupSummary = false }
 }

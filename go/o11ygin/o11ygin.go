@@ -46,6 +46,7 @@ func WithFilter(allow func(*http.Request) bool) Option {
 // WithIgnorePaths excludes requests whose URL path matches any of the given
 // patterns, in the syntax of [path.Match] (for example "/healthz" or
 // "/debug/*"). Typical use is silencing health and readiness probes.
+// A malformed pattern never matches, so its requests remain instrumented.
 func WithIgnorePaths(patterns ...string) Option {
 	return func(c *config) {
 		c.filters = append(c.filters, func(r *http.Request) bool {

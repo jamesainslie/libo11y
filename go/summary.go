@@ -67,6 +67,11 @@ func buildSummary(s *settings, sdk *SDK) ([]slog.Attr, string) {
 
 	attrs := []slog.Attr{
 		slog.String("service.name", serviceName),
+	}
+	if serviceVersion != "" {
+		attrs = append(attrs, slog.String("service.version", serviceVersion))
+	}
+	attrs = append(attrs,
 		slog.String("traces", traces),
 		slog.String("metrics", metrics),
 		slog.String("logs", logs),
@@ -75,10 +80,7 @@ func buildSummary(s *settings, sdk *SDK) ([]slog.Attr, string) {
 		slog.String("sampler", sampler),
 		slog.String("propagators", propagators),
 		slog.Bool("runtime_metrics", s.runtimeMetrics),
-	}
-	if serviceVersion != "" {
-		attrs = append(attrs[:1], append([]slog.Attr{slog.String("service.version", serviceVersion)}, attrs[1:]...)...)
-	}
+	)
 	if endpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"); endpoint != "" {
 		attrs = append(attrs, slog.String("endpoint", endpoint))
 	}
@@ -94,8 +96,10 @@ func buildSummary(s *settings, sdk *SDK) ([]slog.Attr, string) {
 }
 
 // emitStartupSummary forces the summary record through the full log
-// pipeline. It doubles as the initialization canary: any sink error is
-// returned so Setup can fail fast instead of losing records silently later.
+// pipeline. It doubles as the initialization canary: an error from any
+// synchronously-rejecting sink (console writer, extra handlers) is returned
+// so Setup can fail fast. The OTLP sink batches asynchronously, so this is
+// a pipeline-wiring check, not a collector-connectivity check.
 func (s *SDK) emitStartupSummary(ctx context.Context, attrs []slog.Attr) error {
 	record := slog.NewRecord(time.Now(), slog.LevelInfo, "telemetry configured", 0)
 	record.AddAttrs(attrs...)
