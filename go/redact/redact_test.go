@@ -54,6 +54,13 @@ func TestSecretRendersRedactedEverywhere(t *testing.T) {
 	}
 }
 
+func TestMaskedCountsRunesNotBytes(t *testing.T) {
+	name := redact.Masked("Jürgen") // 6 runes, 7 bytes
+	if got, want := fmt.Sprint(name), "XXXXXX"; got != want {
+		t.Errorf("masked = %q, want %q (rune count, not byte count)", got, want)
+	}
+}
+
 func TestMaskedPreservesShapeOnly(t *testing.T) {
 	card := redact.Masked("4111111111111111")
 

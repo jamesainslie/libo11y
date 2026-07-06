@@ -237,7 +237,17 @@ func (h *Handler) processAttrsAt(path []string, attrs []slog.Attr) []slog.Attr {
 			continue
 		}
 		if a.Value.Kind() == slog.KindGroup {
-			members := h.processAttrsAt(append(path, a.Key), a.Value.Group())
+			// Inlined (empty-keyed) groups do not contribute to the group
+			// path, matching ReplaceAttr semantics in the standard library.
+			// The copy also prevents sibling groups from aliasing one
+			// backing array.
+			memberPath := path
+			if a.Key != "" {
+				memberPath = make([]string, len(path)+1)
+				copy(memberPath, path)
+				memberPath[len(path)] = a.Key
+			}
+			members := h.processAttrsAt(memberPath, a.Value.Group())
 			switch {
 			case len(members) == 0:
 				// Elide empty groups.

@@ -34,6 +34,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"unicode/utf8"
 )
 
 // Redacted is the literal that replaces redacted values.
@@ -73,9 +74,9 @@ func (s Secret[T]) MarshalText() ([]byte, error) { return []byte(Redacted), nil 
 // MarshalJSON implements [encoding/json.Marshaler].
 func (s Secret[T]) MarshalJSON() ([]byte, error) { return []byte(`"` + Redacted + `"`), nil }
 
-// Masked is a string that renders as an equal-length run of 'X' through
-// slog, fmt, and JSON marshaling, preserving only its shape. Convert to
-// protect: redact.Masked(cardNumber).
+// Masked is a string that renders as a run of 'X' of equal rune count
+// through slog, fmt, and JSON marshaling, preserving only its visible
+// shape. Convert to protect: redact.Masked(cardNumber).
 type Masked string
 
 // LogValue implements [slog.LogValuer].
@@ -93,7 +94,7 @@ func (m Masked) MarshalText() ([]byte, error) { return []byte(m.masked()), nil }
 // MarshalJSON implements [encoding/json.Marshaler].
 func (m Masked) MarshalJSON() ([]byte, error) { return []byte(`"` + m.masked() + `"`), nil }
 
-func (m Masked) masked() string { return strings.Repeat("X", len(m)) }
+func (m Masked) masked() string { return strings.Repeat("X", utf8.RuneCountInString(string(m))) }
 
 // protection is ordered: higher values are stricter and win through nesting.
 type protection int
@@ -183,7 +184,7 @@ func protectValue(v reflect.Value, floor protection) slog.Value {
 	if v.Kind() != reflect.Struct {
 		switch floor {
 		case mask:
-			return slog.StringValue(strings.Repeat("X", len(fmt.Sprint(v.Interface()))))
+			return slog.StringValue(strings.Repeat("X", utf8.RuneCountInString(fmt.Sprint(v.Interface()))))
 		case redact:
 			return slog.StringValue(Redacted)
 		default:

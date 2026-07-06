@@ -144,17 +144,27 @@ func WithExtraLogHandler(handler slog.Handler) Option {
 	return func(s *settings) { s.extraLogHandler = append(s.extraLogHandler, handler) }
 }
 
-// WithTracerSampler sets the trace sampler. By default the SDK honors the
+// WithTraceSampler sets the trace sampler. By default the SDK honors the
 // standard OTEL_TRACES_SAMPLER environment variable and falls back to
 // parentbased_always_on, preserving inbound sampling decisions.
-func WithTracerSampler(sampler sdktrace.Sampler) Option {
+func WithTraceSampler(sampler sdktrace.Sampler) Option {
 	return func(s *settings) { s.sampler = sampler }
 }
 
 // WithPropagators replaces the default propagator (a composite of W3C Trace
-// Context and W3C Baggage).
-func WithPropagators(propagator propagation.TextMapPropagator) Option {
-	return func(s *settings) { s.propagator = propagator }
+// Context and W3C Baggage). Multiple propagators compose into one composite
+// applied in order.
+func WithPropagators(propagators ...propagation.TextMapPropagator) Option {
+	return func(s *settings) {
+		switch len(propagators) {
+		case 0:
+			s.propagator = nil // fall back to the default composite
+		case 1:
+			s.propagator = propagators[0]
+		default:
+			s.propagator = propagation.NewCompositeTextMapPropagator(propagators...)
+		}
+	}
 }
 
 // WithViews registers metric views on the meter provider.
@@ -189,8 +199,17 @@ func WithoutSlogDefault() Option {
 }
 
 // WithErrorHandler routes asynchronous telemetry errors (such as export
-// failures) to handle. The default handler logs them to the console stream
-// at Warn level, rate limited. Only [Setup] installs the handler globally.
+// failures) to handle. The default handler writes rate-limited Warn records
+// to a plain text stderr logger, deliberately outside the SDK's own log
+// pipeline.
+//
+// A custom handler must not log through the SDK's pipeline (including the
+// slog default installed by [Setup]): when the failing component is the log
+// exporter itself, doing so recurses. Log to a separate destination, as the
+// default does.
+//
+// The OpenTelemetry error handler is process-global, so only [Setup]
+// installs it; under [New] this option has no effect.
 func WithErrorHandler(handle ErrorHandler) Option {
 	return func(s *settings) { s.errorHandler = handle }
 }

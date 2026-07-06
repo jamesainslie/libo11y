@@ -187,6 +187,32 @@ func TestReplacerReceivesGroupPath(t *testing.T) {
 	}
 }
 
+// TestReplacerPathExcludesInlineGroups pins standard-library ReplaceAttr
+// semantics: an empty-keyed (inlined) group contributes no element to the
+// group path its members see.
+func TestReplacerPathExcludesInlineGroups(t *testing.T) {
+	var buf bytes.Buffer
+	var paths [][]string
+	handler := fanout.New(fanout.Config{
+		Legs: []slog.Handler{slog.NewJSONHandler(&buf, nil)},
+		Replace: func(groups []string, attr slog.Attr) slog.Attr {
+			paths = append(paths, groups)
+			return attr
+		},
+	})
+	slog.New(handler).WithGroup("outer").Info("event",
+		slog.Group("", slog.Group("named", "leaf", 1)))
+
+	if len(paths) != 1 {
+		t.Fatalf("replacer called %d times, want 1", len(paths))
+	}
+	got := paths[0]
+	want := []string{"outer", "named"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("group path = %v, want %v (inline group must not appear)", got, want)
+	}
+}
+
 func TestReplacerCanDropAttributes(t *testing.T) {
 	var buf bytes.Buffer
 	handler := fanout.New(fanout.Config{

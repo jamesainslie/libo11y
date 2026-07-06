@@ -139,6 +139,11 @@ func (r *Recorder) Logs() []LogRecord {
 
 // logCapture is a concurrency-safe slog.Handler recording every record
 // together with the active span context.
+//
+// WithAttrs and WithGroup return the receiver unchanged. That is correct
+// only under the fan-out pipeline, which resolves groups and attrs itself
+// and hands its legs fully flattened records; logCapture is not a valid
+// standalone slog.Handler.
 type logCapture struct {
 	mu      sync.Mutex
 	records []LogRecord
