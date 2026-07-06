@@ -43,7 +43,15 @@ implemented (rationale given).
 | Sampler configuration | full | OTEL_TRACES_SAMPLER + `WithTraceSampler` |
 | TLS for exporters | full | standard OTEL_EXPORTER_OTLP_CERTIFICATE et al. (env-driven, exporter-owned) |
 | Signal-driven shutdown helper | full | `SDK.ShutdownOnSignals` (blocks, restores handling on first signal, bounded flush) |
-| Hermetic test harness | full | `o11ytest` with span/metric/log recorders and correlation assertions |
+| Hermetic test harness | full | `o11ytest` with span/metric/log recorders, correlation and conformance assertions (`AssertConforms`, `AssertCorrelated`) |
+| Centralized telemetry specification | full | Weaver registry under `spec/`, Rego policy suite, code generation to `go/spec` + `go/internal/spectables`, `docs/taxonomy` |
+| Tiered resource identity enforced at init | full | tier-0 required (`service.name`, `deployment.environment.name` enum-validated, `service.version` fallback); `WithEnvironment`, `WithServiceNamespace`, `WithoutStrictIdentity` |
+| service.instance.id derivation | full | UUIDv5 from k8s pod identity (Downward API), else UUIDv4 |
+| Single schema URL per resource | full | `spec.SchemaURL` restamped on the composed resource |
+| Sensitivity classification driving redaction | full | generated table drives an unbypassable emit-time replacer; `WithPIIMode`; `o11y.schema.violations` self-metric |
+| Event API and wide events | full | `SDK.Event`, `Record` accumulator, `o11yhttp.WithCanonicalLine` |
+| Emit-time span validator | planned | dev-on/prod-observe validating span processor and metric-label allowlist |
+| Cross-language OTLP conformance (Weaver live-check + golden corpus) | planned | harness is language-agnostic; wired when a second language starts |
 | Log/span event deduplication | excluded | a Rust-ecosystem bridge concern (dual emission through the tracing/OTEL layers); the problem does not exist in Go's slog architecture |
 | Config file layering (YAML/TOML) | excluded | superseded by OTEL declarative config; adopt contrib otelconf (OTEL_CONFIG_FILE) once its Go implementation stabilizes |
 | Metrics cardinality cap + gauge | planned | blocked on otel-go: the SDK's cardinality limit is still experimental (env-only); revisit when the API stabilizes |

@@ -75,6 +75,27 @@ suites.
   inspectable error. A telemetry library must never be the reason its host
   fails; it must also never silently drop buffered telemetry without saying so.
 
+## Specification and enforcement
+
+Every implementation is bound by the libo11y telemetry specification (see
+[SPEC.md](SPEC.md)): a versioned, machine-readable registry of resource
+attributes, structured-logging rules, per-signal minimums, a registered
+event catalog, and a sensitivity classification. The registry extends
+OpenTelemetry semantic conventions and is code-generated into each language
+so that runtime validators and the test harness share one source of truth.
+
+Enforcement is layered: a generated typed API, init-time validation of the
+required identity tier, an always-on emit-time sensitivity layer (secret
+attributes dropped, PII handled per policy), and CI conformance. Required
+identity is enforced at init; the hot path only ever observes and counts.
+
+## Minimum identity
+
+An implementation MUST refuse to start telemetry without a usable
+`service.name` and a valid `deployment.environment.name`, and MUST derive
+`service.instance.id` when absent. The full tiered taxonomy and the
+SDK-versus-collector division of labor are normative in the specification.
+
 ## Configuration
 
 Precedence, strictly: explicit code option, then standard `OTEL_*` environment

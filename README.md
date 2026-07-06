@@ -37,11 +37,27 @@ native logging facade, and everything is correlated and exported over OTLP.
 6. **Safe in the dark.** With no configuration at all, applications run
    normally: telemetry degrades gracefully instead of crashing the host.
 
+## The specification
+
+libo11y centralizes a versioned telemetry specification in
+[`spec/`](spec/): a tiered resource-attribute taxonomy, structured-logging
+rules, per-signal minimums, a registered event catalog, and a sensitivity
+classification that drives redaction. It extends OpenTelemetry semantic
+conventions (never redefining stable upstream attributes), is validated in
+CI by [OpenTelemetry Weaver](https://github.com/open-telemetry/weaver)
+against a policy suite, and is code-generated into each language: typed
+attribute keys, closed enums, and validation tables the runtime and test
+harness share. See [`docs/SPEC.md`](docs/SPEC.md) for the human-readable
+specification and [`docs/taxonomy/`](docs/taxonomy/) for the generated
+attribute tables.
+
+## Further reading
+
 See [`docs/DESIGN.md`](docs/DESIGN.md) for the cross-language design
-contract, [`docs/CONVENTIONS.md`](docs/CONVENTIONS.md) for naming,
-versioning, and configuration conventions, and
-[`docs/PARITY.md`](docs/PARITY.md) for the feature-parity matrix across
-implementations.
+contract, [`docs/SPEC.md`](docs/SPEC.md) for the telemetry specification,
+[`docs/CONVENTIONS.md`](docs/CONVENTIONS.md) for naming, versioning, and
+configuration conventions, and [`docs/PARITY.md`](docs/PARITY.md) for the
+feature-parity matrix across implementations.
 
 ## Quick start (Go)
 

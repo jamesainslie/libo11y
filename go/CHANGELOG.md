@@ -8,6 +8,18 @@ and the module adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Telemetry specification and enforcement: the `spec/` Weaver registry
+  drives generated `spec` (typed keys, enums, event names, schema/version
+  constants, slog+9 severity) and internal validation tables. Runtime
+  enforcement: required tier-0 identity at init (`WithEnvironment`,
+  `WithServiceNamespace`, `WithoutStrictIdentity`, `ErrNoEnvironment`,
+  `ErrInvalidEnvironment`), `service.instance.id` derivation, single
+  schema-URL stamping, an unbypassable sensitivity replacer (`WithPIIMode`,
+  `o11y.schema.violations` self-metric), the `SDK.Event` API, the `Record`
+  wide-event accumulator with `o11yhttp.WithCanonicalLine`, and
+  `o11ytest` conformance assertions. Build-info attributes renamed to their
+  spec forms (`vcs.ref.head.revision`, `o11y.build.time`,
+  `o11y.build.modified`).
 - `o11y.Setup` and `o11y.New`: one-call OpenTelemetry pipeline construction
   (traces, metrics, logs over OTLP) returning an owned `SDK` handle with
   idempotent, per-signal-reporting `Shutdown` and `ForceFlush`.

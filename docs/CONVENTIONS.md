@@ -4,7 +4,9 @@
 
 ```
 libo11y/
-  docs/          cross-language design contract and conventions
+  docs/          cross-language design contract, spec, and conventions
+  spec/          telemetry specification: Weaver registry, policies,
+                 schemas, and the pinned upstream semconv snapshot
   go/            Go module (github.com/jamesainslie/libo11y/go)
   rust/          Rust workspace (planned)
   java/          Java/Maven module (planned)
@@ -12,7 +14,24 @@ libo11y/
 ```
 
 Each language directory is self-contained: its own build, tests, lint
-configuration, changelog, and README.
+configuration, changelog, and README. The `spec/` registry is the shared,
+language-neutral source of truth; each language generates typed constants
+and validation tables from it.
+
+## Specification toolchain
+
+The specification is validated and generated with
+[OpenTelemetry Weaver](https://github.com/open-telemetry/weaver), pinned via
+mise. Make targets from the repository root:
+
+- `make spec-check` validates the registry against the semconv format and
+  the Rego policy suite.
+- `make spec-generate` regenerates `go/spec`, `go/internal/spectables`, and
+  `docs/taxonomy` from the registry.
+- `make spec-drift` fails if generated artifacts are stale (the CI gate).
+
+The official semconv registry is vendored under `spec/vendor/` at a pinned
+version, so validation is hermetic and needs no network.
 
 ## Versioning and releases
 
