@@ -23,6 +23,13 @@ func logToJSON(t *testing.T, attrs ...any) map[string]any {
 	return m
 }
 
+func logJSONString(t *testing.T, attrs ...any) string {
+	t.Helper()
+	var buf bytes.Buffer
+	slog.New(slog.NewJSONHandler(&buf, nil)).Info("event", attrs...)
+	return buf.String()
+}
+
 func TestSecretRendersRedactedEverywhere(t *testing.T) {
 	secret := redact.NewSecret("hunter2")
 
@@ -197,5 +204,140 @@ func TestStructOnNonStructPassesThrough(t *testing.T) {
 	record := logToJSON(t, "n", redact.Struct(42))
 	if got := record["n"]; got != float64(42) {
 		t.Errorf("non-struct = %v, want 42", got)
+	}
+}
+
+type order struct {
+	ID    string
+	Items []payment
+}
+
+// TestSliceOfTaggedStructsProtected pins the fix for the container leak:
+// every element of a slice/array/map of tagged structs must be protected.
+func TestSliceOfTaggedStructsProtected(t *testing.T) {
+	o := order{ID: "o-1", Items: []payment{
+		{Card: "4111111111111111", CVV: "123", PIN: "9876", Merchant: "ACME"},
+	}}
+	line := logJSONString(t, "order", redact.Struct(o))
+	for _, secret := range []string{"4111111111111111", "123", "9876"} {
+		if strings.Contains(line, secret) {
+			t.Errorf("slice element leaked %q in: %s", secret, line)
+		}
+	}
+	if !strings.Contains(line, "ACME") {
+		t.Errorf("passthrough field lost: %s", line)
+	}
+}
+
+type walletByName struct {
+	Cards map[string]payment
+}
+
+func TestMapOfTaggedStructsProtected(t *testing.T) {
+	w := walletByName{Cards: map[string]payment{
+		"primary": {Card: "4111111111111111", CVV: "123", PIN: "9876"},
+	}}
+	line := logJSONString(t, "wallet", redact.Struct(w))
+	for _, secret := range []string{"4111111111111111", "123", "9876"} {
+		if strings.Contains(line, secret) {
+			t.Errorf("map value leaked %q in: %s", secret, line)
+		}
+	}
+}
+
+type arrayHolder struct {
+	Items [1]payment
+}
+
+func TestArrayOfTaggedStructsProtected(t *testing.T) {
+	h := arrayHolder{Items: [1]payment{{Card: "4111111111111111", CVV: "123", PIN: "9876"}}}
+	line := logJSONString(t, "h", redact.Struct(h))
+	for _, secret := range []string{"4111111111111111", "123", "9876"} {
+		if strings.Contains(line, secret) {
+			t.Errorf("array element leaked %q in: %s", secret, line)
+		}
+	}
+}
+
+type anyHolder struct {
+	Payload any
+}
+
+func TestInterfaceFieldOfTaggedStructsProtected(t *testing.T) {
+	h := anyHolder{Payload: []payment{{Card: "4111111111111111", CVV: "123", PIN: "9876"}}}
+	line := logJSONString(t, "h", redact.Struct(h))
+	for _, secret := range []string{"4111111111111111", "123", "9876"} {
+		if strings.Contains(line, secret) {
+			t.Errorf("interface-held slice leaked %q in: %s", secret, line)
+		}
+	}
+}
+
+type selfProtected struct{ APIKey string }
+
+func (s selfProtected) LogValue() slog.Value { return slog.StringValue(redact.Redacted) }
+
+type configWithSelfProtected struct {
+	Auth selfProtected
+}
+
+// TestNestedLogValuerHonored pins the fix for the LogValuer-bypass leak: a
+// nested self-protecting type must keep its protection inside Struct.
+func TestNestedLogValuerHonored(t *testing.T) {
+	line := logJSONString(t, "config", redact.Struct(configWithSelfProtected{
+		Auth: selfProtected{APIKey: "sk-live-secret"},
+	}))
+	if strings.Contains(line, "sk-live-secret") {
+		t.Errorf("nested LogValuer bypassed, leaked in: %s", line)
+	}
+}
+
+type secretHolder struct {
+	Token redact.Secret[string]
+}
+
+func TestNestedSecretHonored(t *testing.T) {
+	line := logJSONString(t, "h", redact.Struct(secretHolder{Token: redact.NewSecret("sk-live-xyz")}))
+	if strings.Contains(line, "sk-live-xyz") {
+		t.Errorf("nested Secret leaked in: %s", line)
+	}
+}
+
+type cyclic struct {
+	Name string
+	Next *cyclic
+}
+
+// TestCyclicGraphDoesNotCrash pins the fix for the stack-overflow DoS: a
+// cyclic structure must render (bounded) rather than recurse forever.
+func TestCyclicGraphDoesNotCrash(t *testing.T) {
+	node := &cyclic{Name: "a"}
+	node.Next = node
+	line := logJSONString(t, "node", redact.Struct(node))
+	if line == "" {
+		t.Error("cyclic render produced no output")
+	}
+}
+
+func TestSecretNumericVerbsRedacted(t *testing.T) {
+	secret := redact.NewSecret(4242)
+	for _, verb := range []string{"%d", "%o", "%b", "%+d", "%v", "%s"} {
+		if got := fmt.Sprintf(verb, secret); got != redact.Redacted {
+			t.Errorf("verb %s = %q, want %q", verb, got, redact.Redacted)
+		}
+	}
+}
+
+func TestMaskedNumericVerbRedacted(t *testing.T) {
+	card := redact.Masked("4111111111111111")
+	want := strings.Repeat("X", 16)
+	for _, verb := range []string{"%d", "%v", "%s"} {
+		got := fmt.Sprintf(verb, card)
+		if strings.Contains(got, "4111") {
+			t.Errorf("verb %s leaked raw value: %q", verb, got)
+		}
+		if verb != "%d" && got != want {
+			t.Errorf("verb %s = %q, want %q", verb, got, want)
+		}
 	}
 }

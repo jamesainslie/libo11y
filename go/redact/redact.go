@@ -30,6 +30,7 @@ package redact
 
 import (
 	"fmt"
+	"io"
 	"log/slog"
 	"reflect"
 	"strings"
@@ -74,6 +75,13 @@ func (s Secret[T]) MarshalText() ([]byte, error) { return []byte(Redacted), nil 
 // MarshalJSON implements [encoding/json.Marshaler].
 func (s Secret[T]) MarshalJSON() ([]byte, error) { return []byte(`"` + Redacted + `"`), nil }
 
+// Format implements [fmt.Formatter], guarding every fmt verb. Without it,
+// numeric verbs such as %d bypass the Stringer and reflect into the wrapped
+// value.
+func (s Secret[T]) Format(f fmt.State, _ rune) {
+	_, _ = io.WriteString(f, Redacted) // writing to fmt.State never fails
+}
+
 // Masked is a string that renders as a run of 'X' of equal rune count
 // through slog, fmt, and JSON marshaling, preserving only its visible
 // shape. Convert to protect: redact.Masked(cardNumber).
@@ -93,6 +101,13 @@ func (m Masked) MarshalText() ([]byte, error) { return []byte(m.masked()), nil }
 
 // MarshalJSON implements [encoding/json.Marshaler].
 func (m Masked) MarshalJSON() ([]byte, error) { return []byte(`"` + m.masked() + `"`), nil }
+
+// Format implements [fmt.Formatter], guarding every fmt verb. Without it, a
+// verb like %d on a string-backed type embeds the raw operand in fmt's
+// bad-verb error string.
+func (m Masked) Format(f fmt.State, _ rune) {
+	_, _ = io.WriteString(f, m.masked()) // writing to fmt.State never fails
+}
 
 func (m Masked) masked() string { return strings.Repeat("X", utf8.RuneCountInString(string(m))) }
 
@@ -121,12 +136,25 @@ func parseProtection(tag string) (protection, bool) {
 	}
 }
 
+// maxDepth bounds the recursion of [Struct] rendering. Values nested deeper
+// (including cyclic graphs, which would otherwise recurse forever) render
+// as REDACTED: failing closed beats crashing the process or leaking.
+const maxDepth = 32
+
 // Struct returns a [slog.LogValuer] that renders v (a struct or pointer to
 // struct) as a log group, applying the protections declared in `o11y` field
 // tags. Untagged fields pass through; unexported fields are omitted; an
 // unrecognized tag value fails closed to redact. The strictest protection
 // in scope wins through nesting: fields of a struct inside a masked field
-// are masked at minimum.
+// are masked at minimum. Protection follows values into slices, arrays,
+// maps, pointers, and interfaces, so a []Payment element is exactly as
+// protected as a Payment field.
+//
+// A nested value implementing [slog.LogValuer] is rendered through its own
+// LogValue (under passthrough and mask floors), so self-protecting types
+// such as [Secret] keep their protection inside Struct. Cyclic or deeper
+// than 32-level structures render as REDACTED rather than recursing
+// without bound.
 //
 // Non-struct values pass through unchanged.
 func Struct(v any) slog.LogValuer {
@@ -139,7 +167,7 @@ type structValuer struct {
 
 // LogValue implements [slog.LogValuer].
 func (s structValuer) LogValue() slog.Value {
-	return protectValue(reflect.ValueOf(s.v), passthrough)
+	return protectValue(reflect.ValueOf(s.v), passthrough, 0)
 }
 
 type fieldPlan struct {
@@ -173,40 +201,99 @@ func plansFor(t reflect.Type) []fieldPlan {
 	return plans
 }
 
-func protectValue(v reflect.Value, floor protection) slog.Value {
-	for v.Kind() == reflect.Pointer || v.Kind() == reflect.Interface {
-		if v.IsNil() {
-			return slog.AnyValue(nil)
-		}
-		v = v.Elem()
-	}
+var logValuerType = reflect.TypeFor[slog.LogValuer]()
 
-	if v.Kind() != reflect.Struct {
-		switch floor {
-		case mask:
-			return slog.StringValue(strings.Repeat("X", utf8.RuneCountInString(fmt.Sprint(v.Interface()))))
-		case redact:
-			return slog.StringValue(Redacted)
-		default:
-			return slog.AnyValue(v.Interface())
-		}
+func protectValue(v reflect.Value, floor protection, depth int) slog.Value {
+	if depth > maxDepth {
+		return slog.StringValue(Redacted) // cycle or absurd nesting: fail closed
 	}
-
 	if floor == redact {
 		return slog.StringValue(Redacted)
 	}
 
-	plans := plansFor(v.Type())
-	attrs := make([]slog.Attr, 0, len(plans))
-	for _, plan := range plans {
-		effective := max(floor, plan.protection)
-		if effective == omit {
-			continue
+	for v.Kind() == reflect.Pointer || v.Kind() == reflect.Interface {
+		if v.IsNil() {
+			return slog.AnyValue(nil)
 		}
-		attrs = append(attrs, slog.Attr{
-			Key:   plan.name,
-			Value: protectValue(v.Field(plan.index), effective),
-		})
+		// A self-protecting value renders through its own LogValue; Struct
+		// must never weaken protection a type already carries.
+		if valuer, ok := v.Interface().(slog.LogValuer); ok {
+			return resolveProtected(valuer, floor)
+		}
+		v = v.Elem()
+		depth++
+	}
+	if v.IsValid() && v.CanInterface() && v.Type().Implements(logValuerType) {
+		if valuer, ok := v.Interface().(slog.LogValuer); ok {
+			return resolveProtected(valuer, floor)
+		}
+	}
+
+	switch v.Kind() {
+	case reflect.Struct:
+		plans := plansFor(v.Type())
+		attrs := make([]slog.Attr, 0, len(plans))
+		for _, plan := range plans {
+			effective := max(floor, plan.protection)
+			if effective == omit {
+				continue
+			}
+			attrs = append(attrs, slog.Attr{
+				Key:   plan.name,
+				Value: protectValue(v.Field(plan.index), effective, depth+1),
+			})
+		}
+		return slog.GroupValue(attrs...)
+
+	case reflect.Slice, reflect.Array:
+		if v.Kind() == reflect.Slice && v.IsNil() {
+			return slog.AnyValue(nil)
+		}
+		elems := make([]slog.Value, v.Len())
+		for i := range v.Len() {
+			elems[i] = protectValue(v.Index(i), floor, depth+1)
+		}
+		return sliceValue(elems)
+
+	case reflect.Map:
+		if v.IsNil() {
+			return slog.AnyValue(nil)
+		}
+		attrs := make([]slog.Attr, 0, v.Len())
+		iter := v.MapRange()
+		for iter.Next() {
+			attrs = append(attrs, slog.Attr{
+				Key:   fmt.Sprint(iter.Key().Interface()),
+				Value: protectValue(iter.Value(), floor, depth+1),
+			})
+		}
+		return slog.GroupValue(attrs...)
+
+	default:
+		if floor == mask {
+			return slog.StringValue(strings.Repeat("X", utf8.RuneCountInString(fmt.Sprint(v.Interface()))))
+		}
+		return slog.AnyValue(v.Interface())
+	}
+}
+
+// resolveProtected renders a self-protecting value through its own
+// LogValue, then applies the surrounding floor to the result.
+func resolveProtected(valuer slog.LogValuer, floor protection) slog.Value {
+	resolved := slog.AnyValue(valuer).Resolve() // Resolve recovers panics
+	if floor == mask && resolved.Kind() == slog.KindString {
+		return slog.StringValue(strings.Repeat("X", utf8.RuneCountInString(resolved.String())))
+	}
+	return resolved
+}
+
+// sliceValue renders protected slice elements as a single value. slog has
+// no first-class list value, so elements become a group keyed by index:
+// stable, queryable, and structurally identical on every sink.
+func sliceValue(elems []slog.Value) slog.Value {
+	attrs := make([]slog.Attr, len(elems))
+	for i, elem := range elems {
+		attrs[i] = slog.Attr{Key: fmt.Sprint(i), Value: elem}
 	}
 	return slog.GroupValue(attrs...)
 }
