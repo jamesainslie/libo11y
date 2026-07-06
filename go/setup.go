@@ -22,19 +22,29 @@ var (
 // OTEL-instrumented libraries work untouched afterwards.
 //
 // Only one global SDK may be active at a time; a second call returns
-// [ErrAlreadySetup]. Shutting the returned SDK down releases the guard so a
-// subsequent Setup succeeds (the previous providers remain installed until
-// then). Use [New] for additional, isolated pipelines.
+// [ErrAlreadySetup], including calls racing an in-flight Setup that has
+// not finished constructing. Shutting the returned SDK down releases the
+// guard so a subsequent Setup succeeds (the previous providers remain
+// installed until then). Use [New] for additional, isolated pipelines.
 func Setup(ctx context.Context, opts ...Option) (*SDK, error) {
+	// Claim the guard, then construct outside the lock: user-supplied
+	// sinks run during the startup canary, and no user code may ever
+	// execute under the process-wide mutex. A sink that itself calls
+	// Setup gets ErrAlreadySetup instead of deadlocking the guard, and
+	// losers of a Setup race fail fast instead of queueing behind a slow
+	// winner.
 	setupMu.Lock()
-	defer setupMu.Unlock()
 	if setupActive {
+		setupMu.Unlock()
 		return nil, ErrAlreadySetup
 	}
+	setupActive = true
+	setupMu.Unlock()
 
 	s := newSettings(opts)
 	sdk, err := newSDK(ctx, s)
 	if err != nil {
+		releaseSetupGuard()
 		return nil, err
 	}
 
@@ -43,10 +53,8 @@ func Setup(ctx context.Context, opts ...Option) (*SDK, error) {
 	// a rejecting sink fails Setup instead of dropping records later.
 	if s.startupSummary {
 		if err := sdk.emitStartupSummary(ctx, sdk.summaryAttrs); err != nil {
-			// Safe under the held setupMu: sdk.global is still false, so
-			// this Shutdown will not call releaseSetupGuard and re-enter
-			// the mutex. Best effort: the canary error is what matters.
-			_ = sdk.Shutdown(ctx)
+			_ = sdk.Shutdown(ctx) // best effort: the canary error is what matters
+			releaseSetupGuard()
 			return nil, fmt.Errorf("o11y: startup canary rejected by log pipeline: %w", err)
 		}
 	}
@@ -63,7 +71,6 @@ func Setup(ctx context.Context, opts ...Option) (*SDK, error) {
 		slog.SetDefault(sdk.logger)
 	}
 
-	setupActive = true
 	return sdk, nil
 }
 

@@ -148,7 +148,9 @@ func WithAttrReplacer(replace AttrReplacer) Option {
 // flattened: correlation attributes are added and group nesting is resolved.
 //
 // The handler runs synchronously on every emit, including the startup
-// summary during [Setup]; it must not block.
+// summary during [Setup]; it must not block, and it must not call [Setup]
+// or [SDK.Shutdown] (a Setup call from inside a sink reports
+// [ErrAlreadySetup]).
 func WithExtraLogHandler(handler slog.Handler) Option {
 	return func(s *settings) { s.extraLogHandler = append(s.extraLogHandler, handler) }
 }

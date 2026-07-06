@@ -135,6 +135,65 @@ func (f failingSink) Handle(context.Context, slog.Record) error { return f.err }
 func (f failingSink) WithAttrs([]slog.Attr) slog.Handler        { return f }
 func (f failingSink) WithGroup(string) slog.Handler             { return f }
 
+// reentrantSetupHandler calls Setup from inside a log sink, which the
+// adversarial review showed used to deadlock the process-wide guard.
+type reentrantSetupHandler struct {
+	result chan error
+}
+
+func (h reentrantSetupHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h reentrantSetupHandler) Handle(ctx context.Context, _ slog.Record) error {
+	_, err := o11y.Setup(ctx, hermeticOptions("reentrant-inner")...)
+	select {
+	case h.result <- err:
+	default:
+	}
+	return nil
+}
+func (h reentrantSetupHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h reentrantSetupHandler) WithGroup(string) slog.Handler      { return h }
+
+// TestSetupReentrantFromSinkDoesNotDeadlock pins the deadlock fix: a sink
+// that calls Setup during the startup canary receives ErrAlreadySetup
+// instead of hanging the guard forever.
+func TestSetupReentrantFromSinkDoesNotDeadlock(t *testing.T) {
+	restoreGlobals(t)
+
+	inner := make(chan error, 1)
+	done := make(chan struct{})
+	var sdk *o11y.SDK
+	var err error
+	go func() {
+		defer close(done)
+		opts := append(hermeticOptions("reentrant-outer"),
+			o11y.WithExtraLogHandler(reentrantSetupHandler{result: inner}))
+		sdk, err = o11y.Setup(context.Background(), opts...)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Setup deadlocked on re-entrant sink")
+	}
+	if err != nil {
+		t.Fatalf("outer Setup: %v", err)
+	}
+	defer func() {
+		if err := sdk.Shutdown(context.Background()); err != nil {
+			t.Errorf("Shutdown: %v", err)
+		}
+	}()
+
+	select {
+	case innerErr := <-inner:
+		if !errors.Is(innerErr, o11y.ErrAlreadySetup) {
+			t.Errorf("inner Setup err = %v, want ErrAlreadySetup", innerErr)
+		}
+	default:
+		t.Error("inner Setup result not captured")
+	}
+}
+
 // TestSetupCanaryFailsFast pins the canary guarantee: a sink that rejects
 // the startup record fails Setup, and the guard is not held afterwards.
 func TestSetupCanaryFailsFast(t *testing.T) {
