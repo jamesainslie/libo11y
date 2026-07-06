@@ -119,6 +119,9 @@ func ensureServiceVersion(res *resource.Resource, resolved bool) (*resource.Reso
 	if resolved || resourceString(res, semconv.ServiceVersionKey) != "" {
 		return res, false
 	}
+	// Merging a schemaless resource into res carries no schema-URL
+	// conflict, so this error path is effectively unreachable; fall back to
+	// the unmodified resource rather than dropping identity if it ever hits.
 	merged, err := resource.Merge(res, resource.NewSchemaless(semconv.ServiceVersion(serviceVersionFallback)))
 	if err != nil {
 		return res, true
@@ -142,6 +145,8 @@ func ensureInstanceID(res *resource.Resource) *resource.Resource {
 	} else {
 		id = uuid.NewString()
 	}
+	// As in ensureServiceVersion, a schemaless merge cannot conflict on the
+	// schema URL, so the error path is unreachable in practice.
 	merged, err := resource.Merge(res, resource.NewSchemaless(semconv.ServiceInstanceID(id)))
 	if err != nil {
 		return res

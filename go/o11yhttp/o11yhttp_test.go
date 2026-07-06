@@ -2,10 +2,14 @@ package o11yhttp_test
 
 import (
 	"context"
+	"io"
+	"log"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -17,9 +21,26 @@ import (
 	"github.com/jamesainslie/libo11y/go/spec"
 )
 
-// captureHandler collects flattened log records for assertions.
+// captureHandler collects flattened log records for assertions. It is
+// concurrency-safe because middleware emits from the server goroutine while
+// the test goroutine reads.
 type captureHandler struct {
+	mu      *sync.Mutex
 	records *[]map[string]any
+}
+
+func newCapture() (captureHandler, func() []map[string]any) {
+	var mu sync.Mutex
+	var records []map[string]any
+	h := captureHandler{mu: &mu, records: &records}
+	snapshot := func() []map[string]any {
+		mu.Lock()
+		defer mu.Unlock()
+		out := make([]map[string]any, len(records))
+		copy(out, records)
+		return out
+	}
+	return h, snapshot
 }
 
 func (c captureHandler) Enabled(context.Context, slog.Level) bool { return true }
@@ -29,17 +50,22 @@ func (c captureHandler) Handle(_ context.Context, r slog.Record) error {
 		m[a.Key] = a.Value.Any()
 		return true
 	})
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	*c.records = append(*c.records, m)
 	return nil
 }
 func (c captureHandler) WithAttrs([]slog.Attr) slog.Handler { return c }
 func (c captureHandler) WithGroup(string) slog.Handler      { return c }
 
+// quietLogger discards the httptest server's per-connection panic log.
+func quietLogger() *log.Logger { return log.New(io.Discard, "", 0) }
+
 // TestCanonicalLineEmitsRequestSummary verifies the wide-event path: one
 // o11y.request.summary event per request carrying method, route, status,
 // outcome, and handler-accumulated attributes.
 func TestCanonicalLineEmitsRequestSummary(t *testing.T) {
-	var captured []map[string]any
+	capture, snapshot := newCapture()
 	recorder := tracetest.NewSpanRecorder()
 	sdk, err := o11y.New(context.Background(),
 		o11y.WithServiceName("canonical-test"),
@@ -49,7 +75,7 @@ func TestCanonicalLineEmitsRequestSummary(t *testing.T) {
 		o11y.WithoutLogExport(),
 		o11y.WithoutRuntimeMetrics(),
 		o11y.WithoutConsoleLog(),
-		o11y.WithExtraLogHandler(captureHandler{records: &captured}),
+		o11y.WithExtraLogHandler(capture),
 	)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -77,7 +103,7 @@ func TestCanonicalLineEmitsRequestSummary(t *testing.T) {
 	}
 
 	var summary map[string]any
-	for _, record := range captured {
+	for _, record := range snapshot() {
 		if record["event.name"] == "o11y.request.summary" {
 			summary = record
 		}
@@ -230,6 +256,109 @@ func hasMetric(data *metricdata.ResourceMetrics, name string) bool {
 		}
 	}
 	return false
+}
+
+// TestCanonicalLinePreservesFlusher pins that the canonical-line wrapper
+// does not strip the optional ResponseWriter interfaces streaming handlers
+// rely on.
+func TestCanonicalLinePreservesFlusher(t *testing.T) {
+	capture, _ := newCapture()
+	sdk, err := o11y.New(context.Background(),
+		o11y.WithServiceName("flusher-test"),
+		o11y.WithEnvironment(spec.EnvironmentTest),
+		o11y.WithSpanProcessor(tracetest.NewSpanRecorder()),
+		o11y.WithMetricReader(sdkmetric.NewManualReader()),
+		o11y.WithoutLogExport(),
+		o11y.WithoutRuntimeMetrics(),
+		o11y.WithoutConsoleLog(),
+		o11y.WithExtraLogHandler(capture),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = sdk.Shutdown(context.Background()) }()
+
+	var flushable atomic.Bool
+	handler := o11yhttp.NewHandler(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// The modern stdlib idiom for reaching Flush through wrappers.
+			if err := http.NewResponseController(w).Flush(); err == nil {
+				flushable.Store(true)
+			}
+		}),
+		"stream",
+		o11yhttp.WithSDK(sdk),
+		o11yhttp.WithCanonicalLine(),
+	)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/stream")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatalf("closing body: %v", err)
+	}
+	if !flushable.Load() {
+		t.Error("canonical-line wrapper stripped http.Flusher (streaming would break)")
+	}
+}
+
+// TestCanonicalLineOnPanic pins that a panicking handler still emits the
+// summary, marked as a failure rather than a spurious 200 success.
+func TestCanonicalLineOnPanic(t *testing.T) {
+	capture, snapshot := newCapture()
+	sdk, err := o11y.New(context.Background(),
+		o11y.WithServiceName("panic-test"),
+		o11y.WithEnvironment(spec.EnvironmentTest),
+		o11y.WithSpanProcessor(tracetest.NewSpanRecorder()),
+		o11y.WithMetricReader(sdkmetric.NewManualReader()),
+		o11y.WithoutLogExport(),
+		o11y.WithoutRuntimeMetrics(),
+		o11y.WithoutConsoleLog(),
+		o11y.WithExtraLogHandler(capture),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = sdk.Shutdown(context.Background()) }()
+
+	// httptest's server recovers per-connection panics; suppress its log.
+	handler := o11yhttp.NewHandler(
+		http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			panic("handler exploded")
+		}),
+		"panicky",
+		o11yhttp.WithSDK(sdk),
+		o11yhttp.WithCanonicalLine(),
+	)
+	server := httptest.NewServer(handler)
+	server.Config.ErrorLog = quietLogger()
+	defer server.Close()
+
+	// The panic aborts the connection, so the client sees an error; the
+	// summary must still have been emitted server-side before unwinding.
+	resp, err := http.Get(server.URL + "/boom")
+	if err == nil {
+		_ = resp.Body.Close()
+	}
+
+	var summary map[string]any
+	for _, record := range snapshot() {
+		if record["event.name"] == "o11y.request.summary" {
+			summary = record
+		}
+	}
+	if summary == nil {
+		t.Fatal("no summary emitted for a panicking request")
+	}
+	if summary["o11y.outcome"] != "failure" {
+		t.Errorf("o11y.outcome = %v, want failure for a panic", summary["o11y.outcome"])
+	}
+	if code, _ := summary["http.response.status_code"].(int64); code != 500 {
+		t.Errorf("http.response.status_code = %v, want 500 for a panic", summary["http.response.status_code"])
+	}
 }
 
 func TestIgnorePathsFilters(t *testing.T) {

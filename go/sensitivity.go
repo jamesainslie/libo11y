@@ -50,6 +50,9 @@ func (v *violationRecorder) record(signal spec.Signal, rule string) {
 	if v == nil {
 		return
 	}
+	// A background context is deliberate: the slog ReplaceAttr signature
+	// carries no context, and this fire-and-forget counter has no need for
+	// trace-exemplar linkage.
 	v.counter.Add(context.Background(), 1, metric.WithAttributes(
 		spec.SignalValue(signal),
 		spec.Rule(rule),
@@ -59,8 +62,12 @@ func (v *violationRecorder) record(signal spec.Signal, rule string) {
 // specReplacer returns an [AttrReplacer] that enforces the spec's sensitivity
 // classification: secret-classified attributes are always dropped, and
 // PII-classified attributes are handled per mode. It composes after the
-// user's replacer (which may rename keys) so it cannot be bypassed by
-// renaming, and it records each action as a schema violation.
+// user's replacer and classifies on the final key, so a value cannot be
+// leaked by renaming a classified key to another known key. Classification
+// is key-based, so renaming to an entirely unclassified key still escapes
+// this layer; that residual gap is inherent and is the redact package's
+// job (capture-time protection of the value itself). Each action is
+// recorded as a schema violation.
 func specReplacer(user AttrReplacer, mode PIIMode, rec *violationRecorder) AttrReplacer {
 	return func(groups []string, a slog.Attr) slog.Attr {
 		if user != nil {
