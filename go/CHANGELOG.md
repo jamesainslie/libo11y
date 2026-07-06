@@ -31,6 +31,12 @@ and the module adheres to [Semantic Versioning](https://semver.org/).
 - `o11ytest`: hermetic in-memory test harness recording spans, metrics,
   and correlated log records, safe under `t.Parallel()`.
 - Runnable HTTP server example.
+- First-class exemplar support for 360-degree signal reconciliation:
+  `WithExemplarFilter` option (default trace-based, honoring
+  OTEL_METRICS_EXEMPLAR_FILTER), `o11ytest.Recorder.Exemplars` accessor,
+  and tests pinning that spans, logs, and metric exemplars from one
+  operation share one trace identity, including through the HTTP
+  middleware's duration histogram.
 - Rust-client parity features: `ForceEmit` context marker for always-emit
   audit records; startup summary record doubling as an initialization
   canary (sink failures fail `Setup`) with `SDK.EffectiveConfig` accessor;

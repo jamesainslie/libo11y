@@ -73,6 +73,69 @@ func TestServerSpanUsesRoutePattern(t *testing.T) {
 	}
 }
 
+// TestServerDurationCarriesExemplar pins the metric-to-trace leg through
+// real middleware: the http.server.request.duration histogram must carry
+// an exemplar stamped with the server span's trace identity.
+func TestServerDurationCarriesExemplar(t *testing.T) {
+	sdk, recorder, reader := newSDK(t)
+
+	handler := o11yhttp.NewHandler(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}),
+		"server",
+		o11yhttp.WithSDK(sdk),
+	)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/work")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatalf("closing body: %v", err)
+	}
+
+	spans := recorder.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("got %d spans, want 1", len(spans))
+	}
+	wantTrace := spans[0].SpanContext().TraceID()
+
+	var data metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &data); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	exemplars := durationExemplars(&data)
+	if len(exemplars) == 0 {
+		t.Fatal("http.server.request.duration carries no exemplars")
+	}
+	var gotTrace [16]byte
+	copy(gotTrace[:], exemplars[0].TraceID)
+	if gotTrace != [16]byte(wantTrace) {
+		t.Errorf("exemplar trace = %x, want %s", exemplars[0].TraceID, wantTrace)
+	}
+}
+
+func durationExemplars(data *metricdata.ResourceMetrics) []metricdata.Exemplar[float64] {
+	for _, scope := range data.ScopeMetrics {
+		for _, m := range scope.Metrics {
+			if m.Name != "http.server.request.duration" {
+				continue
+			}
+			hist, ok := m.Data.(metricdata.Histogram[float64])
+			if !ok {
+				return nil
+			}
+			var out []metricdata.Exemplar[float64]
+			for _, dp := range hist.DataPoints {
+				out = append(out, dp.Exemplars...)
+			}
+			return out
+		}
+	}
+	return nil
+}
+
 func hasMetric(data *metricdata.ResourceMetrics, name string) bool {
 	for _, scope := range data.ScopeMetrics {
 		for _, m := range scope.Metrics {

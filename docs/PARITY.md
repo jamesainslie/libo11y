@@ -39,7 +39,7 @@ implemented (rationale given).
 | Resource: build info | full | `debug.ReadBuildInfo` detector: service.version (when real), vcs.revision/time/modified; `WithoutBuildInfo` opt-out |
 | Runtime metrics | full | contrib runtime, on by default |
 | Histogram bucket control | full | `WithHistogramBuckets`, `WithViews` |
-| Exemplars | full | SDK default (trace-based) |
+| Exemplars (metric-to-trace reconciliation) | full | on by default (trace-based); `WithExemplarFilter` + OTEL_METRICS_EXEMPLAR_FILTER; verified through otelhttp instruments; `o11ytest.Recorder.Exemplars` for consumer assertions |
 | Sampler configuration | full | OTEL_TRACES_SAMPLER + `WithTraceSampler` |
 | TLS for exporters | full | standard OTEL_EXPORTER_OTLP_CERTIFICATE et al. (env-driven, exporter-owned) |
 | Signal-driven shutdown helper | full | `SDK.ShutdownOnSignals` (blocks, restores handling on first signal, bounded flush) |

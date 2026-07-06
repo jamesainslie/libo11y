@@ -37,6 +37,28 @@ parallel trace-ID state, and propagation helpers must not depend on process
 globals: extraction and injection behave identically whether or not global
 propagators are installed.
 
+## Three-way reconciliation (logs, traces, metrics)
+
+Every implementation must close the correlation triangle across all three
+signals:
+
+- **Log to trace**: every log record emitted inside a span carries the
+  span's trace and span IDs, on every sink.
+- **Trace to wire**: spans propagate identity via W3C context on ingress
+  and egress.
+- **Metric to trace**: implementations must emit metric **exemplars**. Any
+  measurement taken inside a sampled span stamps that span's trace and span
+  IDs onto the metric data point, for both library-emitted instruments
+  (HTTP/RPC durations) and application instruments. The default filter is
+  trace-based (exemplars only from sampled spans); always-on and always-off
+  must be selectable in code and via `OTEL_METRICS_EXEMPLAR_FILTER`.
+
+The result is 360-degree reconciliation: from a latency histogram bucket to
+the exact trace that landed in it, from that trace to its logs, and from any
+log line back to the request's metrics. The test harness must expose
+recorded exemplars so applications can assert the full triangle in their own
+suites.
+
 ## Lifecycle
 
 - Initialization is explicit (no import-time side effects) and returns an

@@ -137,6 +137,78 @@ func (r *Recorder) Logs() []LogRecord {
 	return r.logs.snapshot()
 }
 
+// Exemplar is one metric exemplar in harness form: the trace identity and
+// value stamped onto a data point by a measurement inside a sampled span.
+type Exemplar struct {
+	TraceID trace.TraceID
+	SpanID  trace.SpanID
+	Value   float64
+}
+
+// Exemplars collects metrics and returns the exemplars recorded on the
+// named instrument across all its data points. Use it to assert the
+// metric-to-trace leg of telemetry correlation:
+//
+//	exemplars := rec.Exemplars("orders.processed")
+//	if exemplars[0].TraceID != span.SpanContext().TraceID() { ... }
+func (r *Recorder) Exemplars(instrumentName string) []Exemplar {
+	r.tb.Helper()
+	data := r.Metrics()
+	var out []Exemplar
+	for _, scope := range data.ScopeMetrics {
+		for _, m := range scope.Metrics {
+			if m.Name != instrumentName {
+				continue
+			}
+			out = append(out, exemplarsOf(m.Data)...)
+		}
+	}
+	return out
+}
+
+func exemplarsOf(data metricdata.Aggregation) []Exemplar {
+	var out []Exemplar
+	switch agg := data.(type) {
+	case metricdata.Sum[int64]:
+		for _, dp := range agg.DataPoints {
+			out = append(out, convertExemplars(dp.Exemplars, func(v int64) float64 { return float64(v) })...)
+		}
+	case metricdata.Sum[float64]:
+		for _, dp := range agg.DataPoints {
+			out = append(out, convertExemplars(dp.Exemplars, func(v float64) float64 { return v })...)
+		}
+	case metricdata.Histogram[int64]:
+		for _, dp := range agg.DataPoints {
+			out = append(out, convertExemplars(dp.Exemplars, func(v int64) float64 { return float64(v) })...)
+		}
+	case metricdata.Histogram[float64]:
+		for _, dp := range agg.DataPoints {
+			out = append(out, convertExemplars(dp.Exemplars, func(v float64) float64 { return v })...)
+		}
+	case metricdata.Gauge[int64]:
+		for _, dp := range agg.DataPoints {
+			out = append(out, convertExemplars(dp.Exemplars, func(v int64) float64 { return float64(v) })...)
+		}
+	case metricdata.Gauge[float64]:
+		for _, dp := range agg.DataPoints {
+			out = append(out, convertExemplars(dp.Exemplars, func(v float64) float64 { return v })...)
+		}
+	}
+	return out
+}
+
+func convertExemplars[N int64 | float64](exemplars []metricdata.Exemplar[N], toFloat func(N) float64) []Exemplar {
+	out := make([]Exemplar, 0, len(exemplars))
+	for _, e := range exemplars {
+		var converted Exemplar
+		converted.Value = toFloat(e.Value)
+		copy(converted.TraceID[:], e.TraceID)
+		copy(converted.SpanID[:], e.SpanID)
+		out = append(out, converted)
+	}
+	return out
+}
+
 // logCapture is a concurrency-safe slog.Handler recording every record
 // together with the active span context.
 //

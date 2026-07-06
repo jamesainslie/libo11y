@@ -59,9 +59,16 @@ setup call.
   global; a sink that rejects it fails Setup instead of dropping records
   silently in production. The same information is available from
   `sdk.EffectiveConfig()`, and `WithoutStartupSummary` disables the record.
-- **Runtime metrics** (`go.*`) on by default, exemplars on by default
-  (trace-based), histogram buckets adjustable per instrument with
-  `WithHistogramBuckets`.
+- **Runtime metrics** (`go.*`) on by default, histogram buckets adjustable
+  per instrument with `WithHistogramBuckets`.
+- **360-degree reconciliation.** Exemplars are on by default (trace-based):
+  any measurement inside a sampled span stamps the span's trace and span
+  IDs onto the metric data point, including the middleware's own
+  `http.server.request.duration`. Combined with correlated logs, every
+  signal reconciles to the other two: histogram bucket to trace, trace to
+  logs, log line to metrics. Tune with `WithExemplarFilter` or
+  `OTEL_METRICS_EXEMPLAR_FILTER`, and assert the triangle in your own
+  tests with `o11ytest.Recorder.Exemplars`.
 - **Owned lifecycle.** `Shutdown` is idempotent, bounded (5s default when
   the context has no deadline), flushes logs, metrics, then traces, and
   reports per-signal failures via `errors.Join`. The library never panics
@@ -172,8 +179,9 @@ func TestCheckoutEmitsTelemetry(t *testing.T) {
     if logs[0].SpanContext.TraceID() != spans[0].SpanContext().TraceID() {
         t.Error("log not correlated with span")
     }
-    if !slices.Contains(rec.MetricNames(), "orders.processed") {
-        t.Error("counter missing")
+    exemplars := rec.Exemplars("orders.processed")
+    if len(exemplars) == 0 || exemplars[0].TraceID != spans[0].SpanContext().TraceID() {
+        t.Error("metric not reconcilable to trace")
     }
 }
 ```

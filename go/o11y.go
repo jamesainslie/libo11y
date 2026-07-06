@@ -181,6 +181,9 @@ func buildMeterProvider(ctx context.Context, s *settings, res *resource.Resource
 		sdkmetric.WithResource(res),
 		sdkmetric.WithReader(reader),
 	}
+	if s.exemplarFilter != nil {
+		opts = append(opts, sdkmetric.WithExemplarFilter(s.exemplarFilter))
+	}
 	for _, view := range s.views {
 		opts = append(opts, sdkmetric.WithView(view))
 	}

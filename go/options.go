@@ -8,6 +8,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/propagation"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/exemplar"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
@@ -55,6 +56,7 @@ type settings struct {
 	propagator propagation.TextMapPropagator
 
 	views          []sdkmetric.View
+	exemplarFilter exemplar.Filter
 	runtimeMetrics bool
 
 	installSlogDefault bool
@@ -190,6 +192,21 @@ func WithHistogramBuckets(instrumentName string, boundaries []float64) Option {
 		}},
 	)
 	return func(s *settings) { s.views = append(s.views, view) }
+}
+
+// WithExemplarFilter sets the metric exemplar filter, overriding the
+// OTEL_METRICS_EXEMPLAR_FILTER environment variable. The default,
+// [exemplar.TraceBasedFilter], records an exemplar on a data point whenever
+// a measurement happens inside a sampled span, stamping the span's trace
+// and span IDs onto the metric stream. Exemplars are the metric leg of
+// libo11y's three-way correlation: logs and spans share identity through
+// the log pipeline, and exemplars let a metric data point be traced back
+// to the exact request that produced it.
+//
+// Use [exemplar.AlwaysOnFilter] to record exemplars for unsampled traffic
+// too, or [exemplar.AlwaysOffFilter] to disable exemplars.
+func WithExemplarFilter(filter exemplar.Filter) Option {
+	return func(s *settings) { s.exemplarFilter = filter }
 }
 
 // WithoutRuntimeMetrics disables the Go runtime metrics that are otherwise
