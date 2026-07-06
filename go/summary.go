@@ -54,6 +54,11 @@ func buildSummary(s *settings, sdk *SDK) ([]slog.Attr, string) {
 	}
 
 	sampler := envOr("OTEL_TRACES_SAMPLER", "parentbased_always_on")
+	if !knownSampler(sampler) {
+		// The SDK rejects unknown sampler names and falls back; the
+		// summary must report what actually happens, not echo the typo.
+		sampler = "parentbased_always_on"
+	}
 	if s.sampler != nil {
 		sampler = s.sampler.Description()
 	}
@@ -111,4 +116,17 @@ func envOr(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// knownSampler reports whether name is a sampler the SDK accepts from
+// OTEL_TRACES_SAMPLER.
+func knownSampler(name string) bool {
+	switch name {
+	case "always_on", "always_off", "traceidratio",
+		"parentbased_always_on", "parentbased_always_off", "parentbased_traceidratio",
+		"jaeger_remote", "parentbased_jaeger_remote", "xray":
+		return true
+	default:
+		return false
+	}
 }

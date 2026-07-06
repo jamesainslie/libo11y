@@ -256,6 +256,13 @@ func (h *Handler) processAttrsAt(path []string, attrs []slog.Attr) []slog.Attr {
 		if a.Equal(slog.Attr{}) {
 			continue
 		}
+		// trace_id and span_id are reserved at the top level: only the
+		// correlation layer may write them. Dropping user-supplied ones
+		// prevents duplicate JSON keys that shadow the genuine identity
+		// at query time.
+		if len(path) == 0 && (a.Key == TraceIDKey || a.Key == SpanIDKey) {
+			continue
+		}
 		if a.Value.Kind() == slog.KindGroup {
 			// Inlined (empty-keyed) groups do not contribute to the group
 			// path, matching ReplaceAttr semantics in the standard library.

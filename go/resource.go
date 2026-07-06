@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime/debug"
+	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -12,14 +13,16 @@ import (
 )
 
 // buildResource composes the telemetry resource from detectors and explicit
-// options. Precedence, lowest to highest: build info, environment
-// (OTEL_RESOURCE_ATTRIBUTES, OTEL_SERVICE_NAME), telemetry SDK identity,
-// host, process runtime, and container detectors, then explicit option
-// attributes.
+// options. Precedence, lowest to highest: build info, telemetry SDK
+// identity, host, process runtime, and container detectors, then the
+// environment (OTEL_RESOURCE_ATTRIBUTES, OTEL_SERVICE_NAME), then explicit
+// option attributes. Detected values are library defaults, so the
+// environment must override them per the documented
+// option-over-environment-over-default contract.
 func buildResource(ctx context.Context, s *settings) (*resource.Resource, error) {
 	explicit := make([]attribute.KeyValue, 0, len(s.resourceAttrs)+2)
-	if s.serviceName != "" {
-		explicit = append(explicit, semconv.ServiceName(s.serviceName))
+	if name := strings.TrimSpace(s.serviceName); name != "" {
+		explicit = append(explicit, semconv.ServiceName(name))
 	}
 	if s.serviceVersion != "" {
 		explicit = append(explicit, semconv.ServiceVersion(s.serviceVersion))
@@ -31,12 +34,12 @@ func buildResource(ctx context.Context, s *settings) (*resource.Resource, error)
 		opts = append(opts, resource.WithDetectors(buildInfoDetector{}))
 	}
 	opts = append(opts,
-		resource.WithFromEnv(),
 		resource.WithTelemetrySDK(),
 		resource.WithHost(),
 		resource.WithProcessRuntimeName(),
 		resource.WithProcessRuntimeVersion(),
 		resource.WithContainer(),
+		resource.WithFromEnv(),
 		resource.WithAttributes(explicit...),
 	)
 
@@ -86,11 +89,19 @@ func buildInfoAttrs(info *debug.BuildInfo) []attribute.KeyValue {
 	return attrs
 }
 
+// hasServiceName reports whether the resource carries a usable service
+// identity: non-blank after trimming and not the SDK's unknown_service
+// fallback shape, regardless of which channel supplied it.
 func hasServiceName(res *resource.Resource) bool {
 	for _, kv := range res.Attributes() {
-		if kv.Key == semconv.ServiceNameKey && kv.Value.AsString() != "" {
-			return true
+		if kv.Key != semconv.ServiceNameKey {
+			continue
 		}
+		name := strings.TrimSpace(kv.Value.AsString())
+		if name == "" || name == "unknown_service" || strings.HasPrefix(name, "unknown_service:") {
+			return false
+		}
+		return true
 	}
 	return false
 }
