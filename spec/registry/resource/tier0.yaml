@@ -1,0 +1,81 @@
+# Tier 0: required at init. The SDK fails Setup/New with a typed error if
+# any of these cannot be resolved (service.version falls back with a flag
+# rather than failing; see o11y.fallback).
+groups:
+  - id: libo11y.resource.tier0
+    type: attribute_group
+    display_name: Resource Tier 0 (required at init)
+    brief: >
+      Resource identity every libo11y process must carry on every signal.
+      Sources, lowest to highest precedence: detector, environment
+      (OTEL_* variables), explicit option.
+    stability: development
+    annotations:
+      o11y.tier: "0"
+    attributes:
+      - ref: service.name
+        requirement_level: required
+        annotations:
+          o11y.source: option-or-env
+          o11y.sensitivity: public
+          o11y.signals: traces,logs,metrics
+          o11y.role: identifying
+          o11y.gen: alias
+      - ref: service.version
+        requirement_level: required
+        annotations:
+          o11y.source: option-or-env-or-buildinfo
+          o11y.sensitivity: public
+          o11y.signals: traces,logs,metrics
+          o11y.role: descriptive
+          o11y.gen: alias
+          o11y.fallback: 0.0.0-unknown
+      - ref: deployment.environment.name
+        requirement_level: required
+        annotations:
+          o11y.source: option-or-env
+          o11y.sensitivity: public
+          o11y.signals: traces,logs,metrics
+          o11y.role: descriptive
+          o11y.gen: alias
+          o11y.enum: production,staging,development,test
+      - ref: telemetry.sdk.name
+        requirement_level: required
+        annotations:
+          o11y.source: sdk
+          o11y.sensitivity: public
+          o11y.signals: traces,logs
+          o11y.role: identifying
+          o11y.gen: alias
+      - ref: telemetry.sdk.language
+        requirement_level: required
+        annotations:
+          o11y.source: sdk
+          o11y.sensitivity: public
+          o11y.signals: traces,logs
+          o11y.role: identifying
+          o11y.gen: alias
+      - ref: telemetry.sdk.version
+        requirement_level: required
+        annotations:
+          o11y.source: sdk
+          o11y.sensitivity: public
+          o11y.signals: traces,logs
+          o11y.role: identifying
+          o11y.gen: alias
+      - ref: telemetry.distro.name
+        requirement_level: recommended
+        annotations:
+          o11y.source: sdk
+          o11y.sensitivity: public
+          o11y.signals: traces,logs
+          o11y.role: descriptive
+          o11y.gen: alias
+      - ref: telemetry.distro.version
+        requirement_level: recommended
+        annotations:
+          o11y.source: sdk
+          o11y.sensitivity: public
+          o11y.signals: traces,logs
+          o11y.role: descriptive
+          o11y.gen: alias

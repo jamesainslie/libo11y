@@ -1,0 +1,64 @@
+# HTTP span attribute adoption. libo11y imports the stable OTel HTTP span
+# conventions verbatim; this overlay records the requirement levels the
+# span validator enforces in Observe/Strict modes.
+groups:
+  - id: libo11y.span.http.server
+    type: attribute_group
+    display_name: HTTP Server Span (adopted)
+    brief: Required shape of HTTP server spans, from stable semconv.
+    stability: development
+    annotations:
+      o11y.span.kind: server
+    attributes:
+      - ref: http.request.method
+        requirement_level: required
+        annotations:
+          o11y.gen: alias
+      - ref: url.path
+        requirement_level: required
+        annotations:
+          o11y.gen: alias
+      - ref: url.scheme
+        requirement_level: required
+        annotations:
+          o11y.gen: alias
+      - ref: http.route
+        requirement_level:
+          conditionally_required: When a route pattern matched.
+        annotations:
+          o11y.gen: alias
+      - ref: http.response.status_code
+        requirement_level:
+          conditionally_required: When a response was sent.
+        annotations:
+          o11y.gen: alias
+      - ref: error.type
+        requirement_level:
+          conditionally_required: On error.
+        annotations:
+          o11y.gen: alias
+
+  - id: libo11y.span.http.client
+    type: attribute_group
+    display_name: HTTP Client Span (adopted)
+    brief: Required shape of HTTP client spans, from stable semconv.
+    stability: development
+    annotations:
+      o11y.span.kind: client
+    attributes:
+      - ref: http.request.method
+        requirement_level: required
+        annotations:
+          o11y.gen: alias
+      - ref: server.address
+        requirement_level: required
+        annotations:
+          o11y.gen: alias
+      - ref: server.port
+        requirement_level: required
+        annotations:
+          o11y.gen: alias
+      - ref: url.full
+        requirement_level: required
+        annotations:
+          o11y.gen: alias

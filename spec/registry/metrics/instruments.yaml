@@ -1,0 +1,22 @@
+# Instruments libo11y itself emits. Application and middleware instruments
+# come from stable OTel semconv verbatim (http.server.request.duration and
+# friends) and are not redefined here.
+groups:
+  - id: metric.o11y.schema.violations
+    type: metric
+    metric_name: o11y.schema.violations
+    stability: development
+    brief: >
+      Count of telemetry records that violated the libo11y specification,
+      by signal and rule. Emitted only when schema validation is enabled.
+    instrument: counter
+    unit: "{violation}"
+    attributes:
+      - ref: o11y.signal
+        requirement_level: required
+        annotations:
+          o11y.gen: mint
+      - ref: o11y.rule
+        requirement_level: required
+        annotations:
+          o11y.gen: mint

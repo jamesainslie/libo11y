@@ -1,0 +1,184 @@
+groups:
+  - id: registry.o11y
+    type: attribute_group
+    display_name: libo11y Attributes
+    brief: Attributes minted by the libo11y specification, under the o11y namespace.
+    stability: development
+    attributes:
+      - id: o11y.outcome
+        type:
+          members:
+            - id: success
+              value: "success"
+              stability: development
+              brief: The operation completed as intended.
+            - id: failure
+              value: "failure"
+              stability: development
+              brief: The operation failed.
+            - id: unknown
+              value: "unknown"
+              stability: development
+              brief: The outcome could not be determined.
+        stability: development
+        brief: >
+          Outcome of the operation the record describes. Required on wide
+          events and audit records.
+        examples: ["success", "failure"]
+        annotations:
+          o11y.sensitivity: public
+          o11y.cardinality: enum
+
+      - id: o11y.record.class
+        type:
+          members:
+            - id: audit
+              value: "audit"
+              stability: development
+              brief: >
+                Always-emit record: exempt from sampling, level gates, and
+                trace-based dropping.
+        stability: development
+        brief: Structural marking for special record classes.
+        examples: ["audit"]
+        annotations:
+          o11y.sensitivity: public
+          o11y.cardinality: enum
+
+      - id: o11y.team.name
+        type: string
+        stability: development
+        brief: Team that owns the emitting service.
+        examples: ["payments", "checkout-platform"]
+        annotations:
+          o11y.sensitivity: public
+          o11y.cardinality: bounded
+
+      - id: o11y.tenant.id
+        type: string
+        stability: development
+        brief: >
+          Tenant identity. Resource form is permitted only for
+          single-tenant-per-deployment topologies; in shared services it is
+          a span or log attribute propagated via baggage. Never a metric
+          label.
+        examples: ["tenant-8231"]
+        annotations:
+          o11y.sensitivity: internal
+          o11y.cardinality: unbounded
+
+      - id: o11y.cost_center
+        type: string
+        stability: development
+        brief: Cost attribution identifier, normally injected at deploy time.
+        examples: ["cc-4410"]
+        annotations:
+          o11y.sensitivity: internal
+          o11y.cardinality: bounded
+
+      - id: o11y.data.classification
+        type:
+          members:
+            - id: public
+              value: "public"
+              stability: development
+              brief: Public data.
+            - id: internal
+              value: "internal"
+              stability: development
+              brief: Internal data.
+            - id: confidential
+              value: "confidential"
+              stability: development
+              brief: Confidential data.
+            - id: pii
+              value: "pii"
+              stability: development
+              brief: Personally identifiable information.
+        stability: development
+        brief: Classification of the data the workload processes, used by collector redaction pipelines.
+        examples: ["internal"]
+        annotations:
+          o11y.sensitivity: internal
+          o11y.cardinality: enum
+
+      - id: o11y.label
+        type: template[string]
+        stability: development
+        brief: >
+          Free-form user key-value pairs, the single sanctioned map for
+          tenant-supplied labels. Never metric labels.
+        examples: ["o11y.label.region_group=emea"]
+        annotations:
+          o11y.sensitivity: internal
+          o11y.cardinality: unbounded
+
+      - id: o11y.build.modified
+        type: boolean
+        stability: development
+        brief: Whether the binary was built from a modified (dirty) source tree.
+        annotations:
+          o11y.sensitivity: public
+          o11y.cardinality: enum
+
+      - id: o11y.build.time
+        type: string
+        stability: development
+        brief: VCS commit timestamp of the built revision, RFC 3339.
+        examples: ["2026-07-06T12:00:00Z"]
+        annotations:
+          o11y.sensitivity: public
+          o11y.cardinality: bounded
+
+      - id: o11y.config
+        type: template[string]
+        stability: development
+        brief: >
+          Resolved configuration keys reported by the startup summary event
+          (o11y.config.traces, o11y.config.metrics, o11y.config.logs,
+          o11y.config.console, o11y.config.level, o11y.config.sampler,
+          o11y.config.propagators, o11y.config.endpoint).
+        examples: ["o11y.config.traces=otlp"]
+        annotations:
+          o11y.sensitivity: public
+          o11y.cardinality: bounded
+
+      - id: o11y.signal
+        type:
+          members:
+            - id: traces
+              value: "traces"
+              stability: development
+              brief: The trace signal.
+            - id: metrics
+              value: "metrics"
+              stability: development
+              brief: The metric signal.
+            - id: logs
+              value: "logs"
+              stability: development
+              brief: The log signal.
+        stability: development
+        brief: The telemetry signal a record refers to.
+        examples: ["traces"]
+        annotations:
+          o11y.sensitivity: public
+          o11y.cardinality: enum
+
+      - id: o11y.rule
+        type: string
+        stability: development
+        brief: The specification rule a schema violation breached.
+        examples: ["required_resource_attribute", "secret_attribute"]
+        annotations:
+          o11y.sensitivity: public
+          o11y.cardinality: bounded
+
+      - id: o11y.duration
+        type: double
+        stability: development
+        brief: Duration of the operation described by a wide event, in seconds.
+        examples: [0.182]
+        annotations:
+          o11y.sensitivity: public
+          o11y.cardinality: unbounded

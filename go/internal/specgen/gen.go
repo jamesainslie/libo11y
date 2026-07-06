@@ -1,0 +1,301 @@
+package main
+
+import (
+	"fmt"
+	"sort"
+	"strings"
+)
+
+// genSpec renders the public go/spec package.
+func genSpec(m *model) string {
+	var b strings.Builder
+	header(&b, "spec", m, `"log/slog"`, `"go.opentelemetry.io/otel/attribute"`)
+
+	fmt.Fprintf(&b, "// Spec identity.\nconst (\n")
+	fmt.Fprintf(&b, "\t// SchemaURL is stamped on every resource libo11y builds.\n")
+	fmt.Fprintf(&b, "\tSchemaURL = %q\n", m.schemaURL)
+	fmt.Fprintf(&b, "\t// SpecVersion is the libo11y specification version this module implements.\n")
+	fmt.Fprintf(&b, "\tSpecVersion = %q\n", m.specVersion)
+	fmt.Fprintf(&b, "\t// SemconvVersion is the pinned OpenTelemetry semantic conventions version.\n")
+	fmt.Fprintf(&b, "\tSemconvVersion = %q\n", m.semconvVersion)
+	b.WriteString(")\n\n")
+
+	b.WriteString(`// SeverityNumber maps a slog level to its OpenTelemetry log severity
+// number. The offset is fixed and normative: Debug=5, Info=9, Warn=13,
+// Error=17.
+func SeverityNumber(level slog.Level) int { return int(level) + 9 }
+
+// EventNameKey is the log attribute carrying an event's name until the
+// bridge can set the top-level EventName record field directly.
+const EventNameKey = "event.name"
+
+`)
+
+	// Enums from minted attributes.
+	for _, a := range m.minted {
+		members := a.enumMembers()
+		if len(members) == 0 {
+			continue
+		}
+		typeName := goName(a.ID)
+		fmt.Fprintf(&b, "// %s is the closed value set for %s.\ntype %s string\n\nconst (\n", typeName, a.ID, typeName)
+		for _, member := range members {
+			fmt.Fprintf(&b, "\t%s%s %s = %q\n", typeName, goName(member.ID), typeName, member.Value)
+		}
+		b.WriteString(")\n\n")
+	}
+
+	// Environment enum comes from the deployment.environment.name overlay.
+	if envValues := m.environmentValues(); len(envValues) > 0 {
+		b.WriteString("// Environment is the closed value set for deployment.environment.name.\n// Org extensions register at Setup with WithEnvironmentValues.\ntype Environment string\n\nconst (\n")
+		for _, v := range envValues {
+			fmt.Fprintf(&b, "\tEnvironment%s Environment = %q\n", goName(v), v)
+		}
+		b.WriteString(")\n\n")
+	}
+
+	// Minted attribute keys and constructors.
+	b.WriteString("// Attribute keys minted by the libo11y specification.\nconst (\n")
+	for _, a := range m.minted {
+		fmt.Fprintf(&b, "\t%sKey attribute.Key = %q\n", goName(a.ID), a.ID)
+	}
+	b.WriteString(")\n\n")
+
+	for _, a := range m.minted {
+		name := goName(a.ID)
+		switch {
+		case len(a.enumMembers()) > 0:
+			fmt.Fprintf(&b, "// %sValue returns the %s attribute.\nfunc %sValue(v %s) attribute.KeyValue { return %sKey.String(string(v)) }\n\n", name, a.ID, name, name, name)
+		case a.scalarType() == "boolean":
+			fmt.Fprintf(&b, "// %s returns the %s attribute.\nfunc %s(v bool) attribute.KeyValue { return %sKey.Bool(v) }\n\n", name, a.ID, name, name)
+		case a.scalarType() == "double":
+			fmt.Fprintf(&b, "// %s returns the %s attribute.\nfunc %s(v float64) attribute.KeyValue { return %sKey.Float64(v) }\n\n", name, a.ID, name, name)
+		case a.scalarType() == "int":
+			fmt.Fprintf(&b, "// %s returns the %s attribute.\nfunc %s(v int64) attribute.KeyValue { return %sKey.Int64(v) }\n\n", name, a.ID, name, name)
+		case strings.HasPrefix(a.scalarType(), "template"):
+			fmt.Fprintf(&b, "// %s returns one %s.<key> attribute.\nfunc %s(key, v string) attribute.KeyValue { return attribute.String(%q+key, v) }\n\n", name, a.ID, name, a.ID+".")
+		default:
+			fmt.Fprintf(&b, "// %s returns the %s attribute.\nfunc %s(v string) attribute.KeyValue { return %sKey.String(v) }\n\n", name, a.ID, name, name)
+		}
+	}
+
+	// Copied upstream keys (development/RC upstream: copy, don't depend).
+	copied := m.copiedRefs()
+	if len(copied) > 0 {
+		b.WriteString("// Upstream attribute keys copied from the pinned registry snapshot\n// (their upstream definitions are not yet stable).\nconst (\n")
+		for _, name := range copied {
+			fmt.Fprintf(&b, "\t%sKey attribute.Key = %q\n", goName(name), name)
+		}
+		b.WriteString(")\n\n")
+	}
+
+	// Event names.
+	b.WriteString("// Registered event names.\nconst (\n")
+	for _, ev := range m.events {
+		fmt.Fprintf(&b, "\tEvent%s = %q\n", goName(strings.TrimPrefix(ev.Name, "o11y.")), ev.Name)
+	}
+	b.WriteString(")\n")
+
+	return b.String()
+}
+
+// environmentValues reads the enum annotation off the tier0
+// deployment.environment.name ref.
+func (m *model) environmentValues() []string {
+	for _, a := range m.tiers["tier0"] {
+		if a.name() == "deployment.environment.name" {
+			if enum, ok := a.Annotations["o11y.enum"]; ok {
+				return strings.Split(enum, ",")
+			}
+		}
+	}
+	return nil
+}
+
+// copiedRefs returns the sorted, deduplicated names of refs marked
+// o11y.gen: copy across all tier groups.
+func (m *model) copiedRefs() []string {
+	seen := map[string]bool{}
+	for _, tier := range m.tierOrder {
+		for _, a := range m.tiers[tier] {
+			if a.Annotations["o11y.gen"] == "copy" && !seen[a.name()] {
+				seen[a.name()] = true
+			}
+		}
+	}
+	names := make([]string, 0, len(seen))
+	for name := range seen {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// genTables renders go/internal/spectables.
+func genTables(m *model) string {
+	var b strings.Builder
+	header(&b, "spectables", m, `"go.opentelemetry.io/otel/attribute"`)
+
+	b.WriteString(`// Sensitivity classifies an attribute for the redaction layer.
+type Sensitivity int
+
+const (
+	Public Sensitivity = iota
+	Internal
+	PII
+	Secret
+)
+
+// Requirement is a spec requirement level.
+type Requirement int
+
+const (
+	Required Requirement = iota
+	ConditionallyRequired
+	Recommended
+	OptIn
+)
+
+// AttrInfo describes one attribute's place in the resource taxonomy.
+type AttrInfo struct {
+	Tier        string
+	Requirement Requirement
+	Source      string
+	Role        string
+}
+
+// EventInfo describes a registered event.
+type EventInfo struct {
+	Required []attribute.Key
+}
+
+`)
+
+	// Resource taxonomy table.
+	b.WriteString("// Resource is the tiered resource-attribute taxonomy.\nvar Resource = map[attribute.Key]AttrInfo{\n")
+	for _, tier := range m.tierOrder {
+		for _, a := range m.tiers[tier] {
+			fmt.Fprintf(&b, "\t%q: {Tier: %q, Requirement: %s, Source: %q, Role: %q},\n",
+				a.name(), tier, requirementConst(a.requirement()), a.Annotations["o11y.source"], a.Annotations["o11y.role"])
+		}
+	}
+	b.WriteString("}\n\n")
+
+	// Required tier-0 keys in file order.
+	b.WriteString("// RequiredTier0 lists the attributes Setup requires at init.\nvar RequiredTier0 = []attribute.Key{\n")
+	for _, a := range m.tiers["tier0"] {
+		if a.requirement() == "required" {
+			fmt.Fprintf(&b, "\t%q,\n", a.name())
+		}
+	}
+	b.WriteString("}\n\n")
+
+	// Environment enum values.
+	b.WriteString("// EnvironmentValues is the base allowed set for deployment.environment.name.\nvar EnvironmentValues = map[string]bool{\n")
+	for _, v := range m.environmentValues() {
+		fmt.Fprintf(&b, "\t%q: true,\n", v)
+	}
+	b.WriteString("}\n\n")
+
+	// Sensitivity map over every classified attribute.
+	names := make([]string, 0, len(m.classByName))
+	for name := range m.classByName {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	b.WriteString("// SensitivityOf classifies every attribute the spec has an opinion on.\nvar SensitivityOf = map[attribute.Key]Sensitivity{\n")
+	for _, name := range names {
+		fmt.Fprintf(&b, "\t%q: %s,\n", name, sensitivityConst(m.classByName[name]))
+	}
+	b.WriteString("}\n\n")
+
+	// Metric resource label allowlist.
+	b.WriteString("// MetricResourceLabels is the identity quintet: the only resource\n// attributes permitted as effective metric labels.\nvar MetricResourceLabels = []attribute.Key{\n")
+	for _, a := range m.metricLabels {
+		fmt.Fprintf(&b, "\t%q,\n", a.name())
+	}
+	b.WriteString("}\n\n")
+
+	// Events registry.
+	b.WriteString("// Events maps registered event names to their contracts.\nvar Events = map[string]EventInfo{\n")
+	for _, ev := range m.events {
+		var required []string
+		for _, a := range ev.Attributes {
+			if a.requirement() == "required" {
+				required = append(required, fmt.Sprintf("%q", a.name()))
+			}
+		}
+		fmt.Fprintf(&b, "\t%q: {Required: []attribute.Key{%s}},\n", ev.Name, strings.Join(required, ", "))
+	}
+	b.WriteString("}\n\n")
+
+	// Span shape tables.
+	b.WriteString("// SpanRequired maps span kinds registered by the spec to the\n// attributes required on them.\nvar SpanRequired = map[string][]attribute.Key{\n")
+	for _, sp := range m.spans {
+		kind := sp.Annotations["o11y.span.kind"]
+		var required []string
+		for _, a := range sp.Attributes {
+			if a.requirement() == "required" {
+				required = append(required, fmt.Sprintf("%q", a.name()))
+			}
+		}
+		fmt.Fprintf(&b, "\t%q: {%s},\n", kind, strings.Join(required, ", "))
+	}
+	b.WriteString("}\n")
+
+	return b.String()
+}
+
+func requirementConst(level string) string {
+	switch level {
+	case "required":
+		return "Required"
+	case "conditionally_required":
+		return "ConditionallyRequired"
+	case "opt_in":
+		return "OptIn"
+	default:
+		return "Recommended"
+	}
+}
+
+func sensitivityConst(class string) string {
+	switch class {
+	case "public":
+		return "Public"
+	case "pii":
+		return "PII"
+	case "secret":
+		return "Secret"
+	default:
+		return "Internal"
+	}
+}
+
+// genDocs renders the taxonomy markdown.
+func genDocs(m *model) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# libo11y resource taxonomy (spec %s)\n\n", m.specVersion)
+	fmt.Fprintf(&b, "Generated from `spec/registry`; do not edit. Semconv pin: v%s.\n", m.semconvVersion)
+	for _, tier := range m.tierOrder {
+		fmt.Fprintf(&b, "\n## %s\n\n", tier)
+		b.WriteString("| Attribute | Requirement | Source | Role | Sensitivity | Signals |\n")
+		b.WriteString("|---|---|---|---|---|---|\n")
+		for _, a := range m.tiers[tier] {
+			fmt.Fprintf(&b, "| `%s` | %s | %s | %s | %s | %s |\n",
+				a.name(), a.requirement(), a.Annotations["o11y.source"],
+				a.Annotations["o11y.role"], m.classByName[a.name()], a.Annotations["o11y.signals"])
+		}
+	}
+	b.WriteString("\n## Registered events\n\n| Event | Required attributes |\n|---|---|\n")
+	for _, ev := range m.events {
+		var required []string
+		for _, a := range ev.Attributes {
+			if a.requirement() == "required" {
+				required = append(required, "`"+a.name()+"`")
+			}
+		}
+		fmt.Fprintf(&b, "| `%s` | %s |\n", ev.Name, strings.Join(required, ", "))
+	}
+	return b.String()
+}

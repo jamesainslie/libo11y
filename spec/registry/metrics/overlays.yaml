@@ -1,0 +1,32 @@
+# Metric resource-label policy. The identity quintet is the only resource
+# attribute set that may become effective metric labels; every other
+# resource attribute rides target_info (or the collector's shaping).
+groups:
+  - id: libo11y.metrics.resource_labels
+    type: attribute_group
+    display_name: Metric Resource Label Allowlist
+    brief: Resource attributes permitted as effective metric labels.
+    stability: development
+    annotations:
+      o11y.metric_labels: "true"
+    attributes:
+      - ref: service.name
+        requirement_level: required
+        annotations:
+          o11y.gen: alias
+      - ref: service.namespace
+        requirement_level: recommended
+        annotations:
+          o11y.gen: alias
+      - ref: service.instance.id
+        requirement_level: required
+        annotations:
+          o11y.gen: alias
+      - ref: deployment.environment.name
+        requirement_level: required
+        annotations:
+          o11y.gen: alias
+      - ref: service.version
+        requirement_level: recommended
+        annotations:
+          o11y.gen: alias

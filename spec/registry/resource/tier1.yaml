@@ -1,0 +1,203 @@
+# Tier 1: required by environment. Auto-derived; a violation is observed
+# (never an init error) when the environment implies an attribute that is
+# absent. The SDK never calls platform APIs: Kubernetes identity arrives
+# via the Downward API environment and the collector's k8sattributes
+# processor, per the division-of-labor contract.
+groups:
+  - id: libo11y.resource.tier1
+    type: attribute_group
+    display_name: Resource Tier 1 (required by environment)
+    brief: Identity derived from the runtime environment.
+    stability: development
+    annotations:
+      o11y.tier: "1"
+    attributes:
+      - ref: service.instance.id
+        requirement_level: required
+        annotations:
+          o11y.source: derived
+          o11y.sensitivity: internal
+          o11y.signals: traces,logs,metrics
+          o11y.role: identifying
+          o11y.gen: alias
+          o11y.derivation: >
+            UUIDv5 (namespace 4d63009a-8d0f-11ee-aad7-4c796ed8e320) over
+            k8s pod identity from the Downward API when present, else
+            random UUIDv4 per process.
+      - ref: service.namespace
+        requirement_level:
+          conditionally_required: When the organization runs multiple teams or domains.
+        annotations:
+          o11y.source: option-or-env
+          o11y.sensitivity: public
+          o11y.signals: traces,logs,metrics
+          o11y.role: identifying
+          o11y.gen: alias
+      - ref: k8s.namespace.name
+        requirement_level:
+          conditionally_required: In Kubernetes.
+        annotations:
+          o11y.source: downward-api
+          o11y.sensitivity: internal
+          o11y.signals: traces,logs
+          o11y.role: identifying
+          o11y.gen: copy
+          o11y.type: string
+      - ref: k8s.pod.name
+        requirement_level:
+          conditionally_required: In Kubernetes.
+        annotations:
+          o11y.source: downward-api
+          o11y.sensitivity: internal
+          o11y.signals: traces,logs
+          o11y.role: descriptive
+          o11y.gen: copy
+          o11y.type: string
+      - ref: k8s.pod.uid
+        requirement_level:
+          conditionally_required: In Kubernetes, when projected via the Downward API.
+        annotations:
+          o11y.source: downward-api
+          o11y.sensitivity: internal
+          o11y.signals: traces,logs
+          o11y.role: identifying
+          o11y.gen: copy
+          o11y.type: string
+      - ref: k8s.cluster.name
+        requirement_level: recommended
+        annotations:
+          o11y.source: collector
+          o11y.sensitivity: internal
+          o11y.signals: traces,logs
+          o11y.role: identifying
+          o11y.gen: copy
+          o11y.type: string
+      - ref: k8s.deployment.name
+        requirement_level: recommended
+        annotations:
+          o11y.source: collector
+          o11y.sensitivity: internal
+          o11y.signals: traces,logs
+          o11y.role: descriptive
+          o11y.gen: copy
+          o11y.type: string
+      - ref: k8s.container.name
+        requirement_level: recommended
+        annotations:
+          o11y.source: collector
+          o11y.sensitivity: internal
+          o11y.signals: traces,logs
+          o11y.role: descriptive
+          o11y.gen: copy
+          o11y.type: string
+      - ref: k8s.node.name
+        requirement_level: recommended
+        annotations:
+          o11y.source: collector
+          o11y.sensitivity: internal
+          o11y.signals: traces,logs
+          o11y.role: descriptive
+          o11y.gen: copy
+          o11y.type: string
+      - ref: container.id
+        requirement_level:
+          conditionally_required: In containers.
+        annotations:
+          o11y.source: detector
+          o11y.sensitivity: internal
+          o11y.signals: traces,logs
+          o11y.role: identifying
+          o11y.gen: alias
+      - ref: cloud.provider
+        requirement_level: opt_in
+        annotations:
+          o11y.source: detector-or-collector
+          o11y.sensitivity: internal
+          o11y.signals: traces,logs
+          o11y.role: descriptive
+          o11y.gen: copy
+          o11y.type: string
+      - ref: cloud.platform
+        requirement_level: opt_in
+        annotations:
+          o11y.source: detector-or-collector
+          o11y.sensitivity: internal
+          o11y.signals: traces,logs
+          o11y.role: descriptive
+          o11y.gen: copy
+          o11y.type: string
+      - ref: cloud.region
+        requirement_level: opt_in
+        annotations:
+          o11y.source: detector-or-collector
+          o11y.sensitivity: internal
+          o11y.signals: traces,logs
+          o11y.role: descriptive
+          o11y.gen: copy
+          o11y.type: string
+      - ref: cloud.availability_zone
+        requirement_level: opt_in
+        annotations:
+          o11y.source: detector-or-collector
+          o11y.sensitivity: internal
+          o11y.signals: traces,logs
+          o11y.role: descriptive
+          o11y.gen: copy
+          o11y.type: string
+      - ref: cloud.account.id
+        requirement_level: opt_in
+        annotations:
+          o11y.source: detector-or-collector
+          o11y.sensitivity: internal
+          o11y.signals: traces,logs
+          o11y.role: descriptive
+          o11y.gen: copy
+          o11y.type: string
+      - ref: host.id
+        requirement_level:
+          conditionally_required: On non-container hosts.
+        annotations:
+          o11y.source: detector
+          o11y.sensitivity: internal
+          o11y.signals: traces,logs
+          o11y.role: identifying
+          o11y.gen: copy
+          o11y.type: string
+      - ref: host.name
+        requirement_level: recommended
+        annotations:
+          o11y.source: detector
+          o11y.sensitivity: internal
+          o11y.signals: traces,logs
+          o11y.role: descriptive
+          o11y.gen: copy
+          o11y.type: string
+      - ref: faas.name
+        requirement_level:
+          conditionally_required: On serverless platforms.
+        annotations:
+          o11y.source: detector
+          o11y.sensitivity: internal
+          o11y.signals: traces,logs
+          o11y.role: identifying
+          o11y.gen: copy
+          o11y.type: string
+      - ref: faas.instance
+        requirement_level:
+          conditionally_required: On serverless platforms.
+        annotations:
+          o11y.source: detector
+          o11y.sensitivity: internal
+          o11y.signals: traces,logs
+          o11y.role: identifying
+          o11y.gen: copy
+          o11y.type: string
+      - ref: faas.version
+        requirement_level: recommended
+        annotations:
+          o11y.source: detector
+          o11y.sensitivity: internal
+          o11y.signals: traces,logs
+          o11y.role: descriptive
+          o11y.gen: copy
+          o11y.type: string

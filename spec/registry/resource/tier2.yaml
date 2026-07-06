@@ -1,0 +1,95 @@
+# Tier 2: recommended. First-class configuration surface; absent only when
+# unset or undetectable.
+groups:
+  - id: libo11y.resource.tier2
+    type: attribute_group
+    display_name: Resource Tier 2 (recommended)
+    brief: Recommended identity and build provenance.
+    stability: development
+    annotations:
+      o11y.tier: "2"
+    attributes:
+      - ref: vcs.ref.head.revision
+        requirement_level: recommended
+        annotations:
+          o11y.source: buildinfo
+          o11y.sensitivity: public
+          o11y.signals: traces,logs
+          o11y.role: identifying
+          o11y.gen: copy
+          o11y.type: string
+      - ref: vcs.ref.head.name
+        requirement_level: opt_in
+        annotations:
+          o11y.source: buildinfo
+          o11y.sensitivity: public
+          o11y.signals: traces,logs
+          o11y.role: descriptive
+          o11y.gen: copy
+          o11y.type: string
+      - ref: o11y.build.modified
+        requirement_level: recommended
+        annotations:
+          o11y.source: buildinfo
+          o11y.signals: traces,logs
+          o11y.role: descriptive
+          o11y.gen: mint
+      - ref: o11y.build.time
+        requirement_level: recommended
+        annotations:
+          o11y.source: buildinfo
+          o11y.signals: traces,logs
+          o11y.role: descriptive
+          o11y.gen: mint
+      - ref: o11y.team.name
+        requirement_level: recommended
+        annotations:
+          o11y.source: option-or-collector
+          o11y.signals: traces,logs
+          o11y.role: descriptive
+          o11y.gen: mint
+      - ref: process.pid
+        requirement_level: opt_in
+        annotations:
+          o11y.source: detector
+          o11y.sensitivity: internal
+          o11y.signals: traces,logs
+          o11y.role: identifying
+          o11y.gen: copy
+          o11y.type: int
+      - ref: os.type
+        requirement_level: opt_in
+        annotations:
+          o11y.source: detector
+          o11y.sensitivity: public
+          o11y.signals: traces,logs
+          o11y.role: identifying
+          o11y.gen: copy
+          o11y.type: string
+      - ref: host.arch
+        requirement_level: opt_in
+        annotations:
+          o11y.source: detector
+          o11y.sensitivity: public
+          o11y.signals: traces,logs
+          o11y.role: descriptive
+          o11y.gen: copy
+          o11y.type: string
+      - ref: process.runtime.name
+        requirement_level: recommended
+        annotations:
+          o11y.source: detector
+          o11y.sensitivity: public
+          o11y.signals: traces,logs
+          o11y.role: descriptive
+          o11y.gen: copy
+          o11y.type: string
+      - ref: process.runtime.version
+        requirement_level: recommended
+        annotations:
+          o11y.source: detector
+          o11y.sensitivity: public
+          o11y.signals: traces,logs
+          o11y.role: descriptive
+          o11y.gen: copy
+          o11y.type: string

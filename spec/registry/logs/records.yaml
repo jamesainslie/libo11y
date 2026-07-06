@@ -1,0 +1,54 @@
+# Log record rules. Record-level fields (Timestamp, ObservedTimestamp,
+# SeverityNumber/Text, Body, TraceId, SpanId, EventName) are the OTel log
+# data model and are not attributes; the normative rules live in the spec
+# documentation. This group registers the semconv attributes libo11y
+# requires on log records in specific situations.
+groups:
+  - id: libo11y.log.record
+    type: attribute_group
+    display_name: Log Record Attributes
+    brief: >
+      Attributes libo11y attaches or requires on log records. trace_id and
+      span_id are reserved top-level console keys written only by the
+      correlation layer. SeverityNumber maps from slog as slog.Level + 9.
+    stability: development
+    attributes:
+      - ref: error.type
+        requirement_level:
+          conditionally_required: On records of severity ERROR or higher.
+        annotations:
+          o11y.sensitivity: public
+          o11y.cardinality: bounded
+          o11y.gen: alias
+      - ref: exception.type
+        requirement_level:
+          conditionally_required: On exception records, unless exception.message is present.
+        annotations:
+          o11y.sensitivity: public
+          o11y.gen: alias
+      - ref: exception.message
+        requirement_level:
+          conditionally_required: On exception records, unless exception.type is present.
+        annotations:
+          o11y.sensitivity: internal
+          o11y.gen: alias
+      - ref: exception.stacktrace
+        requirement_level: recommended
+        annotations:
+          o11y.sensitivity: internal
+          o11y.gen: alias
+      - ref: code.function.name
+        requirement_level: opt_in
+        annotations:
+          o11y.sensitivity: public
+          o11y.gen: alias
+      - ref: code.file.path
+        requirement_level: opt_in
+        annotations:
+          o11y.sensitivity: internal
+          o11y.gen: alias
+      - ref: code.line.number
+        requirement_level: opt_in
+        annotations:
+          o11y.sensitivity: public
+          o11y.gen: alias

@@ -1,0 +1,41 @@
+# Tombstones. The Go module's pre-spec build-info detector emitted bare
+# vcs.* keys copied from Go build info; the spec renames them to their
+# semconv and o11y forms. Recorded here and as transforms in the next
+# schema file.
+groups:
+  - id: registry.o11y.deprecated
+    type: attribute_group
+    display_name: Deprecated libo11y attributes
+    brief: Attributes emitted by pre-spec libo11y releases, since renamed.
+    stability: development
+    attributes:
+      - id: o11y.deprecated.vcs.revision
+        type: string
+        stability: development
+        brief: Deprecated alias recorded for the pre-spec vcs.revision key.
+        examples: ["3c8f1a2b9d4e5f60718293a4b5c6d7e8f9012345"]
+        deprecated:
+          reason: renamed
+          renamed_to: vcs.ref.head.revision
+        annotations:
+          o11y.sensitivity: public
+      - id: o11y.deprecated.vcs.time
+        type: string
+        stability: development
+        brief: Deprecated alias recorded for the pre-spec vcs.time key.
+        examples: ["2026-07-06T12:00:00Z"]
+        deprecated:
+          reason: renamed
+          renamed_to: o11y.build.time
+        annotations:
+          o11y.sensitivity: public
+      - id: o11y.deprecated.vcs.modified
+        type: string
+        stability: development
+        brief: Deprecated alias recorded for the pre-spec vcs.modified key.
+        examples: ["true"]
+        deprecated:
+          reason: renamed
+          renamed_to: o11y.build.modified
+        annotations:
+          o11y.sensitivity: public

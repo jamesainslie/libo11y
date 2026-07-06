@@ -1,0 +1,73 @@
+# Registered libo11y events. A log record carrying one of these names is
+# an Event: contract-bearing, never sampled, never level-gated. The event
+# name travels as the event.name attribute (the semconv-sanctioned carrier
+# for bridges that cannot set the top-level EventName field yet).
+groups:
+  - id: event.o11y.telemetry.configured
+    type: event
+    name: o11y.telemetry.configured
+    stability: development
+    brief: >
+      Startup summary, emitted once by Setup after the pipeline is
+      constructed and verified (the record doubles as the init canary).
+    attributes:
+      - ref: o11y.config
+        requirement_level: required
+        annotations:
+          o11y.gen: mint
+
+  - id: event.o11y.request.summary
+    type: event
+    name: o11y.request.summary
+    stability: development
+    brief: >
+      Wide event: one per request, flushed at request end (fires on panic),
+      carrying identity, outcome, duration, and everything accumulated on
+      the request record. The primary analytics record.
+    attributes:
+      - ref: http.request.method
+        requirement_level: required
+        annotations:
+          o11y.gen: alias
+      - ref: http.route
+        requirement_level:
+          conditionally_required: When a route pattern matched.
+        annotations:
+          o11y.gen: alias
+      - ref: http.response.status_code
+        requirement_level: required
+        annotations:
+          o11y.gen: alias
+      - ref: o11y.outcome
+        requirement_level: required
+        annotations:
+          o11y.gen: mint
+      - ref: o11y.duration
+        requirement_level: required
+        annotations:
+          o11y.gen: mint
+      - ref: url.path
+        requirement_level: recommended
+        annotations:
+          o11y.gen: alias
+      - ref: server.address
+        requirement_level: recommended
+        annotations:
+          o11y.gen: alias
+
+  - id: event.o11y.telemetry.dropped
+    type: event
+    name: o11y.telemetry.dropped
+    stability: development
+    brief: >
+      Buffered telemetry could not be flushed at shutdown. Emitted
+      best-effort to surviving sinks so the loss is never silent.
+    attributes:
+      - ref: o11y.signal
+        requirement_level: required
+        annotations:
+          o11y.gen: mint
+      - ref: error.type
+        requirement_level: required
+        annotations:
+          o11y.gen: alias
