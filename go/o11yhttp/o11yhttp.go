@@ -10,13 +10,16 @@
 package o11yhttp
 
 import (
+	"log/slog"
 	"net/http"
 	"path"
 	"strings"
+	"time"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	o11y "github.com/jamesainslie/libo11y/go"
+	"github.com/jamesainslie/libo11y/go/spec"
 )
 
 // Option configures the instrumentation constructors.
@@ -26,6 +29,7 @@ type config struct {
 	sdk           *o11y.SDK
 	filters       []otelhttp.Filter
 	publicServer  bool
+	canonicalLine bool
 	nameFormatter func(operation string, r *http.Request) string
 }
 
@@ -66,6 +70,15 @@ func WithPublicEndpoint() Option {
 	return func(c *config) { c.publicServer = true }
 }
 
+// WithCanonicalLine emits one wide event (a canonical log line) per request:
+// the o11y.request.summary event carrying method, route, status, duration,
+// and outcome, plus anything handlers accumulate on the request's
+// o11y.Record (see o11y.RecordFromContext). The event fires even if the
+// handler panics. Requires an SDK bound with [WithSDK].
+func WithCanonicalLine() Option {
+	return func(c *config) { c.canonicalLine = true }
+}
+
 // WithSpanNameFormatter replaces the default span name formatter. The
 // default prefers the matched ServeMux pattern ("GET /users/{id}"), then
 // the operation name, then the request method.
@@ -77,6 +90,9 @@ func WithSpanNameFormatter(format func(operation string, r *http.Request) string
 // names for requests that match no route pattern.
 func NewHandler(handler http.Handler, operation string, opts ...Option) http.Handler {
 	cfg := newConfig(opts)
+	if cfg.canonicalLine {
+		handler = cfg.wrapCanonical(handler)
+	}
 	return otelhttp.NewHandler(handler, operation, cfg.serverOptions()...)
 }
 
@@ -84,7 +100,13 @@ func NewHandler(handler http.Handler, operation string, opts ...Option) http.Han
 // routers that compose func(http.Handler) http.Handler chains.
 func NewMiddleware(operation string, opts ...Option) func(http.Handler) http.Handler {
 	cfg := newConfig(opts)
-	return otelhttp.NewMiddleware(operation, cfg.serverOptions()...)
+	otel := otelhttp.NewMiddleware(operation, cfg.serverOptions()...)
+	return func(next http.Handler) http.Handler {
+		if cfg.canonicalLine {
+			next = cfg.wrapCanonical(next)
+		}
+		return otel(next)
+	}
 }
 
 // NewTransport instruments an http.RoundTripper for outbound requests:
@@ -101,6 +123,60 @@ func newConfig(opts []Option) *config {
 		opt(cfg)
 	}
 	return cfg
+}
+
+// statusRecorder captures the response status code for the canonical line.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (s *statusRecorder) WriteHeader(code int) {
+	s.status = code
+	s.ResponseWriter.WriteHeader(code)
+}
+
+// wrapCanonical installs a per-request wide-event record and flushes it as
+// the o11y.request.summary event when the request completes, including on
+// panic. It runs inside the otelhttp span, so the event is correlated.
+func (c *config) wrapCanonical(next http.Handler) http.Handler {
+	if c.sdk == nil {
+		return next // no SDK to emit through; canonical line is a no-op
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		ctx, record := o11y.StartRecord(r.Context())
+		r = r.WithContext(ctx)
+		sr := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+
+		defer func() {
+			outcome := spec.OutcomeSuccess
+			if sr.status >= 500 {
+				outcome = spec.OutcomeFailure
+			}
+			attrs := []slog.Attr{
+				slog.String("http.request.method", r.Method),
+				slog.Int("http.response.status_code", sr.status),
+				slog.String(string(spec.OutcomeKey), string(outcome)),
+				slog.Float64(string(spec.DurationKey), time.Since(start).Seconds()),
+			}
+			if r.Pattern != "" {
+				attrs = append(attrs, slog.String("http.route", routeOnly(r.Pattern)))
+			}
+			record.EmitEvent(r.Context(), c.sdk, spec.EventRequestSummary, attrs...)
+		}()
+
+		next.ServeHTTP(sr, r)
+	})
+}
+
+// routeOnly strips a leading method from a ServeMux pattern
+// ("GET /users/{id}" -> "/users/{id}").
+func routeOnly(pattern string) string {
+	if i := strings.IndexByte(pattern, ' '); i >= 0 {
+		return pattern[i+1:]
+	}
+	return pattern
 }
 
 func (c *config) commonOptions() []otelhttp.Option {

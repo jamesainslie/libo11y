@@ -11,6 +11,7 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
 
 	"github.com/jamesainslie/libo11y/go/internal/fanout"
+	"github.com/jamesainslie/libo11y/go/spec"
 )
 
 // EffectiveConfig returns a single-line rendering of the fully resolved
@@ -100,13 +101,14 @@ func buildSummary(s *settings, sdk *SDK) ([]slog.Attr, string) {
 	return attrs, line.String()
 }
 
-// emitStartupSummary forces the summary record through the full log
-// pipeline. It doubles as the initialization canary: an error from any
-// synchronously-rejecting sink (console writer, extra handlers) is returned
-// so Setup can fail fast. The OTLP sink batches asynchronously, so this is
-// a pipeline-wiring check, not a collector-connectivity check.
+// emitStartupSummary forces the o11y.telemetry.configured event through the
+// full log pipeline. It doubles as the initialization canary: an error from
+// any synchronously-rejecting sink (console writer, extra handlers) is
+// returned so Setup can fail fast. The OTLP sink batches asynchronously, so
+// this is a pipeline-wiring check, not a collector-connectivity check.
 func (s *SDK) emitStartupSummary(ctx context.Context, attrs []slog.Attr) error {
-	record := slog.NewRecord(time.Now(), slog.LevelInfo, "telemetry configured", 0)
+	record := slog.NewRecord(time.Now(), slog.LevelInfo, spec.EventTelemetryConfigured, 0)
+	record.AddAttrs(slog.String(spec.EventNameKey, spec.EventTelemetryConfigured))
 	record.AddAttrs(attrs...)
 	return s.handler.Handle(fanout.WithForce(ctx), record)
 }

@@ -2,6 +2,7 @@ package o11yhttp_test
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,6 +16,88 @@ import (
 	"github.com/jamesainslie/libo11y/go/o11yhttp"
 	"github.com/jamesainslie/libo11y/go/spec"
 )
+
+// captureHandler collects flattened log records for assertions.
+type captureHandler struct {
+	records *[]map[string]any
+}
+
+func (c captureHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (c captureHandler) Handle(_ context.Context, r slog.Record) error {
+	m := map[string]any{"msg": r.Message}
+	r.Attrs(func(a slog.Attr) bool {
+		m[a.Key] = a.Value.Any()
+		return true
+	})
+	*c.records = append(*c.records, m)
+	return nil
+}
+func (c captureHandler) WithAttrs([]slog.Attr) slog.Handler { return c }
+func (c captureHandler) WithGroup(string) slog.Handler      { return c }
+
+// TestCanonicalLineEmitsRequestSummary verifies the wide-event path: one
+// o11y.request.summary event per request carrying method, route, status,
+// outcome, and handler-accumulated attributes.
+func TestCanonicalLineEmitsRequestSummary(t *testing.T) {
+	var captured []map[string]any
+	recorder := tracetest.NewSpanRecorder()
+	sdk, err := o11y.New(context.Background(),
+		o11y.WithServiceName("canonical-test"),
+		o11y.WithEnvironment(spec.EnvironmentTest),
+		o11y.WithSpanProcessor(recorder),
+		o11y.WithMetricReader(sdkmetric.NewManualReader()),
+		o11y.WithoutLogExport(),
+		o11y.WithoutRuntimeMetrics(),
+		o11y.WithoutConsoleLog(),
+		o11y.WithExtraLogHandler(captureHandler{records: &captured}),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = sdk.Shutdown(context.Background()) }()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /orders/{id}", func(w http.ResponseWriter, r *http.Request) {
+		o11y.RecordFromContext(r.Context()).Set(slog.String("order.id", r.PathValue("id")))
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := o11yhttp.NewHandler(mux, "orders",
+		o11yhttp.WithSDK(sdk),
+		o11yhttp.WithCanonicalLine(),
+	)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/orders/42")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatalf("closing body: %v", err)
+	}
+
+	var summary map[string]any
+	for _, record := range captured {
+		if record["event.name"] == "o11y.request.summary" {
+			summary = record
+		}
+	}
+	if summary == nil {
+		t.Fatal("no o11y.request.summary event emitted")
+	}
+	if summary["http.route"] != "/orders/{id}" {
+		t.Errorf("http.route = %v, want /orders/{id}", summary["http.route"])
+	}
+	if summary["http.request.method"] != "GET" {
+		t.Errorf("http.request.method = %v, want GET", summary["http.request.method"])
+	}
+	if summary["o11y.outcome"] != "success" {
+		t.Errorf("o11y.outcome = %v, want success", summary["o11y.outcome"])
+	}
+	if summary["order.id"] != "42" {
+		t.Errorf("order.id = %v, want 42 (accumulated by handler)", summary["order.id"])
+	}
+}
 
 func newSDK(t *testing.T) (*o11y.SDK, *tracetest.SpanRecorder, *sdkmetric.ManualReader) {
 	t.Helper()

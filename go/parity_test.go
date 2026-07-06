@@ -86,7 +86,7 @@ func TestSetupEmitsStartupSummary(t *testing.T) {
 	if len(records) != 1 {
 		t.Fatalf("got %d records, want 1 startup summary", len(records))
 	}
-	if got, want := records[0].Message, "telemetry configured"; got != want {
+	if got, want := records[0].Message, "o11y.telemetry.configured"; got != want {
 		t.Errorf("message = %q, want %q", got, want)
 	}
 	var serviceName string

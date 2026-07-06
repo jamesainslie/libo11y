@@ -73,6 +73,7 @@ type settings struct {
 	errorHandler       ErrorHandler
 	buildInfo          bool
 	startupSummary     bool
+	piiMode            PIIMode
 
 	spanExporter  sdktrace.SpanExporter
 	spanProcessor sdktrace.SpanProcessor
@@ -209,8 +210,18 @@ func WithoutLogExport() Option {
 // WithAttrReplacer installs an attribute replacer applied uniformly to
 // every log sink. Use it as an emit-time redaction catch-all; prefer the
 // redact package for capture-time protection of your own types.
+//
+// The specification's sensitivity layer runs after this replacer and cannot
+// be bypassed by it: attributes the spec classifies secret are always
+// dropped, and PII attributes are handled per [WithPIIMode].
 func WithAttrReplacer(replace AttrReplacer) Option {
 	return func(s *settings) { s.attrReplacer = replace }
+}
+
+// WithPIIMode selects how attributes the specification classifies as PII are
+// handled on the log pipeline. The default is [PIIHash].
+func WithPIIMode(mode PIIMode) Option {
+	return func(s *settings) { s.piiMode = mode }
 }
 
 // WithExtraLogHandler adds an additional [slog.Handler] as a log sink

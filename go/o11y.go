@@ -124,7 +124,8 @@ func newSDK(ctx context.Context, s *settings) (_ *SDK, err error) {
 		}
 	}
 
-	loggerProvider, handler, err := buildLogPipeline(ctx, s, res)
+	violations := newViolationRecorder(meterProvider)
+	loggerProvider, handler, err := buildLogPipeline(ctx, s, res, violations)
 	if err != nil {
 		return nil, err
 	}
@@ -194,7 +195,7 @@ func buildMeterProvider(ctx context.Context, s *settings, res *resource.Resource
 // optional OTLP sink (through the otelslog bridge), and any extra sinks.
 // Console and extra sinks receive top-level trace correlation attributes;
 // the OTLP sink derives trace context natively from the record context.
-func buildLogPipeline(ctx context.Context, s *settings, res *resource.Resource) (*sdklog.LoggerProvider, slog.Handler, error) {
+func buildLogPipeline(ctx context.Context, s *settings, res *resource.Resource, violations *violationRecorder) (*sdklog.LoggerProvider, slog.Handler, error) {
 	var legs []slog.Handler
 
 	if s.consoleEnabled {
@@ -232,7 +233,7 @@ func buildLogPipeline(ctx context.Context, s *settings, res *resource.Resource) 
 	handler := fanout.New(fanout.Config{
 		Legs:    legs,
 		Level:   s.logLevel,
-		Replace: fanout.ReplaceFunc(s.attrReplacer),
+		Replace: fanout.ReplaceFunc(specReplacer(s.attrReplacer, s.piiMode, violations)),
 	})
 	return loggerProvider, handler, nil
 }
@@ -274,13 +275,16 @@ func (s *SDK) Shutdown(ctx context.Context) error {
 		if s.loggerProvider != nil {
 			if err := s.loggerProvider.Shutdown(ctx); err != nil {
 				errs = append(errs, fmt.Errorf("o11y: shutdown logs: %w", err))
+				s.emitDropped(ctx, "logs", err)
 			}
 		}
 		if err := s.meterProvider.Shutdown(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("o11y: shutdown metrics: %w", err))
+			s.emitDropped(ctx, "metrics", err)
 		}
 		if err := s.tracerProvider.Shutdown(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("o11y: shutdown traces: %w", err))
+			s.emitDropped(ctx, "traces", err)
 		}
 		s.shutdownErr = errors.Join(errs...)
 
