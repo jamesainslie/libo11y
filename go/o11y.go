@@ -91,7 +91,7 @@ func newSDK(ctx context.Context, s *settings) (_ *SDK, err error) {
 	if propagator == nil {
 		propagator = propagation.NewCompositeTextMapPropagator(
 			propagation.TraceContext{},
-			propagation.Baggage{},
+			filterBaggageEgress(propagation.Baggage{}, func(string) bool { return true }),
 		)
 	}
 
