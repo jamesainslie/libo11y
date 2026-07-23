@@ -2,6 +2,10 @@
 // at spec/registry: the public go/spec package (typed keys, enums, event
 // names, version constants), the go/internal/spectables validation tables,
 // and the docs/taxonomy markdown. Run via `make spec-generate`.
+//
+// With -check it instead validates the registry against the libo11y policy
+// suite (naming, ownership, sensitivity, cardinality, events, units) and
+// exits non-zero on any violation. Run via `make spec-check`.
 package main
 
 import (
@@ -11,7 +15,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 
@@ -113,6 +116,7 @@ type model struct {
 	specVersion    string
 	semconvVersion string
 
+	groups       []group           // every group in the registry, for checks
 	minted       []attr            // defined in attributes/o11y.yaml
 	tiers        map[string][]attr // tier id -> refs, in file order
 	tierOrder    []string
@@ -127,11 +131,22 @@ type model struct {
 
 func main() {
 	root := flag.String("root", "..", "repository root")
+	check := flag.Bool("check", false, "validate the registry against the policy suite instead of generating")
 	flag.Parse()
 
 	m, err := load(*root)
 	if err != nil {
 		log.Fatalf("specgen: %v", err)
+	}
+	if *check {
+		violations := checkGroups(m.groups)
+		for _, v := range violations {
+			fmt.Fprintln(os.Stderr, v)
+		}
+		if len(violations) > 0 {
+			os.Exit(1)
+		}
+		return
 	}
 	if err := writeAll(*root, m); err != nil {
 		log.Fatalf("specgen: %v", err)
@@ -150,21 +165,15 @@ func load(root string) (*model, error) {
 		return nil, fmt.Errorf("reading manifest: %w", err)
 	}
 	var manifestDoc struct {
-		SchemaURL    string `yaml:"schema_url"`
-		Dependencies []struct {
-			RegistryPath string `yaml:"registry_path"`
-		} `yaml:"dependencies"`
+		SchemaURL      string `yaml:"schema_url"`
+		SemconvVersion string `yaml:"semconv_version"`
 	}
 	if err := yaml.Unmarshal(manifest, &manifestDoc); err != nil {
 		return nil, fmt.Errorf("parsing manifest: %w", err)
 	}
 	m.schemaURL = manifestDoc.SchemaURL
 	m.specVersion = m.schemaURL[strings.LastIndex(m.schemaURL, "/")+1:]
-	if len(manifestDoc.Dependencies) > 0 {
-		if match := regexp.MustCompile(`v(\d+\.\d+\.\d+)`).FindStringSubmatch(manifestDoc.Dependencies[0].RegistryPath); match != nil {
-			m.semconvVersion = match[1]
-		}
-	}
+	m.semconvVersion = manifestDoc.SemconvVersion
 
 	registryDir := filepath.Join(root, "spec", "registry")
 	err = filepath.WalkDir(registryDir, func(path string, entry os.DirEntry, err error) error {
@@ -180,6 +189,7 @@ func load(root string) (*model, error) {
 			return fmt.Errorf("parsing %s: %w", path, err)
 		}
 		for _, g := range file.Groups {
+			m.groups = append(m.groups, g)
 			m.classify(g)
 		}
 		return nil

@@ -1,12 +1,11 @@
-# libo11y build targets. Weaver is pinned via mise (ubi:open-telemetry/weaver).
-WEAVER ?= weaver
+# libo11y build targets.
 
 .PHONY: spec-check spec-generate spec-drift test lint
 
-# Validate the spec registry against the semconv format and the libo11y
-# Rego policy suite.
+# Validate the spec registry against the libo11y policy suite (naming,
+# ownership, sensitivity, cardinality, events, units).
 spec-check:
-	$(WEAVER) registry check -r spec/registry -p spec/policies
+	cd go && go run ./internal/specgen -root .. -check
 
 # Regenerate go/spec, go/internal/spectables, and docs/taxonomy from the
 # registry.

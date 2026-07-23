@@ -8,11 +8,7 @@ description: The libo11y telemetry specification registry.
 # before the spec/v1.0.0 release (custom-domain decision recorded in the
 # plan; only the string must be final by then, serving can follow).
 schema_url: https://raw.githubusercontent.com/jamesainslie/libo11y/main/spec/schemas/1.0.0
-# The official registry is vendored (spec/vendor/) so validation is
-# hermetic: no network in CI, and TLS-intercepting proxies cannot break the
-# toolchain. Refresh deliberately when moving the pin.
-dependencies:
-  - name: otel
-    # Relative to the repository root; run weaver targets from there
-    # (the Makefile does).
-    registry_path: spec/vendor/otel-semconv-v1.41.0/model
+# The upstream OpenTelemetry semantic conventions release this registry
+# extends. Referenced attributes (http.*, k8s.*, ...) are defined by that
+# release; libo11y never redefines them. Move the pin deliberately.
+semconv_version: 1.41.0
