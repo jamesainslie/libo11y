@@ -5,9 +5,10 @@
 //
 // Owning group resolution (rather than delegating WithAttrs/WithGroup to
 // each sink) is what guarantees three properties no sink can provide alone:
-// correlation attributes stay top-level even inside open groups, the
+// correlation attributes stay top-level even inside open groups, the user
 // replacer sees identical attributes on every sink, and all sinks emit
-// structurally identical records.
+// structurally identical records; per-sink confidentiality redaction runs in
+// each leg's classifier.
 package fanout
 
 import (

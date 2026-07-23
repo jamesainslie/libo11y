@@ -77,25 +77,36 @@ func specReplacer(user AttrReplacer, mode PIIMode, rec *violationRecorder) AttrR
 				return a
 			}
 		}
-		key := attribute.Key(effectiveKey(groups, a.Key))
-		switch spectables.SensitivityOf[key] {
-		case spectables.Secret:
-			rec.record(spec.SignalLogs, "secret_attribute")
-			return slog.Attr{} // never emit a secret
-		case spectables.PII:
-			switch mode {
-			case PIIDrop:
-				rec.record(spec.SignalLogs, "pii_attribute")
-				return slog.Attr{}
-			case PIIAllow:
-				return a
-			default: // PIIHash
-				rec.record(spec.SignalLogs, "pii_attribute")
-				return slog.String(a.Key, hashValue(a.Value.String()))
-			}
-		default:
+		return classify(sinkConsole, mode, rec, groups, a)
+	}
+}
+
+// classify applies the spec's sensitivity ruling to a single leaf attribute
+// on its effective (grouped) key: secret-classified attributes are always
+// dropped, and PII-classified attributes are handled per mode. It is the one
+// implementation shared by [specReplacer] and the per-leg classifyingHandler,
+// so the two seams cannot drift. The sink mode selects per-sink policy;
+// through Phase 0 both sinks classify identically, so mode is not yet
+// consulted here (Phase 1 uses it for confidential-console-withhold).
+func classify(_ sinkMode, mode PIIMode, rec *violationRecorder, groups []string, a slog.Attr) slog.Attr {
+	key := attribute.Key(effectiveKey(groups, a.Key))
+	switch spectables.SensitivityOf[key] {
+	case spectables.Secret:
+		rec.record(spec.SignalLogs, "secret_attribute")
+		return slog.Attr{} // never emit a secret
+	case spectables.PII:
+		switch mode {
+		case PIIDrop:
+			rec.record(spec.SignalLogs, "pii_attribute")
+			return slog.Attr{}
+		case PIIAllow:
 			return a
+		default: // PIIHash
+			rec.record(spec.SignalLogs, "pii_attribute")
+			return slog.String(a.Key, hashValue(a.Value.String()))
 		}
+	default:
+		return a
 	}
 }
 

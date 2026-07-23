@@ -207,7 +207,7 @@ func buildLogPipeline(ctx context.Context, s *settings, res *resource.Resource, 
 		default:
 			console = slog.NewJSONHandler(s.consoleWriter, handlerOpts)
 		}
-		legs = append(legs, fanout.Correlate(console))
+		legs = append(legs, classifyingHandler(fanout.Correlate(console), sinkConsole, s.piiMode, violations))
 	}
 
 	var loggerProvider *sdklog.LoggerProvider
@@ -220,22 +220,36 @@ func buildLogPipeline(ctx context.Context, s *settings, res *resource.Resource, 
 			sdklog.WithResource(res),
 			sdklog.WithProcessor(sdklog.NewBatchProcessor(exporter)),
 		)
-		legs = append(legs, otelslog.NewHandler(scopeName,
+		otlp := otelslog.NewHandler(scopeName,
 			otelslog.WithLoggerProvider(loggerProvider),
 			otelslog.WithSource(true),
-		))
+		)
+		legs = append(legs, classifyingHandler(otlp, sinkOTLP, s.piiMode, violations))
 	}
 
 	for _, extra := range s.extraLogHandler {
-		legs = append(legs, fanout.Correlate(extra))
+		legs = append(legs, classifyingHandler(fanout.Correlate(extra), sinkConsole, s.piiMode, violations))
 	}
 
+	// Spec classification now runs per leg (see classifyingHandler); the shared
+	// fan-out replacer carries only the user-supplied replacer, so every sink
+	// still sees identical attributes before per-sink classification.
 	handler := fanout.New(fanout.Config{
 		Legs:    legs,
 		Level:   s.logLevel,
-		Replace: fanout.ReplaceFunc(specReplacer(s.attrReplacer, s.piiMode, violations)),
+		Replace: userReplaceFunc(s.attrReplacer),
 	})
 	return loggerProvider, handler, nil
+}
+
+// userReplaceFunc adapts an optional user [AttrReplacer] to the fan-out
+// replacer contract, returning nil when the caller supplied none so the
+// fan-out skips the replace pass entirely.
+func userReplaceFunc(user AttrReplacer) fanout.ReplaceFunc {
+	if user == nil {
+		return nil
+	}
+	return fanout.ReplaceFunc(user)
 }
 
 // TracerProvider returns the SDK's tracer provider.
