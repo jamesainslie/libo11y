@@ -25,7 +25,17 @@ import (
 // above the configured level also record normally; force-emit ensures those
 // below it are not dropped.
 func (s *SDK) Event(ctx context.Context, name string, attrs ...slog.Attr) {
-	record := slog.NewRecord(time.Now(), slog.LevelInfo, name, 0)
+	s.emitEvent(ctx, slog.LevelInfo, name, attrs)
+}
+
+// emitEvent is the structural force-emit path shared by Event and, later, by
+// app-event registration and the log sampler. It builds the named record,
+// stamps the event.name attribute, and force-emits through the handler so the
+// record is exempt from level gating and sampling by construction, not by
+// name matching. The exemption is the ForceEmit marker on the context; a bare
+// record carrying event.name without it stays subject to the level gate.
+func (s *SDK) emitEvent(ctx context.Context, level slog.Level, name string, attrs []slog.Attr) {
+	record := slog.NewRecord(time.Now(), level, name, 0)
 	record.AddAttrs(append([]slog.Attr{slog.String(spec.EventNameKey, name)}, attrs...)...)
 	_ = s.handler.Handle(ForceEmit(ctx), record)
 }
