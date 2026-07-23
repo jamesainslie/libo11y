@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"log/slog"
+	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -76,7 +77,8 @@ func specReplacer(user AttrReplacer, mode PIIMode, rec *violationRecorder) AttrR
 				return a
 			}
 		}
-		switch spectables.SensitivityOf[attribute.Key(a.Key)] {
+		key := attribute.Key(effectiveKey(groups, a.Key))
+		switch spectables.SensitivityOf[key] {
 		case spectables.Secret:
 			rec.record(spec.SignalLogs, "secret_attribute")
 			return slog.Attr{} // never emit a secret
@@ -95,6 +97,17 @@ func specReplacer(user AttrReplacer, mode PIIMode, rec *violationRecorder) AttrR
 			return a
 		}
 	}
+}
+
+// effectiveKey joins the enclosing group path with the leaf key to form the
+// dotted spec attribute name the classification tables are keyed on. A grouped
+// attribute such as slog.Group("host", slog.String("ip", v)) must classify on
+// "host.ip", not the leaf "ip", so grouping cannot bypass the spec layer.
+func effectiveKey(groups []string, key string) string {
+	if len(groups) == 0 {
+		return key
+	}
+	return strings.Join(groups, ".") + "." + key
 }
 
 // hashValue renders a stable, non-reversible token for a PII value.
