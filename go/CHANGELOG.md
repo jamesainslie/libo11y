@@ -8,7 +8,7 @@ and the module adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- Telemetry specification and enforcement: the `spec/` Weaver registry
+- Telemetry specification and enforcement: the `spec/` registry
   drives generated `spec` (typed keys, enums, event names, schema/version
   constants, slog+9 severity) and internal validation tables. Runtime
   enforcement: required tier-0 identity at init (`WithEnvironment`,
