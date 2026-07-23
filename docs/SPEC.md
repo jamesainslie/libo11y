@@ -178,6 +178,7 @@ version bump.
 3. **Emit-time** (log pipeline): the sensitivity layer, always on; an
    optional validating processor and metric-label allowlist, dev-on and
    prod-observe.
-4. **CI conformance** (Weaver `registry check` and policies, `live-check`,
-   and the language test harnesses): the only layer that catches a
-   developer bypassing the generated constants.
+4. **CI conformance** (`make spec-check` policy validation, the
+   `make spec-drift` generation gate, and the language test harnesses):
+   the only layer that catches a developer bypassing the generated
+   constants.

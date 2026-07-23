@@ -43,11 +43,11 @@ libo11y centralizes a versioned telemetry specification in
 [`spec/`](spec/): a tiered resource-attribute taxonomy, structured-logging
 rules, per-signal minimums, a registered event catalog, and a sensitivity
 classification that drives redaction. It extends OpenTelemetry semantic
-conventions (never redefining stable upstream attributes), is validated in
-CI by [OpenTelemetry Weaver](https://github.com/open-telemetry/weaver)
-against a policy suite, and is code-generated into each language: typed
-attribute keys, closed enums, and validation tables the runtime and test
-harness share. See [`docs/SPEC.md`](docs/SPEC.md) for the human-readable
+conventions (never redefining stable upstream attributes), is validated by
+the repository's own policy checks (`make spec-check`: naming, namespace
+ownership, sensitivity, cardinality, event, and metric-unit rules), and is
+code-generated into each language: typed attribute keys, closed enums, and
+validation tables the runtime and test harness share. See [`docs/SPEC.md`](docs/SPEC.md) for the human-readable
 specification and [`docs/taxonomy/`](docs/taxonomy/) for the generated
 attribute tables.
 
