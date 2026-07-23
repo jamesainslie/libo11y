@@ -27,9 +27,20 @@ func violationIDs(violations []violation) []string {
 	return ids
 }
 
+// hasRule reports whether any violation carries the given rule ID.
+func hasRule(violations []violation, ruleID string) bool {
+	for _, v := range violations {
+		if v.RuleID == ruleID {
+			return true
+		}
+	}
+	return false
+}
+
 func assertViolations(t *testing.T, doc string, wantIDs ...string) {
 	t.Helper()
-	got := violationIDs(checkGroups(parseGroups(t, doc)))
+	groups := parseGroups(t, doc)
+	got := violationIDs(checkGroups(groups, buildIndex(groups)))
 	if len(got) != len(wantIDs) {
 		t.Fatalf("checkGroups() violations = %v, want %v", got, wantIDs)
 	}
@@ -98,6 +109,22 @@ groups:
         annotations:
           o11y.sensitivity: secret
 `, "libo11y_secret_referenced")
+}
+
+// TestSecretReferencedAcrossGroupsFlagged pins the cross-group seam: a
+// secret key defined in a forbidden group and referenced (without a local
+// annotation) from a signal group is flagged via the prebuilt index.
+func TestSecretReferencedAcrossGroupsFlagged(t *testing.T) {
+	groups := []group{
+		{ID: "libo11y.resource.forbidden", Attributes: []attr{{Ref: "x.secret",
+			Annotations: map[string]string{"o11y.sensitivity": "secret"}}}},
+		{ID: "some.signal.group", Type: "attribute_group", Attributes: []attr{{Ref: "x.secret"}}},
+	}
+	idx := buildIndex(groups)
+	vs := checkGroups(groups, idx)
+	if !hasRule(vs, "libo11y_secret_referenced") {
+		t.Fatalf("secret ref in a signal group not flagged: %v", vs)
+	}
 }
 
 // TestCheckGroupsSecretDefinitionAllowed pins the carve-out: a secret-class
@@ -300,7 +327,7 @@ func TestCheckRealRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loading registry: %v", err)
 	}
-	if violations := checkGroups(m.groups); len(violations) != 0 {
+	if violations := checkGroups(m.groups, buildIndex(m.groups)); len(violations) != 0 {
 		for _, v := range violations {
 			t.Errorf("registry violation: %s", v)
 		}

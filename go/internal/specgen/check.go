@@ -31,21 +31,68 @@ var (
 	attrNamePattern = regexp.MustCompile(`^[a-z][a-z0-9]*(_[a-z0-9]+)*(\.[a-z][a-z0-9]*(_[a-z0-9]+)*)+$`)
 )
 
+// index is a whole-registry view built in a first pass and consulted by the
+// per-attribute checks in the second pass. secretKeys are attribute names
+// classified secret anywhere in the registry; mintedNames are the o11y.*
+// names defined by the registry. upstreamKeys is populated in a later phase
+// (ref and deprecation cross-checks against vendored semconv); it is empty
+// here.
+type index struct {
+	secretKeys   map[string]bool
+	mintedNames  map[string]bool
+	upstreamKeys map[string]semconvEntry
+}
+
+// semconvEntry is a placeholder for the vendored upstream attribute record
+// consulted by the ref and deprecation rules introduced in a later phase.
+type semconvEntry struct{}
+
+// buildIndex runs the first pass over the registry, collecting the
+// cross-group facts the per-attribute checks need: which keys are secret and
+// which o11y.* names the registry mints.
+func buildIndex(groups []group) *index {
+	idx := &index{
+		secretKeys:   map[string]bool{},
+		mintedNames:  map[string]bool{},
+		upstreamKeys: map[string]semconvEntry{},
+	}
+	for _, g := range groups {
+		for _, a := range g.Attributes {
+			if a.Annotations["o11y.sensitivity"] == "secret" {
+				idx.secretKeys[a.name()] = true
+			}
+			if a.ID != "" && strings.HasPrefix(a.ID, "o11y.") {
+				idx.mintedNames[a.ID] = true
+			}
+		}
+	}
+	return idx
+}
+
+// isForbiddenGroup reports whether a group documents forbidden keys rather
+// than emitting them. A secret key defined in such a group is a permitted
+// definition; a reference to it from any other group is a violation.
+func isForbiddenGroup(g group) bool {
+	return strings.Contains(g.ID, ".forbidden")
+}
+
 // checkGroups validates registry groups against the libo11y policy suite:
 // naming, namespace ownership, sensitivity and cardinality classification,
-// event discipline, and metric naming and unit rules.
-func checkGroups(groups []group) []violation {
+// event discipline, and metric naming and unit rules. It runs as a second
+// pass over the prebuilt idx, which carries the cross-group facts (secret
+// keys, minted names) the per-attribute rules consult.
+func checkGroups(groups []group, idx *index) []violation {
 	var violations []violation
 	for _, g := range groups {
 		for _, a := range g.Attributes {
-			violations = append(violations, checkAttribute(g, a)...)
+			violations = append(violations, checkAttribute(g, a, idx)...)
 		}
 		violations = append(violations, checkGroup(g)...)
 	}
 	return violations
 }
 
-func checkAttribute(g group, a attr) []violation {
+func checkAttribute(g group, a attr, idx *index) []violation {
 	var violations []violation
 	fail := func(ruleID, category, attrName string) {
 		violations = append(violations, violation{RuleID: ruleID, Category: category, Group: g.ID, Attr: attrName})
@@ -84,9 +131,14 @@ func checkAttribute(g group, a attr) []violation {
 	}
 
 	// Secret-class attributes may exist only as documentation of a
-	// forbidden key: no signal group may reference one.
-	if a.Ref != "" && a.Annotations["o11y.sensitivity"] == "secret" {
-		fail("libo11y_secret_referenced", "sensitivity", a.Ref)
+	// forbidden key: no signal group may reference one. A reference is a
+	// violation when it carries a local secret annotation or when the index
+	// records the referenced key as secret elsewhere; a forbidden group
+	// defines such keys and is exempt.
+	if a.Ref != "" && !isForbiddenGroup(g) {
+		if a.Annotations["o11y.sensitivity"] == "secret" || idx.secretKeys[a.Ref] {
+			fail("libo11y_secret_referenced", "sensitivity", a.Ref)
+		}
 	}
 
 	// Unbounded attributes are forbidden as metric labels. Reported via

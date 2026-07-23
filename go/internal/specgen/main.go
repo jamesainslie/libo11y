@@ -139,7 +139,7 @@ func main() {
 		log.Fatalf("specgen: %v", err)
 	}
 	if *check {
-		violations := checkGroups(m.groups)
+		violations := checkGroups(m.groups, buildIndex(m.groups))
 		for _, v := range violations {
 			fmt.Fprintln(os.Stderr, v)
 		}
