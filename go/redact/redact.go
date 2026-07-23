@@ -26,6 +26,13 @@
 //	}
 //
 //	slog.Info("charge", "payment", redact.Struct(payment))
+//
+// The `o11y` tag also recognizes the two-axis classification vocabulary:
+// `confidential` maps to mask and `secret` maps to redact, so capture-time
+// tags speak the same language as the telemetry spec. Value-typing a secret
+// field is the fail-closed backstop that key-based classification cannot
+// provide: a key can be renamed to an unclassified name, but a tagged field
+// carries its protection with the value.
 package redact
 
 import (
@@ -121,13 +128,19 @@ const (
 	omit
 )
 
+// parseProtection maps an o11y tag value to a protection level. Alongside the
+// three protection names (mask, redact, omit) it recognizes the two-axis
+// classification vocabulary: confidential maps to mask, secret maps to redact.
+// Value-typing a secret field is the fail-closed backstop that key-based
+// classification cannot provide, since a key can be renamed to an unclassified
+// name but a tagged field cannot. Unknown tags fail closed to redact.
 func parseProtection(tag string) (protection, bool) {
 	switch tag {
 	case "":
 		return passthrough, true
-	case "mask":
+	case "mask", "confidential":
 		return mask, true
-	case "redact":
+	case "redact", "secret":
 		return redact, true
 	case "omit":
 		return omit, true

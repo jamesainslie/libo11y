@@ -319,6 +319,34 @@ func TestCyclicGraphDoesNotCrash(t *testing.T) {
 	}
 }
 
+type taggedAxes struct {
+	Token string `o11y:"secret"`
+	Name  string `o11y:"confidential"`
+}
+
+// TestStructSecretTagRedacts pins the two-axis vocabulary: a secret-tagged
+// field renders REDACTED (never its value), the fail-closed backstop for the
+// strictest classification.
+func TestStructSecretTagRedacts(t *testing.T) {
+	v := redact.Struct(taggedAxes{Token: "abc", Name: "gopher"}).LogValue()
+	if strings.Contains(fmt.Sprint(v), "abc") {
+		t.Fatalf("secret-tagged field leaked: %v", v)
+	}
+}
+
+// TestStructConfidentialTagMasks pins that a confidential-tagged field masks
+// (preserving shape only) rather than redacting or passing through.
+func TestStructConfidentialTagMasks(t *testing.T) {
+	record := logToJSON(t, "v", redact.Struct(taggedAxes{Token: "abc", Name: "gopher"}))
+	group := record["v"].(map[string]any)
+	if got, want := group["Name"], strings.Repeat("X", 6); got != want {
+		t.Errorf("confidential Name = %v, want %v (masked)", got, want)
+	}
+	if got := group["Token"]; got != redact.Redacted {
+		t.Errorf("secret Token = %v, want %v (redacted)", got, redact.Redacted)
+	}
+}
+
 func TestSecretNumericVerbsRedacted(t *testing.T) {
 	secret := redact.NewSecret(4242)
 	for _, verb := range []string{"%d", "%o", "%b", "%+d", "%v", "%s"} {
