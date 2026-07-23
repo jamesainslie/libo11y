@@ -106,12 +106,6 @@ func newSDK(ctx context.Context, s *settings) (_ *SDK, err error) {
 		}
 	}()
 
-	tracerProvider, err := buildTracerProvider(ctx, s, res)
-	if err != nil {
-		return nil, err
-	}
-	cleanups = append(cleanups, tracerProvider.Shutdown)
-
 	meterProvider, err := buildMeterProvider(ctx, s, res)
 	if err != nil {
 		return nil, err
@@ -125,6 +119,13 @@ func newSDK(ctx context.Context, s *settings) (_ *SDK, err error) {
 	}
 
 	violations := newViolationRecorder(meterProvider)
+
+	tracerProvider, err := buildTracerProvider(ctx, s, res, violations)
+	if err != nil {
+		return nil, err
+	}
+	cleanups = append(cleanups, tracerProvider.Shutdown)
+
 	loggerProvider, handler, err := buildLogPipeline(ctx, s, res, violations)
 	if err != nil {
 		return nil, err
@@ -149,22 +150,25 @@ func newSDK(ctx context.Context, s *settings) (_ *SDK, err error) {
 	return sdk, nil
 }
 
-func buildTracerProvider(ctx context.Context, s *settings, res *resource.Resource) (*sdktrace.TracerProvider, error) {
+func buildTracerProvider(ctx context.Context, s *settings, res *resource.Resource, violations *violationRecorder) (*sdktrace.TracerProvider, error) {
 	opts := []sdktrace.TracerProviderOption{sdktrace.WithResource(res)}
 	if s.sampler != nil {
 		opts = append(opts, sdktrace.WithSampler(s.sampler))
 	}
 	switch {
 	case s.spanProcessor != nil:
+		// A caller who supplies a whole span processor owns the export path
+		// (this is a test seam); redaction runs at the exporter boundary,
+		// which such a processor is free to bypass.
 		opts = append(opts, sdktrace.WithSpanProcessor(s.spanProcessor))
 	case s.spanExporter != nil:
-		opts = append(opts, sdktrace.WithBatcher(s.spanExporter))
+		opts = append(opts, sdktrace.WithBatcher(redactingExporter(s.spanExporter, violations)))
 	default:
 		exporter, err := autoexport.NewSpanExporter(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("o11y: building span exporter: %w", err)
 		}
-		opts = append(opts, sdktrace.WithBatcher(exporter))
+		opts = append(opts, sdktrace.WithBatcher(redactingExporter(exporter, violations)))
 	}
 	return sdktrace.NewTracerProvider(opts...), nil
 }
