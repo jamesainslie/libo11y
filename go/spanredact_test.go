@@ -7,6 +7,7 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/jamesainslie/libo11y/go/internal/spectables"
 )
@@ -89,5 +90,71 @@ func TestRedactingExporterDropsSecretSpanAttr(t *testing.T) {
 	}
 	if !sawPublic {
 		t.Errorf("non-secret span attribute %q was dropped", publicKey)
+	}
+}
+
+func TestRedactingExporterStripsSecretFromEventsAndLinks(t *testing.T) {
+	const secretKey = attribute.Key("test.secret.token")
+	const publicKey = attribute.Key("service.name")
+	registerSecretKey(t, secretKey)
+
+	stub := &captureExporter{}
+	exp := redactingExporter(stub, nil)
+
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exp)),
+	)
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+
+	linked := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID: trace.TraceID{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10},
+		SpanID:  trace.SpanID{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08},
+	})
+
+	tracer := tp.Tracer("test")
+	_, span := tracer.Start(context.Background(), "op",
+		trace.WithLinks(trace.Link{
+			SpanContext: linked,
+			Attributes:  []attribute.KeyValue{secretKey.String("linksecret"), publicKey.String("ok")},
+		}),
+	)
+	span.AddEvent("evt", trace.WithAttributes(
+		secretKey.String("eventsecret"),
+		publicKey.String("ok"),
+	))
+	span.End()
+
+	spans := stub.captured()
+	if len(spans) != 1 {
+		t.Fatalf("captured %d spans, want 1", len(spans))
+	}
+	got := spans[0]
+
+	var eventPublic, linkPublic bool
+	for _, e := range got.Events() {
+		for _, a := range e.Attributes {
+			if a.Key == secretKey {
+				t.Errorf("secret leaked in span event %q attribute", e.Name)
+			}
+			if a.Key == publicKey {
+				eventPublic = true
+			}
+		}
+	}
+	for _, l := range got.Links() {
+		for _, a := range l.Attributes {
+			if a.Key == secretKey {
+				t.Errorf("secret leaked in span link attribute")
+			}
+			if a.Key == publicKey {
+				linkPublic = true
+			}
+		}
+	}
+	if !eventPublic {
+		t.Errorf("non-secret span event attribute was dropped")
+	}
+	if !linkPublic {
+		t.Errorf("non-secret span link attribute was dropped")
 	}
 }

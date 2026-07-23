@@ -40,20 +40,34 @@ func (c *classifier) Enabled(ctx context.Context, level slog.Level) bool {
 }
 
 func (c *classifier) Handle(ctx context.Context, record slog.Record) error {
-	classified := slog.NewRecord(record.Time, record.Level, record.Message, record.PC)
+	attrs := make([]slog.Attr, 0, record.NumAttrs())
+	changed := false
 	record.Attrs(func(a slog.Attr) bool {
-		if out, keep := c.classifyAttr(nil, a); keep {
-			classified.AddAttrs(out)
+		out, keep, ch := c.classifyAttr(nil, a)
+		if ch {
+			changed = true
+		}
+		if keep {
+			attrs = append(attrs, out)
 		}
 		return true
 	})
+	// Nothing was dropped or rewritten: forward the original record so the
+	// common path (no secret/PII attribute present) adds no record rebuild.
+	if !changed {
+		return c.inner.Handle(ctx, record)
+	}
+	classified := slog.NewRecord(record.Time, record.Level, record.Message, record.PC)
+	classified.AddAttrs(attrs...)
 	return c.inner.Handle(ctx, classified)
 }
 
 // classifyAttr classifies a single attribute at the given group path,
-// recursing into groups so the effective dotted key is used for every leaf.
-// It reports whether the attribute survives classification.
-func (c *classifier) classifyAttr(groups []string, a slog.Attr) (slog.Attr, bool) {
+// recursing into groups so the effective dotted key is used for every leaf. It
+// reports whether the attribute survives classification, and whether it was
+// altered (dropped, rewritten, or, for a group, had any member changed) so the
+// caller can skip rebuilding an unchanged record.
+func (c *classifier) classifyAttr(groups []string, a slog.Attr) (out slog.Attr, keep, changed bool) {
 	a.Value = a.Value.Resolve()
 	if a.Value.Kind() == slog.KindGroup {
 		path := groups
@@ -64,21 +78,29 @@ func (c *classifier) classifyAttr(groups []string, a slog.Attr) (slog.Attr, bool
 		}
 		members := a.Value.Group()
 		kept := make([]slog.Attr, 0, len(members))
+		memberChanged := false
 		for _, m := range members {
-			if out, keep := c.classifyAttr(path, m); keep {
-				kept = append(kept, out)
+			mo, mk, mc := c.classifyAttr(path, m)
+			if mc {
+				memberChanged = true
+			}
+			if mk {
+				kept = append(kept, mo)
 			}
 		}
-		if len(kept) == 0 {
-			return slog.Attr{}, false
+		if len(kept) != len(members) {
+			memberChanged = true
 		}
-		return slog.Attr{Key: a.Key, Value: slog.GroupValue(kept...)}, true
+		if len(kept) == 0 {
+			return slog.Attr{}, false, true
+		}
+		return slog.Attr{Key: a.Key, Value: slog.GroupValue(kept...)}, true, memberChanged
 	}
-	out := classify(c.mode, c.pii, c.rec, groups, a)
-	if out.Equal(slog.Attr{}) || out.Key == "" {
-		return slog.Attr{}, false
+	res := classify(c.mode, c.pii, c.rec, groups, a)
+	if res.Equal(slog.Attr{}) || res.Key == "" {
+		return slog.Attr{}, false, true
 	}
-	return out, true
+	return res, true, !res.Equal(a)
 }
 
 func (c *classifier) WithAttrs(attrs []slog.Attr) slog.Handler {
