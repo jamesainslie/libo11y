@@ -646,6 +646,48 @@ func TestRecursiveTypeScanTerminatesAndHonorsTags(t *testing.T) {
 	}
 }
 
+type taggedPayload struct {
+	User  string
+	Token string `o11y:"secret"`
+}
+
+type anyTaggedValuer struct{}
+
+func (anyTaggedValuer) LogValue() slog.Value {
+	return slog.AnyValue(taggedPayload{User: "u", Token: "raw-valuer-tok"})
+}
+
+type groupTaggedValuer struct{}
+
+func (groupTaggedValuer) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.Any("p", taggedPayload{User: "u", Token: "raw-group-tok"}),
+		slog.Int("n", 7),
+	)
+}
+
+func TestPassthroughLogValuerResultIsWalked(t *testing.T) {
+	type holder struct {
+		A anyTaggedValuer
+		G groupTaggedValuer
+	}
+	out := logJSONString(t,
+		"field", redact.Struct(holder{}),
+		"top", redact.Struct(anyTaggedValuer{}),
+	)
+	for _, raw := range []string{"raw-valuer-tok", "raw-group-tok"} {
+		if strings.Contains(out, raw) {
+			t.Errorf("tagged value returned by a LogValuer leaked %q: %s", raw, out)
+		}
+	}
+	if !strings.Contains(out, `"n":7`) {
+		t.Errorf("passthrough scalars returned by a LogValuer should stay unchanged: %s", out)
+	}
+	if !strings.Contains(out, `"User":"u"`) {
+		t.Errorf("untagged fields of a LogValuer result should still render: %s", out)
+	}
+}
+
 type panicStringer struct{ N int }
 
 func (panicStringer) String() string { panic("boom") }

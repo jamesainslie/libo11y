@@ -170,9 +170,13 @@ const maxDepth = 32
 //
 // A nested value implementing [slog.LogValuer] is rendered through its own
 // LogValue (under passthrough and mask floors), so self-protecting types
-// such as [Secret] keep their protection inside Struct. Cyclic or deeper
-// than 32-level structures render as REDACTED rather than recursing
-// without bound.
+// such as [Secret] keep their protection inside Struct. The floor in scope
+// is then enforced on the result: values it returns are walked so their
+// tags still apply, and under a mask floor every leaf is masked. Group keys
+// a LogValuer emits are treated as field names and are never masked, so a
+// LogValuer that carries data in group keys must protect those keys itself.
+// Cyclic or deeper than 32-level structures render as REDACTED rather than
+// recursing without bound.
 //
 // Non-struct values pass through unchanged.
 func Struct(v any) slog.LogValuer {
@@ -424,16 +428,16 @@ func resolveProtected(valuer slog.LogValuer, floor protection, depth int) slog.V
 
 // applyFloor enforces a protection floor on an already-resolved value.
 // Groups are walked so every leaf is protected; arbitrary values are walked
-// with Struct's own traversal so their tags still apply strictest-wins. A
-// leaf already rendered REDACTED keeps that stricter rendering.
+// with Struct's own traversal so their tags still apply strictest-wins, even
+// under a passthrough floor. Group keys are treated as field names and are
+// never masked. Under passthrough, scalars and arbitrary values whose type
+// cannot carry protection are returned unchanged. A leaf already rendered
+// REDACTED keeps that stricter rendering.
 func applyFloor(v slog.Value, floor protection, depth int) slog.Value {
 	if depth > maxDepth {
 		return slog.StringValue(Redacted)
 	}
-	switch floor {
-	case passthrough:
-		return v
-	case redact, omit:
+	if floor == redact || floor == omit {
 		return slog.StringValue(Redacted)
 	}
 	v = v.Resolve()
@@ -445,16 +449,18 @@ func applyFloor(v slog.Value, floor protection, depth int) slog.Value {
 			out[i] = slog.Attr{Key: m.Key, Value: applyFloor(m.Value, floor, depth+1)}
 		}
 		return slog.GroupValue(out...)
-	case slog.KindString:
-		if v.String() == Redacted {
+	case slog.KindAny:
+		if floor == passthrough && !mayCarryProtection(reflect.TypeOf(v.Any())) {
 			return v
 		}
-		return slog.StringValue(maskString(v.String()))
-	case slog.KindAny:
 		return protectValue(reflect.ValueOf(v.Any()), floor, depth+1)
-	default: // int64, uint64, float64, bool, duration, time
-		return slog.StringValue(maskString(v.String()))
 	}
+	// Remaining kinds are scalars: string, int64, uint64, float64, bool,
+	// duration, and time.
+	if floor == passthrough || (v.Kind() == slog.KindString && v.String() == Redacted) {
+		return v
+	}
+	return slog.StringValue(maskString(v.String()))
 }
 
 // sliceValue renders protected slice elements as a single value. slog has
