@@ -158,6 +158,10 @@ groups:
               value: "logs"
               stability: development
               brief: The log signal.
+            - id: resource
+              value: "resource"
+              stability: development
+              brief: The telemetry resource shared by every signal.
         stability: development
         brief: The telemetry signal a record refers to.
         examples: ["traces"]

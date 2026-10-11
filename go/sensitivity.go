@@ -10,8 +10,9 @@ import (
 )
 
 // PIIMode selects how attributes the specification classifies as PII are
-// handled on logs (every log sink) and on spans (span, event, and link
-// attributes at export). Later releases extend it to every signal.
+// handled on logs (every log sink), on spans (span, event, and link
+// attributes at export), and on the telemetry resource every signal carries.
+// Later releases extend it to every signal.
 type PIIMode int
 
 const (

@@ -56,9 +56,10 @@ const (
 type Signal string
 
 const (
-	SignalTraces  Signal = "traces"
-	SignalMetrics Signal = "metrics"
-	SignalLogs    Signal = "logs"
+	SignalTraces   Signal = "traces"
+	SignalMetrics  Signal = "metrics"
+	SignalLogs     Signal = "logs"
+	SignalResource Signal = "resource"
 )
 
 // Environment is the closed value set for deployment.environment.name.

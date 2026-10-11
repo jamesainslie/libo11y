@@ -26,7 +26,10 @@ const serviceVersionFallback = "0.0.0-unknown"
 
 // buildResource composes the telemetry resource from detectors and explicit
 // options, enforces the tier-0 identity contract, derives service.instance.id,
-// and stamps the single libo11y schema URL.
+// applies the sensitivity policy, and stamps the single libo11y schema URL.
+// It also returns how many resource attributes the policy dropped or
+// tokenized per violation rule, for newSDK to record once the violation
+// counter exists.
 //
 // Precedence, lowest to highest: build info, telemetry SDK identity, host,
 // process runtime, and container detectors, then the environment
@@ -34,7 +37,7 @@ const serviceVersionFallback = "0.0.0-unknown"
 // attributes. Detected values are library defaults, so the environment
 // overrides them per the documented option-over-environment-over-default
 // contract. Under [WithoutOTELEnv] the environment layer is skipped.
-func buildResource(ctx context.Context, s *settings) (*resource.Resource, error) {
+func buildResource(ctx context.Context, s *settings) (*resource.Resource, map[string]int, error) {
 	explicit := make([]attribute.KeyValue, 0, len(s.resourceAttrs)+4)
 	versionResolved := false
 	if name := strings.TrimSpace(s.serviceName); name != "" {
@@ -76,26 +79,59 @@ func buildResource(ctx context.Context, s *settings) (*resource.Resource, error)
 		// usable telemetry identity; refusing to start over a missing
 		// container ID would violate the never-break-the-host contract.
 		if res == nil || !errors.Is(err, resource.ErrPartialResource) {
-			return nil, fmt.Errorf("o11y: building resource: %w", err)
+			return nil, nil, fmt.Errorf("o11y: building resource: %w", err)
 		}
 	}
 
 	res, err = enforceIdentity(res, s)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	res, s.versionFallback = ensureServiceVersion(res, versionResolved)
 	res = ensureInstanceID(res)
 
-	// Stamp exactly one schema URL, whatever the detectors carried, so
-	// resource merges downstream are never undefined.
-	res = resource.NewWithAttributes(spec.SchemaURL, res.Attributes()...)
+	// Apply the sensitivity policy, then stamp exactly one schema URL,
+	// whatever the detectors carried, so resource merges downstream are
+	// never undefined. Required identity survives classification because
+	// tier-0 keys are classified public.
+	policy := newSensitivityPolicy(s, nil)
+	attrs, counts := classifyResourceAttrs(res.Attributes(), policy)
+	res = resource.NewWithAttributes(spec.SchemaURL, attrs...)
+
+	// The providers merge the environment resource underneath this one, so
+	// an ambient key absent here reaches every signal with its ambient
+	// value. Under WithoutOTELEnv every ambient key is shadowed. Otherwise
+	// the keys the policy drops are shadowed, so a PII or secret value from
+	// OTEL_RESOURCE_ATTRIBUTES cannot return through the merge; keys the
+	// policy tokenizes are already present here with their token and win
+	// the merge, and a tokenized key somehow absent here is shadowed rather
+	// than leaked.
+	shadow := func(key attribute.Key) bool { return policy.classOf(key) != actionKeep }
 	if s.ignoreEnv {
-		// The providers merge the environment resource underneath this one;
-		// shadow every ambient key so no ambient value reaches them.
-		res = shadowEnvironment(res, shadowAll)
+		shadow = shadowAll
 	}
-	return res, nil
+	return shadowEnvironment(res, shadow), counts, nil
+}
+
+// classifyResourceAttrs applies the sensitivity policy to resource
+// attributes once at startup, returning the surviving attributes and how
+// many were removed or tokenized per rule (recorded after the violation
+// counter exists).
+func classifyResourceAttrs(attrs []attribute.KeyValue, p *sensitivityPolicy) ([]attribute.KeyValue, map[string]int) {
+	kept := make([]attribute.KeyValue, 0, len(attrs))
+	counts := map[string]int{}
+	for _, kv := range attrs {
+		switch p.classOf(kv.Key) {
+		case actionDrop:
+			counts[ruleFor(p.lookup(kv.Key))]++
+		case actionRewrite:
+			counts[ruleFor(p.lookup(kv.Key))]++
+			kept = append(kept, kv.Key.String(p.token(canonicalAttr(kv.Value))))
+		default:
+			kept = append(kept, kv)
+		}
+	}
+	return kept, counts
 }
 
 // enforceIdentity applies the tier-0 identity contract: a usable

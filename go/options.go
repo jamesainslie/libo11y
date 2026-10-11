@@ -241,9 +241,15 @@ func WithAttrReplacer(replace AttrReplacer) Option {
 }
 
 // WithPIIMode selects how attributes the specification classifies as PII are
-// handled on logs (every log sink) and on spans (span, event, and link
-// attributes at export). Later releases extend it to every signal. The
-// default is [PIIDrop]. [PIIHash] also needs [WithPIIHashKey].
+// handled on logs (every log sink), on spans (span, event, and link
+// attributes at export), and on the telemetry resource. Later releases extend
+// it to every signal. The default is [PIIDrop]. [PIIHash] also needs
+// [WithPIIHashKey].
+//
+// A PII or secret key that arrives through OTEL_RESOURCE_ATTRIBUTES and is
+// dropped is exported with an empty value rather than omitted: the OTel
+// providers merge the environment resource underneath the library's, and an
+// empty value is the only way to win that merge.
 func WithPIIMode(mode PIIMode) Option {
 	return func(s *settings) { s.piiMode = mode }
 }

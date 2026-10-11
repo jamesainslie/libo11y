@@ -44,6 +44,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/jamesainslie/libo11y/go/internal/fanout"
+	"github.com/jamesainslie/libo11y/go/spec"
 )
 
 // scopeName identifies telemetry emitted by this library itself.
@@ -88,7 +89,7 @@ func newSDK(ctx context.Context, s *settings) (_ *SDK, err error) {
 	if s.piiMode == PIIHash && len(s.piiHashKey) < minPIIHashKeyLen {
 		return nil, ErrPIIHashKey
 	}
-	res, err := buildResource(ctx, s)
+	res, resourceViolations, err := buildResource(ctx, s)
 	if err != nil {
 		return nil, err
 	}
@@ -124,7 +125,14 @@ func newSDK(ctx context.Context, s *settings) (_ *SDK, err error) {
 		}
 	}
 
-	policy := newSensitivityPolicy(s, newViolationRecorder(meterProvider))
+	violations := newViolationRecorder(meterProvider)
+	policy := newSensitivityPolicy(s, violations)
+	// The resource was classified before the violation counter existed.
+	for rule, n := range resourceViolations {
+		for range n {
+			violations.record(spec.SignalResource, rule)
+		}
+	}
 
 	tracerProvider, err := buildTracerProvider(ctx, s, res, policy)
 	if err != nil {

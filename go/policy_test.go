@@ -64,3 +64,37 @@ func TestCanonicalRenderingMatchesAcrossValueKinds(t *testing.T) {
 		})
 	}
 }
+
+func TestClassifyResourceAttrsCountsPerRule(t *testing.T) {
+	s := newSettings([]Option{
+		WithPIIMode(PIIHash), WithPIIHashKey(internalTestKey),
+		WithSensitivityForTest(map[attribute.Key]spectables.Sensitivity{"test.secret": spectables.Secret}),
+	})
+	kept, counts := classifyResourceAttrs([]attribute.KeyValue{
+		attribute.String("service.name", "svc"),
+		attribute.String("test.secret", "s3cr3t"),
+		attribute.String("host.ip", "10.0.0.1"),
+		attribute.String("host.mac", "aa:bb"),
+	}, newSensitivityPolicy(s, nil))
+
+	if counts["secret_attribute"] != 1 || counts["pii_attribute"] != 2 || len(counts) != 2 {
+		t.Errorf("counts = %v, want 1 secret_attribute and 2 pii_attribute", counts)
+	}
+	got := map[attribute.Key]string{}
+	for _, kv := range kept {
+		got[kv.Key] = kv.Value.AsString()
+	}
+	want := map[attribute.Key]string{
+		"service.name": "svc",
+		"host.ip":      wantToken(internalTestKey, "10.0.0.1"),
+		"host.mac":     wantToken(internalTestKey, "aa:bb"),
+	}
+	if len(got) != len(want) {
+		t.Errorf("kept = %v, want %v", got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("kept[%s] = %q, want %q", k, got[k], v)
+		}
+	}
+}

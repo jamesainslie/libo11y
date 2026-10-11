@@ -29,9 +29,11 @@ const (
 )
 
 // sensitivityPolicy is the single enforcement point for the specification's
-// sensitivity classification. One policy is built per SDK; its consumers
-// today are the classifying slog legs (console, OTLP, and extra sinks) and the
-// span exporter wrapper (span, event, and link attributes). Further signals
+// sensitivity classification. One policy per SDK serves the classifying slog
+// legs (console, OTLP, and extra sinks) and the span exporter wrapper (span,
+// event, and link attributes). Resource construction runs before the
+// violation counter exists, so it uses a recorder-less policy built from the
+// same settings and newSDK records its counts afterwards. Further signals
 // are added as they are wired to it, so every signal asks the same policy
 // what to do with a key and the signals cannot drift apart.
 //
@@ -53,28 +55,42 @@ func newSensitivityPolicy(s *settings, rec *violationRecorder) *sensitivityPolic
 	return &sensitivityPolicy{lookup: lookup, pii: s.piiMode, key: s.piiHashKey, rec: rec}
 }
 
-// decide classifies key and records a violation for every action taken:
-// secret-classified keys are always dropped, and PII-classified keys are
-// handled per the PII mode.
-func (p *sensitivityPolicy) decide(signal spec.Signal, key attribute.Key) classAction {
+// classOf classifies key without recording anything: secret-classified keys
+// are always dropped, and PII-classified keys are handled per the PII mode.
+func (p *sensitivityPolicy) classOf(key attribute.Key) classAction {
 	switch p.lookup(key) {
 	case spectables.Secret:
-		p.rec.record(signal, "secret_attribute")
 		return actionDrop
 	case spectables.PII:
 		switch p.pii {
 		case PIIAllow:
 			return actionKeep
-		case PIIDrop:
-			p.rec.record(signal, "pii_attribute")
-			return actionDrop
-		default: // PIIHash
-			p.rec.record(signal, "pii_attribute")
+		case PIIHash:
 			return actionRewrite
+		default: // PIIDrop
+			return actionDrop
 		}
 	default:
 		return actionKeep
 	}
+}
+
+// decide classifies key and records a violation for every action taken.
+func (p *sensitivityPolicy) decide(signal spec.Signal, key attribute.Key) classAction {
+	act := p.classOf(key)
+	if act != actionKeep {
+		p.rec.record(signal, ruleFor(p.lookup(key)))
+	}
+	return act
+}
+
+// ruleFor names the violation rule for an attribute of the given class that
+// classification dropped or rewrote.
+func ruleFor(class spectables.Sensitivity) string {
+	if class == spectables.Secret {
+		return "secret_attribute"
+	}
+	return "pii_attribute"
 }
 
 // minPIIHashKeyLen is the shortest key PIIHash accepts: 256 bits, the
