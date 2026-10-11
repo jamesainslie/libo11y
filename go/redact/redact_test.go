@@ -473,3 +473,24 @@ func TestStructNilAndDeepPointerChains(t *testing.T) {
 		t.Errorf("deep chain = %q, want %s", got, redact.Redacted)
 	}
 }
+
+func TestMaskFloorProtectsMapKeys(t *testing.T) {
+	type holder struct {
+		Emails map[string]int `o11y:"mask"`
+		Plain  map[string]int
+	}
+	var buf bytes.Buffer
+	slog.New(slog.NewJSONHandler(&buf, nil)).Info("m", "v", redact.Struct(holder{
+		Emails: map[string]int{"alice@example.com": 1, "bob@example.com": 2},
+		Plain:  map[string]int{"b": 2, "a": 1},
+	}))
+	out := buf.String()
+	for _, raw := range []string{"alice@example.com", "bob@example.com"} {
+		if strings.Contains(out, raw) {
+			t.Errorf("masked map key %q leaked: %s", raw, out)
+		}
+	}
+	if !strings.Contains(out, `"Plain":{"a":"1","b":"2"}`) && !strings.Contains(out, `"Plain":{"a":1,"b":2}`) {
+		t.Errorf("unmasked map should render sorted by key: %s", out)
+	}
+}

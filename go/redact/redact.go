@@ -40,6 +40,8 @@ import (
 	"io"
 	"log/slog"
 	"reflect"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -161,7 +163,9 @@ const maxDepth = 32
 // in scope wins through nesting: fields of a struct inside a masked field
 // are masked at minimum. Protection follows values into slices, arrays,
 // maps, pointers, and interfaces, so a []Payment element is exactly as
-// protected as a Payment field.
+// protected as a Payment field. Map entries render sorted by key. Under a
+// mask floor, map entries render as a group keyed by sorted position, each
+// holding the masked key and the protected value.
 //
 // A nested value implementing [slog.LogValuer] is rendered through its own
 // LogValue (under passthrough and mask floors), so self-protecting types
@@ -280,13 +284,28 @@ func protectValue(v reflect.Value, floor protection, depth int) slog.Value {
 		if v.IsNil() {
 			return slog.AnyValue(nil)
 		}
-		attrs := make([]slog.Attr, 0, v.Len())
-		iter := v.MapRange()
-		for iter.Next() {
-			attrs = append(attrs, slog.Attr{
-				Key:   fmt.Sprint(iter.Key().Interface()),
-				Value: protectValue(iter.Value(), floor, depth+1),
-			})
+		keys := v.MapKeys()
+		rendered := make([]string, len(keys))
+		for i, k := range keys {
+			rendered[i] = fmt.Sprint(k.Interface())
+		}
+		order := make([]int, len(keys))
+		for i := range order {
+			order[i] = i
+		}
+		sort.SliceStable(order, func(a, b int) bool { return rendered[order[a]] < rendered[order[b]] })
+		attrs := make([]slog.Attr, 0, len(keys))
+		for pos, i := range order {
+			value := protectValue(v.MapIndex(keys[i]), floor, depth+1)
+			if floor == mask {
+				// Masked keys of equal length would collide, so entries are
+				// keyed by position and carry the masked key alongside.
+				attrs = append(attrs, slog.Group(strconv.Itoa(pos),
+					slog.String("key", maskString(rendered[i])),
+					slog.Any("value", value)))
+				continue
+			}
+			attrs = append(attrs, slog.Attr{Key: rendered[i], Value: value})
 		}
 		return slog.GroupValue(attrs...)
 
