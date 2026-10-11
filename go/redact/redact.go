@@ -178,9 +178,12 @@ const maxDepth = 32
 // [fmt.Stringer] whose type cannot carry protection (time.Time, net.IP,
 // netip.Addr) renders as its text form, masked under a mask floor; any other
 // such value is walked so a String method cannot fold a tagged field into
-// its text, and a panicking String or MarshalText renders REDACTED. A nil
-// value, nil pointer, nil interface, nil slice, or nil map renders as a nil
-// value. Scalars render unchanged, or masked under a mask floor.
+// its text, and a panicking String or MarshalText renders REDACTED. A value
+// implementing error renders its Error() text (masked under a mask floor)
+// when nothing reachable from it, including wrapped causes, may carry
+// protection, and REDACTED otherwise. A nil value, nil pointer, nil
+// interface, nil slice, or nil map renders as a nil value. Scalars render
+// unchanged, or masked under a mask floor.
 //
 // A nested value implementing [slog.LogValuer] is rendered through its own
 // LogValue (under passthrough and mask floors), so self-protecting types

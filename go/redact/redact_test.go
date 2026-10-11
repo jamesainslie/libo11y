@@ -853,6 +853,30 @@ func TestCollidingMapKeyTextUsesPositionalShape(t *testing.T) {
 	}
 }
 
+// opaqueCauseErr folds its cause into Error() without exposing Unwrap.
+type opaqueCauseErr struct {
+	cause error
+}
+
+func (e *opaqueCauseErr) Error() string { return "op: " + e.cause.Error() }
+
+func TestErrorCauseWithoutUnwrapIsChecked(t *testing.T) {
+	type holder struct {
+		Tagged error
+		Clean  error
+	}
+	out := logJSONString(t, "v", redact.Struct(holder{
+		Tagged: &opaqueCauseErr{cause: taggedErr{Token: "raw-opaque-tok"}},
+		Clean:  &opaqueCauseErr{cause: errors.New("timeout")},
+	}))
+	if strings.Contains(out, "raw-opaque-tok") {
+		t.Errorf("tagged cause leaked through an error without Unwrap: %s", out)
+	}
+	if !strings.Contains(out, `"Tagged":"REDACTED"`) || !strings.Contains(out, `"Clean":"op: timeout"`) {
+		t.Errorf("want Tagged REDACTED and Clean as text: %s", out)
+	}
+}
+
 type panicStringer struct{ N int }
 
 func (panicStringer) String() string { panic("boom") }
