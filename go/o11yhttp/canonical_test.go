@@ -230,3 +230,31 @@ func TestCanonicalLinePreservesWriterInterfaces(t *testing.T) {
 		})
 	}
 }
+
+func TestCanonicalLineHonorsFilters(t *testing.T) {
+	t.Parallel()
+	env := newCanonicalEnv(t)
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", func(http.ResponseWriter, *http.Request) {})
+	mux.HandleFunc("GET /users/{id}", func(http.ResponseWriter, *http.Request) {})
+	h := o11yhttp.NewHandler(mux, "f", o11yhttp.WithSDK(env.sdk), o11yhttp.WithCanonicalLine(),
+		o11yhttp.WithIgnorePaths("/healthz"),
+		o11yhttp.WithFilter(func(r *http.Request) bool { return r.Header.Get("X-Skip") == "" }))
+	for _, req := range []*http.Request{
+		httptest.NewRequest(http.MethodGet, "/healthz", nil),
+		func() *http.Request {
+			r := httptest.NewRequest(http.MethodGet, "/users/1", nil)
+			r.Header.Set("X-Skip", "1")
+			return r
+		}(),
+		httptest.NewRequest(http.MethodGet, "/users/2", nil),
+	} {
+		h.ServeHTTP(httptest.NewRecorder(), req)
+	}
+	if s := env.summaries(); len(s) != 1 {
+		t.Fatalf("got %d summaries, want 1 (filtered requests must not emit)", len(s))
+	}
+	if n := len(env.spans.Ended()); n != 1 {
+		t.Fatalf("got %d spans, want 1", n)
+	}
+}

@@ -74,7 +74,8 @@ func WithPublicEndpoint() Option {
 // the o11y.request.summary event carrying method, route, status, duration,
 // and outcome, plus anything handlers accumulate on the request's
 // o11y.Record (see o11y.RecordFromContext). The event fires even if the
-// handler panics. Requires an SDK bound with [WithSDK].
+// handler panics. Requests excluded by [WithFilter] or [WithIgnorePaths]
+// emit no summary. Requires an SDK bound with [WithSDK].
 func WithCanonicalLine() Option {
 	return func(c *config) { c.canonicalLine = true }
 }
@@ -133,6 +134,12 @@ func (c *config) wrapCanonical(next http.Handler) http.Handler {
 		return next // no SDK to emit through; canonical line is a no-op
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, outer *http.Request) {
+		for _, allow := range c.filters {
+			if !allow(outer) {
+				next.ServeHTTP(w, outer) // filtered: not traced, measured, or summarized
+				return
+			}
+		}
 		start := time.Now()
 		ctx, record := o11y.StartRecord(outer.Context())
 		r := outer.WithContext(ctx)
