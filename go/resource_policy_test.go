@@ -7,8 +7,10 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	"go.opentelemetry.io/otel/sdk/resource"
 
 	o11y "github.com/jamesainslie/libo11y/go"
+	"github.com/jamesainslie/libo11y/go/internal/spectables"
 	"github.com/jamesainslie/libo11y/go/spec"
 )
 
@@ -22,7 +24,8 @@ func resourceMap(attrs []attribute.KeyValue) map[string]string {
 
 // exportedResources emits one span, one metric point, and one log record
 // through sdk and returns the resource attributes each signal exported with,
-// keyed by signal, plus the collected metrics.
+// keyed by signal, plus the collected metrics. It asserts that every exported
+// resource carries the libo11y schema URL.
 func exportedResources(t *testing.T, opts ...o11y.Option) (map[string][]attribute.KeyValue, metricdata.ResourceMetrics) {
 	t.Helper()
 	exp := &memLogExporter{}
@@ -40,9 +43,6 @@ func exportedResources(t *testing.T, opts ...o11y.Option) (map[string][]attribut
 		t.Fatal(err)
 	}
 
-	if sdk.Resource().SchemaURL() != spec.SchemaURL {
-		t.Errorf("schema URL = %q", sdk.Resource().SchemaURL())
-	}
 	ended := spans.Ended()
 	if len(ended) != 1 {
 		t.Fatalf("got %d spans", len(ended))
@@ -55,12 +55,20 @@ func exportedResources(t *testing.T, opts ...o11y.Option) (map[string][]attribut
 	if len(recs) == 0 {
 		t.Fatal("no log exported")
 	}
-	return map[string][]attribute.KeyValue{
-		"SDK":     sdk.Resource().Attributes(),
-		"span":    ended[0].Resource().Attributes(),
-		"metrics": md.Resource.Attributes(),
-		"log":     recs[0].Resource().Attributes(),
-	}, md
+	resources := map[string]*resource.Resource{
+		"SDK":     sdk.Resource(),
+		"span":    ended[0].Resource(),
+		"metrics": md.Resource,
+		"log":     recs[0].Resource(),
+	}
+	attrs := make(map[string][]attribute.KeyValue, len(resources))
+	for where, res := range resources {
+		if res.SchemaURL() != spec.SchemaURL {
+			t.Errorf("%s resource schema URL = %q, want %q", where, res.SchemaURL(), spec.SchemaURL)
+		}
+		attrs[where] = res.Attributes()
+	}
+	return attrs, md
 }
 
 func checkIdentity(t *testing.T, where string, m map[string]string) {
@@ -73,16 +81,20 @@ func checkIdentity(t *testing.T, where string, m map[string]string) {
 func TestResourcePIIEnforcedOnEveryExportedSignal(t *testing.T) {
 	t.Parallel()
 	resources, md := exportedResources(t,
-		o11y.WithResourceAttributes(attribute.String("host.ip", "10.9.8.7")))
+		o11y.WithResourceAttributes(
+			attribute.String("host.ip", "10.9.8.7"),
+			attribute.String("host.mac", "aa:bb:cc:dd:ee:ff")))
 	for where, attrs := range resources {
 		m := resourceMap(attrs)
-		if _, leaked := m["host.ip"]; leaked {
-			t.Errorf("%s resource carries host.ip", where)
+		for _, key := range []string{"host.ip", "host.mac"} {
+			if _, leaked := m[key]; leaked {
+				t.Errorf("%s resource carries %s", where, key)
+			}
 		}
 		checkIdentity(t, where, m)
 	}
 
-	var resourceViolations int64
+	var points []metricdata.DataPoint[int64]
 	for _, scope := range md.ScopeMetrics {
 		for _, metric := range scope.Metrics {
 			if metric.Name != "o11y.schema.violations" {
@@ -93,16 +105,48 @@ func TestResourcePIIEnforcedOnEveryExportedSignal(t *testing.T) {
 				t.Fatalf("o11y.schema.violations data is %T", metric.Data)
 			}
 			for _, p := range sum.DataPoints {
-				signal, _ := p.Attributes.Value(spec.SignalKey)
-				rule, _ := p.Attributes.Value(spec.RuleKey)
-				if signal.AsString() == string(spec.SignalResource) && rule.AsString() == "pii_attribute" {
-					resourceViolations += p.Value
+				if signal, _ := p.Attributes.Value(spec.SignalKey); signal.AsString() == string(spec.SignalResource) {
+					points = append(points, p)
 				}
 			}
 		}
 	}
-	if resourceViolations != 1 {
-		t.Errorf("resource pii_attribute violations = %d, want 1", resourceViolations)
+	if len(points) != 1 {
+		t.Fatalf("got %d resource violation points, want 1: %+v", len(points), points)
+	}
+	if rule, _ := points[0].Attributes.Value(spec.RuleKey); rule.AsString() != "pii_attribute" || points[0].Value != 2 {
+		t.Errorf("resource violation = %s x %d, want pii_attribute x 2", rule.AsString(), points[0].Value)
+	}
+}
+
+// TestResourceSecretFromEnvironment covers a secret-classified key that
+// arrives through OTEL_RESOURCE_ATTRIBUTES: it must be shadowed (present with
+// an empty value) on every exported resource, whatever the PII mode.
+func TestResourceSecretFromEnvironment(t *testing.T) {
+	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "o11y.test.secret=s3cr3t")
+	secret := o11y.WithSensitivityForTest(map[attribute.Key]spectables.Sensitivity{
+		"o11y.test.secret": spectables.Secret,
+	})
+	for name, opts := range map[string][]o11y.Option{
+		"default": {secret},
+		"allow":   {secret, o11y.WithPIIMode(o11y.PIIAllow)},
+		"hash":    {secret, o11y.WithPIIMode(o11y.PIIHash), o11y.WithPIIHashKey(testKey)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			resources, _ := exportedResources(t, opts...)
+			for where, attrs := range resources {
+				m := resourceMap(attrs)
+				for key, value := range m {
+					if strings.Contains(value, "s3cr3t") {
+						t.Errorf("%s resource %s carries the environment secret: %q", where, key, value)
+					}
+				}
+				if got := m["o11y.test.secret"]; got != "" {
+					t.Errorf("%s resource o11y.test.secret = %q, want shadowed empty", where, got)
+				}
+				checkIdentity(t, where, m)
+			}
+		})
 	}
 }
 

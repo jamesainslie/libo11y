@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
@@ -59,6 +60,30 @@ func TestPIIHashRequiresKey(t *testing.T) {
 				t.Fatalf("New error = %v, want ErrPIIHashKey", err)
 			}
 		})
+	}
+}
+
+// TestSetupPIIHashRequiresKey covers the Setup path: it must fail the same
+// way as New, install nothing, and leave Setup available for a valid retry.
+func TestSetupPIIHashRequiresKey(t *testing.T) {
+	restoreGlobals(t)
+	prevTracer := otel.GetTracerProvider()
+
+	_, err := o11y.Setup(context.Background(), append(hermeticOptions("setup-pii"), o11y.WithPIIMode(o11y.PIIHash))...)
+	if !errors.Is(err, o11y.ErrPIIHashKey) {
+		t.Fatalf("Setup error = %v, want ErrPIIHashKey", err)
+	}
+	if otel.GetTracerProvider() != prevTracer {
+		t.Error("a failed Setup installed a global tracer provider")
+	}
+
+	sdk, err := o11y.Setup(context.Background(),
+		append(hermeticOptions("setup-pii"), o11y.WithPIIMode(o11y.PIIHash), o11y.WithPIIHashKey(testKey))...)
+	if err != nil {
+		t.Fatalf("Setup with a key after a failed Setup: %v", err)
+	}
+	if err := sdk.Shutdown(context.Background()); err != nil {
+		t.Errorf("Shutdown: %v", err)
 	}
 }
 
