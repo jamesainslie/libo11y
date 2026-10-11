@@ -2,12 +2,16 @@ package redact_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jamesainslie/libo11y/go/redact"
 )
@@ -417,5 +421,55 @@ func TestMaskFloorAppliesToAllResolvedKinds(t *testing.T) {
 				t.Errorf("nested Secret lost its stricter REDACTED protection: %s", out)
 			}
 		})
+	}
+}
+
+// TestStructSelfReferentialInterfaceTerminates runs the cycle in a child
+// test process killed on timeout, so a regression cannot leave a spinning
+// goroutine in this process.
+func TestStructSelfReferentialInterfaceTerminates(t *testing.T) {
+	if os.Getenv("REDACT_CYCLE_CHILD") == "1" {
+		var v any
+		v = &v
+		got := redact.Struct(v).LogValue().String()
+		if !strings.Contains(got, redact.Redacted) {
+			t.Fatalf("cycle rendered %q, want REDACTED", got)
+		}
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestStructSelfReferentialInterfaceTerminates$", "-test.count=1")
+	cmd.Env = append(os.Environ(), "REDACT_CYCLE_CHILD=1")
+	out, err := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("pointer/interface cycle did not terminate within 20s (child killed)")
+	}
+	if err != nil {
+		t.Fatalf("child failed: %v\n%s", err, out)
+	}
+}
+
+func TestStructNilAndDeepPointerChains(t *testing.T) {
+	if got := redact.Struct(nil).LogValue(); got.Any() != nil {
+		t.Errorf("Struct(nil) = %v, want nil value", got)
+	}
+	var typedNil *struct{ A string }
+	if got := redact.Struct(typedNil).LogValue(); got.Any() != nil {
+		t.Errorf("Struct(typed nil) = %v, want nil value", got)
+	}
+	chain := func(n int) any {
+		var v any = "leaf"
+		for range n {
+			x := v
+			v = &x
+		}
+		return v
+	}
+	if got := redact.Struct(chain(3)).LogValue().String(); got != "leaf" {
+		t.Errorf("shallow chain = %q, want leaf", got)
+	}
+	if got := redact.Struct(chain(40)).LogValue().String(); got != redact.Redacted {
+		t.Errorf("deep chain = %q, want %s", got, redact.Redacted)
 	}
 }

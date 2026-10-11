@@ -217,14 +217,16 @@ func plansFor(t reflect.Type) []fieldPlan {
 var logValuerType = reflect.TypeFor[slog.LogValuer]()
 
 func protectValue(v reflect.Value, floor protection, depth int) slog.Value {
-	if depth > maxDepth {
-		return slog.StringValue(Redacted) // cycle or absurd nesting: fail closed
-	}
 	if floor == redact {
 		return slog.StringValue(Redacted)
 	}
-
+	// Every iteration descends one level, so the bound is checked inside the
+	// loop: a self-referential interface (var v any; v = &v) would otherwise
+	// spin forever without ever reaching the recursive depth check.
 	for v.Kind() == reflect.Pointer || v.Kind() == reflect.Interface {
+		if depth > maxDepth {
+			return slog.StringValue(Redacted) // cycle or absurd nesting: fail closed
+		}
 		if v.IsNil() {
 			return slog.AnyValue(nil)
 		}
@@ -235,6 +237,12 @@ func protectValue(v reflect.Value, floor protection, depth int) slog.Value {
 		}
 		v = v.Elem()
 		depth++
+	}
+	if depth > maxDepth {
+		return slog.StringValue(Redacted)
+	}
+	if !v.IsValid() {
+		return slog.AnyValue(nil) // Struct(nil)
 	}
 	if v.IsValid() && v.CanInterface() && v.Type().Implements(logValuerType) {
 		if valuer, ok := v.Interface().(slog.LogValuer); ok {
