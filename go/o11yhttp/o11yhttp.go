@@ -125,24 +125,6 @@ func newConfig(opts []Option) *config {
 	return cfg
 }
 
-// statusRecorder captures the response status code for the canonical line.
-// It preserves the wrapped writer's optional interfaces
-// (http.Flusher/Hijacker/Pusher/io.ReaderFrom) through Unwrap, so
-// http.NewResponseController still reaches them: enabling the canonical
-// line must not break streaming or connection hijacking.
-type statusRecorder struct {
-	http.ResponseWriter
-	status int
-}
-
-func (s *statusRecorder) WriteHeader(code int) {
-	s.status = code
-	s.ResponseWriter.WriteHeader(code)
-}
-
-// Unwrap exposes the underlying writer to [http.NewResponseController].
-func (s *statusRecorder) Unwrap() http.ResponseWriter { return s.ResponseWriter }
-
 // wrapCanonical installs a per-request wide-event record and flushes it as
 // the o11y.request.summary event when the request completes, including on
 // panic. It runs inside the otelhttp span, so the event is correlated.
@@ -154,7 +136,7 @@ func (c *config) wrapCanonical(next http.Handler) http.Handler {
 		start := time.Now()
 		ctx, record := o11y.StartRecord(outer.Context())
 		r := outer.WithContext(ctx)
-		sr := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		ww, st := trackResponse(w)
 
 		panicked := false
 		defer func() {
@@ -169,18 +151,19 @@ func (c *config) wrapCanonical(next http.Handler) http.Handler {
 			// canonical line does not misreport it as a 200 success, then
 			// let the panic keep propagating.
 			p := recover()
+			status := st.final()
 			if p != nil {
 				panicked = true
-				sr.status = http.StatusInternalServerError
+				status = http.StatusInternalServerError
 			}
 
 			outcome := spec.OutcomeSuccess
-			if panicked || sr.status >= 500 {
+			if panicked || status >= 500 {
 				outcome = spec.OutcomeFailure
 			}
 			attrs := []slog.Attr{
 				slog.String("http.request.method", r.Method),
-				slog.Int("http.response.status_code", sr.status),
+				slog.Int("http.response.status_code", status),
 				slog.String(string(spec.OutcomeKey), string(outcome)),
 				slog.Float64(string(spec.DurationKey), time.Since(start).Seconds()),
 			}
@@ -194,7 +177,7 @@ func (c *config) wrapCanonical(next http.Handler) http.Handler {
 			}
 		}()
 
-		next.ServeHTTP(sr, r)
+		next.ServeHTTP(ww, r)
 	})
 }
 

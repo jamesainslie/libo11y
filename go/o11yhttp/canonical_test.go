@@ -2,6 +2,8 @@ package o11yhttp_test
 
 import (
 	"context"
+	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -156,4 +158,75 @@ func attrValue(attrs []attribute.KeyValue, key string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+func quietServer(h http.Handler) *httptest.Server {
+	srv := httptest.NewUnstartedServer(h)
+	srv.Config.ErrorLog = log.New(io.Discard, "", 0)
+	srv.Start()
+	return srv
+}
+
+// plainWriter implements only http.ResponseWriter.
+type plainWriter struct{ h http.Header }
+
+func (p *plainWriter) Header() http.Header {
+	if p.h == nil {
+		p.h = http.Header{}
+	}
+	return p.h
+}
+func (p *plainWriter) Write(b []byte) (int, error) { return len(b), nil }
+func (p *plainWriter) WriteHeader(int)             {}
+
+type writerCaps struct {
+	flusher, hijacker, readerFrom bool
+	controllerFlushErr            bool
+}
+
+func capsHandler(out chan<- writerCaps) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		var c writerCaps
+		_, c.flusher = w.(http.Flusher)
+		_, c.hijacker = w.(http.Hijacker)
+		_, c.readerFrom = w.(io.ReaderFrom)
+		c.controllerFlushErr = http.NewResponseController(w).Flush() != nil
+		out <- c
+	})
+}
+
+func TestCanonicalLinePreservesWriterInterfaces(t *testing.T) {
+	cases := map[string]func(t *testing.T, h http.Handler){
+		"recorder": func(_ *testing.T, h http.Handler) {
+			h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+		},
+		"plain": func(_ *testing.T, h http.Handler) {
+			h.ServeHTTP(&plainWriter{}, httptest.NewRequest(http.MethodGet, "/", nil))
+		},
+		"server": func(t *testing.T, h http.Handler) {
+			srv := quietServer(h)
+			defer srv.Close()
+			resp, err := srv.Client().Get(srv.URL)
+			if err != nil {
+				t.Fatalf("GET: %v", err)
+			}
+			_ = resp.Body.Close()
+		},
+	}
+	for name, drive := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			env := newCanonicalEnv(t)
+			measure := func(opts ...o11yhttp.Option) writerCaps {
+				out := make(chan writerCaps, 1)
+				drive(t, o11yhttp.NewHandler(capsHandler(out), "caps", append([]o11yhttp.Option{o11yhttp.WithSDK(env.sdk)}, opts...)...))
+				return <-out
+			}
+			control := measure()
+			got := measure(o11yhttp.WithCanonicalLine())
+			if got != control {
+				t.Errorf("canonical line changed writer capabilities: got %+v, control %+v", got, control)
+			}
+		})
+	}
 }
