@@ -32,28 +32,3 @@ func TestPolicyUsesInjectedLookup(t *testing.T) {
 		t.Errorf("grouped injected secret not dropped: %v %v", a, act)
 	}
 }
-
-func TestPolicyKV(t *testing.T) {
-	secret := map[attribute.Key]spectables.Sensitivity{"test.secret": spectables.Secret}
-	hashing := newSensitivityPolicy(newSettings([]Option{
-		WithPIIMode(PIIHash), WithSensitivityForTest(secret),
-	}), nil)
-
-	if out, act := hashing.kv(spec.SignalTraces, attribute.String("test.secret", "x")); act != actionDrop || out.Valid() {
-		t.Errorf("secret kv: %v %v, want an invalid KeyValue and drop", out, act)
-	}
-	out, act := hashing.kv(spec.SignalTraces, attribute.String("host.ip", "10.0.0.1"))
-	if act != actionRewrite || out.Key != "host.ip" || out.Value.AsString() != hashValue("10.0.0.1") {
-		t.Errorf("PII kv under PIIHash: %v %v, want the hash token and rewrite", out, act)
-	}
-	public := attribute.Int("http.response.status_code", 200)
-	if out, act := hashing.kv(spec.SignalLogs, public); act != actionKeep || out != public {
-		t.Errorf("public kv: %v %v, want it unchanged and keep", out, act)
-	}
-
-	allowing := newSensitivityPolicy(newSettings([]Option{WithPIIMode(PIIAllow)}), nil)
-	pii := attribute.String("host.ip", "10.0.0.1")
-	if out, act := allowing.kv(spec.SignalMetrics, pii); act != actionKeep || out != pii {
-		t.Errorf("PII kv under PIIAllow: %v %v, want it unchanged and keep", out, act)
-	}
-}

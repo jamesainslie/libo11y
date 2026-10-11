@@ -12,7 +12,8 @@ import (
 )
 
 // PIIMode selects how attributes the specification classifies as PII are
-// handled on the log pipeline.
+// handled on logs (every log sink) and on spans (span, event, and link
+// attributes at export). Later releases extend it to every signal.
 type PIIMode int
 
 const (

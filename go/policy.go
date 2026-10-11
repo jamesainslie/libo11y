@@ -21,9 +21,11 @@ const (
 )
 
 // sensitivityPolicy is the single enforcement point for the specification's
-// sensitivity classification. Every signal (log legs, the OTLP log
-// processor, spans, the resource, metrics) asks it what to do with a key, so
-// the signals cannot drift apart.
+// sensitivity classification. One policy is built per SDK; its consumers
+// today are the classifying slog legs (console, OTLP, and extra sinks) and the
+// span exporter wrapper (span, event, and link attributes). Further signals
+// are added as they are wired to it, so every signal asks the same policy
+// what to do with a key and the signals cannot drift apart.
 //
 // Classification is key-based, so a value logged under an entirely
 // unclassified key escapes this layer; that residual gap is inherent and is

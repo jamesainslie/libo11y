@@ -239,7 +239,9 @@ func WithAttrReplacer(replace AttrReplacer) Option {
 }
 
 // WithPIIMode selects how attributes the specification classifies as PII are
-// handled on the log pipeline. The default is [PIIHash].
+// handled on logs (every log sink) and on spans (span, event, and link
+// attributes at export). Later releases extend it to every signal. The
+// default is [PIIHash].
 func WithPIIMode(mode PIIMode) Option {
 	return func(s *settings) { s.piiMode = mode }
 }

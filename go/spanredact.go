@@ -10,15 +10,14 @@ import (
 	"github.com/jamesainslie/libo11y/go/spec"
 )
 
-// redactingExporter wraps inner so that span attributes the sensitivity policy
-// drops (secrets always, PII under [PIIDrop]) are stripped before the payload
-// leaves the process.
-// otel-go delivers an ended span to a SpanProcessor as an immutable
+// redactingExporter wraps inner so that span attributes are classified by the
+// SDK's [sensitivityPolicy] before the payload leaves the process: secrets are
+// always dropped, and PII is dropped, replaced by a token, or kept per the PII
+// mode. otel-go delivers an ended span to a SpanProcessor as an immutable
 // ReadOnlySpan, so the span leg of redaction cannot run at OnEnd; it must run
 // at the exporter boundary, which is the last point we control the payload.
-// Classification goes through the SDK's [sensitivityPolicy], which counts
-// every stripped attribute as an o11y.schema.violations event on the traces
-// signal.
+// The policy counts every dropped or rewritten attribute as an
+// o11y.schema.violations event on the traces signal.
 func redactingExporter(inner sdktrace.SpanExporter, policy *sensitivityPolicy) sdktrace.SpanExporter {
 	return &spanRedactor{inner: inner, policy: policy}
 }
@@ -28,14 +27,14 @@ type spanRedactor struct {
 	policy *sensitivityPolicy
 }
 
-// ExportSpans rebuilds each span with its policy-dropped attributes removed
+// ExportSpans rebuilds each span with the policy applied to its attributes
 // and delegates the batch to the wrapped exporter. Redaction covers the span's
 // own attributes plus the attributes on every span event and link, since a
 // secret can be attached through span.AddEvent or a link as readily as through
 // span.SetAttributes. Span attribute keys are already the flat dotted names the
 // classification table is keyed on, so no group joining is needed here. When no
 // span in the batch needs redacting the original slice is forwarded untouched,
-// so the common path (nothing dropped) allocates nothing.
+// so the common path (nothing dropped or rewritten) allocates nothing.
 func (s *spanRedactor) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpan) error {
 	var redacted []sdktrace.ReadOnlySpan
 	for i, span := range spans {
@@ -59,9 +58,9 @@ func (s *spanRedactor) Shutdown(ctx context.Context) error {
 	return s.inner.Shutdown(ctx)
 }
 
-// redact returns a ReadOnlySpan identical to span except that policy-dropped
-// attributes are absent from the span, its events, and its links. When nothing
-// needs stripping the original span is returned unchanged so the common path
+// redact returns a ReadOnlySpan identical to span except that the policy has
+// been applied to the attributes of the span, its events, and its links. When
+// nothing changes the original span is returned unchanged so the common path
 // allocates nothing.
 func (s *spanRedactor) redact(span sdktrace.ReadOnlySpan) sdktrace.ReadOnlySpan {
 	attrs, attrsChanged := s.filterAttrs(span.Attributes())
@@ -87,32 +86,34 @@ func (s *spanRedactor) redact(span sdktrace.ReadOnlySpan) sdktrace.ReadOnlySpan 
 	return stub.Snapshot()
 }
 
-// filterAttrs removes the attributes the policy drops; the policy counts each
-// as a violation. It reports whether anything was stripped; when nothing is
-// dropped the input slice is returned and changed is false, so no allocation
-// occurs. Every key is decided exactly once, so every violation is counted
-// once. Only drops are applied to spans for now; PII rewriting is not.
+// filterAttrs applies the sensitivity policy to attrs: kept attributes pass
+// through, dropped ones are removed, and rewritten ones are replaced by the
+// policy's token. The policy counts each drop or rewrite as a violation, and
+// every key is decided exactly once, so each violation is counted once. It
+// reports whether anything changed; when nothing does, the input slice is
+// returned and no allocation occurs.
 func (s *spanRedactor) filterAttrs(attrs []attribute.KeyValue) ([]attribute.KeyValue, bool) {
-	var kept []attribute.KeyValue
+	var out []attribute.KeyValue
 	for i, a := range attrs {
-		drop := s.policy.decide(spec.SignalTraces, a.Key) == actionDrop
-		switch {
-		case kept == nil && !drop:
-			// Nothing dropped yet: keep scanning without allocating.
-		case kept == nil:
-			kept = make([]attribute.KeyValue, i, len(attrs))
-			copy(kept, attrs[:i])
-		case !drop:
-			kept = append(kept, a)
+		res, act := s.policy.kv(spec.SignalTraces, a)
+		if out == nil {
+			if act == actionKeep {
+				continue // nothing changed yet: keep scanning without allocating
+			}
+			out = make([]attribute.KeyValue, i, len(attrs))
+			copy(out, attrs[:i])
+		}
+		if act != actionDrop {
+			out = append(out, res)
 		}
 	}
-	if kept == nil {
+	if out == nil {
 		return attrs, false
 	}
-	return kept, true
+	return out, true
 }
 
-// filterEvents strips policy-dropped attributes from each span event. The
+// filterEvents applies the policy to each span event's attributes. The
 // events slice is copied only when at least one event actually changes.
 func (s *spanRedactor) filterEvents(events []sdktrace.Event) ([]sdktrace.Event, bool) {
 	var out []sdktrace.Event
@@ -133,7 +134,7 @@ func (s *spanRedactor) filterEvents(events []sdktrace.Event) ([]sdktrace.Event, 
 	return out, true
 }
 
-// filterLinks strips policy-dropped attributes from each span link. The links
+// filterLinks applies the policy to each span link's attributes. The links
 // slice is copied only when at least one link actually changes.
 func (s *spanRedactor) filterLinks(links []sdktrace.Link) ([]sdktrace.Link, bool) {
 	var out []sdktrace.Link

@@ -6,10 +6,13 @@ import (
 	"testing"
 
 	"go.opentelemetry.io/otel/attribute"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/jamesainslie/libo11y/go/internal/spectables"
+	"github.com/jamesainslie/libo11y/go/spec"
 )
 
 // captureExporter records the spans handed to it so a test can inspect the
@@ -146,5 +149,135 @@ func TestRedactingExporterStripsSecretFromEventsAndLinks(t *testing.T) {
 	}
 	if !linkPublic {
 		t.Errorf("non-secret span link attribute was dropped")
+	}
+}
+
+// exportOnePIISpan runs one span through redactingExporter with policy. The
+// span carries the PII attribute host.ip on itself, on one event, and on one
+// link, each next to a public attribute.
+func exportOnePIISpan(t *testing.T, policy *sensitivityPolicy) sdktrace.ReadOnlySpan {
+	t.Helper()
+	stub := &captureExporter{}
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(redactingExporter(stub, policy))),
+	)
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+
+	linked := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID: trace.TraceID{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10},
+		SpanID:  trace.SpanID{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08},
+	})
+	pii := attribute.String("host.ip", "10.0.0.1")
+	public := attribute.String("service.name", "checkout")
+	_, span := tp.Tracer("test").Start(context.Background(), "op",
+		trace.WithLinks(trace.Link{SpanContext: linked, Attributes: []attribute.KeyValue{pii, public}}),
+	)
+	span.SetAttributes(pii, public)
+	span.AddEvent("evt", trace.WithAttributes(pii, public))
+	span.End()
+
+	spans := stub.captured()
+	if len(spans) != 1 {
+		t.Fatalf("captured %d spans, want 1", len(spans))
+	}
+	return spans[0]
+}
+
+// spanAttrSets returns the span's own, first event's, and first link's
+// attribute sets, labelled for error messages.
+func spanAttrSets(t *testing.T, span sdktrace.ReadOnlySpan) map[string][]attribute.KeyValue {
+	t.Helper()
+	if len(span.Events()) != 1 || len(span.Links()) != 1 {
+		t.Fatalf("got %d events and %d links, want 1 each", len(span.Events()), len(span.Links()))
+	}
+	return map[string][]attribute.KeyValue{
+		"span":  span.Attributes(),
+		"event": span.Events()[0].Attributes,
+		"link":  span.Links()[0].Attributes,
+	}
+}
+
+func lookupAttr(attrs []attribute.KeyValue, key attribute.Key) (attribute.Value, bool) {
+	for _, a := range attrs {
+		if a.Key == key {
+			return a.Value, true
+		}
+	}
+	return attribute.Value{}, false
+}
+
+func TestRedactingExporterAppliesPIIMode(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		mode    PIIMode
+		present bool
+		want    string
+	}{
+		{name: "drop", mode: PIIDrop, present: false},
+		{name: "allow", mode: PIIAllow, present: true, want: "10.0.0.1"},
+		{name: "hash", mode: PIIHash, present: true, want: hashValue("10.0.0.1")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			policy := newSensitivityPolicy(newSettings([]Option{WithPIIMode(tc.mode)}), nil)
+			for where, attrs := range spanAttrSets(t, exportOnePIISpan(t, policy)) {
+				got, ok := lookupAttr(attrs, "host.ip")
+				if ok != tc.present {
+					t.Errorf("%s: host.ip present = %v, want %v (attrs %v)", where, ok, tc.present, attrs)
+				}
+				if ok && got.AsString() != tc.want {
+					t.Errorf("%s: host.ip = %q, want %q", where, got.AsString(), tc.want)
+				}
+				if v, ok := lookupAttr(attrs, "service.name"); !ok || v.AsString() != "checkout" {
+					t.Errorf("%s: public service.name lost or changed: %v", where, attrs)
+				}
+			}
+		})
+	}
+}
+
+func TestRedactingExporterCountsOneViolationPerPIIAttribute(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
+	policy := newSensitivityPolicy(newSettings([]Option{WithPIIMode(PIIHash)}), newViolationRecorder(mp))
+
+	stub := &captureExporter{}
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(redactingExporter(stub, policy))),
+	)
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	_, span := tp.Tracer("test").Start(context.Background(), "op")
+	span.SetAttributes(attribute.String("host.ip", "10.0.0.1"), attribute.String("service.name", "checkout"))
+	span.End()
+
+	var data metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &data); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	var points []metricdata.DataPoint[int64]
+	for _, scope := range data.ScopeMetrics {
+		for _, m := range scope.Metrics {
+			if m.Name != "o11y.schema.violations" {
+				continue
+			}
+			sum, ok := m.Data.(metricdata.Sum[int64])
+			if !ok {
+				t.Fatalf("o11y.schema.violations data is %T, want Sum[int64]", m.Data)
+			}
+			points = append(points, sum.DataPoints...)
+		}
+	}
+	if len(points) != 1 {
+		t.Fatalf("got %d violation points, want 1: %+v", len(points), points)
+	}
+	p := points[0]
+	if v, _ := p.Attributes.Value(spec.SignalKey); v.AsString() != string(spec.SignalTraces) {
+		t.Errorf("signal = %q, want traces", v.AsString())
+	}
+	if v, _ := p.Attributes.Value(spec.RuleKey); v.AsString() != "pii_attribute" {
+		t.Errorf("rule = %q, want pii_attribute", v.AsString())
+	}
+	if p.Value != 1 {
+		t.Errorf("violation count = %d, want 1", p.Value)
 	}
 }
