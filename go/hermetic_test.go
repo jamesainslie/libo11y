@@ -5,7 +5,12 @@ import (
 	"strings"
 	"testing"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	o11y "github.com/jamesainslie/libo11y/go"
 	"github.com/jamesainslie/libo11y/go/spec"
@@ -48,6 +53,73 @@ func TestWithoutOTELEnvDisablesLogExportWithoutExporter(t *testing.T) {
 	t.Cleanup(func() { _ = sdk.Shutdown(context.Background()) })
 	if _, ok := sdk.LoggerProvider().(*sdklog.LoggerProvider); ok {
 		t.Error("LoggerProvider is an SDK provider; want the no-op provider when no log exporter is injected")
+	}
+}
+
+// WithoutOTELEnv's own sampler, exemplar-filter, and cardinality pins, with no
+// sampler or filter option to hide them.
+func TestWithoutOTELEnvPinsSamplerExemplarFilterAndCardinality(t *testing.T) {
+	t.Setenv("OTEL_TRACES_SAMPLER", "always_off")
+	t.Setenv("OTEL_METRICS_EXEMPLAR_FILTER", "always_off")
+	t.Setenv("OTEL_GO_X_CARDINALITY_LIMIT", "1")
+	spans := tracetest.NewSpanRecorder()
+	reader := sdkmetric.NewManualReader()
+	sdk, err := o11y.New(context.Background(),
+		o11y.WithServiceName("hermetic"), o11y.WithEnvironment(spec.EnvironmentTest),
+		o11y.WithoutOTELEnv(), o11y.WithoutConsoleLog(), o11y.WithoutRuntimeMetrics(),
+		o11y.WithSpanProcessor(spans), o11y.WithMetricReader(reader))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = sdk.Shutdown(context.Background()) })
+
+	meter := sdk.MeterProvider().Meter("t")
+	hist, err := meter.Float64Histogram("h")
+	if err != nil {
+		t.Fatal(err)
+	}
+	counter, err := meter.Int64Counter("c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, span := sdk.TracerProvider().Tracer("t").Start(context.Background(), "op")
+	hist.Record(ctx, 1.5)
+	for _, set := range []string{"a", "b", "c"} {
+		counter.Add(ctx, 1, metric.WithAttributes(attribute.String("set", set)))
+	}
+	span.End()
+
+	if n := len(spans.Ended()); n != 1 {
+		t.Errorf("recorded %d spans, want 1 (ambient OTEL_TRACES_SAMPLER leaked in)", n)
+	}
+
+	var data metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &data); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	var exemplars, points int
+	for _, scope := range data.ScopeMetrics {
+		for _, m := range scope.Metrics {
+			switch agg := m.Data.(type) {
+			case metricdata.Histogram[float64]:
+				for _, dp := range agg.DataPoints {
+					exemplars += len(dp.Exemplars)
+				}
+			case metricdata.Sum[int64]:
+				for _, dp := range agg.DataPoints {
+					if v, ok := dp.Attributes.Value("otel.metric.overflow"); ok && v.AsBool() {
+						t.Errorf("counter produced an overflow series (ambient OTEL_GO_X_CARDINALITY_LIMIT leaked in)")
+					}
+					points++
+				}
+			}
+		}
+	}
+	if exemplars == 0 {
+		t.Error("histogram recorded inside a sampled span has no exemplar (ambient OTEL_METRICS_EXEMPLAR_FILTER leaked in)")
+	}
+	if points != 3 {
+		t.Errorf("counter has %d data points, want 3 (ambient OTEL_GO_X_CARDINALITY_LIMIT leaked in)", points)
 	}
 }
 
