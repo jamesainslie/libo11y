@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -774,6 +775,63 @@ func TestTextLeafFailsClosedOnFuncAndChanComponents(t *testing.T) {
 	for _, raw := range []string{"raw-func-tok", "raw-chan-tok"} {
 		if strings.Contains(out, raw) {
 			t.Errorf("value reached through a func or chan leaked %q: %s", raw, out)
+		}
+	}
+}
+
+type taggedErr struct {
+	Token string `o11y:"secret"`
+}
+
+func (e taggedErr) Error() string { return "auth failed: " + e.Token }
+
+type errValuer struct{ err error }
+
+func (e errValuer) LogValue() slog.Value { return slog.AnyValue(e.err) }
+
+func TestStructRendersErrors(t *testing.T) {
+	wrapped := func() error { return fmt.Errorf("db: %w", errors.New("conn refused")) }
+	type holder struct {
+		Wrapped  error
+		Plain    error
+		Joined   error
+		Masked   error `o11y:"mask"`
+		Nil      error
+		Valuer   errValuer
+		Tagged   error
+		WrapTag  error
+		ValTag   errValuer
+		JoinTag  error
+		NilValue error
+	}
+	out := logJSONString(t, "v", redact.Struct(holder{
+		Wrapped: wrapped(),
+		Plain:   errors.New("conn refused"),
+		Joined:  errors.Join(errors.New("a"), errors.New("b")),
+		Masked:  wrapped(),
+		Valuer:  errValuer{err: wrapped()},
+		Tagged:  taggedErr{Token: "raw-err-tok-1"},
+		WrapTag: fmt.Errorf("ctx: %w", taggedErr{Token: "raw-err-tok-2"}),
+		ValTag:  errValuer{err: fmt.Errorf("ctx: %w", taggedErr{Token: "raw-err-tok-3"})},
+		JoinTag: errors.Join(errors.New("ok"), taggedErr{Token: "raw-err-tok-4"}),
+	}))
+	if strings.Contains(out, "raw-err-tok") {
+		t.Errorf("tagged error leaked: %s", out)
+	}
+	for _, want := range []string{
+		`"Wrapped":"db: conn refused"`,
+		`"Plain":"conn refused"`,
+		`"Joined":"a\nb"`,
+		`"Masked":"XXXXXXXXXXXXXXXX"`,
+		`"Nil":null`,
+		`"Valuer":"db: conn refused"`,
+		`"Tagged":"REDACTED"`,
+		`"WrapTag":"REDACTED"`,
+		`"ValTag":"REDACTED"`,
+		`"JoinTag":"REDACTED"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %s in %s", want, out)
 		}
 	}
 }

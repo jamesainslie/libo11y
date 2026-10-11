@@ -255,6 +255,9 @@ func protectValue(v reflect.Value, floor protection, depth int) slog.Value {
 		if valuer, ok := v.Interface().(slog.LogValuer); ok {
 			return resolveProtected(valuer, floor, depth)
 		}
+		if rendered, ok := errorValue(v, floor); ok {
+			return rendered
+		}
 		v = v.Elem()
 		depth++
 	}
@@ -268,6 +271,9 @@ func protectValue(v reflect.Value, floor protection, depth int) slog.Value {
 		if valuer, ok := v.Interface().(slog.LogValuer); ok {
 			return resolveProtected(valuer, floor, depth)
 		}
+	}
+	if rendered, ok := errorValue(v, floor); ok {
+		return rendered
 	}
 	if text, ok := leafText(v); ok {
 		if floor == mask && text != Redacted {
@@ -405,7 +411,127 @@ func leafText(v reflect.Value) (text string, ok bool) {
 	return "", false
 }
 
-var protectionScanCache sync.Map // reflect.Type -> bool
+var errorType = reflect.TypeFor[error]()
+
+// maxErrorNodes bounds how many values errorIsClean visits for one error,
+// so a pathological error graph fails closed instead of running long.
+const maxErrorNodes = 256
+
+// errorValue renders v as its Error() text when v's type implements error:
+// unchanged under passthrough, masked under a mask floor. When anything
+// reachable from the error could carry protection, the whole error renders
+// REDACTED, because Error() may fold that content into its text.
+func errorValue(v reflect.Value, floor protection) (slog.Value, bool) {
+	if !v.IsValid() || !v.CanInterface() || !v.Type().Implements(errorType) {
+		return slog.Value{}, false
+	}
+	err, ok := v.Interface().(error)
+	if !ok || err == nil {
+		return slog.Value{}, false
+	}
+	text := errorText(err)
+	if floor == mask && text != Redacted {
+		text = maskString(text)
+	}
+	return slog.StringValue(text), true
+}
+
+// errorText returns err.Error() when the error is clean, and REDACTED when
+// it is not or when Error or Unwrap panics.
+func errorText(err error) (text string) {
+	defer func() {
+		if recover() != nil {
+			text = Redacted // fail closed on a panicking method
+		}
+	}()
+	budget := maxErrorNodes
+	if !errorIsClean(reflect.ValueOf(err), &budget, 0) {
+		return Redacted
+	}
+	return err.Error()
+}
+
+// errorIsClean reports whether nothing reachable from an error value could
+// carry protection. Types are checked with [mayCarryProtection], except that
+// interface components whose static type is error are not failed outright:
+// their dynamic values are visited instead, as are the errors returned by
+// Unwrap() error and Unwrap() []error. This covers wrapping errors whether or
+// not they expose their causes through Unwrap.
+func errorIsClean(v reflect.Value, budget *int, depth int) bool {
+	*budget--
+	if *budget < 0 || depth > maxDepth {
+		return false
+	}
+	if !v.IsValid() {
+		return true
+	}
+	switch v.Kind() {
+	case reflect.Interface:
+		return v.IsNil() || errorIsClean(v.Elem(), budget, depth+1)
+	case reflect.Pointer:
+		if v.IsNil() {
+			return true
+		}
+	}
+	t := v.Type()
+	if !mayCarryProtection(t) {
+		return true // no tags and no dynamic content anywhere in the type
+	}
+	if errorScanMayCarryProtection(t) {
+		return false // something other than an error interface may carry protection
+	}
+	// Only error-typed interfaces remain: visit their dynamic values.
+	if v.CanInterface() {
+		switch u := v.Interface().(type) {
+		case interface{ Unwrap() error }:
+			if !errorIsClean(reflect.ValueOf(u.Unwrap()), budget, depth+1) {
+				return false
+			}
+		case interface{ Unwrap() []error }:
+			for _, inner := range u.Unwrap() {
+				if !errorIsClean(reflect.ValueOf(inner), budget, depth+1) {
+					return false
+				}
+			}
+		}
+	}
+	switch v.Kind() {
+	case reflect.Pointer:
+		return errorIsClean(v.Elem(), budget, depth+1)
+	case reflect.Struct:
+		for i := range v.NumField() {
+			if !errorIsClean(v.Field(i), budget, depth+1) {
+				return false
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		for i := range v.Len() {
+			if !errorIsClean(v.Index(i), budget, depth+1) {
+				return false
+			}
+		}
+	case reflect.Map:
+		iter := v.MapRange()
+		for iter.Next() {
+			if !errorIsClean(iter.Key(), budget, depth+1) || !errorIsClean(iter.Value(), budget, depth+1) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+var (
+	protectionScanCache sync.Map // reflect.Type -> bool
+	errorScanCache      sync.Map // reflect.Type -> bool
+)
+
+// errorScanMayCarryProtection is [mayCarryProtection] except that interface
+// components whose static type is exactly error are treated as clean;
+// errorIsClean visits their dynamic values instead.
+func errorScanMayCarryProtection(t reflect.Type) bool {
+	return cachedScan(&errorScanCache, t, true)
+}
 
 // mayCarryProtection reports whether a value of type t could hold anything
 // that Struct must protect: an o11y-tagged field at any depth (exported,
@@ -416,22 +542,27 @@ var protectionScanCache sync.Map // reflect.Type -> bool
 // are cached per type; recursive types terminate, and scans deeper than
 // maxDepth fail closed.
 func mayCarryProtection(t reflect.Type) bool {
+	return cachedScan(&protectionScanCache, t, false)
+}
+
+func cachedScan(cache *sync.Map, t reflect.Type, errorsClean bool) bool {
 	if t == nil {
 		return false
 	}
-	if cached, ok := protectionScanCache.Load(t); ok {
+	if cached, ok := cache.Load(t); ok {
 		return cached.(bool) // cache only ever holds bool
 	}
-	result := scanProtection(t, make(map[reflect.Type]bool), 0)
-	protectionScanCache.Store(t, result)
+	result := scanProtection(t, make(map[reflect.Type]bool), 0, errorsClean)
+	cache.Store(t, result)
 	return result
 }
 
 // scanProtection is the depth-first scan behind mayCarryProtection. A true
 // result short-circuits to the root, so a type already in seen is either on
 // the current path (a cycle, which adds nothing new) or fully scanned and
-// found clean; either way it contributes false.
-func scanProtection(t reflect.Type, seen map[reflect.Type]bool, depth int) bool {
+// found clean; either way it contributes false. With errorsClean set,
+// interface components of static type error count as clean.
+func scanProtection(t reflect.Type, seen map[reflect.Type]bool, depth int, errorsClean bool) bool {
 	if depth > maxDepth {
 		return true
 	}
@@ -443,21 +574,25 @@ func scanProtection(t reflect.Type, seen map[reflect.Type]bool, depth int) bool 
 		return true
 	}
 	switch t.Kind() {
-	case reflect.Interface, reflect.Func, reflect.Chan, reflect.UnsafePointer:
-		// Dynamic content: what an interface holds, a func returns, a chan
-		// delivers, or an unsafe pointer addresses is unknown until run time.
+	case reflect.Interface:
+		// What an interface holds is unknown until run time.
+		return !errorsClean || t != errorType
+	case reflect.Func, reflect.Chan, reflect.UnsafePointer:
+		// Dynamic content: what a func returns, a chan delivers, or an
+		// unsafe pointer addresses is unknown until run time.
 		return true
 	case reflect.Pointer, reflect.Slice, reflect.Array:
-		return scanProtection(t.Elem(), seen, depth+1)
+		return scanProtection(t.Elem(), seen, depth+1, errorsClean)
 	case reflect.Map:
-		return scanProtection(t.Key(), seen, depth+1) || scanProtection(t.Elem(), seen, depth+1)
+		return scanProtection(t.Key(), seen, depth+1, errorsClean) ||
+			scanProtection(t.Elem(), seen, depth+1, errorsClean)
 	case reflect.Struct:
 		for i := range t.NumField() {
 			field := t.Field(i)
 			if _, tagged := field.Tag.Lookup(TagKey); tagged {
 				return true
 			}
-			if scanProtection(field.Type, seen, depth+1) {
+			if scanProtection(field.Type, seen, depth+1, errorsClean) {
 				return true
 			}
 		}
