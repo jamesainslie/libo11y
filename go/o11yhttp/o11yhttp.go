@@ -150,14 +150,20 @@ func (c *config) wrapCanonical(next http.Handler) http.Handler {
 	if c.sdk == nil {
 		return next // no SDK to emit through; canonical line is a no-op
 	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return http.HandlerFunc(func(w http.ResponseWriter, outer *http.Request) {
 		start := time.Now()
-		ctx, record := o11y.StartRecord(r.Context())
-		r = r.WithContext(ctx)
+		ctx, record := o11y.StartRecord(outer.Context())
+		r := outer.WithContext(ctx)
 		sr := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 
 		panicked := false
 		defer func() {
+			// ServeMux records the matched pattern on the request it
+			// receives, which is our clone. The enclosing otelhttp handler
+			// names the span and labels its metrics from its own request,
+			// so copy the pattern back before it looks.
+			outer.Pattern = r.Pattern
+
 			// A panic unwinds through here before the connection-level
 			// recovery in http.Server; stamp the request as failed so the
 			// canonical line does not misreport it as a 200 success, then

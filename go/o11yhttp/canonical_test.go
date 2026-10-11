@@ -1,0 +1,159 @@
+package o11yhttp_test
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"go.opentelemetry.io/otel/attribute"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+
+	o11y "github.com/jamesainslie/libo11y/go"
+	"github.com/jamesainslie/libo11y/go/o11yhttp"
+	"github.com/jamesainslie/libo11y/go/spec"
+)
+
+type canonicalEnv struct {
+	sdk     *o11y.SDK
+	spans   *tracetest.SpanRecorder
+	reader  *sdkmetric.ManualReader
+	records func() []map[string]any
+}
+
+func newCanonicalEnv(t *testing.T) canonicalEnv {
+	t.Helper()
+	capture, snapshot := newCapture()
+	spans := tracetest.NewSpanRecorder()
+	reader := sdkmetric.NewManualReader()
+	sdk, err := o11y.New(context.Background(),
+		o11y.WithServiceName("canonical-test"),
+		o11y.WithEnvironment(spec.EnvironmentTest),
+		o11y.WithSpanProcessor(spans),
+		o11y.WithMetricReader(reader),
+		o11y.WithoutLogExport(),
+		o11y.WithoutRuntimeMetrics(),
+		o11y.WithoutConsoleLog(),
+		o11y.WithExtraLogHandler(capture),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = sdk.Shutdown(context.Background()) })
+	return canonicalEnv{sdk: sdk, spans: spans, reader: reader, records: snapshot}
+}
+
+func (e canonicalEnv) summaries() []map[string]any {
+	var out []map[string]any
+	for _, r := range e.records() {
+		if r[spec.EventNameKey] == spec.EventRequestSummary {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// durationRoutes returns the http.route values on the server duration histogram.
+func (e canonicalEnv) durationRoutes(t *testing.T) []string {
+	t.Helper()
+	var data metricdata.ResourceMetrics
+	if err := e.reader.Collect(context.Background(), &data); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	var routes []string
+	for _, sm := range data.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != "http.server.request.duration" {
+				continue
+			}
+			hist, ok := m.Data.(metricdata.Histogram[float64])
+			if !ok {
+				t.Fatalf("duration metric is %T", m.Data)
+			}
+			for _, dp := range hist.DataPoints {
+				if v, ok := dp.Attributes.Value(attribute.Key("http.route")); ok {
+					routes = append(routes, v.AsString())
+				}
+			}
+		}
+	}
+	return routes
+}
+
+func TestCanonicalLinePreservesRouteNaming(t *testing.T) {
+	builders := map[string]func(http.Handler, ...o11yhttp.Option) http.Handler{
+		"NewHandler": func(h http.Handler, opts ...o11yhttp.Option) http.Handler {
+			return o11yhttp.NewHandler(h, "users", opts...)
+		},
+		"NewMiddleware": func(h http.Handler, opts ...o11yhttp.Option) http.Handler {
+			return o11yhttp.NewMiddleware("users", opts...)(h)
+		},
+	}
+	formatters := map[string]struct {
+		opts []o11yhttp.Option
+		want string
+	}{
+		"default": {nil, "GET /users/{id}"},
+		"custom": {[]o11yhttp.Option{o11yhttp.WithSpanNameFormatter(func(op string, r *http.Request) string {
+			return op + " " + r.Pattern
+		})}, "users GET /users/{id}"},
+	}
+	const parentTrace = "4bf92f3577b34da6a3ce929d0e0e4736"
+	for bname, build := range builders {
+		for fname, f := range formatters {
+			t.Run(bname+"/"+fname, func(t *testing.T) {
+				t.Parallel()
+				run := func(canonical bool) canonicalEnv {
+					env := newCanonicalEnv(t)
+					mux := http.NewServeMux()
+					mux.HandleFunc("GET /users/{id}", func(w http.ResponseWriter, _ *http.Request) {
+						w.WriteHeader(http.StatusOK)
+					})
+					opts := append([]o11yhttp.Option{o11yhttp.WithSDK(env.sdk)}, f.opts...)
+					if canonical {
+						opts = append(opts, o11yhttp.WithCanonicalLine())
+					}
+					req := httptest.NewRequest(http.MethodGet, "/users/42", nil)
+					req.Header.Set("traceparent", "00-"+parentTrace+"-00f067aa0ba902b7-01")
+					build(mux, opts...).ServeHTTP(httptest.NewRecorder(), req)
+					return env
+				}
+				control, got := run(false), run(true)
+
+				gotSpans, controlSpans := got.spans.Ended(), control.spans.Ended()
+				if len(gotSpans) != 1 || len(controlSpans) != 1 {
+					t.Fatalf("spans: canonical %d, control %d; want 1 each", len(gotSpans), len(controlSpans))
+				}
+				if name := gotSpans[0].Name(); name != f.want || name != controlSpans[0].Name() {
+					t.Errorf("span name = %q, control %q, want %q", name, controlSpans[0].Name(), f.want)
+				}
+				if tid := gotSpans[0].Parent().TraceID().String(); tid != parentTrace {
+					t.Errorf("parent trace = %s, want %s (propagation broken)", tid, parentTrace)
+				}
+				if _, ok := attrValue(controlSpans[0].Attributes(), "http.route"); ok {
+					if v, _ := attrValue(gotSpans[0].Attributes(), "http.route"); v != "/users/{id}" {
+						t.Errorf("span http.route = %q, want /users/{id}", v)
+					}
+				}
+				if routes := got.durationRoutes(t); len(routes) != 1 || routes[0] != "/users/{id}" {
+					t.Errorf("duration metric routes = %v, want [/users/{id}]", routes)
+				}
+				s := got.summaries()
+				if len(s) != 1 || s[0]["http.route"] != "/users/{id}" {
+					t.Errorf("summary = %v, want http.route /users/{id}", s)
+				}
+			})
+		}
+	}
+}
+
+func attrValue(attrs []attribute.KeyValue, key string) (string, bool) {
+	for _, a := range attrs {
+		if string(a.Key) == key {
+			return a.Value.String(), true
+		}
+	}
+	return "", false
+}
