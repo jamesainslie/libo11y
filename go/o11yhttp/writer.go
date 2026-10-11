@@ -16,11 +16,21 @@ type statusTracker struct {
 	hijacked bool
 }
 
+// observeHeader records the first final status. net/http sends 1xx
+// informational headers immediately and still accepts a final status
+// afterwards, except 101 Switching Protocols, which is final.
 func (s *statusTracker) observeHeader(code int) {
-	if s.status == 0 && !s.hijacked {
-		s.status = code
+	if s.status != 0 || s.hijacked {
+		return // already committed: net/http ignores superfluous WriteHeader
 	}
+	if code >= 100 && code < 200 && code != http.StatusSwitchingProtocols {
+		return
+	}
+	s.status = code
 }
+
+// committed reports whether a final status reached the client.
+func (s *statusTracker) committed() bool { return s.status != 0 }
 
 func (s *statusTracker) observeWrite() {
 	if s.status == 0 && !s.hijacked {
@@ -33,6 +43,11 @@ func (s *statusTracker) observeHijack() { s.hijacked = true }
 // final returns the committed status, defaulting to 200 when the handler
 // never wrote (net/http sends 200 in that case).
 func (s *statusTracker) final() int {
+	if s.hijacked && s.status == 0 {
+		// A hijacking handler has taken over the protocol; net/http never
+		// sends a status of its own on a hijacked connection.
+		return http.StatusSwitchingProtocols
+	}
 	if s.status == 0 {
 		return http.StatusOK
 	}

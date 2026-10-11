@@ -148,13 +148,16 @@ func (c *config) wrapCanonical(next http.Handler) http.Handler {
 
 			// A panic unwinds through here before the connection-level
 			// recovery in http.Server; stamp the request as failed so the
-			// canonical line does not misreport it as a 200 success, then
-			// let the panic keep propagating.
+			// canonical line does not misreport it as a success, then let
+			// the panic keep propagating. A status already committed is
+			// what the client received, so it stands; otherwise report 500.
 			p := recover()
 			status := st.final()
 			if p != nil {
 				panicked = true
-				status = http.StatusInternalServerError
+				if !st.committed() {
+					status = http.StatusInternalServerError
+				}
 			}
 
 			outcome := spec.OutcomeSuccess
