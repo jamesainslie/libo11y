@@ -9,10 +9,12 @@ import (
 	"github.com/felixge/httpsnoop"
 )
 
-// statusTracker records the response status the client actually receives.
-// It is written only from the goroutine serving the request.
+// statusTracker records the final response status the handler committed.
+// That is the status net/http sends, though a failed connection can still
+// keep it from reaching the client. It inherits the ResponseWriter
+// contract: no concurrent use, no use after ServeHTTP returns.
 type statusTracker struct {
-	status   int // first committed final status; 0 until committed
+	status   int // first final status the handler committed; 0 until then
 	hijacked bool
 }
 

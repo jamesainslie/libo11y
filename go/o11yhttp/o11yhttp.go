@@ -44,6 +44,8 @@ func WithSDK(sdk *o11y.SDK) Option {
 
 // WithFilter adds a predicate; requests for which it returns false are not
 // traced or measured. All filters must pass for a request to be recorded.
+// A filter may run more than once per request, so it must be deterministic
+// and free of side effects.
 func WithFilter(allow func(*http.Request) bool) Option {
 	return func(c *config) { c.filters = append(c.filters, otelhttp.Filter(allow)) }
 }
@@ -90,7 +92,9 @@ func WithSpanNameFormatter(format func(operation string, r *http.Request) string
 }
 
 // NewHandler instruments an http.Handler. The operation name seeds span
-// names for requests that match no route pattern.
+// names for requests that match no route pattern. A panic in the handler,
+// including http.ErrAbortHandler, marks the server span Error and keeps
+// propagating.
 func NewHandler(handler http.Handler, operation string, opts ...Option) http.Handler {
 	cfg := newConfig(opts)
 	if cfg.canonicalLine {
@@ -101,7 +105,9 @@ func NewHandler(handler http.Handler, operation string, opts ...Option) http.Han
 }
 
 // NewMiddleware returns server instrumentation in middleware form, for
-// routers that compose func(http.Handler) http.Handler chains.
+// routers that compose func(http.Handler) http.Handler chains. As with
+// [NewHandler], a panic, including http.ErrAbortHandler, marks the server
+// span Error and keeps propagating.
 func NewMiddleware(operation string, opts ...Option) func(http.Handler) http.Handler {
 	cfg := newConfig(opts)
 	otel := otelhttp.NewMiddleware(operation, cfg.serverOptions()...)
@@ -193,8 +199,9 @@ func (c *config) wrapCanonical(next http.Handler) http.Handler {
 			// A panic unwinds through here before the connection-level
 			// recovery in http.Server; stamp the request as failed so the
 			// canonical line does not misreport it as a success, then let
-			// the panic keep propagating. A status already committed is
-			// what the client received, so it stands; otherwise report 500.
+			// the panic keep propagating. A status the handler already
+			// committed (or a hijack) stands, because net/http can no longer
+			// replace it; otherwise report 500.
 			p := recover()
 			status := st.final()
 			if p != nil {
@@ -281,7 +288,10 @@ func defaultSpanName(operation string, r *http.Request) string {
 	}
 	if r.Pattern != "" {
 		if strings.Contains(r.Pattern, " ") {
-			return r.Pattern // registered with a method, so the method is known
+			// Registered with a method. ServeMux accepts any method token
+			// there, so it may be nonstandard, but cardinality stays bounded
+			// by the registered patterns.
+			return r.Pattern
 		}
 		return method + " " + r.Pattern
 	}
