@@ -3,6 +3,7 @@ package o11y
 import (
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -139,9 +140,21 @@ func (p *sensitivityPolicy) kv(signal spec.Signal, kv attribute.KeyValue) (attri
 // form: scalars as their strconv text (floats in the shortest 'g' form) and
 // slices as a JSON array of the elements' canonical strings, for example
 // ["10.0.0.1","10.0.0.2"] and ["1","2"]. Byte slices render as standard
-// base64 on both paths. Values with no counterpart on the other path (slog
+// base64 on both paths, and slog values with a text form (net.IP,
+// net.HardwareAddr, and other encoding.TextMarshaler or fmt.Stringer types)
+// render as that text. Values with no counterpart on the other path (slog
 // times, durations, and arbitrary types; attribute maps) fall back to their
 // own String rendering.
+//
+// The form deliberately does not encode the type, so values that render to
+// the same text share a token: the string "1", the integer 1, and the float
+// 1.0 all render as 1, a net.IP shares a token with its string form, and a
+// string that reads as a JSON array, such as ["1","2"], shares a token with
+// the slice it spells. The value, not its Go or OTel type, is what PII joins
+// on. Strings hash their
+// raw bytes when scalar, but inside a slice they pass through JSON encoding,
+// which replaces invalid UTF-8 with U+FFFD, so slice elements that differ
+// only in invalid bytes share a token.
 
 // canonicalAttr renders an attribute value in the canonical form.
 func canonicalAttr(v attribute.Value) string {
@@ -192,14 +205,27 @@ func canonicalSlog(v slog.Value) string {
 	}
 }
 
-// canonicalAny renders an arbitrary slog payload: byte slices as base64,
-// other slices and arrays as a canonical array of their elements, and
-// everything else through its slog value.
+// canonicalAny renders an arbitrary slog payload: plain byte slices as
+// base64; types with a text form (encoding.TextMarshaler, then fmt.Stringer)
+// as that text, so a net.IP or net.HardwareAddr matches the string a span
+// would carry for it; other slices and arrays as a canonical array of their
+// elements; and everything else through its slog value.
 func canonicalAny(x any) string {
 	if b, ok := x.([]byte); ok {
 		return base64.StdEncoding.EncodeToString(b)
 	}
 	rv := reflect.ValueOf(x)
+	if rv.Kind() == reflect.Pointer && rv.IsNil() {
+		return fmt.Sprint(x) // a nil pointer's methods may panic
+	}
+	if m, ok := x.(encoding.TextMarshaler); ok {
+		if text, err := m.MarshalText(); err == nil {
+			return string(text)
+		}
+	}
+	if s, ok := x.(fmt.Stringer); ok {
+		return s.String()
+	}
 	if rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array {
 		if v := slog.AnyValue(x); v.Kind() != slog.KindAny {
 			return canonicalSlog(v)

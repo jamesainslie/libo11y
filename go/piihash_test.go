@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"strings"
 	"testing"
 
@@ -123,6 +124,16 @@ func TestPIIHashSameTokenOnLogsAndSpans(t *testing.T) {
 			"bool slice",
 			slog.Any("host.ip", []bool{true, false}),
 			attribute.BoolSlice("host.ip", []bool{true, false}),
+		},
+		{
+			"net.IP",
+			slog.Any("host.ip", net.ParseIP("10.9.8.7")),
+			attribute.String("host.ip", net.ParseIP("10.9.8.7").String()),
+		},
+		{
+			"net.HardwareAddr",
+			slog.Any("host.ip", net.HardwareAddr{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff}),
+			attribute.String("host.ip", net.HardwareAddr{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff}.String()),
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
