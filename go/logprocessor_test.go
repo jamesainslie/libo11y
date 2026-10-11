@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"go.opentelemetry.io/contrib/bridges/otelslog"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
 	o11y "github.com/jamesainslie/libo11y/go"
@@ -39,9 +41,10 @@ func TestBridgeOnLoggerProviderIsClassified(t *testing.T) {
 	}
 }
 
-// Each classified attribute is counted once on the logs signal: a bridge
-// record by the processor, an own slog record by its leg's classifier and
-// not again by the processor.
+// Each classified attribute is counted once per sink on the logs signal: a
+// bridge record by the processor, an own slog record by its OTLP leg's
+// classifier and not again by the processor. The console is off here, so the
+// OTLP leg is the only sink.
 func TestLogProcessorCountsViolationsOnce(t *testing.T) {
 	t.Parallel()
 	exp := &memLogExporter{}
@@ -96,6 +99,42 @@ func TestBridgeMapUnderClassifiedKeyIsDropped(t *testing.T) {
 	}
 	if attrs["safe"] != "ok" {
 		t.Errorf("unclassified attribute lost: %v", attrs)
+	}
+}
+
+// Maps inside a slice are judged on their holder's key, as zap.Objects and
+// similar bridge encodings produce them, and an emptied element is removed.
+func TestBridgeSliceOfMapsIsClassified(t *testing.T) {
+	t.Parallel()
+	exp := &memLogExporter{}
+	sdk, _, _, _ := newHermetic(t, o11y.WithLogExporter(exp))
+	logger := sdk.LoggerProvider().Logger("thirdparty")
+	var rec log.Record
+	rec.SetBody(attribute.StringValue("m"))
+	rec.AddAttributes(attribute.KeyValue{Key: "host", Value: attribute.SliceValue(
+		attribute.MapValue(attribute.String("ip", "10.1.1.1"), attribute.String("name", "web-1")),
+		attribute.MapValue(attribute.String("ip", "10.1.1.2")),
+	)})
+	logger.Emit(context.Background(), rec)
+	if err := sdk.ForceFlush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got := exp.snapshot()[0]
+	var host attribute.Value
+	got.WalkAttributes(func(kv attribute.KeyValue) bool {
+		if kv.Key == "host" {
+			host = kv.Value
+		}
+		return true
+	})
+	if host.Type() != attribute.SLICE {
+		t.Fatalf("host = %v, want a slice", host)
+	}
+	if s := host.String(); strings.Contains(s, "10.1.1.") || !strings.Contains(s, "web-1") {
+		t.Errorf("host = %s, want the ips removed and the name kept", s)
+	}
+	if n := len(host.AsSlice()); n != 1 {
+		t.Errorf("host has %d elements, want 1 (the emptied map removed)", n)
 	}
 }
 

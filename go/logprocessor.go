@@ -2,7 +2,6 @@ package o11y
 
 import (
 	"context"
-	"slices"
 
 	"go.opentelemetry.io/otel/attribute"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
@@ -14,14 +13,16 @@ import (
 // SDK's LoggerProvider emits, whichever bridge produced it (otelslog,
 // otelzap, otellogr, and so on). It is registered before the batch
 // processor and runs synchronously; sdk/log documents that a processor's
-// synchronous changes to the record are visible to the next one. Map values
-// are walked so grouped attributes are judged on their dotted effective keys,
-// and a map under a classified key is judged as one value.
+// synchronous changes to the record are visible to the next one. Map values,
+// and maps inside slices, are walked so grouped attributes are judged on
+// their dotted effective keys; a value under a classified key is judged as
+// one value. The record body is not classified.
 //
 // Records from the SDK's own slog pipeline are skipped: that leg classifies
 // slog values before the bridge converts them (see [classifyingHandler]),
 // which keeps its tokens identical to the console's for values with a text
-// form such as net.IP, and classifying them again would hash a token.
+// form such as net.IP, and classifying them again would hash a token. That
+// leg treats a Go map logged as one slog value as opaque, like the console.
 type redactingLogProcessor struct {
 	policy *sensitivityPolicy
 }
@@ -33,8 +34,8 @@ func (redactingLogProcessor) Enabled(context.Context, sdklog.EnabledParameters) 
 
 // OnEmit drops or tokenizes classified attributes in place. A first pass
 // decides without recording whether anything is classified, so a record with
-// nothing to change is left untouched and costs no allocation beyond the
-// effective keys of grouped attributes.
+// nothing to change is left untouched; it allocates only when it walks map
+// or slice values (their member copies and nested effective keys).
 //
 // Rewriting the attributes resets the record's dropped-attribute count, which
 // sdk/log offers no way to preserve; it changes only when a classified
@@ -45,7 +46,7 @@ func (p redactingLogProcessor) OnEmit(ctx context.Context, r *sdklog.Record) err
 	}
 	needed := false
 	r.WalkAttributes(func(kv attribute.KeyValue) bool {
-		needed = p.needsClassification(nil, kv)
+		needed = p.needsClassification("", kv)
 		return !needed
 	})
 	if !needed {
@@ -53,7 +54,7 @@ func (p redactingLogProcessor) OnEmit(ctx context.Context, r *sdklog.Record) err
 	}
 	kept := make([]attribute.KeyValue, 0, r.AttributesLen())
 	r.WalkAttributes(func(kv attribute.KeyValue) bool {
-		if out, keep, _ := p.classify(nil, kv); keep {
+		if out, keep, _ := p.classify("", kv); keep {
 			kept = append(kept, out)
 		}
 		return true
@@ -62,56 +63,106 @@ func (p redactingLogProcessor) OnEmit(ctx context.Context, r *sdklog.Record) err
 	return nil
 }
 
+// nestedKey returns the effective dotted key of key under prefix, the
+// effective key of the map or slice that holds it ("" at the top level).
+func nestedKey(prefix string, key attribute.Key) string {
+	if prefix == "" {
+		return string(key)
+	}
+	return prefix + "." + string(key)
+}
+
 // needsClassification reports, without recording violations, whether kv or
 // any attribute nested in it is classified.
-func (p redactingLogProcessor) needsClassification(groups []string, kv attribute.KeyValue) bool {
-	if p.policy.classOf(attribute.Key(effectiveKey(groups, string(kv.Key)))) != actionKeep {
+func (p redactingLogProcessor) needsClassification(prefix string, kv attribute.KeyValue) bool {
+	key := nestedKey(prefix, kv.Key)
+	if p.policy.classOf(attribute.Key(key)) != actionKeep {
 		return true
 	}
-	if kv.Value.Type() != attribute.MAP {
-		return false
-	}
-	path := append(slices.Clone(groups), string(kv.Key))
-	for _, m := range kv.Value.AsMap() {
-		if p.needsClassification(path, m) {
-			return true
+	return p.valueNeedsClassification(key, kv.Value)
+}
+
+// valueNeedsClassification reports whether any attribute nested in v, a
+// value held under the effective key prefix, is classified. Map members are
+// judged on their dotted keys; slice elements share their holder's key.
+func (p redactingLogProcessor) valueNeedsClassification(prefix string, v attribute.Value) bool {
+	switch v.Type() {
+	case attribute.MAP:
+		for _, m := range v.AsMap() {
+			if p.needsClassification(prefix, m) {
+				return true
+			}
+		}
+	case attribute.SLICE:
+		for _, e := range v.AsSlice() {
+			if p.valueNeedsClassification(prefix, e) {
+				return true
+			}
 		}
 	}
 	return false
 }
 
-// classify applies the policy to kv at the given group path, recording a
-// violation for every attribute it drops or rewrites. A map under an
-// unclassified key is rebuilt from its classified members, and dropped when
-// none survive. Change tracking comes from the policy's action, never from
-// comparing values.
-func (p redactingLogProcessor) classify(groups []string, kv attribute.KeyValue) (out attribute.KeyValue, keep, changed bool) {
-	switch p.policy.decide(spec.SignalLogs, attribute.Key(effectiveKey(groups, string(kv.Key)))) {
+// classify applies the policy to kv under the effective key prefix,
+// recording a violation for every attribute it drops or rewrites. A value
+// under a classified key is judged whole; a map or slice under an
+// unclassified key is rebuilt from what survives classification of its
+// members, and dropped when nothing survives. Change tracking comes from the
+// policy's action, never from comparing values.
+func (p redactingLogProcessor) classify(prefix string, kv attribute.KeyValue) (out attribute.KeyValue, keep, changed bool) {
+	key := nestedKey(prefix, kv.Key)
+	switch p.policy.decide(spec.SignalLogs, attribute.Key(key)) {
 	case actionDrop:
 		return attribute.KeyValue{}, false, true
 	case actionRewrite:
 		return kv.Key.String(p.policy.token(canonicalAttr(kv.Value))), true, true
 	}
-	if kv.Value.Type() != attribute.MAP {
-		return kv, true, false
-	}
-	path := append(slices.Clone(groups), string(kv.Key))
-	members := kv.Value.AsMap()
-	kept := make([]attribute.KeyValue, 0, len(members))
-	for _, m := range members {
-		mo, mk, mc := p.classify(path, m)
-		changed = changed || mc
-		if mk {
-			kept = append(kept, mo)
-		}
-	}
+	v, keep, changed := p.classifyValue(key, kv.Value)
 	switch {
 	case !changed:
 		return kv, true, false
-	case len(kept) == 0:
+	case !keep:
 		return attribute.KeyValue{}, false, true
 	default:
-		return kv.Key.Map(kept...), true, true
+		return attribute.KeyValue{Key: kv.Key, Value: v}, true, true
+	}
+}
+
+// classifyValue classifies the attributes nested in v, a value held under
+// the effective key prefix. It reports whether anything changed and whether
+// the value survives: a map or slice emptied by classification is dropped.
+func (p redactingLogProcessor) classifyValue(prefix string, v attribute.Value) (out attribute.Value, keep, changed bool) {
+	switch v.Type() {
+	case attribute.MAP:
+		members := v.AsMap()
+		kept := make([]attribute.KeyValue, 0, len(members))
+		for _, m := range members {
+			mo, mk, mc := p.classify(prefix, m)
+			changed = changed || mc
+			if mk {
+				kept = append(kept, mo)
+			}
+		}
+		if !changed {
+			return v, true, false
+		}
+		return attribute.MapValue(kept...), len(kept) > 0, true
+	case attribute.SLICE:
+		elems := v.AsSlice()
+		kept := make([]attribute.Value, 0, len(elems))
+		for _, e := range elems {
+			eo, ek, ec := p.classifyValue(prefix, e)
+			changed = changed || ec
+			if ek {
+				kept = append(kept, eo)
+			}
+		}
+		if !changed {
+			return v, true, false
+		}
+		return attribute.SliceValue(kept...), len(kept) > 0, true
+	default:
+		return v, true, false
 	}
 }
 
