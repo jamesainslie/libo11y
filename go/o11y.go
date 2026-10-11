@@ -129,9 +129,7 @@ func newSDK(ctx context.Context, s *settings) (_ *SDK, err error) {
 	policy := newSensitivityPolicy(s, violations)
 	// The resource was classified before the violation counter existed.
 	for rule, n := range resourceViolations {
-		for range n {
-			violations.record(spec.SignalResource, rule)
-		}
+		violations.add(spec.SignalResource, rule, int64(n))
 	}
 
 	tracerProvider, err := buildTracerProvider(ctx, s, res, policy)

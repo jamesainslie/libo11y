@@ -46,14 +46,19 @@ func newViolationRecorder(mp metric.MeterProvider) *violationRecorder {
 }
 
 func (v *violationRecorder) record(signal spec.Signal, rule string) {
-	if v == nil {
+	v.add(signal, rule, 1)
+}
+
+// add counts n violations of rule on signal in one measurement.
+func (v *violationRecorder) add(signal spec.Signal, rule string, n int64) {
+	if v == nil || n <= 0 {
 		return
 	}
 	// A background context is deliberate: classification runs in slog
 	// handlers and in export-side processors, several of which (WithAttrs,
 	// the span exporter's batch) have no per-record context, and this
 	// fire-and-forget counter has no need for trace-exemplar linkage.
-	v.counter.Add(context.Background(), 1, metric.WithAttributes(
+	v.counter.Add(context.Background(), n, metric.WithAttributes(
 		spec.SignalValue(signal),
 		spec.Rule(rule),
 	))
