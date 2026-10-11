@@ -3,6 +3,7 @@ package o11y
 import (
 	"context"
 	"log/slog"
+	"slices"
 )
 
 // sinkMode identifies which log sink a per-leg classifier is guarding. It is
@@ -29,10 +30,11 @@ func classifyingHandler(inner slog.Handler, mode sinkMode, pii PIIMode, rec *vio
 }
 
 type classifier struct {
-	inner slog.Handler
-	mode  sinkMode
-	pii   PIIMode
-	rec   *violationRecorder
+	inner  slog.Handler
+	mode   sinkMode
+	pii    PIIMode
+	rec    *violationRecorder
+	groups []string
 }
 
 func (c *classifier) Enabled(ctx context.Context, level slog.Level) bool {
@@ -43,17 +45,15 @@ func (c *classifier) Handle(ctx context.Context, record slog.Record) error {
 	attrs := make([]slog.Attr, 0, record.NumAttrs())
 	changed := false
 	record.Attrs(func(a slog.Attr) bool {
-		out, keep, ch := c.classifyAttr(nil, a)
-		if ch {
-			changed = true
-		}
+		out, keep, ch := c.classifyAttr(c.groups, a)
+		changed = changed || ch
 		if keep {
 			attrs = append(attrs, out)
 		}
 		return true
 	})
 	// Nothing was dropped or rewritten: forward the original record so the
-	// common path (no secret/PII attribute present) adds no record rebuild.
+	// common path adds no record rebuild.
 	if !changed {
 		return c.inner.Handle(ctx, record)
 	}
@@ -62,51 +62,66 @@ func (c *classifier) Handle(ctx context.Context, record slog.Record) error {
 	return c.inner.Handle(ctx, classified)
 }
 
-// classifyAttr classifies a single attribute at the given group path,
-// recursing into groups so the effective dotted key is used for every leaf. It
-// reports whether the attribute survives classification, and whether it was
-// altered (dropped, rewritten, or, for a group, had any member changed) so the
-// caller can skip rebuilding an unchanged record.
+// classifyAttr classifies one attribute at the given group path, recursing
+// into groups so every leaf is judged on its effective dotted key. Change
+// tracking comes from the classification action, never from comparing slog
+// values, because slog.Value.Equal panics on uncomparable values.
 func (c *classifier) classifyAttr(groups []string, a slog.Attr) (out slog.Attr, keep, changed bool) {
 	a.Value = a.Value.Resolve()
 	if a.Value.Kind() == slog.KindGroup {
 		path := groups
 		if a.Key != "" {
-			path = make([]string, len(groups)+1)
-			copy(path, groups)
-			path[len(groups)] = a.Key
+			path = append(slices.Clone(groups), a.Key)
 		}
 		members := a.Value.Group()
 		kept := make([]slog.Attr, 0, len(members))
 		memberChanged := false
 		for _, m := range members {
 			mo, mk, mc := c.classifyAttr(path, m)
-			if mc {
-				memberChanged = true
-			}
+			memberChanged = memberChanged || mc
 			if mk {
 				kept = append(kept, mo)
 			}
 		}
-		if len(kept) != len(members) {
-			memberChanged = true
-		}
 		if len(kept) == 0 {
 			return slog.Attr{}, false, true
 		}
-		return slog.Attr{Key: a.Key, Value: slog.GroupValue(kept...)}, true, memberChanged
+		if !memberChanged {
+			return a, true, false
+		}
+		return slog.Attr{Key: a.Key, Value: slog.GroupValue(kept...)}, true, true
 	}
-	res := classify(c.mode, c.pii, c.rec, groups, a)
-	if res.Equal(slog.Attr{}) || res.Key == "" {
+	res, action := classify(c.mode, c.pii, c.rec, groups, a)
+	switch action {
+	case actionDrop:
 		return slog.Attr{}, false, true
+	case actionRewrite:
+		return res, true, true
+	default:
+		return a, true, false
 	}
-	return res, true, !res.Equal(a)
 }
 
+// WithAttrs classifies the attributes at the handler's current group path
+// before handing them to the inner handler, so pre-bound attributes obey the
+// same rules as per-record ones.
 func (c *classifier) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return &classifier{inner: c.inner.WithAttrs(attrs), mode: c.mode, pii: c.pii, rec: c.rec}
+	kept := make([]slog.Attr, 0, len(attrs))
+	for _, a := range attrs {
+		if out, keep, _ := c.classifyAttr(c.groups, a); keep {
+			kept = append(kept, out)
+		}
+	}
+	return &classifier{inner: c.inner.WithAttrs(kept), mode: c.mode, pii: c.pii, rec: c.rec, groups: c.groups}
 }
 
+// WithGroup extends the group path used to build effective keys.
 func (c *classifier) WithGroup(name string) slog.Handler {
-	return &classifier{inner: c.inner.WithGroup(name), mode: c.mode, pii: c.pii, rec: c.rec}
+	if name == "" {
+		return c
+	}
+	return &classifier{
+		inner: c.inner.WithGroup(name), mode: c.mode, pii: c.pii, rec: c.rec,
+		groups: append(slices.Clone(c.groups), name),
+	}
 }

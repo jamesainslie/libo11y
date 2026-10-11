@@ -60,53 +60,47 @@ func (v *violationRecorder) record(signal spec.Signal, rule string) {
 	))
 }
 
-// specReplacer returns an [AttrReplacer] that enforces the spec's sensitivity
-// classification: secret-classified attributes are always dropped, and
-// PII-classified attributes are handled per mode. It composes after the
-// user's replacer and classifies on the final key, so a value cannot be
-// leaked by renaming a classified key to another known key. Classification
-// is key-based, so renaming to an entirely unclassified key still escapes
-// this layer; that residual gap is inherent and is the redact package's
-// job (capture-time protection of the value itself). Each action is
-// recorded as a schema violation.
-func specReplacer(user AttrReplacer, mode PIIMode, rec *violationRecorder) AttrReplacer {
-	return func(groups []string, a slog.Attr) slog.Attr {
-		if user != nil {
-			a = user(groups, a)
-			if a.Equal(slog.Attr{}) || a.Key == "" {
-				return a
-			}
-		}
-		return classify(sinkConsole, mode, rec, groups, a)
-	}
-}
+// classAction reports what classification did to one attribute, so callers
+// track changes without comparing slog values (slog.Value.Equal panics on
+// uncomparable values such as slices and maps).
+type classAction int
+
+const (
+	actionKeep classAction = iota
+	actionRewrite
+	actionDrop
+)
 
 // classify applies the spec's sensitivity ruling to a single leaf attribute
 // on its effective (grouped) key: secret-classified attributes are always
-// dropped, and PII-classified attributes are handled per mode. It is the one
-// implementation shared by [specReplacer] and the per-leg classifyingHandler,
-// so the two seams cannot drift. The sink mode selects per-sink policy;
-// through Phase 0 both sinks classify identically, so mode is not yet
-// consulted here (Phase 1 uses it for confidential-console-withhold).
-func classify(_ sinkMode, mode PIIMode, rec *violationRecorder, groups []string, a slog.Attr) slog.Attr {
+// dropped, and PII-classified attributes are handled per mode. Each drop or
+// rewrite is recorded as a schema violation, and the returned action tells
+// the caller what happened so it never has to compare slog values.
+// Classification is key-based, so renaming to an entirely unclassified key
+// still escapes this layer; that residual gap is inherent and is the redact
+// package's job (capture-time protection of the value itself). The sink mode
+// selects per-sink policy; through Phase 0 both sinks classify identically,
+// so mode is not yet consulted here (Phase 1 uses it for
+// confidential-console-withhold).
+func classify(_ sinkMode, mode PIIMode, rec *violationRecorder, groups []string, a slog.Attr) (slog.Attr, classAction) {
 	key := attribute.Key(effectiveKey(groups, a.Key))
 	switch spectables.SensitivityOf[key] {
 	case spectables.Secret:
 		rec.record(spec.SignalLogs, "secret_attribute")
-		return slog.Attr{} // never emit a secret
+		return slog.Attr{}, actionDrop
 	case spectables.PII:
 		switch mode {
 		case PIIDrop:
 			rec.record(spec.SignalLogs, "pii_attribute")
-			return slog.Attr{}
+			return slog.Attr{}, actionDrop
 		case PIIAllow:
-			return a
+			return a, actionKeep
 		default: // PIIHash
 			rec.record(spec.SignalLogs, "pii_attribute")
-			return slog.String(a.Key, hashValue(a.Value.String()))
+			return slog.String(a.Key, hashValue(a.Value.String())), actionRewrite
 		}
 	default:
-		return a
+		return a, actionKeep
 	}
 }
 
