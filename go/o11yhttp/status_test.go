@@ -3,10 +3,14 @@ package o11yhttp_test
 import (
 	"bufio"
 	"errors"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/jamesainslie/libo11y/go/o11yhttp"
 	"github.com/jamesainslie/libo11y/go/spec"
@@ -65,6 +69,67 @@ func TestCanonicalSummaryReportsCommittedStatus(t *testing.T) {
 			}
 			if got := s[0][string(spec.OutcomeKey)]; got != string(tc.wantOutcome) {
 				t.Errorf("summary outcome = %v, want %s", got, tc.wantOutcome)
+			}
+		})
+	}
+}
+
+func TestCanonicalSummaryAfterHijack(t *testing.T) {
+	for _, panics := range []bool{false, true} {
+		t.Run(fmt.Sprintf("panics=%v", panics), func(t *testing.T) {
+			t.Parallel()
+			env := newCanonicalEnv(t)
+			h := o11yhttp.NewHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				conn, buf, err := http.NewResponseController(w).Hijack()
+				if err != nil {
+					t.Errorf("Hijack: %v", err)
+					return
+				}
+				_, _ = buf.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: test\r\n\r\n")
+				_ = buf.Flush()
+				_ = conn.Close()
+				if panics {
+					panic("boom")
+				}
+			}), "hijack", o11yhttp.WithSDK(env.sdk), o11yhttp.WithCanonicalLine())
+			done := make(chan struct{})
+			srv := quietServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				defer close(done) // runs after the summary, even while panicking
+				h.ServeHTTP(w, r)
+			}))
+			defer srv.Close()
+
+			conn, err := net.Dial("tcp", srv.Listener.Addr().String())
+			if err != nil {
+				t.Fatalf("Dial: %v", err)
+			}
+			defer func() { _ = conn.Close() }()
+			if _, err := io.WriteString(conn, "GET / HTTP/1.1\r\nHost: test\r\n\r\n"); err != nil {
+				t.Fatalf("write request: %v", err)
+			}
+			line, err := bufio.NewReader(conn).ReadString('\n')
+			if err != nil || !strings.HasPrefix(line, "HTTP/1.1 101 ") {
+				t.Fatalf("status line = %q, %v; want HTTP/1.1 101", line, err)
+			}
+			select {
+			case <-done:
+			case <-time.After(10 * time.Second):
+				t.Fatal("handler did not finish")
+			}
+
+			s := env.summaries()
+			if len(s) != 1 {
+				t.Fatalf("got %d summaries, want 1", len(s))
+			}
+			if got := s[0]["http.response.status_code"]; got != int64(http.StatusSwitchingProtocols) {
+				t.Errorf("summary status = %v, want 101", got)
+			}
+			want := spec.OutcomeSuccess
+			if panics {
+				want = spec.OutcomeFailure
+			}
+			if got := s[0][string(spec.OutcomeKey)]; got != string(want) {
+				t.Errorf("summary outcome = %v, want %s", got, want)
 			}
 		})
 	}

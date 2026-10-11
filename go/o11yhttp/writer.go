@@ -29,8 +29,11 @@ func (s *statusTracker) observeHeader(code int) {
 	s.status = code
 }
 
-// committed reports whether a final status reached the client.
-func (s *statusTracker) committed() bool { return s.status != 0 }
+// committed reports whether the handler has committed a final status or
+// taken over the connection with a successful Hijack. Either way net/http
+// can no longer send a status of its own, so a later panic must not be
+// reported as 500.
+func (s *statusTracker) committed() bool { return s.status != 0 || s.hijacked }
 
 func (s *statusTracker) observeWrite() {
 	if s.status == 0 && !s.hijacked {
