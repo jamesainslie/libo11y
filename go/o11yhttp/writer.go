@@ -61,8 +61,11 @@ func (s *statusTracker) final() int {
 func trackResponse(w http.ResponseWriter) (http.ResponseWriter, *statusTracker) {
 	st := &statusTracker{}
 	wrapped := httpsnoop.Wrap(w, httpsnoop.Hooks{
+		// WriteHeader and Hijack call through first and observe only what
+		// took effect: net/http panics inside WriteHeader on an invalid
+		// code, and a failed Hijack leaves the connection with net/http.
 		WriteHeader: func(next httpsnoop.WriteHeaderFunc) httpsnoop.WriteHeaderFunc {
-			return func(code int) { st.observeHeader(code); next(code) }
+			return func(code int) { next(code); st.observeHeader(code) }
 		},
 		Write: func(next httpsnoop.WriteFunc) httpsnoop.WriteFunc {
 			return func(b []byte) (int, error) { st.observeWrite(); return next(b) }
@@ -74,7 +77,13 @@ func trackResponse(w http.ResponseWriter) (http.ResponseWriter, *statusTracker) 
 			return func() { st.observeWrite(); next() }
 		},
 		Hijack: func(next httpsnoop.HijackFunc) httpsnoop.HijackFunc {
-			return func() (net.Conn, *bufio.ReadWriter, error) { st.observeHijack(); return next() }
+			return func() (net.Conn, *bufio.ReadWriter, error) {
+				conn, rw, err := next()
+				if err == nil {
+					st.observeHijack()
+				}
+				return conn, rw, err
+			}
 		},
 	})
 	return wrapped, st
