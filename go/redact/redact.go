@@ -255,7 +255,7 @@ func protectValue(v reflect.Value, floor protection, depth int) slog.Value {
 		}
 	}
 	if text, ok := leafText(v); ok {
-		if floor == mask {
+		if floor == mask && text != Redacted {
 			return slog.StringValue(maskString(text))
 		}
 		return slog.StringValue(text)
@@ -326,15 +326,19 @@ func protectValue(v reflect.Value, floor protection, depth int) slog.Value {
 
 // leafText returns the text form of values that are opaque leaves rather
 // than containers to walk: types implementing encoding.TextMarshaler or
-// fmt.Stringer, unless they are structs with o11y-tagged fields (walking
-// those fields keeps the tags authoritative).
-func leafText(v reflect.Value) (string, bool) {
-	if !v.IsValid() || !v.CanInterface() {
+// fmt.Stringer whose type cannot carry protection anywhere inside it (see
+// [mayCarryProtection]). Any other value is walked, which keeps nested tags
+// authoritative: a String method cannot fold a tagged field into its text.
+// A panicking String or MarshalText renders REDACTED.
+func leafText(v reflect.Value) (text string, ok bool) {
+	if !v.IsValid() || !v.CanInterface() || mayCarryProtection(v.Type()) {
 		return "", false
 	}
-	if v.Kind() == reflect.Struct && hasProtectedField(v.Type()) {
-		return "", false
-	}
+	defer func() {
+		if recover() != nil {
+			text, ok = Redacted, true // fail closed on a panicking method
+		}
+	}()
 	switch x := v.Interface().(type) {
 	case encoding.TextMarshaler:
 		b, err := x.MarshalText()
@@ -348,10 +352,59 @@ func leafText(v reflect.Value) (string, bool) {
 	return "", false
 }
 
-func hasProtectedField(t reflect.Type) bool {
-	for _, p := range plansFor(t) {
-		if p.protection != passthrough {
-			return true
+var protectionScanCache sync.Map // reflect.Type -> bool
+
+// mayCarryProtection reports whether a value of type t could hold anything
+// that Struct must protect: an o11y-tagged field at any depth (exported,
+// unexported, or embedded), a self-protecting [slog.LogValuer] component,
+// or an interface-typed component whose dynamic value is unknown until run
+// time (fail closed). Components are reached through struct fields,
+// pointers, slices, arrays, and map keys and values. Results are cached per
+// type; recursive types terminate, and scans deeper than maxDepth fail
+// closed.
+func mayCarryProtection(t reflect.Type) bool {
+	if t == nil {
+		return false
+	}
+	if cached, ok := protectionScanCache.Load(t); ok {
+		return cached.(bool) // cache only ever holds bool
+	}
+	result := scanProtection(t, make(map[reflect.Type]bool), 0)
+	protectionScanCache.Store(t, result)
+	return result
+}
+
+// scanProtection is the depth-first scan behind mayCarryProtection. A true
+// result short-circuits to the root, so a type already in seen is either on
+// the current path (a cycle, which adds nothing new) or fully scanned and
+// found clean; either way it contributes false.
+func scanProtection(t reflect.Type, seen map[reflect.Type]bool, depth int) bool {
+	if depth > maxDepth {
+		return true
+	}
+	if seen[t] {
+		return false
+	}
+	seen[t] = true
+	if t.Implements(logValuerType) {
+		return true
+	}
+	switch t.Kind() {
+	case reflect.Interface:
+		return true
+	case reflect.Pointer, reflect.Slice, reflect.Array:
+		return scanProtection(t.Elem(), seen, depth+1)
+	case reflect.Map:
+		return scanProtection(t.Key(), seen, depth+1) || scanProtection(t.Elem(), seen, depth+1)
+	case reflect.Struct:
+		for i := range t.NumField() {
+			field := t.Field(i)
+			if _, tagged := field.Tag.Lookup(TagKey); tagged {
+				return true
+			}
+			if scanProtection(field.Type, seen, depth+1) {
+				return true
+			}
 		}
 	}
 	return false

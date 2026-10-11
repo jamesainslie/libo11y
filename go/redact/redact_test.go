@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"strings"
@@ -532,3 +533,138 @@ type taggedMarshaler struct {
 }
 
 func (t taggedMarshaler) MarshalText() ([]byte, error) { return []byte("token=" + t.Token), nil }
+
+// EmbeddedCreds is exported so that embedding it yields an exported field.
+type EmbeddedCreds struct {
+	Token string `o11y:"secret"`
+}
+
+func (c EmbeddedCreds) String() string { return "token=" + c.Token }
+
+// reqEmbed inherits String from EmbeddedCreds through embedding.
+type reqEmbed struct {
+	EmbeddedCreds
+	ID string
+}
+
+type authInfo struct {
+	Token string `o11y:"secret"`
+}
+
+type outerStringer struct {
+	ID   string
+	Auth authInfo
+}
+
+func (o outerStringer) String() string { return o.ID + ":" + o.Auth.Token }
+
+type leakUser struct {
+	Name     string
+	Password string `o11y:"secret"`
+}
+
+type leakUsers []leakUser
+
+func (u leakUsers) String() string {
+	parts := make([]string, len(u))
+	for i, user := range u {
+		parts[i] = user.Name + "/" + user.Password
+	}
+	return strings.Join(parts, ",")
+}
+
+type hiddenToken struct {
+	ID    string
+	token string `o11y:"secret"`
+}
+
+func (h hiddenToken) String() string { return h.ID + ":" + h.token }
+
+func TestTextLeafDoesNotBypassNestedTags(t *testing.T) {
+	cases := map[string]any{
+		"embedded tagged struct with promoted String": reqEmbed{EmbeddedCreds: EmbeddedCreds{Token: "raw-embed-tok"}, ID: "r1"},
+		"Stringer with tagged nested field":           outerStringer{ID: "o1", Auth: authInfo{Token: "raw-outer-tok"}},
+		"named slice Stringer of tagged elements":     leakUsers{{Name: "u1", Password: "raw-user-pw"}},
+		"Stringer with unexported tagged field":       hiddenToken{ID: "h1", token: "raw-hidden-tok"},
+	}
+	for name, v := range cases {
+		t.Run(name, func(t *testing.T) {
+			out := logJSONString(t, "v", redact.Struct(v))
+			if strings.Contains(out, "raw-") {
+				t.Errorf("nested tagged value leaked through text form: %s", out)
+			}
+		})
+	}
+}
+
+func TestMaskFloorDoesNotLeakNestedSecretLength(t *testing.T) {
+	type holder struct {
+		O outerStringer `o11y:"mask"`
+	}
+	out := logJSONString(t, "v", redact.Struct(holder{O: outerStringer{ID: "o1", Auth: authInfo{Token: "raw-outer-tok"}}}))
+	if strings.Contains(out, "raw-outer-tok") {
+		t.Fatalf("raw token leaked: %s", out)
+	}
+	if !strings.Contains(out, `"Token":"REDACTED"`) {
+		t.Errorf("nested secret under a mask floor should render REDACTED, not fold into a masked string: %s", out)
+	}
+}
+
+func TestStructRendersNetipAddrAsText(t *testing.T) {
+	type holder struct {
+		Addr netip.Addr
+	}
+	out := logJSONString(t, "v", redact.Struct(holder{Addr: netip.MustParseAddr("192.0.2.7")}))
+	if !strings.Contains(out, `"Addr":"192.0.2.7"`) {
+		t.Errorf("netip.Addr not rendered as text: %s", out)
+	}
+}
+
+type plainNode struct {
+	Name string
+	Next *plainNode
+}
+
+func (n plainNode) String() string { return "node:" + n.Name }
+
+type taggedNode struct {
+	Name   string
+	Secret string `o11y:"secret"`
+	Next   *taggedNode
+}
+
+func (n taggedNode) String() string { return n.Name + ":" + n.Secret }
+
+func TestRecursiveTypeScanTerminatesAndHonorsTags(t *testing.T) {
+	out := logJSONString(t, "plain", redact.Struct(plainNode{Name: "a", Next: &plainNode{Name: "b"}}),
+		"tagged", redact.Struct(taggedNode{Name: "t", Secret: "raw-node-secret", Next: &taggedNode{Name: "u"}}))
+	if !strings.Contains(out, `"plain":"node:a"`) {
+		t.Errorf("untagged recursive Stringer should render as text: %s", out)
+	}
+	if strings.Contains(out, "raw-node-secret") {
+		t.Errorf("tagged recursive Stringer leaked: %s", out)
+	}
+}
+
+type panicStringer struct{ N int }
+
+func (panicStringer) String() string { panic("boom") }
+
+func TestPanickingStringerFailsClosed(t *testing.T) {
+	type holder struct {
+		P panicStringer
+	}
+	var got slog.Value
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("LogValue panicked: %v", r)
+			}
+		}()
+		got = redact.Struct(holder{P: panicStringer{N: 1}}).LogValue()
+	}()
+	members := got.Group()
+	if len(members) != 1 || members[0].Value.String() != redact.Redacted {
+		t.Errorf("panicking Stringer = %v, want P=%s", got, redact.Redacted)
+	}
+}
