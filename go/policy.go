@@ -92,6 +92,8 @@ func (p *sensitivityPolicy) decide(signal spec.Signal, key attribute.Key) classA
 // secret and PII attributes outright, even under PIIHash, because a distinct
 // token per value would multiply series cardinality. Metric-side removals are
 // not counted as violations: the filter runs on the measurement hot path.
+// It must never read p.rec, which newSDK attaches after the meter provider
+// (and possibly its periodic reader and runtime metrics) is already running.
 func (p *sensitivityPolicy) metricKeep(kv attribute.KeyValue) bool {
 	switch p.lookup(kv.Key) {
 	case spectables.Secret:

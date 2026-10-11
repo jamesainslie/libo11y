@@ -62,10 +62,27 @@ func (p *sensitivityPolicy) protectStream(s sdkmetric.Stream) sdkmetric.Stream {
 	s.ExemplarReservoirProviderSelector = func(agg sdkmetric.Aggregation) exemplar.ReservoirProvider {
 		provider := selector(agg)
 		return func(attrs attribute.Set) exemplar.Reservoir {
-			return filteredReservoir{inner: provider(attrs), keep: p.metricKeep}
+			return filterReservoir(provider(attrs), p.metricKeep)
 		}
 	}
 	return s
+}
+
+// filterReservoir wraps inner so classified attributes are removed from the
+// filtered attributes offered to it. The SDK's built-in reservoirs carry an
+// unexported marker telling the SDK they are safe for concurrent use, so it
+// calls them without a lock; the wrappers for those types embed them to keep
+// the marker (the policy filter itself holds no state). Any other reservoir
+// is wrapped plainly and the SDK serializes calls to it as before.
+func filterReservoir(inner exemplar.Reservoir, keep func(attribute.KeyValue) bool) exemplar.Reservoir {
+	switch r := inner.(type) {
+	case *exemplar.FixedSizeReservoir:
+		return filteredFixedSizeReservoir{FixedSizeReservoir: r, keep: keep}
+	case *exemplar.HistogramReservoir:
+		return filteredHistogramReservoir{HistogramReservoir: r, keep: keep}
+	default:
+		return filteredReservoir{inner: inner, keep: keep}
+	}
 }
 
 // filteredReservoir removes classified attributes from the filtered
@@ -75,28 +92,54 @@ type filteredReservoir struct {
 	keep  func(attribute.KeyValue) bool
 }
 
-// Offer forwards the measurement with classified filtered attributes
-// removed. The offered slice is forwarded untouched when nothing is
-// classified, so the common path allocates nothing.
 func (r filteredReservoir) Offer(ctx context.Context, t time.Time, v exemplar.Value, filtered []attribute.KeyValue) {
+	r.inner.Offer(ctx, t, v, keepAttrs(filtered, r.keep))
+}
+
+func (r filteredReservoir) Collect(dest *[]exemplar.Exemplar) { r.inner.Collect(dest) }
+
+// filteredFixedSizeReservoir is filteredReservoir for the SDK's fixed-size
+// reservoir; embedding it promotes Collect and the concurrency marker.
+type filteredFixedSizeReservoir struct {
+	*exemplar.FixedSizeReservoir
+	keep func(attribute.KeyValue) bool
+}
+
+func (r filteredFixedSizeReservoir) Offer(ctx context.Context, t time.Time, v exemplar.Value, filtered []attribute.KeyValue) {
+	r.FixedSizeReservoir.Offer(ctx, t, v, keepAttrs(filtered, r.keep))
+}
+
+// filteredHistogramReservoir is filteredReservoir for the SDK's histogram
+// reservoir; embedding it promotes Collect and the concurrency marker.
+type filteredHistogramReservoir struct {
+	*exemplar.HistogramReservoir
+	keep func(attribute.KeyValue) bool
+}
+
+func (r filteredHistogramReservoir) Offer(ctx context.Context, t time.Time, v exemplar.Value, filtered []attribute.KeyValue) {
+	r.HistogramReservoir.Offer(ctx, t, v, keepAttrs(filtered, r.keep))
+}
+
+// keepAttrs returns attrs without the attributes keep rejects. The input
+// slice is returned untouched when keep accepts them all, so the common path
+// allocates nothing.
+func keepAttrs(attrs []attribute.KeyValue, keep func(attribute.KeyValue) bool) []attribute.KeyValue {
 	var kept []attribute.KeyValue
-	for i, kv := range filtered {
+	for i, kv := range attrs {
 		if kept == nil {
-			if r.keep(kv) {
+			if keep(kv) {
 				continue
 			}
-			kept = make([]attribute.KeyValue, i, len(filtered))
-			copy(kept, filtered[:i])
+			kept = make([]attribute.KeyValue, i, len(attrs))
+			copy(kept, attrs[:i])
 			continue
 		}
-		if r.keep(kv) {
+		if keep(kv) {
 			kept = append(kept, kv)
 		}
 	}
 	if kept == nil {
-		kept = filtered
+		return attrs
 	}
-	r.inner.Offer(ctx, t, v, kept)
+	return kept
 }
-
-func (r filteredReservoir) Collect(dest *[]exemplar.Exemplar) { r.inner.Collect(dest) }
