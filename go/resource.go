@@ -33,7 +33,7 @@ const serviceVersionFallback = "0.0.0-unknown"
 // (OTEL_RESOURCE_ATTRIBUTES, OTEL_SERVICE_NAME), then explicit option
 // attributes. Detected values are library defaults, so the environment
 // overrides them per the documented option-over-environment-over-default
-// contract.
+// contract. Under [WithoutOTELEnv] the environment layer is skipped.
 func buildResource(ctx context.Context, s *settings) (*resource.Resource, error) {
 	explicit := make([]attribute.KeyValue, 0, len(s.resourceAttrs)+4)
 	versionResolved := false
@@ -62,9 +62,13 @@ func buildResource(ctx context.Context, s *settings) (*resource.Resource, error)
 		resource.WithProcessRuntimeName(),
 		resource.WithProcessRuntimeVersion(),
 		resource.WithContainer(),
-		resource.WithFromEnv(),
-		resource.WithAttributes(explicit...),
 	)
+	if !s.ignoreEnv {
+		// Immediately before the explicit attributes, so the environment
+		// overrides detectors and options override the environment.
+		opts = append(opts, resource.WithFromEnv())
+	}
+	opts = append(opts, resource.WithAttributes(explicit...))
 
 	res, err := resource.New(ctx, opts...)
 	if err != nil {

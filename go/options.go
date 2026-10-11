@@ -42,7 +42,8 @@ type ErrorHandler func(error)
 
 // Option configures [New] and [Setup]. Precedence is strict: an explicit
 // option overrides the corresponding standard OTEL_* environment variable,
-// which overrides the library default.
+// which overrides the library default. [WithoutOTELEnv] removes the
+// environment layer entirely.
 type Option func(*settings)
 
 type settings struct {
@@ -80,6 +81,8 @@ type settings struct {
 	spanExporter  sdktrace.SpanExporter
 	spanProcessor sdktrace.SpanProcessor
 	metricReader  sdkmetric.Reader
+
+	ignoreEnv bool
 }
 
 func newSettings(opts []Option) *settings {

@@ -38,6 +38,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/exemplar"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
@@ -154,9 +155,16 @@ func newSDK(ctx context.Context, s *settings) (_ *SDK, err error) {
 
 func buildTracerProvider(ctx context.Context, s *settings, res *resource.Resource, violations *violationRecorder) (*sdktrace.TracerProvider, error) {
 	opts := []sdktrace.TracerProviderOption{sdktrace.WithResource(res)}
-	if s.sampler != nil {
-		opts = append(opts, sdktrace.WithSampler(s.sampler))
+	if s.ignoreEnv {
+		opts = append(opts, sdktrace.WithRawSpanLimits(defaultSpanLimits()))
 	}
+	switch {
+	case s.sampler != nil:
+		opts = append(opts, sdktrace.WithSampler(s.sampler))
+	case s.ignoreEnv:
+		opts = append(opts, sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.AlwaysSample())))
+	}
+	batch := traceBatchOptions(s)
 	switch {
 	case s.spanProcessor != nil:
 		// A caller who supplies a whole span processor owns the export path
@@ -164,32 +172,41 @@ func buildTracerProvider(ctx context.Context, s *settings, res *resource.Resourc
 		// which such a processor is free to bypass.
 		opts = append(opts, sdktrace.WithSpanProcessor(s.spanProcessor))
 	case s.spanExporter != nil:
-		opts = append(opts, sdktrace.WithBatcher(redactingExporter(s.spanExporter, violations)))
+		opts = append(opts, sdktrace.WithBatcher(redactingExporter(s.spanExporter, violations), batch...))
+	case s.ignoreEnv:
+		// No injected exporter and the environment is ignored: spans are
+		// sampled and visible to in-process processors only, never exported.
 	default:
 		exporter, err := autoexport.NewSpanExporter(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("o11y: building span exporter: %w", err)
 		}
-		opts = append(opts, sdktrace.WithBatcher(redactingExporter(exporter, violations)))
+		opts = append(opts, sdktrace.WithBatcher(redactingExporter(exporter, violations), batch...))
 	}
 	return sdktrace.NewTracerProvider(opts...), nil
 }
 
 func buildMeterProvider(ctx context.Context, s *settings, res *resource.Resource) (*sdkmetric.MeterProvider, error) {
-	reader := s.metricReader
-	if reader == nil {
-		var err error
-		reader, err = autoexport.NewMetricReader(ctx)
+	opts := []sdkmetric.Option{sdkmetric.WithResource(res)}
+	opts = append(opts, meterProviderOptions(s)...)
+	switch {
+	case s.metricReader != nil:
+		opts = append(opts, sdkmetric.WithReader(s.metricReader))
+	case s.ignoreEnv:
+		// No injected reader and the environment is ignored: instruments
+		// work but nothing is collected or exported.
+	default:
+		reader, err := autoexport.NewMetricReader(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("o11y: building metric reader: %w", err)
 		}
+		opts = append(opts, sdkmetric.WithReader(reader))
 	}
-	opts := []sdkmetric.Option{
-		sdkmetric.WithResource(res),
-		sdkmetric.WithReader(reader),
-	}
-	if s.exemplarFilter != nil {
+	switch {
+	case s.exemplarFilter != nil:
 		opts = append(opts, sdkmetric.WithExemplarFilter(s.exemplarFilter))
+	case s.ignoreEnv:
+		opts = append(opts, sdkmetric.WithExemplarFilter(exemplar.TraceBasedFilter))
 	}
 	for _, view := range s.views {
 		opts = append(opts, sdkmetric.WithView(view))
@@ -217,7 +234,7 @@ func buildLogPipeline(ctx context.Context, s *settings, res *resource.Resource, 
 	}
 
 	var loggerProvider *sdklog.LoggerProvider
-	if s.logExport {
+	if s.logExportEnabled() {
 		exporter := s.logExporter
 		if exporter == nil {
 			var err error
@@ -226,10 +243,12 @@ func buildLogPipeline(ctx context.Context, s *settings, res *resource.Resource, 
 				return nil, nil, fmt.Errorf("o11y: building log exporter: %w", err)
 			}
 		}
-		loggerProvider = sdklog.NewLoggerProvider(
+		providerOpts := []sdklog.LoggerProviderOption{
 			sdklog.WithResource(res),
-			sdklog.WithProcessor(sdklog.NewBatchProcessor(exporter)),
-		)
+			sdklog.WithProcessor(sdklog.NewBatchProcessor(exporter, logBatchOptions(s)...)),
+		}
+		providerOpts = append(providerOpts, logProviderOptions(s)...)
+		loggerProvider = sdklog.NewLoggerProvider(providerOpts...)
 		otlp := otelslog.NewHandler(scopeName,
 			otelslog.WithLoggerProvider(loggerProvider),
 			otelslog.WithSource(true),

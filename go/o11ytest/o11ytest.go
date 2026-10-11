@@ -2,10 +2,11 @@
 // an application emits through libo11y: spans, metrics, and log records,
 // including the correlation between them, in ordinary unit tests.
 //
-// [Start] builds a fully in-memory SDK with o11y.New: no process globals
-// are touched, no exporter dials out, and no environment variable is read
-// or written, so harnesses in different tests are isolated and safe under
-// t.Parallel().
+// [Start] builds a fully in-memory SDK with o11y.New and o11y.WithoutOTELEnv:
+// no process globals are touched, no exporter dials out, and no OTEL_*
+// variable is read, so harnesses are deterministic and safe under
+// t.Parallel(). The resource still carries host and process detector values
+// describing the machine.
 //
 //	rec := o11ytest.Start(t)
 //	svc := NewCheckoutService(rec.SDK)   // inject providers under test
@@ -24,6 +25,7 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/exemplar"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -72,8 +74,9 @@ func (r LogRecord) Attr(key string) (string, bool) {
 // down via t.Cleanup; a shutdown failure fails the test.
 //
 // Defaults: the service name is the test name, log level is Debug, runtime
-// metrics and console output are off, and nothing is exported anywhere.
-// Additional options are applied after these defaults and may override
+// metrics and console output are off, every span is sampled, exemplars use
+// the trace-based filter, OTEL_* variables are ignored, and nothing is
+// exported anywhere. Additional options are applied after these defaults and may override
 // them (for example o11y.WithServiceName or o11y.WithAttrReplacer).
 func Start(tb testing.TB, opts ...o11y.Option) *Recorder {
 	tb.Helper()
@@ -92,6 +95,9 @@ func Start(tb testing.TB, opts ...o11y.Option) *Recorder {
 		o11y.WithoutRuntimeMetrics(),
 		o11y.WithoutConsoleLog(),
 		o11y.WithExtraLogHandler(logs),
+		o11y.WithoutOTELEnv(),
+		o11y.WithTraceSampler(sdktrace.AlwaysSample()),
+		o11y.WithExemplarFilter(exemplar.TraceBasedFilter),
 	}
 	sdk, err := o11y.New(context.Background(), append(base, opts...)...)
 	if err != nil {

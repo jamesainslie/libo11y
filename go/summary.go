@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"os"
 	"strings"
 	"time"
 
@@ -34,20 +33,31 @@ func buildSummary(s *settings, sdk *SDK) ([]slog.Attr, string) {
 		}
 	}
 
+	// Under WithoutOTELEnv a signal with nothing injected is disabled rather
+	// than built from the environment.
 	traces := "injected"
-	if s.spanProcessor == nil && s.spanExporter == nil {
-		traces = envOr("OTEL_TRACES_EXPORTER", "otlp")
+	switch {
+	case s.spanProcessor != nil || s.spanExporter != nil:
+	case s.ignoreEnv:
+		traces = "none"
+	default:
+		traces = s.envOr("OTEL_TRACES_EXPORTER", "otlp")
 	}
 	metrics := "injected"
-	if s.metricReader == nil {
-		metrics = envOr("OTEL_METRICS_EXPORTER", "otlp")
+	switch {
+	case s.metricReader != nil:
+	case s.ignoreEnv:
+		metrics = "none"
+	default:
+		metrics = s.envOr("OTEL_METRICS_EXPORTER", "otlp")
 	}
 	logs := "none"
 	switch {
-	case s.logExport && s.logExporter != nil:
+	case !s.logExportEnabled():
+	case s.logExporter != nil:
 		logs = "injected"
-	case s.logExport:
-		logs = envOr("OTEL_LOGS_EXPORTER", "otlp")
+	default:
+		logs = s.envOr("OTEL_LOGS_EXPORTER", "otlp")
 	}
 	console := "off"
 	if s.consoleEnabled {
@@ -57,7 +67,7 @@ func buildSummary(s *settings, sdk *SDK) ([]slog.Attr, string) {
 		}
 	}
 
-	sampler := envOr("OTEL_TRACES_SAMPLER", "parentbased_always_on")
+	sampler := s.envOr("OTEL_TRACES_SAMPLER", "parentbased_always_on")
 	if !knownSampler(sampler) {
 		// The SDK rejects unknown sampler names and falls back; the
 		// summary must report what actually happens, not echo the typo.
@@ -90,7 +100,7 @@ func buildSummary(s *settings, sdk *SDK) ([]slog.Attr, string) {
 		slog.String("propagators", propagators),
 		slog.Bool("runtime_metrics", s.runtimeMetrics),
 	)
-	if endpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"); endpoint != "" {
+	if endpoint := s.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"); endpoint != "" {
 		attrs = append(attrs, slog.String("endpoint", endpoint))
 	}
 
@@ -114,13 +124,6 @@ func (s *SDK) emitStartupSummary(ctx context.Context, attrs []slog.Attr) error {
 	record.AddAttrs(slog.String(spec.EventNameKey, spec.EventTelemetryConfigured))
 	record.AddAttrs(attrs...)
 	return s.handler.Handle(fanout.WithForce(ctx), record)
-}
-
-func envOr(key, fallback string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return fallback
 }
 
 // knownSampler reports whether name is a sampler the SDK accepts from
