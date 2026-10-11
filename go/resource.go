@@ -89,7 +89,13 @@ func buildResource(ctx context.Context, s *settings) (*resource.Resource, error)
 
 	// Stamp exactly one schema URL, whatever the detectors carried, so
 	// resource merges downstream are never undefined.
-	return resource.NewWithAttributes(spec.SchemaURL, res.Attributes()...), nil
+	res = resource.NewWithAttributes(spec.SchemaURL, res.Attributes()...)
+	if s.ignoreEnv {
+		// The providers merge the environment resource underneath this one;
+		// shadow every ambient key so no ambient value reaches them.
+		res = shadowEnvironment(res, shadowAll)
+	}
+	return res, nil
 }
 
 // enforceIdentity applies the tier-0 identity contract: a usable

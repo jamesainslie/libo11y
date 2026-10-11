@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 
@@ -71,5 +72,38 @@ func TestHarnessCallerOptionsStillWin(t *testing.T) {
 	span.End()
 	if n := len(rec.Spans()); n != 0 {
 		t.Errorf("captured %d spans, want 0: caller sampler must override the harness default", n)
+	}
+}
+
+// The OTel providers merge the environment resource underneath the one they
+// are given, so ambient keys the library resource does not define must be
+// shadowed or they reach every span and metric the harness records.
+func TestHarnessProviderResourcesCarryNoAmbientAttributes(t *testing.T) {
+	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "team=ambient-team,host.name=ambient-host")
+	rec := o11ytest.Start(t)
+
+	ctx, span := rec.SDK.TracerProvider().Tracer("t").Start(context.Background(), "op")
+	counter, err := rec.SDK.MeterProvider().Meter("t").Int64Counter("c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	counter.Add(ctx, 1)
+	span.End()
+
+	spans := rec.Spans()
+	if len(spans) != 1 {
+		t.Fatalf("captured %d spans, want 1", len(spans))
+	}
+	assertNoAmbient(t, "span resource", spans[0].Resource())
+	metrics := rec.Metrics()
+	assertNoAmbient(t, "metric resource", metrics.Resource)
+}
+
+func assertNoAmbient(t *testing.T, where string, res *resource.Resource) {
+	t.Helper()
+	for _, kv := range res.Attributes() {
+		if v := kv.Value.String(); v == "ambient-team" || v == "ambient-host" {
+			t.Errorf("%s carries ambient %s=%q from OTEL_RESOURCE_ATTRIBUTES", where, kv.Key, v)
+		}
 	}
 }

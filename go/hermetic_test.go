@@ -51,6 +51,40 @@ func TestWithoutOTELEnvDisablesLogExportWithoutExporter(t *testing.T) {
 	}
 }
 
+// The log provider merges the environment resource underneath the one it is
+// given; ambient keys must be shadowed so none reaches an exported record.
+func TestWithoutOTELEnvShadowsAmbientResourceOnLogs(t *testing.T) {
+	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "team=ambient-team,host.name=ambient-host")
+	exp := &memLogExporter{}
+	sdk, err := o11y.New(context.Background(),
+		o11y.WithServiceName("hermetic"), o11y.WithEnvironment(spec.EnvironmentTest),
+		o11y.WithoutOTELEnv(), o11y.WithoutConsoleLog(), o11y.WithoutRuntimeMetrics(),
+		o11y.WithLogExporter(exp))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = sdk.Shutdown(context.Background()) })
+
+	sdk.Logger().Info("hello")
+	if err := sdk.ForceFlush(context.Background()); err != nil {
+		t.Fatalf("ForceFlush: %v", err)
+	}
+	recs := exp.snapshot()
+	if len(recs) != 1 {
+		t.Fatalf("exported %d records, want 1", len(recs))
+	}
+	for _, kv := range recs[0].Resource().Attributes() {
+		if v := kv.Value.String(); v == "ambient-team" || v == "ambient-host" {
+			t.Errorf("log record resource carries ambient %s=%q from OTEL_RESOURCE_ATTRIBUTES", kv.Key, v)
+		}
+	}
+	for _, kv := range sdk.Resource().Attributes() {
+		if v := kv.Value.String(); v == "ambient-team" || v == "ambient-host" {
+			t.Errorf("SDK resource carries ambient %s=%q", kv.Key, v)
+		}
+	}
+}
+
 func TestWithoutOTELEnvPinsLogRecordLimits(t *testing.T) {
 	t.Setenv("OTEL_LOGRECORD_ATTRIBUTE_COUNT_LIMIT", "1")
 	t.Setenv("OTEL_LOGRECORD_ATTRIBUTE_VALUE_LENGTH_LIMIT", "1")

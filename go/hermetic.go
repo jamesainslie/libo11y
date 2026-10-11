@@ -4,14 +4,19 @@ import (
 	"os"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
 // WithoutOTELEnv makes the SDK ignore the OTEL_* environment variables: its
 // configuration comes only from options and library defaults. The resource
-// omits OTEL_RESOURCE_ATTRIBUTES and OTEL_SERVICE_NAME; sampler, span limits,
+// takes no values from OTEL_RESOURCE_ATTRIBUTES or OTEL_SERVICE_NAME, and
+// every ambient key it does not otherwise define is shadowed with an empty
+// string value, because the OTel providers always merge the environment
+// resource underneath the one they are given; sampler, span limits,
 // log record limits, batching, cardinality limit, and exemplar filter use the
 // SDK defaults; and a signal with no injected exporter, processor, or reader
 // is disabled instead of being built from the environment (traces are still
@@ -31,6 +36,11 @@ import (
 // Pinned by an explicit option under WithoutOTELEnv:
 //   - OTEL_RESOURCE_ATTRIBUTES, OTEL_SERVICE_NAME (sdk/resource fromEnv):
 //     resource.WithFromEnv is omitted from the resource detectors.
+//   - OTEL_RESOURCE_ATTRIBUTES, OTEL_SERVICE_NAME (sdk/trace, sdk/metric, and
+//     sdk/log WithResource, which each compute
+//     resource.Merge(resource.Environment(), res)): shadowEnvironment adds
+//     every ambient key the library resource does not define with an empty
+//     value, so the library resource wins every key in that merge.
 //   - OTEL_TRACES_SAMPLER, OTEL_TRACES_SAMPLER_ARG (sdk/trace samplerFromEnv):
 //     sdktrace.WithSampler(ParentBased(AlwaysSample())) unless a sampler
 //     option is given.
@@ -69,14 +79,7 @@ import (
 //     sdk/log): SDK self-observability metrics go to the global meter
 //     provider, never to this SDK's pipelines.
 //
-// Not pinnable in v1.47.0 (no option overrides them):
-//   - OTEL_RESOURCE_ATTRIBUTES, OTEL_SERVICE_NAME (sdk/trace, sdk/metric, and
-//     sdk/log WithResource each merge resource.Environment() beneath the
-//     given resource): [SDK.Resource] is environment-free and every key the
-//     library resource defines (service.*, deployment.environment.name,
-//     host.*, process.runtime.*, telemetry.sdk.*, container.*) keeps its
-//     library value, but an ambient key absent from the library resource
-//     appears on the telemetry the providers emit.
+// Experimental switches not pinnable in v1.47.0 (no option overrides them):
 //   - OTEL_GO_X_PER_SERIES_START_TIMESTAMPS (sdk/metric aggregates): changes
 //     the start timestamps of metric data points.
 //   - OTEL_GO_X_DEPRECATED_RUNTIME_METRICS (contrib runtime): adds the
@@ -109,6 +112,40 @@ func (s *settings) envOr(key, fallback string) string {
 	}
 	return fallback
 }
+
+// shadowEnvironment returns res extended with an empty-string attribute for
+// every key of the environment resource (OTEL_RESOURCE_ATTRIBUTES and
+// OTEL_SERVICE_NAME, as parsed by resource.Environment) that res does not
+// already define and for which shadow reports true. The schema URL of res
+// is kept.
+//
+// The trace, metric, and log providers' WithResource options always compute
+// resource.Merge(resource.Environment(), res), in which res wins on key
+// conflicts. A shadowed key therefore reaches every provider with the empty
+// value from res instead of its ambient value.
+func shadowEnvironment(res *resource.Resource, shadow func(attribute.Key) bool) *resource.Resource {
+	env := resource.Environment()
+	if env.Len() == 0 {
+		return res
+	}
+	present := res.Set()
+	attrs := res.Attributes()
+	added := false
+	for _, kv := range env.Attributes() {
+		if present.HasValue(kv.Key) || !shadow(kv.Key) {
+			continue
+		}
+		attrs = append(attrs, attribute.String(string(kv.Key), ""))
+		added = true
+	}
+	if !added {
+		return res
+	}
+	return resource.NewWithAttributes(res.SchemaURL(), attrs...)
+}
+
+// shadowAll is the shadowEnvironment selector used under WithoutOTELEnv.
+func shadowAll(attribute.Key) bool { return true }
 
 // defaultSpanLimits returns the sdk/trace default span limits without
 // consulting the OTEL_SPAN_*, OTEL_EVENT_*, OTEL_LINK_*, and OTEL_ATTRIBUTE_*
