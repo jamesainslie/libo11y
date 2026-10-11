@@ -16,6 +16,28 @@ import (
 	"github.com/jamesainslie/libo11y/go/spec"
 )
 
+// trackedServer starts a quiet server for h and returns a wait function that
+// blocks until one request has finished in the handler. The client can see
+// the response (headers, a flush, a closed connection) before the handler
+// returns and emits its summary, so tests wait before reading summaries.
+func trackedServer(t *testing.T, h http.Handler) (*httptest.Server, func()) {
+	t.Helper()
+	done := make(chan struct{}, 8)
+	srv := quietServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() { done <- struct{}{} }() // runs after the summary, even while panicking
+		h.ServeHTTP(w, r)
+	}))
+	wait := func() {
+		t.Helper()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Fatal("handler did not finish")
+		}
+	}
+	return srv, wait
+}
+
 func TestCanonicalSummaryReportsCommittedStatus(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -43,7 +65,7 @@ func TestCanonicalSummaryReportsCommittedStatus(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			env := newCanonicalEnv(t)
-			srv := quietServer(o11yhttp.NewHandler(tc.handler, "status",
+			srv, wait := trackedServer(t, o11yhttp.NewHandler(tc.handler, "status",
 				o11yhttp.WithSDK(env.sdk), o11yhttp.WithCanonicalLine()))
 			defer srv.Close()
 
@@ -59,6 +81,7 @@ func TestCanonicalSummaryReportsCommittedStatus(t *testing.T) {
 			} else if err == nil {
 				_ = resp.Body.Close()
 			}
+			wait()
 
 			s := env.summaries()
 			if len(s) != 1 {
@@ -92,11 +115,7 @@ func TestCanonicalSummaryAfterHijack(t *testing.T) {
 					panic("boom")
 				}
 			}), "hijack", o11yhttp.WithSDK(env.sdk), o11yhttp.WithCanonicalLine())
-			done := make(chan struct{})
-			srv := quietServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				defer close(done) // runs after the summary, even while panicking
-				h.ServeHTTP(w, r)
-			}))
+			srv, wait := trackedServer(t, h)
 			defer srv.Close()
 
 			conn, err := net.Dial("tcp", srv.Listener.Addr().String())
@@ -111,11 +130,7 @@ func TestCanonicalSummaryAfterHijack(t *testing.T) {
 			if err != nil || !strings.HasPrefix(line, "HTTP/1.1 101 ") {
 				t.Fatalf("status line = %q, %v; want HTTP/1.1 101", line, err)
 			}
-			select {
-			case <-done:
-			case <-time.After(10 * time.Second):
-				t.Fatal("handler did not finish")
-			}
+			wait()
 
 			s := env.summaries()
 			if len(s) != 1 {
