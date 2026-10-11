@@ -688,6 +688,70 @@ func TestPassthroughLogValuerResultIsWalked(t *testing.T) {
 	}
 }
 
+type taggedKey struct {
+	ID    string
+	Token string `o11y:"secret"`
+}
+
+func TestMapKeysWithTaggedTypesFailClosed(t *testing.T) {
+	type holder struct {
+		ByKey map[taggedKey]int
+		ByAny map[any]int
+	}
+	out := logJSONString(t, "v", redact.Struct(holder{
+		ByKey: map[taggedKey]int{{ID: "k1", Token: "raw-key-tok-1"}: 1, {ID: "k2", Token: "raw-key-tok-2"}: 2},
+		ByAny: map[any]int{taggedKey{ID: "k3", Token: "raw-key-tok-3"}: 3, "plain": 4},
+	}))
+	if strings.Contains(out, "raw-key-tok") {
+		t.Fatalf("tagged map key leaked: %s", out)
+	}
+	var m struct {
+		V struct {
+			ByKey map[string]struct {
+				Key   string
+				Value int
+			}
+			ByAny map[string]struct {
+				Key   string
+				Value int
+			}
+		}
+	}
+	if err := json.Unmarshal([]byte(out), &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(m.V.ByKey) != 2 {
+		t.Errorf("redacted keys must not collide; want 2 entries, got %d: %s", len(m.V.ByKey), out)
+	}
+	for pos, entry := range m.V.ByKey {
+		if entry.Key != redact.Redacted {
+			t.Errorf("entry %s key = %q, want %s", pos, entry.Key, redact.Redacted)
+		}
+	}
+	keys := map[string]int{}
+	for _, entry := range m.V.ByAny {
+		keys[entry.Key] = entry.Value
+	}
+	if keys[redact.Redacted] != 3 || keys["plain"] != 4 {
+		t.Errorf("map[any] keys = %v, want REDACTED:3 and plain:4: %s", keys, out)
+	}
+}
+
+func TestMapOrderingIsDeterministic(t *testing.T) {
+	type holder struct {
+		M map[any]int
+	}
+	v := holder{M: map[any]int{1: 10, "1": 20, int64(1): 30, "0": 40}}
+	first := logJSONString(t, "v", redact.Struct(v))
+	_, firstV, _ := strings.Cut(first, `"v":`)
+	for range 30 {
+		_, got, _ := strings.Cut(logJSONString(t, "v", redact.Struct(v)), `"v":`)
+		if got != firstV {
+			t.Fatalf("map ordering is not deterministic:\n%s\n%s", firstV, got)
+		}
+	}
+}
+
 type panicStringer struct{ N int }
 
 func (panicStringer) String() string { panic("boom") }

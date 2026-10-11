@@ -36,12 +36,13 @@
 package redact
 
 import (
+	"cmp"
 	"encoding"
 	"fmt"
 	"io"
 	"log/slog"
 	"reflect"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -164,9 +165,21 @@ const maxDepth = 32
 // in scope wins through nesting: fields of a struct inside a masked field
 // are masked at minimum. Protection follows values into slices, arrays,
 // maps, pointers, and interfaces, so a []Payment element is exactly as
-// protected as a Payment field. Map entries render sorted by key. Under a
-// mask floor, map entries render as a group keyed by sorted position, each
-// holding the masked key and the protected value.
+// protected as a Payment field.
+//
+// Non-struct values are walked the same way. Slices and arrays render as a
+// group keyed by index. Maps render as a group sorted by key text (ties
+// broken by the key's dynamic type name). Under a mask floor, or when a key's
+// type may carry protection, map entries instead render as a group keyed by
+// sorted position, each holding the protected key (masked, or REDACTED for a
+// key whose type has tagged fields, a LogValuer, or an interface component)
+// and the protected value. A value implementing [encoding.TextMarshaler] or
+// [fmt.Stringer] whose type cannot carry protection (time.Time, net.IP,
+// netip.Addr) renders as its text form, masked under a mask floor; any other
+// such value is walked so a String method cannot fold a tagged field into
+// its text, and a panicking String or MarshalText renders REDACTED. A nil
+// value, nil pointer, nil interface, nil slice, or nil map renders as a nil
+// value. Scalars render unchanged, or masked under a mask floor.
 //
 // A nested value implementing [slog.LogValuer] is rendered through its own
 // LogValue (under passthrough and mask floors), so self-protecting types
@@ -177,8 +190,6 @@ const maxDepth = 32
 // LogValuer that carries data in group keys must protect those keys itself.
 // Cyclic or deeper than 32-level structures render as REDACTED rather than
 // recursing without bound.
-//
-// Non-struct values pass through unchanged.
 func Struct(v any) slog.LogValuer {
 	return structValuer{v: v}
 }
@@ -296,27 +307,32 @@ func protectValue(v reflect.Value, floor protection, depth int) slog.Value {
 			return slog.AnyValue(nil)
 		}
 		keys := v.MapKeys()
-		rendered := make([]string, len(keys))
+		entries := make([]mapEntry, len(keys))
+		positional := floor == mask
 		for i, k := range keys {
-			rendered[i] = fmt.Sprint(k.Interface())
+			entries[i] = renderMapKey(k)
+			entries[i].index = i
+			positional = positional || entries[i].redacted
 		}
-		order := make([]int, len(keys))
-		for i := range order {
-			order[i] = i
-		}
-		sort.SliceStable(order, func(a, b int) bool { return rendered[order[a]] < rendered[order[b]] })
-		attrs := make([]slog.Attr, 0, len(keys))
-		for pos, i := range order {
-			value := protectValue(v.MapIndex(keys[i]), floor, depth+1)
-			if floor == mask {
-				// Masked keys of equal length would collide, so entries are
-				// keyed by position and carry the masked key alongside.
-				attrs = append(attrs, slog.Group(strconv.Itoa(pos),
-					slog.String("key", maskString(rendered[i])),
-					slog.Any("value", value)))
+		slices.SortStableFunc(entries, func(a, b mapEntry) int {
+			return cmp.Or(cmp.Compare(a.text, b.text), cmp.Compare(a.typeName, b.typeName))
+		})
+		attrs := make([]slog.Attr, 0, len(entries))
+		for pos, e := range entries {
+			value := protectValue(v.MapIndex(keys[e.index]), floor, depth+1)
+			if !positional {
+				attrs = append(attrs, slog.Attr{Key: e.text, Value: value})
 				continue
 			}
-			attrs = append(attrs, slog.Attr{Key: rendered[i], Value: value})
+			// Masked or redacted keys would collide, so entries are keyed by
+			// position and carry the protected key alongside.
+			key := e.text
+			if floor == mask && !e.redacted {
+				key = maskString(key)
+			}
+			attrs = append(attrs, slog.Group(strconv.Itoa(pos),
+				slog.String("key", key),
+				slog.Any("value", value)))
 		}
 		return slog.GroupValue(attrs...)
 
@@ -326,6 +342,39 @@ func protectValue(v reflect.Value, floor protection, depth int) slog.Value {
 		}
 		return slog.AnyValue(v.Interface())
 	}
+}
+
+// mapEntry is a map key prepared for rendering: its text, the dynamic type
+// name used as a deterministic sort tiebreaker, whether the text was
+// redacted, and the key's index in the MapKeys result.
+type mapEntry struct {
+	text     string
+	typeName string
+	redacted bool
+	index    int
+}
+
+// renderMapKey renders a map key safely. A key whose dynamic type may carry
+// protection renders REDACTED (fail closed: fmt.Sprint would print tagged
+// fields raw); other keys use their text form or fmt.Sprint.
+func renderMapKey(k reflect.Value) mapEntry {
+	for k.Kind() == reflect.Interface && !k.IsNil() {
+		k = k.Elem()
+	}
+	entry := mapEntry{typeName: fmt.Sprintf("%T", k.Interface())}
+	switch {
+	case k.Kind() == reflect.Interface: // nil interface key
+		entry.text = fmt.Sprint(k.Interface())
+	case mayCarryProtection(k.Type()):
+		entry.text, entry.redacted = Redacted, true
+	default:
+		if text, ok := leafText(k); ok {
+			entry.text = text
+		} else {
+			entry.text = fmt.Sprint(k.Interface())
+		}
+	}
+	return entry
 }
 
 // leafText returns the text form of values that are opaque leaves rather
