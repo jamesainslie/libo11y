@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	o11y "github.com/jamesainslie/libo11y/go"
 	"github.com/jamesainslie/libo11y/go/spec"
@@ -94,6 +96,7 @@ func NewHandler(handler http.Handler, operation string, opts ...Option) http.Han
 	if cfg.canonicalLine {
 		handler = cfg.wrapCanonical(handler)
 	}
+	handler = cfg.recordPanics(handler)
 	return otelhttp.NewHandler(handler, operation, cfg.serverOptions()...)
 }
 
@@ -106,7 +109,7 @@ func NewMiddleware(operation string, opts ...Option) func(http.Handler) http.Han
 		if cfg.canonicalLine {
 			next = cfg.wrapCanonical(next)
 		}
-		return otel(next)
+		return otel(cfg.recordPanics(next))
 	}
 }
 
@@ -126,6 +129,42 @@ func newConfig(opts []Option) *config {
 	return cfg
 }
 
+// allowed reports whether every configured filter admits r, matching the
+// decision otelhttp makes before it starts a span.
+func (c *config) allowed(r *http.Request) bool {
+	for _, allow := range c.filters {
+		if !allow(r) {
+			return false
+		}
+	}
+	return true
+}
+
+// recordPanics marks the active server span as failed when the handler
+// panics, then re-panics so net/http's own recovery still runs. otelhttp has
+// no recover of its own, so without this a panicking request ends with an
+// Unset span status. It sits inside otelhttp so the span is in context.
+// The exception event itself is not recorded here: the SDK span's End,
+// deferred by otelhttp, already records one for an in-flight panic, and a
+// second would duplicate it. Filtered requests have no server span, so
+// they pass straight through rather than marking whatever span an outer
+// layer put in the context.
+func (c *config) recordPanics(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !c.allowed(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		defer func() {
+			if p := recover(); p != nil {
+				trace.SpanFromContext(r.Context()).SetStatus(codes.Error, "panic")
+				panic(p)
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
 // wrapCanonical installs a per-request wide-event record and flushes it as
 // the o11y.request.summary event when the request completes, including on
 // panic. It runs inside the otelhttp span, so the event is correlated.
@@ -134,11 +173,9 @@ func (c *config) wrapCanonical(next http.Handler) http.Handler {
 		return next // no SDK to emit through; canonical line is a no-op
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, outer *http.Request) {
-		for _, allow := range c.filters {
-			if !allow(outer) {
-				next.ServeHTTP(w, outer) // filtered: not traced, measured, or summarized
-				return
-			}
+		if !c.allowed(outer) {
+			next.ServeHTTP(w, outer) // filtered: not traced, measured, or summarized
+			return
 		}
 		start := time.Now()
 		ctx, record := o11y.StartRecord(outer.Context())
@@ -171,12 +208,16 @@ func (c *config) wrapCanonical(next http.Handler) http.Handler {
 			if panicked || status >= 500 {
 				outcome = spec.OutcomeFailure
 			}
-			attrs := []slog.Attr{
-				slog.String("http.request.method", r.Method),
+			method, exact := normalizeMethod(r.Method)
+			attrs := []slog.Attr{slog.String("http.request.method", method)}
+			if !exact {
+				attrs = append(attrs, slog.String("http.request.method_original", r.Method))
+			}
+			attrs = append(attrs,
 				slog.Int("http.response.status_code", status),
 				slog.String(string(spec.OutcomeKey), string(outcome)),
 				slog.Float64(string(spec.DurationKey), time.Since(start).Seconds()),
-			}
+			)
 			if r.Pattern != "" {
 				attrs = append(attrs, slog.String("http.route", routeOnly(r.Pattern)))
 			}
@@ -230,16 +271,54 @@ func (c *config) transportOptions() []otelhttp.Option {
 
 // defaultSpanName names spans "METHOD pattern" when a ServeMux route
 // pattern is available, keeping cardinality bounded while staying
-// human-readable.
+// human-readable. Methods outside the semantic-convention set are named
+// "HTTP", as otelhttp does, so arbitrary request methods cannot mint new
+// span names.
 func defaultSpanName(operation string, r *http.Request) string {
+	method, _ := normalizeMethod(r.Method)
+	if method == methodOther {
+		method = "HTTP" // semconv: unknown methods name the span "HTTP"
+	}
 	if r.Pattern != "" {
 		if strings.Contains(r.Pattern, " ") {
-			return r.Pattern // pattern registered with a method, e.g. "GET /users/{id}"
+			return r.Pattern // registered with a method, so the method is known
 		}
-		return r.Method + " " + r.Pattern
+		return method + " " + r.Pattern
 	}
 	if operation != "" {
 		return operation
 	}
-	return r.Method
+	return method
+}
+
+// methodOther is the semantic-convention value for methods outside the
+// known set.
+const methodOther = "_OTHER"
+
+// knownMethods mirrors the semantic-convention method set otelhttp uses
+// (methodLookup in otelhttp v0.72.0 internal/semconv/util.go); keep it in
+// sync with otelhttp's internal semconv method table.
+var knownMethods = map[string]bool{
+	http.MethodConnect: true, http.MethodDelete: true, http.MethodGet: true,
+	http.MethodHead: true, http.MethodOptions: true, http.MethodPatch: true,
+	http.MethodPost: true, http.MethodPut: true, http.MethodTrace: true,
+}
+
+// normalizeMethod maps a request method onto the bounded semantic-convention
+// set the way otelhttp does for server spans: a known method passes through,
+// a known method in another case is upper-cased, and anything else becomes
+// "_OTHER". exact reports whether http.request.method_original can be
+// omitted: the method is already in normalized form, or it is empty, for
+// which otelhttp records no original either.
+func normalizeMethod(method string) (normalized string, exact bool) {
+	if method == "" {
+		return methodOther, true // otelhttp records no original for an empty method
+	}
+	if knownMethods[method] {
+		return method, true
+	}
+	if upper := strings.ToUpper(method); knownMethods[upper] {
+		return upper, false
+	}
+	return methodOther, false
 }

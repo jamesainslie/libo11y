@@ -2,6 +2,7 @@ package o11yhttp_test
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -256,5 +258,103 @@ func TestCanonicalLineHonorsFilters(t *testing.T) {
 	}
 	if n := len(env.spans.Ended()); n != 1 {
 		t.Fatalf("got %d spans, want 1", n)
+	}
+}
+
+func TestPanicMarksServerSpanError(t *testing.T) {
+	for _, canonical := range []bool{false, true} {
+		t.Run(fmt.Sprintf("canonical=%v", canonical), func(t *testing.T) {
+			t.Parallel()
+			env := newCanonicalEnv(t)
+			opts := []o11yhttp.Option{o11yhttp.WithSDK(env.sdk)}
+			if canonical {
+				opts = append(opts, o11yhttp.WithCanonicalLine())
+			}
+			h := o11yhttp.NewHandler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic("boom") }), "p", opts...)
+			func() {
+				defer func() {
+					if recover() == nil {
+						t.Error("panic was swallowed; it must propagate")
+					}
+				}()
+				h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+			}()
+			spans := env.spans.Ended()
+			if len(spans) != 1 {
+				t.Fatalf("got %d spans", len(spans))
+			}
+			if spans[0].Status().Code != codes.Error {
+				t.Errorf("span status = %v, want Error", spans[0].Status())
+			}
+			exceptions := 0
+			for _, e := range spans[0].Events() {
+				if e.Name == "exception" {
+					exceptions++
+				}
+			}
+			if exceptions != 1 {
+				t.Errorf("span has %d exception events, want 1", exceptions)
+			}
+		})
+	}
+}
+
+func TestUnknownMethodNormalized(t *testing.T) {
+	t.Parallel()
+	env := newCanonicalEnv(t)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/items/{id}", func(http.ResponseWriter, *http.Request) {})
+	h := o11yhttp.NewHandler(mux, "m", o11yhttp.WithSDK(env.sdk), o11yhttp.WithCanonicalLine())
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("XQZ123", "/items/7", nil))
+
+	if name := env.spans.Ended()[0].Name(); name != "HTTP /items/{id}" {
+		t.Errorf("span name = %q, want HTTP /items/{id}", name)
+	}
+	s := env.summaries()[0]
+	if s["http.request.method"] != "_OTHER" || s["http.request.method_original"] != "XQZ123" {
+		t.Errorf("summary method = %v / %v, want _OTHER / XQZ123", s["http.request.method"], s["http.request.method_original"])
+	}
+}
+
+// TestKnownMethodCaseNormalized pins otelhttp's server behavior for a known
+// method in another case: the method is upper-cased and the original kept.
+func TestKnownMethodCaseNormalized(t *testing.T) {
+	t.Parallel()
+	env := newCanonicalEnv(t)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/items/{id}", func(http.ResponseWriter, *http.Request) {})
+	h := o11yhttp.NewHandler(mux, "m", o11yhttp.WithSDK(env.sdk), o11yhttp.WithCanonicalLine())
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("get", "/items/7", nil))
+
+	if name := env.spans.Ended()[0].Name(); name != "GET /items/{id}" {
+		t.Errorf("span name = %q, want GET /items/{id}", name)
+	}
+	s := env.summaries()[0]
+	if s["http.request.method"] != http.MethodGet || s["http.request.method_original"] != "get" {
+		t.Errorf("summary method = %v / %v, want GET / get", s["http.request.method"], s["http.request.method_original"])
+	}
+}
+
+// TestFilteredPanicLeavesOuterSpan checks that a filtered request, which has
+// no server span of its own, does not mark a span an outer layer started.
+func TestFilteredPanicLeavesOuterSpan(t *testing.T) {
+	t.Parallel()
+	env := newCanonicalEnv(t)
+	h := o11yhttp.NewHandler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic("boom") }), "p",
+		o11yhttp.WithSDK(env.sdk), o11yhttp.WithCanonicalLine(), o11yhttp.WithIgnorePaths("/healthz"))
+	ctx, outer := env.sdk.TracerProvider().Tracer("outer").Start(context.Background(), "outer")
+	func() {
+		defer func() { _ = recover() }()
+		req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/healthz", nil)
+		h.ServeHTTP(httptest.NewRecorder(), req)
+	}()
+	outer.End()
+
+	spans := env.spans.Ended()
+	if len(spans) != 1 || spans[0].Name() != "outer" {
+		t.Fatalf("spans = %d, want only the outer span", len(spans))
+	}
+	if code := spans[0].Status().Code; code != codes.Unset {
+		t.Errorf("outer span status = %v, want Unset", code)
 	}
 }
