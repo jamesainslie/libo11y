@@ -116,8 +116,10 @@ groups:
 // annotation) from a signal group is flagged via the prebuilt index.
 func TestSecretReferencedAcrossGroupsFlagged(t *testing.T) {
 	groups := []group{
-		{ID: "libo11y.resource.forbidden", Attributes: []attr{{Ref: "x.secret",
-			Annotations: map[string]string{"o11y.sensitivity": "secret"}}}},
+		{ID: "libo11y.resource.forbidden", Attributes: []attr{{
+			Ref:         "x.secret",
+			Annotations: map[string]string{"o11y.sensitivity": "secret"},
+		}}},
 		{ID: "some.signal.group", Type: "attribute_group", Attributes: []attr{{Ref: "x.secret"}}},
 	}
 	idx := buildIndex(groups)
