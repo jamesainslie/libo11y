@@ -1,7 +1,11 @@
 package o11y
 
 import (
+	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"sync"
 	"testing"
 
@@ -206,6 +210,17 @@ func lookupAttr(attrs []attribute.KeyValue, key attribute.Key) (attribute.Value,
 	return attribute.Value{}, false
 }
 
+// internalTestKey is the PIIHash key for in-package tests.
+var internalTestKey = bytes.Repeat([]byte("k"), minPIIHashKeyLen)
+
+// wantToken computes the expected PIIHash token independently of the
+// policy: HMAC-SHA256 over the canonical value, truncated to 128 bits.
+func wantToken(key []byte, canonical string) string {
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte(canonical))
+	return "hmac-sha256:" + hex.EncodeToString(mac.Sum(nil)[:16])
+}
+
 func TestRedactingExporterAppliesPIIMode(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -215,10 +230,10 @@ func TestRedactingExporterAppliesPIIMode(t *testing.T) {
 	}{
 		{name: "drop", mode: PIIDrop, present: false},
 		{name: "allow", mode: PIIAllow, present: true, want: "10.0.0.1"},
-		{name: "hash", mode: PIIHash, present: true, want: hashValue("10.0.0.1")},
+		{name: "hash", mode: PIIHash, present: true, want: wantToken(internalTestKey, "10.0.0.1")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			policy := newSensitivityPolicy(newSettings([]Option{WithPIIMode(tc.mode)}), nil)
+			policy := newSensitivityPolicy(newSettings([]Option{WithPIIMode(tc.mode), WithPIIHashKey(internalTestKey)}), nil)
 			for where, attrs := range spanAttrSets(t, exportOnePIISpan(t, policy)) {
 				got, ok := lookupAttr(attrs, "host.ip")
 				if ok != tc.present {
@@ -239,7 +254,7 @@ func TestRedactingExporterCountsOneViolationPerPIIAttribute(t *testing.T) {
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
-	policy := newSensitivityPolicy(newSettings([]Option{WithPIIMode(PIIHash)}), newViolationRecorder(mp))
+	policy := newSensitivityPolicy(newSettings([]Option{WithPIIMode(PIIHash), WithPIIHashKey(internalTestKey)}), newViolationRecorder(mp))
 
 	stub := &captureExporter{}
 	tp := sdktrace.NewTracerProvider(

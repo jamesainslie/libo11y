@@ -85,6 +85,9 @@ func New(ctx context.Context, opts ...Option) (*SDK, error) {
 }
 
 func newSDK(ctx context.Context, s *settings) (_ *SDK, err error) {
+	if s.piiMode == PIIHash && len(s.piiHashKey) < minPIIHashKeyLen {
+		return nil, ErrPIIHashKey
+	}
 	res, err := buildResource(ctx, s)
 	if err != nil {
 		return nil, err

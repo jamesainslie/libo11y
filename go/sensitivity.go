@@ -2,8 +2,6 @@ package o11y
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"strings"
 
 	"go.opentelemetry.io/otel/metric"
@@ -17,11 +15,12 @@ import (
 type PIIMode int
 
 const (
-	// PIIHash replaces a PII value with a short salted-free SHA-256 prefix,
-	// preserving joinability without exposing the value. This is the default.
-	PIIHash PIIMode = iota
-	// PIIDrop removes PII attributes entirely.
-	PIIDrop
+	// PIIDrop removes PII attributes entirely. This is the default.
+	PIIDrop PIIMode = iota
+	// PIIHash replaces a PII value with a keyed HMAC-SHA256 token, so values
+	// stay joinable across records without being reversible by anyone who
+	// lacks the key. Requires [WithPIIHashKey].
+	PIIHash
 	// PIIAllow emits PII attributes unchanged. Never the default; requires
 	// an explicit opt-in and a data-handling justification.
 	PIIAllow
@@ -68,10 +67,4 @@ func effectiveKey(groups []string, key string) string {
 		return key
 	}
 	return strings.Join(groups, ".") + "." + key
-}
-
-// hashValue renders a stable, non-reversible token for a PII value.
-func hashValue(v string) string {
-	sum := sha256.Sum256([]byte(v))
-	return "sha256:" + hex.EncodeToString(sum[:8])
 }

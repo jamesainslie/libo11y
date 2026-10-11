@@ -19,6 +19,11 @@ var ErrNoServiceName = errors.New("o11y: service name required: set WithServiceN
 // identity requirements to observed violations during migration.
 var ErrNoEnvironment = errors.New("o11y: deployment environment required: set WithEnvironment or deployment.environment.name")
 
+// ErrPIIHashKey reports that PIIHash was selected without a key of at least
+// 32 bytes. An unkeyed hash of a low-entropy value such as an IPv4 address
+// is reversible by enumeration, so the library refuses to start.
+var ErrPIIHashKey = errors.New("o11y: PIIHash requires WithPIIHashKey with a key of at least 32 bytes")
+
 // ErrInvalidEnvironment is returned when the resolved deployment environment
 // is not in the allowed set. Extend the set with [WithEnvironmentValues].
 var ErrInvalidEnvironment = errors.New("o11y: deployment environment not in the allowed set")

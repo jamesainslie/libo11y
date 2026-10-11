@@ -13,18 +13,20 @@ import (
 )
 
 // The forbidden PII attributes (host.ip, device.id, ...) are classified pii
-// by the spec, so they are hashed by default and dropped under PIIDrop.
+// by the spec, so they are dropped by default (PIIDrop) and tokenized under
+// PIIHash with a key. TestPIIAttributesDroppedByDefault is in
+// piihash_test.go.
 
-func TestPIIAttributesHashedByDefault(t *testing.T) {
-	sdk, _, _, console := newHermetic(t)
+func TestPIIModeHashLeavesOtherAttributes(t *testing.T) {
+	sdk, _, _, console := newHermetic(t, o11y.WithPIIMode(o11y.PIIHash), o11y.WithPIIHashKey(testKey))
 	sdk.Logger().Info("event", "host.ip", "10.1.2.3", "ok", "yes")
 
 	records := consoleRecords(t, console)
 	if got := records[0]["host.ip"]; got == "10.1.2.3" {
 		t.Error("PII attribute host.ip emitted in the clear")
 	}
-	if got, _ := records[0]["host.ip"].(string); !strings.HasPrefix(got, "sha256:") {
-		t.Errorf("host.ip = %v, want a sha256 token", records[0]["host.ip"])
+	if got, _ := records[0]["host.ip"].(string); !strings.HasPrefix(got, "hmac-sha256:") {
+		t.Errorf("host.ip = %v, want an hmac-sha256 token", records[0]["host.ip"])
 	}
 	if records[0]["ok"] != "yes" {
 		t.Error("unrelated attribute altered")
@@ -54,7 +56,7 @@ func TestPIIModeAllow(t *testing.T) {
 func TestSpecReplacerRunsAfterUserReplacer(t *testing.T) {
 	// A user replacer renames a benign key to a PII-classified one; the
 	// spec layer must still catch it (cannot be bypassed by renaming).
-	sdk, _, _, console := newHermetic(t, o11y.WithAttrReplacer(
+	sdk, _, _, console := newHermetic(t, o11y.WithPIIMode(o11y.PIIHash), o11y.WithPIIHashKey(testKey), o11y.WithAttrReplacer(
 		func(_ []string, a slog.Attr) slog.Attr {
 			if a.Key == "addr" {
 				a.Key = "host.ip"
@@ -65,7 +67,7 @@ func TestSpecReplacerRunsAfterUserReplacer(t *testing.T) {
 	sdk.Logger().Info("event", "addr", "10.9.9.9")
 
 	records := consoleRecords(t, console)
-	if got, _ := records[0]["host.ip"].(string); !strings.HasPrefix(got, "sha256:") {
+	if got, _ := records[0]["host.ip"].(string); !strings.HasPrefix(got, "hmac-sha256:") {
 		t.Errorf("renamed-to-PII attribute not caught by spec layer: %v", records[0]["host.ip"])
 	}
 }

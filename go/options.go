@@ -1,6 +1,7 @@
 package o11y
 
 import (
+	"bytes"
 	"io"
 	"log/slog"
 	"os"
@@ -77,6 +78,7 @@ type settings struct {
 	buildInfo          bool
 	startupSummary     bool
 	piiMode            PIIMode
+	piiHashKey         []byte
 
 	spanExporter  sdktrace.SpanExporter
 	spanProcessor sdktrace.SpanProcessor
@@ -241,9 +243,18 @@ func WithAttrReplacer(replace AttrReplacer) Option {
 // WithPIIMode selects how attributes the specification classifies as PII are
 // handled on logs (every log sink) and on spans (span, event, and link
 // attributes at export). Later releases extend it to every signal. The
-// default is [PIIHash].
+// default is [PIIDrop]. [PIIHash] also needs [WithPIIHashKey].
 func WithPIIMode(mode PIIMode) Option {
 	return func(s *settings) { s.piiMode = mode }
+}
+
+// WithPIIHashKey sets the secret key for [PIIHash] tokens. Use at least 32
+// random bytes from your secret store and keep it stable: rotating the key
+// changes every token and breaks joins across the rotation. The key is
+// copied.
+func WithPIIHashKey(key []byte) Option {
+	key = bytes.Clone(key)
+	return func(s *settings) { s.piiHashKey = key }
 }
 
 // WithExtraLogHandler adds an additional [slog.Handler] as a log sink
