@@ -4,9 +4,13 @@
 //
 // [Start] builds a fully in-memory SDK with o11y.New and o11y.WithoutOTELEnv:
 // no process globals are touched, no exporter dials out, and no OTEL_*
-// variable is read, so harnesses are deterministic and safe under
+// variable affects behavior, so harnesses are deterministic and safe under
 // t.Parallel(). The resource still carries host and process detector values
-// describing the machine.
+// describing the machine. Keys named in OTEL_RESOURCE_ATTRIBUTES appear on
+// the resource, and on recorded telemetry, with empty values (see
+// o11y.WithoutOTELEnv). The OTel SDK constructors still parse some OTEL_*
+// variables, and malformed values are reported to the global otel error
+// handler.
 //
 //	rec := o11ytest.Start(t)
 //	svc := NewCheckoutService(rec.SDK)   // inject providers under test
@@ -75,9 +79,10 @@ func (r LogRecord) Attr(key string) (string, bool) {
 //
 // Defaults: the service name is the test name, log level is Debug, runtime
 // metrics and console output are off, every span is sampled, exemplars use
-// the trace-based filter, OTEL_* variables are ignored, and nothing is
-// exported anywhere. Additional options are applied after these defaults and may override
-// them (for example o11y.WithServiceName or o11y.WithAttrReplacer).
+// the trace-based filter, OTEL_* variables do not affect behavior, and
+// nothing is exported anywhere. Additional options are applied after these
+// defaults and may override them (for example o11y.WithServiceName or
+// o11y.WithAttrReplacer).
 func Start(tb testing.TB, opts ...o11y.Option) *Recorder {
 	tb.Helper()
 

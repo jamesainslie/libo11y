@@ -11,19 +11,28 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
-// WithoutOTELEnv makes the SDK ignore the OTEL_* environment variables: its
-// configuration comes only from options and library defaults. The resource
-// takes no values from OTEL_RESOURCE_ATTRIBUTES or OTEL_SERVICE_NAME, and
-// every ambient key it does not otherwise define is shadowed with an empty
-// string value, because the OTel providers always merge the environment
-// resource underneath the one they are given; sampler, span limits,
-// log record limits, batching, cardinality limit, and exemplar filter use the
-// SDK defaults; and a signal with no injected exporter, processor, or reader
-// is disabled instead of being built from the environment (traces are still
+// WithoutOTELEnv makes the SDK's behavior independent of the OTEL_*
+// environment variables: its configuration comes only from options and
+// library defaults. The resource takes no values from
+// OTEL_RESOURCE_ATTRIBUTES or OTEL_SERVICE_NAME; sampler, span limits, log
+// record limits, batching, cardinality limit, and exemplar filter use the SDK
+// defaults; and a signal with no injected exporter, processor, or reader is
+// disabled instead of being built from the environment (traces are still
 // sampled and visible to in-process processors, metrics have no reader, and
 // logs are not exported). Use it for hermetic tests and for hosting several
 // isolated SDKs in one process. It is the one deliberate exception to
 // option-over-environment-over-default precedence, and it is opt-in.
+//
+// No OTEL_* variable affects behavior, but the variables are still read:
+// the OTel SDK constructors parse some of them before the explicit options
+// override the result, and malformed values are reported to the global otel
+// error handler. Because the OTel providers always merge the environment
+// resource underneath the one they are given, every key named in
+// OTEL_RESOURCE_ATTRIBUTES that the library resource does not define is
+// shadowed: it appears on the resource, and on exported telemetry, with an
+// empty string value. Shadow keys are exported, which matters for collector
+// processors that fill in absent keys (the resource processor's insert
+// action, for example), since such a key is present, not absent.
 //
 // Exporters, processors, and readers the caller injects are constructed by
 // the caller and read whatever environment they read; WithoutOTELEnv governs
@@ -49,14 +58,17 @@ import (
 //     OTEL_SPAN_LINK_COUNT_LIMIT, OTEL_LINK_ATTRIBUTE_COUNT_LIMIT, and their
 //     fallbacks OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT, OTEL_ATTRIBUTE_COUNT_LIMIT
 //     (sdk/trace NewSpanLimits): sdktrace.WithRawSpanLimits(defaults).
-//   - OTEL_BSP_SCHEDULE_DELAY, OTEL_BSP_EXPORT_TIMEOUT, OTEL_BSP_MAX_QUEUE_SIZE,
-//     OTEL_BSP_MAX_EXPORT_BATCH_SIZE (sdk/trace NewBatchSpanProcessor): explicit
-//     batch span processor options with the SDK defaults.
-//   - OTEL_BLRP_SCHEDULE_DELAY, OTEL_BLRP_EXPORT_TIMEOUT, OTEL_BLRP_MAX_QUEUE_SIZE,
-//     OTEL_BLRP_MAX_EXPORT_BATCH_SIZE (sdk/log newBatchConfig): explicit batch
-//     processor options with the SDK defaults.
-//   - OTEL_LOGRECORD_ATTRIBUTE_COUNT_LIMIT, OTEL_LOGRECORD_ATTRIBUTE_VALUE_LENGTH_LIMIT
-//     (sdk/log newProviderConfig): explicit limits with the SDK defaults.
+//   - OTEL_BSP_SCHEDULE_DELAY, OTEL_BSP_EXPORT_TIMEOUT,
+//     OTEL_BSP_MAX_QUEUE_SIZE, OTEL_BSP_MAX_EXPORT_BATCH_SIZE (sdk/trace
+//     NewBatchSpanProcessor): explicit batch span processor options with the
+//     SDK defaults.
+//   - OTEL_BLRP_SCHEDULE_DELAY, OTEL_BLRP_EXPORT_TIMEOUT,
+//     OTEL_BLRP_MAX_QUEUE_SIZE, OTEL_BLRP_MAX_EXPORT_BATCH_SIZE (sdk/log
+//     newBatchConfig): explicit batch processor options with the SDK
+//     defaults.
+//   - OTEL_LOGRECORD_ATTRIBUTE_COUNT_LIMIT,
+//     OTEL_LOGRECORD_ATTRIBUTE_VALUE_LENGTH_LIMIT (sdk/log
+//     newProviderConfig): explicit limits with the SDK defaults.
 //   - OTEL_METRICS_EXEMPLAR_FILTER (sdk/metric meterProviderOptionsFromEnv):
 //     sdkmetric.WithExemplarFilter(TraceBasedFilter) unless a filter option is
 //     given.
@@ -123,6 +135,11 @@ func (s *settings) envOr(key, fallback string) string {
 // resource.Merge(resource.Environment(), res), in which res wins on key
 // conflicts. A shadowed key therefore reaches every provider with the empty
 // value from res instead of its ambient value.
+//
+// OTEL_SERVICE_NAME is shadowed like any other key. When strict identity is
+// off and no service name is configured, res has no service.name, so an
+// ambient OTEL_SERVICE_NAME (or service.name in OTEL_RESOURCE_ATTRIBUTES)
+// inserts an empty service.name.
 func shadowEnvironment(res *resource.Resource, shadow func(attribute.Key) bool) *resource.Resource {
 	env := resource.Environment()
 	if env.Len() == 0 {
