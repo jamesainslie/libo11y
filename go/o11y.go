@@ -89,7 +89,13 @@ func newSDK(ctx context.Context, s *settings) (_ *SDK, err error) {
 	if s.piiMode == PIIHash && len(s.piiHashKey) < minPIIHashKeyLen {
 		return nil, ErrPIIHashKey
 	}
-	res, resourceViolations, err := buildResource(ctx, s)
+	// One policy serves every signal. The resource and the meter provider's
+	// views need it before the violation counter (built on that provider)
+	// exists, so the recorder is attached below, before any provider is
+	// handed out or used concurrently. Resource classification counts its
+	// violations separately, and metric filtering never records any.
+	policy := newSensitivityPolicy(s, nil)
+	res, resourceViolations, err := buildResource(ctx, s, policy)
 	if err != nil {
 		return nil, err
 	}
@@ -113,7 +119,7 @@ func newSDK(ctx context.Context, s *settings) (_ *SDK, err error) {
 		}
 	}()
 
-	meterProvider, err := buildMeterProvider(ctx, s, res)
+	meterProvider, err := buildMeterProvider(ctx, s, res, policy)
 	if err != nil {
 		return nil, err
 	}
@@ -126,7 +132,7 @@ func newSDK(ctx context.Context, s *settings) (_ *SDK, err error) {
 	}
 
 	violations := newViolationRecorder(meterProvider)
-	policy := newSensitivityPolicy(s, violations)
+	policy.rec = violations
 	// The resource was classified before the violation counter existed.
 	for rule, n := range resourceViolations {
 		violations.add(spec.SignalResource, rule, int64(n))
@@ -196,7 +202,7 @@ func buildTracerProvider(ctx context.Context, s *settings, res *resource.Resourc
 	return sdktrace.NewTracerProvider(opts...), nil
 }
 
-func buildMeterProvider(ctx context.Context, s *settings, res *resource.Resource) (*sdkmetric.MeterProvider, error) {
+func buildMeterProvider(ctx context.Context, s *settings, res *resource.Resource, policy *sensitivityPolicy) (*sdkmetric.MeterProvider, error) {
 	opts := []sdkmetric.Option{sdkmetric.WithResource(res)}
 	opts = append(opts, meterProviderOptions(s)...)
 	switch {
@@ -218,7 +224,8 @@ func buildMeterProvider(ctx context.Context, s *settings, res *resource.Resource
 	case s.ignoreEnv:
 		opts = append(opts, sdkmetric.WithExemplarFilter(exemplar.TraceBasedFilter))
 	}
-	for _, view := range s.views {
+	// Every stream, user-defined or default, applies the sensitivity policy.
+	for _, view := range policy.metricViews(s.views) {
 		opts = append(opts, sdkmetric.WithView(view))
 	}
 	return sdkmetric.NewMeterProvider(opts...), nil

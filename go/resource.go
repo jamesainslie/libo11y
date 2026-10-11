@@ -37,7 +37,7 @@ const serviceVersionFallback = "0.0.0-unknown"
 // attributes. Detected values are library defaults, so the environment
 // overrides them per the documented option-over-environment-over-default
 // contract. Under [WithoutOTELEnv] the environment layer is skipped.
-func buildResource(ctx context.Context, s *settings) (*resource.Resource, map[string]int, error) {
+func buildResource(ctx context.Context, s *settings, policy *sensitivityPolicy) (*resource.Resource, map[string]int, error) {
 	explicit := make([]attribute.KeyValue, 0, len(s.resourceAttrs)+4)
 	versionResolved := false
 	if name := strings.TrimSpace(s.serviceName); name != "" {
@@ -94,7 +94,6 @@ func buildResource(ctx context.Context, s *settings) (*resource.Resource, map[st
 	// whatever the detectors carried, so resource merges downstream are
 	// never undefined. Required identity survives classification because
 	// tier-0 keys are classified public.
-	policy := newSensitivityPolicy(s, nil)
 	attrs, counts := classifyResourceAttrs(res.Attributes(), policy)
 	res = resource.NewWithAttributes(spec.SchemaURL, attrs...)
 

@@ -31,13 +31,14 @@ const (
 
 // sensitivityPolicy is the single enforcement point for the specification's
 // sensitivity classification. One policy per SDK serves the classifying slog
-// legs (console, OTLP, and extra sinks) and the span wrappers around the
+// legs (console, OTLP, and extra sinks), the span wrappers around the
 // exporter and any injected processor's OnEnd (span, event, and link
-// attributes). Resource construction runs before the
-// violation counter exists, so it uses a recorder-less policy built from the
-// same settings and newSDK records its counts afterwards. Further signals
-// are added as they are wired to it, so every signal asks the same policy
-// what to do with a key and the signals cannot drift apart.
+// attributes), and the metric views and exemplar reservoirs (data point and
+// exemplar filtered attributes), and the resource. newSDK builds it before
+// the violation counter exists, classifies the resource while it has no
+// recorder (recording those counts afterwards), and attaches the recorder
+// before any provider is handed out. Every signal asks
+// the same policy what to do with a key, so the signals cannot drift apart.
 //
 // Classification is key-based, so a value logged under an entirely
 // unclassified key escapes this layer; that residual gap is inherent and is
@@ -84,6 +85,21 @@ func (p *sensitivityPolicy) decide(signal spec.Signal, key attribute.Key) classA
 		p.rec.record(signal, ruleFor(p.lookup(key)))
 	}
 	return act
+}
+
+// metricKeep reports whether a metric attribute may be exported. Metrics drop
+// secret and PII attributes outright, even under PIIHash, because a distinct
+// token per value would multiply series cardinality. Metric-side removals are
+// not counted as violations: the filter runs on the measurement hot path.
+func (p *sensitivityPolicy) metricKeep(kv attribute.KeyValue) bool {
+	switch p.lookup(kv.Key) {
+	case spectables.Secret:
+		return false
+	case spectables.PII:
+		return p.pii == PIIAllow
+	default:
+		return true
+	}
 }
 
 // ruleFor names the violation rule for an attribute of the given class that

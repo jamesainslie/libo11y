@@ -242,9 +242,10 @@ func WithAttrReplacer(replace AttrReplacer) Option {
 
 // WithPIIMode selects how attributes the specification classifies as PII are
 // handled on logs (every log sink), on spans (span, event, and link
-// attributes at export), and on the telemetry resource. Later releases extend
-// it to every signal. The default is [PIIDrop]. [PIIHash] also needs
-// [WithPIIHashKey].
+// attributes at export and in an injected span processor's OnEnd), and on the
+// telemetry resource. Metric data point and exemplar filtered attributes drop
+// PII under [PIIHash] too, since hashing would multiply series cardinality.
+// The default is [PIIDrop]. [PIIHash] also needs [WithPIIHashKey].
 //
 // A PII or secret key that arrives through OTEL_RESOURCE_ATTRIBUTES and is
 // dropped is exported with an empty value rather than omitted: the OTel
@@ -298,7 +299,10 @@ func WithPropagators(propagators ...propagation.TextMapPropagator) Option {
 	}
 }
 
-// WithViews registers metric views on the meter provider.
+// WithViews registers metric views on the meter provider. Each stream a view
+// produces keeps its own attribute filter and exemplar reservoir, composed
+// with the sensitivity policy, which removes secret and PII attributes from
+// data points and exemplars (see [WithPIIMode]).
 func WithViews(views ...sdkmetric.View) Option {
 	return func(s *settings) { s.views = append(s.views, views...) }
 }

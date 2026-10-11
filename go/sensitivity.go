@@ -11,8 +11,10 @@ import (
 
 // PIIMode selects how attributes the specification classifies as PII are
 // handled on logs (every log sink), on spans (span, event, and link
-// attributes at export), and on the telemetry resource every signal carries.
-// Later releases extend it to every signal.
+// attributes at export and in an injected span processor's OnEnd), and on the
+// telemetry resource every signal carries. Metric data point and exemplar
+// filtered attributes drop PII under every mode but [PIIAllow]: a distinct
+// token per value would multiply series cardinality.
 type PIIMode int
 
 const (
