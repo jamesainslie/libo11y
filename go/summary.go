@@ -43,7 +43,10 @@ func buildSummary(s *settings, sdk *SDK) ([]slog.Attr, string) {
 		metrics = envOr("OTEL_METRICS_EXPORTER", "otlp")
 	}
 	logs := "none"
-	if s.logExport {
+	switch {
+	case s.logExport && s.logExporter != nil:
+		logs = "injected"
+	case s.logExport:
 		logs = envOr("OTEL_LOGS_EXPORTER", "otlp")
 	}
 	console := "off"

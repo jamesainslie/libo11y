@@ -32,6 +32,8 @@ import (
 	"go.opentelemetry.io/contrib/bridges/otelslog"
 	"go.opentelemetry.io/contrib/exporters/autoexport"
 	"go.opentelemetry.io/contrib/instrumentation/runtime"
+	"go.opentelemetry.io/otel/log"
+	lognoop "go.opentelemetry.io/otel/log/noop"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
@@ -216,9 +218,13 @@ func buildLogPipeline(ctx context.Context, s *settings, res *resource.Resource, 
 
 	var loggerProvider *sdklog.LoggerProvider
 	if s.logExport {
-		exporter, err := autoexport.NewLogExporter(ctx)
-		if err != nil {
-			return nil, nil, fmt.Errorf("o11y: building log exporter: %w", err)
+		exporter := s.logExporter
+		if exporter == nil {
+			var err error
+			exporter, err = autoexport.NewLogExporter(ctx)
+			if err != nil {
+				return nil, nil, fmt.Errorf("o11y: building log exporter: %w", err)
+			}
 		}
 		loggerProvider = sdklog.NewLoggerProvider(
 			sdklog.WithResource(res),
@@ -273,6 +279,16 @@ func (s *SDK) Resource() *resource.Resource { return s.res }
 // Handler returns the correlated slog handler backing [SDK.Logger]. Use it
 // to construct additional loggers that share the SDK's log pipeline.
 func (s *SDK) Handler() slog.Handler { return s.handler }
+
+// LoggerProvider returns the SDK's OpenTelemetry logger provider, for log
+// bridges other than slog (otelzap, otellogr, and so on). When log export is
+// disabled it returns a no-op provider.
+func (s *SDK) LoggerProvider() log.LoggerProvider {
+	if s.loggerProvider == nil {
+		return lognoop.NewLoggerProvider()
+	}
+	return s.loggerProvider
+}
 
 // Logger returns a logger that writes to every configured log sink with
 // trace correlation.

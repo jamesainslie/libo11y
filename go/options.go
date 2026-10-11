@@ -9,6 +9,7 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/propagation"
+	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/exemplar"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -59,6 +60,7 @@ type settings struct {
 	consoleFormat   ConsoleFormat
 	consoleEnabled  bool
 	logExport       bool
+	logExporter     sdklog.Exporter
 	attrReplacer    AttrReplacer
 	extraLogHandler []slog.Handler
 
@@ -205,6 +207,17 @@ func WithoutConsoleLog() Option {
 // unaffected. Equivalent to OTEL_LOGS_EXPORTER=none, but scoped to this SDK.
 func WithoutLogExport() Option {
 	return func(s *settings) { s.logExport = false }
+}
+
+// WithLogExporter injects a log record exporter, bypassing the exporter that
+// would otherwise be built from OTEL_LOGS_EXPORTER and OTEL_EXPORTER_OTLP_*
+// environment variables. Records are still batched. It enables log export,
+// overriding an earlier [WithoutLogExport].
+func WithLogExporter(exporter sdklog.Exporter) Option {
+	return func(s *settings) {
+		s.logExporter = exporter
+		s.logExport = exporter != nil
+	}
 }
 
 // WithAttrReplacer installs an attribute replacer applied uniformly to
