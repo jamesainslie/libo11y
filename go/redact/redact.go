@@ -268,7 +268,7 @@ func protectValue(v reflect.Value, floor protection, depth int) slog.Value {
 	if !v.IsValid() {
 		return slog.AnyValue(nil) // Struct(nil)
 	}
-	if v.IsValid() && v.CanInterface() && v.Type().Implements(logValuerType) {
+	if v.CanInterface() && v.Type().Implements(logValuerType) {
 		if valuer, ok := v.Interface().(slog.LogValuer); ok {
 			return resolveProtected(valuer, floor, depth)
 		}
