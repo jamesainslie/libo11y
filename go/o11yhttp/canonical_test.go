@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	o11y "github.com/jamesainslie/libo11y/go"
@@ -57,6 +59,17 @@ func (e canonicalEnv) summaries() []map[string]any {
 		}
 	}
 	return out
+}
+
+// single returns the only ended span and the only request summary, failing
+// the test unless there is exactly one of each.
+func (e canonicalEnv) single(t *testing.T) (sdktrace.ReadOnlySpan, map[string]any) {
+	t.Helper()
+	spans, summaries := e.spans.Ended(), e.summaries()
+	if len(spans) != 1 || len(summaries) != 1 {
+		t.Fatalf("got %d spans and %d summaries, want 1 each", len(spans), len(summaries))
+	}
+	return spans[0], summaries[0]
 }
 
 // durationRoutes returns the http.route values on the server duration histogram.
@@ -238,7 +251,9 @@ func TestCanonicalLineHonorsFilters(t *testing.T) {
 	env := newCanonicalEnv(t)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(http.ResponseWriter, *http.Request) {})
-	mux.HandleFunc("GET /users/{id}", func(http.ResponseWriter, *http.Request) {})
+	mux.HandleFunc("GET /users/{id}", func(_ http.ResponseWriter, r *http.Request) {
+		o11y.RecordFromContext(r.Context()).Set(slog.String("user.id", r.PathValue("id")))
+	})
 	h := o11yhttp.NewHandler(mux, "f", o11yhttp.WithSDK(env.sdk), o11yhttp.WithCanonicalLine(),
 		o11yhttp.WithIgnorePaths("/healthz"),
 		o11yhttp.WithFilter(func(r *http.Request) bool { return r.Header.Get("X-Skip") == "" }))
@@ -258,6 +273,13 @@ func TestCanonicalLineHonorsFilters(t *testing.T) {
 	}
 	if n := len(env.spans.Ended()); n != 1 {
 		t.Fatalf("got %d spans, want 1", n)
+	}
+	span, summary := env.single(t)
+	if v, _ := attrValue(span.Attributes(), "url.path"); v != "/users/2" {
+		t.Errorf("span url.path = %q, want /users/2", v)
+	}
+	if summary["http.route"] != "/users/{id}" || summary["user.id"] != "2" {
+		t.Errorf("summary route / user.id = %v / %v, want /users/{id} / 2", summary["http.route"], summary["user.id"])
 	}
 }
 
@@ -307,10 +329,10 @@ func TestUnknownMethodNormalized(t *testing.T) {
 	h := o11yhttp.NewHandler(mux, "m", o11yhttp.WithSDK(env.sdk), o11yhttp.WithCanonicalLine())
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("XQZ123", "/items/7", nil))
 
-	if name := env.spans.Ended()[0].Name(); name != "HTTP /items/{id}" {
+	span, s := env.single(t)
+	if name := span.Name(); name != "HTTP /items/{id}" {
 		t.Errorf("span name = %q, want HTTP /items/{id}", name)
 	}
-	s := env.summaries()[0]
 	if s["http.request.method"] != "_OTHER" || s["http.request.method_original"] != "XQZ123" {
 		t.Errorf("summary method = %v / %v, want _OTHER / XQZ123", s["http.request.method"], s["http.request.method_original"])
 	}
@@ -326,10 +348,10 @@ func TestKnownMethodCaseNormalized(t *testing.T) {
 	h := o11yhttp.NewHandler(mux, "m", o11yhttp.WithSDK(env.sdk), o11yhttp.WithCanonicalLine())
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("get", "/items/7", nil))
 
-	if name := env.spans.Ended()[0].Name(); name != "GET /items/{id}" {
+	span, s := env.single(t)
+	if name := span.Name(); name != "GET /items/{id}" {
 		t.Errorf("span name = %q, want GET /items/{id}", name)
 	}
-	s := env.summaries()[0]
 	if s["http.request.method"] != http.MethodGet || s["http.request.method_original"] != "get" {
 		t.Errorf("summary method = %v / %v, want GET / get", s["http.request.method"], s["http.request.method_original"])
 	}
