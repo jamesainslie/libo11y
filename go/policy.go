@@ -151,8 +151,10 @@ func (p *sensitivityPolicy) kv(signal spec.Signal, kv attribute.KeyValue) (attri
 // 1.0 all render as 1, a net.IP shares a token with its string form, and a
 // string that reads as a JSON array, such as ["1","2"], shares a token with
 // the slice it spells. The value, not its Go or OTel type, is what PII joins
-// on. Strings hash their
-// raw bytes when scalar, but inside a slice they pass through JSON encoding,
+// on. A named slice type with its own String or MarshalText method hashes
+// that text, not the JSON-array form, so it joins with an attribute holding
+// the same text rather than with a slice attribute. Strings hash their raw
+// bytes when scalar, but inside a slice they pass through JSON encoding,
 // which replaces invalid UTF-8 with U+FFFD, so slice elements that differ
 // only in invalid bytes share a token.
 
