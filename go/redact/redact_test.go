@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"strings"
 	"testing"
@@ -367,5 +368,54 @@ func TestMaskedNumericVerbRedacted(t *testing.T) {
 		if verb != "%d" && got != want {
 			t.Errorf("verb %s = %q, want %q", verb, got, want)
 		}
+	}
+}
+
+type intValuer struct{}
+
+func (intValuer) LogValue() slog.Value { return slog.Int64Value(8675309) }
+
+type groupValuer struct{}
+
+func (groupValuer) LogValue() slog.Value {
+	return slog.GroupValue(slog.String("token", "tok-raw-123"), slog.Int64("n", 4242424242))
+}
+
+type anyValuer struct{}
+
+func (anyValuer) LogValue() slog.Value {
+	return slog.AnyValue(map[string]string{"k": "raw-map-secret"})
+}
+
+type nestedSecretValuer struct{}
+
+func (nestedSecretValuer) LogValue() slog.Value {
+	return slog.GroupValue(slog.Any("s", redact.NewSecret("inner-secret")))
+}
+
+func TestMaskFloorAppliesToAllResolvedKinds(t *testing.T) {
+	type holder struct {
+		Num    intValuer          `o11y:"mask"`
+		Grp    groupValuer        `o11y:"confidential"`
+		Any    anyValuer          `o11y:"mask"`
+		Nested nestedSecretValuer `o11y:"mask"`
+	}
+	for name, newHandler := range map[string]func(io.Writer) slog.Handler{
+		"json": func(w io.Writer) slog.Handler { return slog.NewJSONHandler(w, nil) },
+		"text": func(w io.Writer) slog.Handler { return slog.NewTextHandler(w, nil) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			slog.New(newHandler(&buf)).Info("m", "v", redact.Struct(holder{}))
+			out := buf.String()
+			for _, raw := range []string{"8675309", "tok-raw-123", "4242424242", "raw-map-secret", "inner-secret"} {
+				if strings.Contains(out, raw) {
+					t.Errorf("raw value %q leaked under a mask floor: %s", raw, out)
+				}
+			}
+			if !strings.Contains(out, redact.Redacted) {
+				t.Errorf("nested Secret lost its stricter REDACTED protection: %s", out)
+			}
+		})
 	}
 }

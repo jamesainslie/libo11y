@@ -116,7 +116,7 @@ func (m Masked) Format(f fmt.State, _ rune) {
 	_, _ = io.WriteString(f, m.masked()) // writing to fmt.State never fails
 }
 
-func (m Masked) masked() string { return strings.Repeat("X", utf8.RuneCountInString(string(m))) }
+func (m Masked) masked() string { return maskString(string(m)) }
 
 // protection is ordered: higher values are stricter and win through nesting.
 type protection int
@@ -231,14 +231,14 @@ func protectValue(v reflect.Value, floor protection, depth int) slog.Value {
 		// A self-protecting value renders through its own LogValue; Struct
 		// must never weaken protection a type already carries.
 		if valuer, ok := v.Interface().(slog.LogValuer); ok {
-			return resolveProtected(valuer, floor)
+			return resolveProtected(valuer, floor, depth)
 		}
 		v = v.Elem()
 		depth++
 	}
 	if v.IsValid() && v.CanInterface() && v.Type().Implements(logValuerType) {
 		if valuer, ok := v.Interface().(slog.LogValuer); ok {
-			return resolveProtected(valuer, floor)
+			return resolveProtected(valuer, floor, depth)
 		}
 	}
 
@@ -284,20 +284,57 @@ func protectValue(v reflect.Value, floor protection, depth int) slog.Value {
 
 	default:
 		if floor == mask {
-			return slog.StringValue(strings.Repeat("X", utf8.RuneCountInString(fmt.Sprint(v.Interface()))))
+			return slog.StringValue(maskString(fmt.Sprint(v.Interface())))
 		}
 		return slog.AnyValue(v.Interface())
 	}
 }
 
+// maskString renders s as a run of 'X' of equal rune count.
+func maskString(s string) string { return strings.Repeat("X", utf8.RuneCountInString(s)) }
+
 // resolveProtected renders a self-protecting value through its own
-// LogValue, then applies the surrounding floor to the result.
-func resolveProtected(valuer slog.LogValuer, floor protection) slog.Value {
+// LogValue, then enforces the surrounding floor on the result whatever its
+// kind, so a masked field cannot leak through a LogValuer that returns a
+// number, a group, or an arbitrary value.
+func resolveProtected(valuer slog.LogValuer, floor protection, depth int) slog.Value {
 	resolved := slog.AnyValue(valuer).Resolve() // Resolve recovers panics
-	if floor == mask && resolved.Kind() == slog.KindString {
-		return slog.StringValue(strings.Repeat("X", utf8.RuneCountInString(resolved.String())))
+	return applyFloor(resolved, floor, depth)
+}
+
+// applyFloor enforces a protection floor on an already-resolved value.
+// Groups are walked so every leaf is protected; arbitrary values are walked
+// with Struct's own traversal so their tags still apply strictest-wins. A
+// leaf already rendered REDACTED keeps that stricter rendering.
+func applyFloor(v slog.Value, floor protection, depth int) slog.Value {
+	if depth > maxDepth {
+		return slog.StringValue(Redacted)
 	}
-	return resolved
+	switch floor {
+	case passthrough:
+		return v
+	case redact, omit:
+		return slog.StringValue(Redacted)
+	}
+	v = v.Resolve()
+	switch v.Kind() {
+	case slog.KindGroup:
+		members := v.Group()
+		out := make([]slog.Attr, len(members))
+		for i, m := range members {
+			out[i] = slog.Attr{Key: m.Key, Value: applyFloor(m.Value, floor, depth+1)}
+		}
+		return slog.GroupValue(out...)
+	case slog.KindString:
+		if v.String() == Redacted {
+			return v
+		}
+		return slog.StringValue(maskString(v.String()))
+	case slog.KindAny:
+		return protectValue(reflect.ValueOf(v.Any()), floor, depth+1)
+	default: // int64, uint64, float64, bool, duration, time
+		return slog.StringValue(maskString(v.String()))
+	}
 }
 
 // sliceValue renders protected slice elements as a single value. slog has
