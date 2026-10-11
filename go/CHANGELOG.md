@@ -56,3 +56,34 @@ and the module adheres to [Semantic Versioning](https://semver.org/).
   container detector; `SDK.ShutdownOnSignals` lifecycle helper;
   `o11ygin` Gin middleware as a nested module. Parity matrix in
   `docs/PARITY.md`.
+
+### Changed
+
+- Minimum Go version raised from 1.25.0 to 1.26.0 for both the `go` and
+  `go/o11ygin` modules. `golang.org/x/net` v0.60.0, the first release that
+  fixes GO-2026-6603, GO-2026-6610, GO-2026-6611, GO-2026-6612, and
+  GO-2026-6617, declares `go 1.26.0`, as do the patched OpenTelemetry
+  releases. No version of `x/net` that clears those advisories supports
+  Go 1.25.
+- Dependencies upgraded: OpenTelemetry Go v1.47.0 (`otel/log` and
+  `otel/sdk/log` now on the stable v1 line), OTLP log exporters v0.23.0,
+  contrib v0.72.0 (`otelslog` bridge v0.21.0), gRPC v1.84.0, and
+  `golang.org/x/net` v0.61.0. The global LoggerProvider is now installed
+  through `otel.SetLoggerProvider`, which replaces the deprecated
+  `otel/log/global` package with identical behavior.
+
+### Security
+
+- Cleared every third-party module advisory reported by `govulncheck`:
+  GO-2026-6505 (`otel/sdk` and OTLP trace exporters), GO-2026-6508
+  (`otlploggrpc`), GO-2026-6615 (`otel/sdk/log`), GO-2026-6061 and
+  GO-2026-6348 (`google.golang.org/grpc`), and GO-2026-6603, GO-2026-6610,
+  GO-2026-6611, GO-2026-6612, and GO-2026-6617 (`golang.org/x/net`).
+- Remaining findings are in the Go standard library and are fixed by the
+  toolchain, not by this module: build with go1.26.9 or later. Affected
+  packages: `net/http` (GO-2026-5026, GO-2026-6089, GO-2026-6603,
+  GO-2026-6605, GO-2026-6610, GO-2026-6611, GO-2026-6612, GO-2026-6613,
+  GO-2026-6617), `net/textproto` (GO-2026-6608), `crypto/tls`
+  (GO-2026-5856, GO-2026-6090, GO-2026-6607), `html/template`
+  (GO-2026-6091, GO-2026-6599, GO-2026-6600), `net/url` (GO-2026-6218),
+  and `encoding/asn1` (GO-2026-5972).

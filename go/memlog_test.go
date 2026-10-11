@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/attribute"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 )
 
@@ -36,13 +36,13 @@ func (e *memLogExporter) snapshot() []sdklog.Record {
 // so grouped attributes appear under their effective names.
 func logAttrs(r sdklog.Record) map[string]string {
 	out := map[string]string{}
-	var walk func(prefix string, kv log.KeyValue)
-	walk = func(prefix string, kv log.KeyValue) {
-		key := kv.Key
+	var walk func(prefix string, kv attribute.KeyValue)
+	walk = func(prefix string, kv attribute.KeyValue) {
+		key := string(kv.Key)
 		if prefix != "" {
 			key = prefix + "." + key
 		}
-		if kv.Value.Kind() == log.KindMap {
+		if kv.Value.Type() == attribute.MAP {
 			for _, member := range kv.Value.AsMap() {
 				walk(key, member)
 			}
@@ -50,7 +50,7 @@ func logAttrs(r sdklog.Record) map[string]string {
 		}
 		out[key] = kv.Value.String()
 	}
-	r.WalkAttributes(func(kv log.KeyValue) bool {
+	r.WalkAttributes(func(kv attribute.KeyValue) bool {
 		walk("", kv)
 		return true
 	})

@@ -7,7 +7,6 @@ import (
 	"sync"
 
 	"go.opentelemetry.io/otel"
-	logglobal "go.opentelemetry.io/otel/log/global"
 )
 
 var (
@@ -63,7 +62,7 @@ func Setup(ctx context.Context, opts ...Option) (*SDK, error) {
 	otel.SetTracerProvider(sdk.tracerProvider)
 	otel.SetMeterProvider(sdk.meterProvider)
 	if sdk.loggerProvider != nil {
-		logglobal.SetLoggerProvider(sdk.loggerProvider)
+		otel.SetLoggerProvider(sdk.loggerProvider)
 	}
 	otel.SetTextMapPropagator(sdk.propagator)
 	otel.SetErrorHandler(otel.ErrorHandlerFunc(sdk.errorHandler))

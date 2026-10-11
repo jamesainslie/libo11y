@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/log"
 
 	o11y "github.com/jamesainslie/libo11y/go"
@@ -38,7 +39,7 @@ func TestLoggerProviderAccessorExports(t *testing.T) {
 	sdk, _, _, _ := newHermetic(t, o11y.WithLogExporter(exp))
 
 	var r log.Record
-	r.SetBody(log.StringValue("bridged"))
+	r.SetBody(attribute.StringValue("bridged"))
 	sdk.LoggerProvider().Logger("third-party").Emit(context.Background(), r)
 	if err := sdk.ForceFlush(context.Background()); err != nil {
 		t.Fatalf("ForceFlush: %v", err)

@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
@@ -78,6 +80,44 @@ func TestSetupLifecycle(t *testing.T) {
 	}
 	if err := sdk2.Shutdown(context.Background()); err != nil {
 		t.Fatalf("Shutdown second SDK: %v", err)
+	}
+}
+
+// TestSetupInstallsGlobalLoggerProvider pins that Setup registers the SDK's
+// LoggerProvider as the OpenTelemetry global, so third-party log bridges that
+// use otel.GetLoggerProvider export through the configured pipeline.
+func TestSetupInstallsGlobalLoggerProvider(t *testing.T) {
+	prevLogger := slog.Default()
+	prevTracer := otel.GetTracerProvider()
+	prevMeter := otel.GetMeterProvider()
+	prevLoggerProvider := otel.GetLoggerProvider()
+	prevPropagator := otel.GetTextMapPropagator()
+	t.Cleanup(func() {
+		slog.SetDefault(prevLogger)
+		otel.SetTracerProvider(prevTracer)
+		otel.SetMeterProvider(prevMeter)
+		otel.SetLoggerProvider(prevLoggerProvider)
+		otel.SetTextMapPropagator(prevPropagator)
+	})
+
+	exp := &memLogExporter{}
+	opts := append(hermeticOptions("setup-global-logs"),
+		o11y.WithLogExporter(exp), o11y.WithoutStartupSummary())
+	sdk, err := o11y.Setup(context.Background(), opts...)
+	if err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+	t.Cleanup(func() { _ = sdk.Shutdown(context.Background()) })
+
+	var r log.Record
+	r.SetBody(attribute.StringValue("via-global"))
+	otel.GetLoggerProvider().Logger("third-party").Emit(context.Background(), r)
+	if err := sdk.ForceFlush(context.Background()); err != nil {
+		t.Fatalf("ForceFlush: %v", err)
+	}
+	recs := exp.snapshot()
+	if len(recs) != 1 || recs[0].Body().AsString() != "via-global" {
+		t.Fatalf("record emitted through the global LoggerProvider not exported: %+v", recs)
 	}
 }
 
