@@ -381,14 +381,20 @@ func WithErrorHandler(handle ErrorHandler) Option {
 
 // WithTraceExporter injects a span exporter, bypassing the exporter that
 // would otherwise be built from OTEL_TRACES_EXPORTER and OTEL_EXPORTER_OTLP_*
-// environment variables. Spans are still batched.
+// environment variables. Spans are still batched, and the exporter receives
+// them redacted by the sensitivity policy. It coexists with
+// [WithSpanProcessor]: when both are given, both run.
 func WithTraceExporter(exporter sdktrace.SpanExporter) Option {
 	return func(s *settings) { s.spanExporter = exporter }
 }
 
-// WithSpanProcessor injects a span processor in place of the default
-// batching pipeline. Intended for tests and custom pipelines; the o11ytest
-// package uses it to record spans synchronously.
+// WithSpanProcessor adds a span processor. When no exporter is injected with
+// [WithTraceExporter], the processor owns the export path and no exporter is
+// built from the environment; when one is, both run. Spans delivered to the
+// processor's OnEnd are redacted by the sensitivity policy; OnStart receives
+// the live span before redaction, so a processor that reads attributes at
+// start sees classified values. Intended for tests and custom pipelines; the
+// o11ytest package uses it to record spans synchronously.
 func WithSpanProcessor(processor sdktrace.SpanProcessor) Option {
 	return func(s *settings) { s.spanProcessor = processor }
 }

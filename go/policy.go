@@ -31,8 +31,9 @@ const (
 
 // sensitivityPolicy is the single enforcement point for the specification's
 // sensitivity classification. One policy per SDK serves the classifying slog
-// legs (console, OTLP, and extra sinks) and the span exporter wrapper (span,
-// event, and link attributes). Resource construction runs before the
+// legs (console, OTLP, and extra sinks) and the span wrappers around the
+// exporter and any injected processor's OnEnd (span, event, and link
+// attributes). Resource construction runs before the
 // violation counter exists, so it uses a recorder-less policy built from the
 // same settings and newSDK records its counts afterwards. Further signals
 // are added as they are wired to it, so every signal asks the same policy

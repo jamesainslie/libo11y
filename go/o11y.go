@@ -174,17 +174,18 @@ func buildTracerProvider(ctx context.Context, s *settings, res *resource.Resourc
 		opts = append(opts, sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.AlwaysSample())))
 	}
 	batch := traceBatchOptions(s)
+	if s.spanProcessor != nil {
+		// The injected processor sees the live span at OnStart and a
+		// redacted view of the ended span at OnEnd.
+		opts = append(opts, sdktrace.WithSpanProcessor(redactingProcessor(s.spanProcessor, policy)))
+	}
 	switch {
-	case s.spanProcessor != nil:
-		// A caller who supplies a whole span processor owns the export path
-		// (this is a test seam); redaction runs at the exporter boundary,
-		// which such a processor is free to bypass.
-		opts = append(opts, sdktrace.WithSpanProcessor(s.spanProcessor))
 	case s.spanExporter != nil:
 		opts = append(opts, sdktrace.WithBatcher(redactingExporter(s.spanExporter, policy), batch...))
-	case s.ignoreEnv:
-		// No injected exporter and the environment is ignored: spans are
-		// sampled and visible to in-process processors only, never exported.
+	case s.spanProcessor != nil, s.ignoreEnv:
+		// A caller-supplied processor owns the export path, or the
+		// environment is ignored: build no environment exporter. Spans are
+		// still sampled and visible to in-process processors.
 	default:
 		exporter, err := autoexport.NewSpanExporter(ctx)
 		if err != nil {
