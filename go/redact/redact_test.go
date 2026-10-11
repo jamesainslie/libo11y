@@ -19,10 +19,22 @@ import (
 	"github.com/jamesainslie/libo11y/go/redact"
 )
 
+// noTime drops the record timestamp, whose digits could otherwise
+// coincidentally contain a short secret (such as a CVV) that a test asserts
+// is absent, making the leak checks flaky.
+var noTime = &slog.HandlerOptions{
+	ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+		if len(groups) == 0 && a.Key == slog.TimeKey {
+			return slog.Attr{}
+		}
+		return a
+	},
+}
+
 func logToJSON(t *testing.T, attrs ...any) map[string]any {
 	t.Helper()
 	var buf bytes.Buffer
-	logger := slog.New(slog.NewJSONHandler(&buf, nil))
+	logger := slog.New(slog.NewJSONHandler(&buf, noTime))
 	logger.Info("event", attrs...)
 	var m map[string]any
 	if err := json.Unmarshal(buf.Bytes(), &m); err != nil {
@@ -34,7 +46,7 @@ func logToJSON(t *testing.T, attrs ...any) map[string]any {
 func logJSONString(t *testing.T, attrs ...any) string {
 	t.Helper()
 	var buf bytes.Buffer
-	slog.New(slog.NewJSONHandler(&buf, nil)).Info("event", attrs...)
+	slog.New(slog.NewJSONHandler(&buf, noTime)).Info("event", attrs...)
 	return buf.String()
 }
 
@@ -408,8 +420,8 @@ func TestMaskFloorAppliesToAllResolvedKinds(t *testing.T) {
 		Nested nestedSecretValuer `o11y:"mask"`
 	}
 	for name, newHandler := range map[string]func(io.Writer) slog.Handler{
-		"json": func(w io.Writer) slog.Handler { return slog.NewJSONHandler(w, nil) },
-		"text": func(w io.Writer) slog.Handler { return slog.NewTextHandler(w, nil) },
+		"json": func(w io.Writer) slog.Handler { return slog.NewJSONHandler(w, noTime) },
+		"text": func(w io.Writer) slog.Handler { return slog.NewTextHandler(w, noTime) },
 	} {
 		t.Run(name, func(t *testing.T) {
 			var buf bytes.Buffer
@@ -483,7 +495,7 @@ func TestMaskFloorProtectsMapKeys(t *testing.T) {
 		Plain  map[string]int
 	}
 	var buf bytes.Buffer
-	slog.New(slog.NewJSONHandler(&buf, nil)).Info("m", "v", redact.Struct(holder{
+	slog.New(slog.NewJSONHandler(&buf, noTime)).Info("m", "v", redact.Struct(holder{
 		Emails: map[string]int{"alice@example.com": 1, "bob@example.com": 2},
 		Plain:  map[string]int{"b": 2, "a": 1},
 	}))
@@ -506,7 +518,7 @@ func TestStructRendersOpaqueLeafTypes(t *testing.T) {
 		Masked net.IP `o11y:"mask"`
 	}
 	var buf bytes.Buffer
-	slog.New(slog.NewJSONHandler(&buf, nil)).Info("m", "v", redact.Struct(holder{
+	slog.New(slog.NewJSONHandler(&buf, noTime)).Info("m", "v", redact.Struct(holder{
 		At: when, IP: net.ParseIP("10.1.2.3"), Masked: net.ParseIP("10.9.9.9"),
 	}))
 	out := buf.String()
@@ -523,7 +535,7 @@ func TestStructRendersOpaqueLeafTypes(t *testing.T) {
 
 func TestStructTaggedTextMarshalerStillWalksFields(t *testing.T) {
 	var buf bytes.Buffer
-	slog.New(slog.NewJSONHandler(&buf, nil)).Info("m", "v", redact.Struct(taggedMarshaler{Token: "raw-token"}))
+	slog.New(slog.NewJSONHandler(&buf, noTime)).Info("m", "v", redact.Struct(taggedMarshaler{Token: "raw-token"}))
 	if strings.Contains(buf.String(), "raw-token") {
 		t.Errorf("tagged field leaked through MarshalText: %s", buf.String())
 	}
