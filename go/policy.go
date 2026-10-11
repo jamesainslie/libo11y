@@ -31,7 +31,8 @@ const (
 
 // sensitivityPolicy is the single enforcement point for the specification's
 // sensitivity classification. One policy per SDK serves the classifying slog
-// legs (console, OTLP, and extra sinks), the span wrappers around the
+// legs (console, OTLP, and extra sinks), the LoggerProvider's redacting
+// processor (records from every other log bridge), the span wrappers around the
 // exporter and any injected processor's OnEnd (span, event, and link
 // attributes), and the metric views and exemplar reservoirs (data point and
 // exemplar filtered attributes), and the resource. newSDK builds it before

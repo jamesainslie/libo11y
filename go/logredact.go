@@ -9,7 +9,10 @@ import (
 // sinkMode identifies which log sink a per-leg classifier is guarding. It is
 // the seam that lets classification differ by destination: Phase 1 uses it to
 // withhold confidential attributes from the console while still exporting them
-// over OTLP. Through Phase 0 both modes classify identically.
+// over OTLP. Through Phase 0 both modes classify identically. The OTLP leg
+// also marks each record's context as classified, so the LoggerProvider's
+// [redactingLogProcessor], which classifies records from every other bridge,
+// leaves it alone.
 type sinkMode int
 
 const (
@@ -43,6 +46,9 @@ func (c *classifier) Enabled(ctx context.Context, level slog.Level) bool {
 }
 
 func (c *classifier) Handle(ctx context.Context, record slog.Record) error {
+	if c.mode == sinkOTLP {
+		ctx = markPipelineClassified(ctx)
+	}
 	attrs := make([]slog.Attr, 0, record.NumAttrs())
 	changed := false
 	record.Attrs(func(a slog.Attr) bool {

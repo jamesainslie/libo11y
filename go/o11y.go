@@ -262,6 +262,7 @@ func buildLogPipeline(ctx context.Context, s *settings, res *resource.Resource, 
 		}
 		providerOpts := []sdklog.LoggerProviderOption{
 			sdklog.WithResource(res),
+			sdklog.WithProcessor(redactingLogProcessor{policy: policy}),
 			sdklog.WithProcessor(sdklog.NewBatchProcessor(exporter, logBatchOptions(s)...)),
 		}
 		providerOpts = append(providerOpts, logProviderOptions(s)...)
@@ -270,6 +271,10 @@ func buildLogPipeline(ctx context.Context, s *settings, res *resource.Resource, 
 			otelslog.WithLoggerProvider(loggerProvider),
 			otelslog.WithSource(true),
 		)
+		// Records from this leg are classified on slog values, before the
+		// bridge converts them, and marked so the provider's redacting
+		// processor (which covers every other bridge) does not classify
+		// them again.
 		legs = append(legs, classifyingHandler(otlp, sinkOTLP, policy))
 	}
 
@@ -317,8 +322,11 @@ func (s *SDK) Resource() *resource.Resource { return s.res }
 func (s *SDK) Handler() slog.Handler { return s.handler }
 
 // LoggerProvider returns the SDK's OpenTelemetry logger provider, for log
-// bridges other than slog (otelzap, otellogr, and so on). When log export is
-// disabled it returns a no-op provider.
+// bridges other than slog (otelzap, otellogr, and so on). Records emitted
+// through it receive the same sensitivity enforcement as the slog pipeline:
+// secret and PII attributes, including those nested in map values, are
+// dropped or tokenized per [WithPIIMode]. When log export is disabled it
+// returns a no-op provider.
 func (s *SDK) LoggerProvider() log.LoggerProvider {
 	if s.loggerProvider == nil {
 		return lognoop.NewLoggerProvider()

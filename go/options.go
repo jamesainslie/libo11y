@@ -241,11 +241,12 @@ func WithAttrReplacer(replace AttrReplacer) Option {
 }
 
 // WithPIIMode selects how attributes the specification classifies as PII are
-// handled on logs (every log sink), on spans (span, event, and link
-// attributes at export and in an injected span processor's OnEnd), and on the
-// telemetry resource. Metric data point and exemplar filtered attributes drop
-// PII under [PIIHash] too, since hashing would multiply series cardinality.
-// The default is [PIIDrop]. [PIIHash] also needs [WithPIIHashKey].
+// handled on logs (every slog sink, and every bridge on the SDK's
+// LoggerProvider), on spans (span, event, and link attributes at export and
+// in an injected span processor's OnEnd), and on the telemetry resource.
+// Metric data point and exemplar filtered attributes drop PII under [PIIHash]
+// too, since hashing would multiply series cardinality. The default is
+// [PIIDrop]. [PIIHash] also needs [WithPIIHashKey].
 //
 // A PII or secret key that arrives through OTEL_RESOURCE_ATTRIBUTES and is
 // dropped is exported with an empty value rather than omitted: the OTel
