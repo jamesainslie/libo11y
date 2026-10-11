@@ -169,10 +169,11 @@ const maxDepth = 32
 //
 // Non-struct values are walked the same way. Slices and arrays render as a
 // group keyed by index. Maps render as a group sorted by key text (ties
-// broken by the key's dynamic type name). Under a mask floor, or when a key's
-// type may carry protection, map entries instead render as a group keyed by
-// sorted position, each holding the protected key (masked, or REDACTED for a
-// key whose type has tagged fields, a LogValuer, or an interface component)
+// broken by the key's dynamic type name). Under a mask floor, when a key's
+// type may carry protection, or when two keys render the same text, map
+// entries instead render as a group keyed by sorted position, each holding
+// the protected key (masked, or REDACTED for a key whose type has tagged
+// fields, a LogValuer, or dynamic components such as an interface)
 // and the protected value. A value implementing [encoding.TextMarshaler] or
 // [fmt.Stringer] whose type cannot carry protection (time.Time, net.IP,
 // netip.Addr) renders as its text form, masked under a mask floor; any other
@@ -323,6 +324,10 @@ func protectValue(v reflect.Value, floor protection, depth int) slog.Value {
 		slices.SortStableFunc(entries, func(a, b mapEntry) int {
 			return cmp.Or(cmp.Compare(a.text, b.text), cmp.Compare(a.typeName, b.typeName))
 		})
+		for i := 1; i < len(entries) && !positional; i++ {
+			// Distinct keys with equal text (1 and int64(1)) would collide.
+			positional = entries[i].text == entries[i-1].text
+		}
 		attrs := make([]slog.Attr, 0, len(entries))
 		for pos, e := range entries {
 			value := protectValue(v.MapIndex(keys[e.index]), floor, depth+1)

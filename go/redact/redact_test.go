@@ -836,6 +836,23 @@ func TestStructRendersErrors(t *testing.T) {
 	}
 }
 
+func TestCollidingMapKeyTextUsesPositionalShape(t *testing.T) {
+	type holder struct {
+		M map[any]int
+		U map[string]int
+	}
+	out := logJSONString(t, "v", redact.Struct(holder{
+		M: map[any]int{1: 10, int64(1): 30},
+		U: map[string]int{"b": 2, "a": 1},
+	}))
+	if !strings.Contains(out, `"M":{"0":{"key":"1","value":10},"1":{"key":"1","value":30}}`) {
+		t.Errorf("colliding key text should render positionally: %s", out)
+	}
+	if !strings.Contains(out, `"U":{"a":1,"b":2}`) {
+		t.Errorf("distinct keys should keep the plain shape: %s", out)
+	}
+}
+
 type panicStringer struct{ N int }
 
 func (panicStringer) String() string { panic("boom") }
