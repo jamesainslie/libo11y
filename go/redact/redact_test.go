@@ -752,6 +752,32 @@ func TestMapOrderingIsDeterministic(t *testing.T) {
 	}
 }
 
+type lazyCreds struct {
+	get func() authInfo
+}
+
+func (l lazyCreds) String() string { return "token=" + l.get().Token }
+
+type chanCreds struct {
+	ch chan authInfo
+}
+
+func (c chanCreds) String() string { return "token=" + (<-c.ch).Token }
+
+func TestTextLeafFailsClosedOnFuncAndChanComponents(t *testing.T) {
+	ch := make(chan authInfo, 1)
+	ch <- authInfo{Token: "raw-chan-tok"}
+	out := logJSONString(t,
+		"lazy", redact.Struct(lazyCreds{get: func() authInfo { return authInfo{Token: "raw-func-tok"} }}),
+		"chan", redact.Struct(chanCreds{ch: ch}),
+	)
+	for _, raw := range []string{"raw-func-tok", "raw-chan-tok"} {
+		if strings.Contains(out, raw) {
+			t.Errorf("value reached through a func or chan leaked %q: %s", raw, out)
+		}
+	}
+}
+
 type panicStringer struct{ N int }
 
 func (panicStringer) String() string { panic("boom") }

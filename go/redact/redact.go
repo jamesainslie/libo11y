@@ -410,11 +410,11 @@ var protectionScanCache sync.Map // reflect.Type -> bool
 // mayCarryProtection reports whether a value of type t could hold anything
 // that Struct must protect: an o11y-tagged field at any depth (exported,
 // unexported, or embedded), a self-protecting [slog.LogValuer] component,
-// or an interface-typed component whose dynamic value is unknown until run
-// time (fail closed). Components are reached through struct fields,
-// pointers, slices, arrays, and map keys and values. Results are cached per
-// type; recursive types terminate, and scans deeper than maxDepth fail
-// closed.
+// or an interface, func, chan, or unsafe pointer component whose content is
+// unknown until run time (fail closed). Components are reached through
+// struct fields, pointers, slices, arrays, and map keys and values. Results
+// are cached per type; recursive types terminate, and scans deeper than
+// maxDepth fail closed.
 func mayCarryProtection(t reflect.Type) bool {
 	if t == nil {
 		return false
@@ -443,7 +443,9 @@ func scanProtection(t reflect.Type, seen map[reflect.Type]bool, depth int) bool 
 		return true
 	}
 	switch t.Kind() {
-	case reflect.Interface:
+	case reflect.Interface, reflect.Func, reflect.Chan, reflect.UnsafePointer:
+		// Dynamic content: what an interface holds, a func returns, a chan
+		// delivers, or an unsafe pointer addresses is unknown until run time.
 		return true
 	case reflect.Pointer, reflect.Slice, reflect.Array:
 		return scanProtection(t.Elem(), seen, depth+1)
