@@ -217,33 +217,6 @@ func TestSetupCanaryFailsFast(t *testing.T) {
 	}
 }
 
-func TestShutdownOnSignals(t *testing.T) {
-	sdk, err := o11y.New(context.Background(), hermeticOptions("signals-test")...)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-
-	done := make(chan error, 1)
-	go func() {
-		done <- sdk.ShutdownOnSignals(context.Background(), syscall.SIGUSR1)
-	}()
-
-	// Give the goroutine time to install the signal handler, then signal.
-	time.Sleep(100 * time.Millisecond)
-	if err := syscall.Kill(syscall.Getpid(), syscall.SIGUSR1); err != nil {
-		t.Fatalf("Kill: %v", err)
-	}
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Errorf("ShutdownOnSignals: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("ShutdownOnSignals did not return after signal")
-	}
-}
-
 func TestShutdownOnSignalsHonorsContext(t *testing.T) {
 	sdk, err := o11y.New(context.Background(), hermeticOptions("signals-ctx")...)
 	if err != nil {
@@ -267,19 +240,24 @@ func TestShutdownOnSignalsHonorsContext(t *testing.T) {
 	}
 }
 
-// restoreGlobals snapshots and restores the process globals a Setup test
-// mutates.
+// restoreGlobals snapshots and restores every process global Setup installs:
+// the slog default, the OTel tracer, meter, and logger providers, the text
+// map propagator, and the OTel error handler.
 func restoreGlobals(t *testing.T) {
 	t.Helper()
-	prevLogger := slog.Default()
+	prevSlog := slog.Default()
 	prevTracer := otel.GetTracerProvider()
 	prevMeter := otel.GetMeterProvider()
+	prevLogger := otel.GetLoggerProvider()
 	prevPropagator := otel.GetTextMapPropagator()
+	prevHandler := otel.GetErrorHandler()
 	t.Cleanup(func() {
-		slog.SetDefault(prevLogger)
+		slog.SetDefault(prevSlog)
 		otel.SetTracerProvider(prevTracer)
 		otel.SetMeterProvider(prevMeter)
+		otel.SetLoggerProvider(prevLogger)
 		otel.SetTextMapPropagator(prevPropagator)
+		otel.SetErrorHandler(prevHandler)
 	})
 }
 

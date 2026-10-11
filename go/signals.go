@@ -27,8 +27,25 @@ func (s *SDK) ShutdownOnSignals(ctx context.Context, signals ...os.Signal) error
 	if len(signals) == 0 {
 		signals = []os.Signal{os.Interrupt, syscall.SIGTERM}
 	}
-	notifyCtx, stop := signal.NotifyContext(ctx, signals...)
-	<-notifyCtx.Done()
-	stop()
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, signals...)
+	return s.shutdownOn(ctx, ch)
+}
+
+// shutdownOn waits for a signal on sig or for ctx to end, then shuts down
+// with a context that keeps ctx's values but not its cancellation, so the
+// flush is still bounded by the SDK's own deadline.
+//
+// Signal delivery to sig is stopped before the flush starts, restoring the
+// default handling, so a second signal terminates the process instead of
+// being swallowed while the flush runs. signal.Stop is a no-op for a channel
+// that was never registered with signal.Notify, which is what lets tests
+// drive this seam with a plain channel and no real signal.
+func (s *SDK) shutdownOn(ctx context.Context, sig chan os.Signal) error {
+	select {
+	case <-sig:
+	case <-ctx.Done():
+	}
+	signal.Stop(sig)
 	return s.Shutdown(context.WithoutCancel(ctx))
 }

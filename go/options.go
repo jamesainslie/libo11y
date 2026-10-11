@@ -83,6 +83,10 @@ type settings struct {
 	metricReader  sdkmetric.Reader
 
 	ignoreEnv bool
+
+	// sensitivity overrides the classification lookup when non-nil. It is
+	// set only by test options; production SDKs use the generated table.
+	sensitivity func(attribute.Key) spectables.Sensitivity
 }
 
 func newSettings(opts []Option) *settings {

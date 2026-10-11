@@ -33,16 +33,8 @@ func hermeticOptions(name string) []o11y.Option {
 // test: install, guard against double setup, release on shutdown, reinstall.
 // It restores the globals it changes.
 func TestSetupLifecycle(t *testing.T) {
-	prevLogger := slog.Default()
-	prevTracer := otel.GetTracerProvider()
-	prevMeter := otel.GetMeterProvider()
+	restoreGlobals(t)
 	prevPropagator := otel.GetTextMapPropagator()
-	t.Cleanup(func() {
-		slog.SetDefault(prevLogger)
-		otel.SetTracerProvider(prevTracer)
-		otel.SetMeterProvider(prevMeter)
-		otel.SetTextMapPropagator(prevPropagator)
-	})
 
 	sdk, err := o11y.Setup(context.Background(), hermeticOptions("setup-test")...)
 	if err != nil {
@@ -87,18 +79,7 @@ func TestSetupLifecycle(t *testing.T) {
 // LoggerProvider as the OpenTelemetry global, so third-party log bridges that
 // use otel.GetLoggerProvider export through the configured pipeline.
 func TestSetupInstallsGlobalLoggerProvider(t *testing.T) {
-	prevLogger := slog.Default()
-	prevTracer := otel.GetTracerProvider()
-	prevMeter := otel.GetMeterProvider()
-	prevLoggerProvider := otel.GetLoggerProvider()
-	prevPropagator := otel.GetTextMapPropagator()
-	t.Cleanup(func() {
-		slog.SetDefault(prevLogger)
-		otel.SetTracerProvider(prevTracer)
-		otel.SetMeterProvider(prevMeter)
-		otel.SetLoggerProvider(prevLoggerProvider)
-		otel.SetTextMapPropagator(prevPropagator)
-	})
+	restoreGlobals(t)
 
 	exp := &memLogExporter{}
 	opts := append(hermeticOptions("setup-global-logs"),
@@ -122,16 +103,7 @@ func TestSetupInstallsGlobalLoggerProvider(t *testing.T) {
 }
 
 func TestSetupInstallsSlogDefault(t *testing.T) {
-	prevLogger := slog.Default()
-	prevTracer := otel.GetTracerProvider()
-	prevMeter := otel.GetMeterProvider()
-	prevPropagator := otel.GetTextMapPropagator()
-	t.Cleanup(func() {
-		slog.SetDefault(prevLogger)
-		otel.SetTracerProvider(prevTracer)
-		otel.SetMeterProvider(prevMeter)
-		otel.SetTextMapPropagator(prevPropagator)
-	})
+	restoreGlobals(t)
 
 	sdk, err := o11y.Setup(context.Background(), hermeticOptions("slog-default")...)
 	if err != nil {
@@ -149,16 +121,7 @@ func TestSetupInstallsSlogDefault(t *testing.T) {
 }
 
 func TestSetupWithoutSlogDefault(t *testing.T) {
-	prevLogger := slog.Default()
-	prevTracer := otel.GetTracerProvider()
-	prevMeter := otel.GetMeterProvider()
-	prevPropagator := otel.GetTextMapPropagator()
-	t.Cleanup(func() {
-		slog.SetDefault(prevLogger)
-		otel.SetTracerProvider(prevTracer)
-		otel.SetMeterProvider(prevMeter)
-		otel.SetTextMapPropagator(prevPropagator)
-	})
+	restoreGlobals(t)
 
 	opts := append(hermeticOptions("no-slog-default"), o11y.WithoutSlogDefault())
 	sdk, err := o11y.Setup(context.Background(), opts...)
@@ -177,6 +140,8 @@ func TestSetupWithoutSlogDefault(t *testing.T) {
 }
 
 func TestSetupFailureDoesNotHoldGuard(t *testing.T) {
+	restoreGlobals(t)
+
 	// A Setup that fails (missing service name) must not block a later one.
 	if _, err := o11y.Setup(context.Background(),
 		o11y.WithSpanProcessor(tracetest.NewSpanRecorder()),
@@ -187,17 +152,6 @@ func TestSetupFailureDoesNotHoldGuard(t *testing.T) {
 	); !errors.Is(err, o11y.ErrNoServiceName) {
 		t.Fatalf("Setup without service name: err = %v, want ErrNoServiceName", err)
 	}
-
-	prevLogger := slog.Default()
-	prevTracer := otel.GetTracerProvider()
-	prevMeter := otel.GetMeterProvider()
-	prevPropagator := otel.GetTextMapPropagator()
-	t.Cleanup(func() {
-		slog.SetDefault(prevLogger)
-		otel.SetTracerProvider(prevTracer)
-		otel.SetMeterProvider(prevMeter)
-		otel.SetTextMapPropagator(prevPropagator)
-	})
 
 	sdk, err := o11y.Setup(context.Background(), hermeticOptions("after-failure")...)
 	if err != nil {

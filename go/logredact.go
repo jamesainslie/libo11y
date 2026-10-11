@@ -20,20 +20,21 @@ const (
 )
 
 // classifyingHandler wraps a single fan-out leg so every record's attributes
-// pass through the spec classifier ([classify]) before reaching inner. Moving
+// pass through the SDK's [sensitivityPolicy] before reaching inner. Moving
 // classification into each leg (rather than running it once in the shared
 // fan-out replacer) is what makes redaction sink-aware: each leg carries its
 // own [sinkMode]. The user replacer still runs once upstream in the fan-out,
 // so every leg sees identical attributes; only classification is per-leg.
-func classifyingHandler(inner slog.Handler, mode sinkMode, pii PIIMode, rec *violationRecorder) slog.Handler {
-	return &classifier{inner: inner, mode: mode, pii: pii, rec: rec}
+// Through Phase 0 both sinks classify identically, so mode is not yet
+// consulted (Phase 1 uses it for confidential-console-withhold).
+func classifyingHandler(inner slog.Handler, mode sinkMode, policy *sensitivityPolicy) slog.Handler {
+	return &classifier{inner: inner, mode: mode, policy: policy}
 }
 
 type classifier struct {
 	inner  slog.Handler
 	mode   sinkMode
-	pii    PIIMode
-	rec    *violationRecorder
+	policy *sensitivityPolicy
 	groups []string
 }
 
@@ -91,7 +92,7 @@ func (c *classifier) classifyAttr(groups []string, a slog.Attr) (out slog.Attr, 
 		}
 		return slog.Attr{Key: a.Key, Value: slog.GroupValue(kept...)}, true, true
 	}
-	res, action := classify(c.mode, c.pii, c.rec, groups, a)
+	res, action := c.policy.slogAttr(groups, a)
 	switch action {
 	case actionDrop:
 		return slog.Attr{}, false, true
@@ -112,7 +113,7 @@ func (c *classifier) WithAttrs(attrs []slog.Attr) slog.Handler {
 			kept = append(kept, out)
 		}
 	}
-	return &classifier{inner: c.inner.WithAttrs(kept), mode: c.mode, pii: c.pii, rec: c.rec, groups: c.groups}
+	return &classifier{inner: c.inner.WithAttrs(kept), mode: c.mode, policy: c.policy, groups: c.groups}
 }
 
 // WithGroup extends the group path used to build effective keys.
@@ -121,7 +122,7 @@ func (c *classifier) WithGroup(name string) slog.Handler {
 		return c
 	}
 	return &classifier{
-		inner: c.inner.WithGroup(name), mode: c.mode, pii: c.pii, rec: c.rec,
+		inner: c.inner.WithGroup(name), mode: c.mode, policy: c.policy,
 		groups: append(slices.Clone(c.groups), name),
 	}
 }

@@ -121,15 +121,15 @@ func newSDK(ctx context.Context, s *settings) (_ *SDK, err error) {
 		}
 	}
 
-	violations := newViolationRecorder(meterProvider)
+	policy := newSensitivityPolicy(s, newViolationRecorder(meterProvider))
 
-	tracerProvider, err := buildTracerProvider(ctx, s, res, violations)
+	tracerProvider, err := buildTracerProvider(ctx, s, res, policy)
 	if err != nil {
 		return nil, err
 	}
 	cleanups = append(cleanups, tracerProvider.Shutdown)
 
-	loggerProvider, handler, err := buildLogPipeline(ctx, s, res, violations)
+	loggerProvider, handler, err := buildLogPipeline(ctx, s, res, policy)
 	if err != nil {
 		return nil, err
 	}
@@ -153,7 +153,7 @@ func newSDK(ctx context.Context, s *settings) (_ *SDK, err error) {
 	return sdk, nil
 }
 
-func buildTracerProvider(ctx context.Context, s *settings, res *resource.Resource, violations *violationRecorder) (*sdktrace.TracerProvider, error) {
+func buildTracerProvider(ctx context.Context, s *settings, res *resource.Resource, policy *sensitivityPolicy) (*sdktrace.TracerProvider, error) {
 	opts := []sdktrace.TracerProviderOption{sdktrace.WithResource(res)}
 	if s.ignoreEnv {
 		opts = append(opts, sdktrace.WithRawSpanLimits(defaultSpanLimits()))
@@ -172,7 +172,7 @@ func buildTracerProvider(ctx context.Context, s *settings, res *resource.Resourc
 		// which such a processor is free to bypass.
 		opts = append(opts, sdktrace.WithSpanProcessor(s.spanProcessor))
 	case s.spanExporter != nil:
-		opts = append(opts, sdktrace.WithBatcher(redactingExporter(s.spanExporter, violations), batch...))
+		opts = append(opts, sdktrace.WithBatcher(redactingExporter(s.spanExporter, policy), batch...))
 	case s.ignoreEnv:
 		// No injected exporter and the environment is ignored: spans are
 		// sampled and visible to in-process processors only, never exported.
@@ -181,7 +181,7 @@ func buildTracerProvider(ctx context.Context, s *settings, res *resource.Resourc
 		if err != nil {
 			return nil, fmt.Errorf("o11y: building span exporter: %w", err)
 		}
-		opts = append(opts, sdktrace.WithBatcher(redactingExporter(exporter, violations), batch...))
+		opts = append(opts, sdktrace.WithBatcher(redactingExporter(exporter, policy), batch...))
 	}
 	return sdktrace.NewTracerProvider(opts...), nil
 }
@@ -218,7 +218,7 @@ func buildMeterProvider(ctx context.Context, s *settings, res *resource.Resource
 // optional OTLP sink (through the otelslog bridge), and any extra sinks.
 // Console and extra sinks receive top-level trace correlation attributes;
 // the OTLP sink derives trace context natively from the record context.
-func buildLogPipeline(ctx context.Context, s *settings, res *resource.Resource, violations *violationRecorder) (*sdklog.LoggerProvider, slog.Handler, error) {
+func buildLogPipeline(ctx context.Context, s *settings, res *resource.Resource, policy *sensitivityPolicy) (*sdklog.LoggerProvider, slog.Handler, error) {
 	var legs []slog.Handler
 
 	if s.consoleEnabled {
@@ -230,7 +230,7 @@ func buildLogPipeline(ctx context.Context, s *settings, res *resource.Resource, 
 		default:
 			console = slog.NewJSONHandler(s.consoleWriter, handlerOpts)
 		}
-		legs = append(legs, classifyingHandler(fanout.Correlate(console), sinkConsole, s.piiMode, violations))
+		legs = append(legs, classifyingHandler(fanout.Correlate(console), sinkConsole, policy))
 	}
 
 	var loggerProvider *sdklog.LoggerProvider
@@ -253,11 +253,11 @@ func buildLogPipeline(ctx context.Context, s *settings, res *resource.Resource, 
 			otelslog.WithLoggerProvider(loggerProvider),
 			otelslog.WithSource(true),
 		)
-		legs = append(legs, classifyingHandler(otlp, sinkOTLP, s.piiMode, violations))
+		legs = append(legs, classifyingHandler(otlp, sinkOTLP, policy))
 	}
 
 	for _, extra := range s.extraLogHandler {
-		legs = append(legs, classifyingHandler(fanout.Correlate(extra), sinkConsole, s.piiMode, violations))
+		legs = append(legs, classifyingHandler(fanout.Correlate(extra), sinkConsole, policy))
 	}
 
 	// Spec classification now runs per leg (see classifyingHandler); the shared

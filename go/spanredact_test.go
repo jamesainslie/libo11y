@@ -34,30 +34,21 @@ func (c *captureExporter) captured() []sdktrace.ReadOnlySpan {
 	return c.spans
 }
 
-// registerSecretKey installs a temporary Secret classification for key and
-// removes it when the test ends. The runtime table currently carries no
-// Secret-classified attribute, so the redaction path is exercised against a
-// key the test controls.
-func registerSecretKey(t *testing.T, key attribute.Key) {
-	t.Helper()
-	prev, had := spectables.SensitivityOf[key]
-	spectables.SensitivityOf[key] = spectables.Secret
-	t.Cleanup(func() {
-		if had {
-			spectables.SensitivityOf[key] = prev
-			return
-		}
-		delete(spectables.SensitivityOf, key)
-	})
+// secretPolicy returns a policy that classifies key as Secret on top of the
+// generated table. The runtime table currently carries no Secret-classified
+// attribute, so the redaction path is exercised against a key the test
+// controls, without mutating the shared generated table.
+func secretPolicy(key attribute.Key) *sensitivityPolicy {
+	s := newSettings([]Option{WithSensitivityForTest(map[attribute.Key]spectables.Sensitivity{key: spectables.Secret})})
+	return newSensitivityPolicy(s, nil)
 }
 
 func TestRedactingExporterDropsSecretSpanAttr(t *testing.T) {
 	const secretKey = attribute.Key("test.secret.token")
 	const publicKey = attribute.Key("service.name")
-	registerSecretKey(t, secretKey)
 
 	stub := &captureExporter{}
-	exp := redactingExporter(stub, nil)
+	exp := redactingExporter(stub, secretPolicy(secretKey))
 
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exp)),
@@ -96,10 +87,9 @@ func TestRedactingExporterDropsSecretSpanAttr(t *testing.T) {
 func TestRedactingExporterStripsSecretFromEventsAndLinks(t *testing.T) {
 	const secretKey = attribute.Key("test.secret.token")
 	const publicKey = attribute.Key("service.name")
-	registerSecretKey(t, secretKey)
 
 	stub := &captureExporter{}
-	exp := redactingExporter(stub, nil)
+	exp := redactingExporter(stub, secretPolicy(secretKey))
 
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exp)),
