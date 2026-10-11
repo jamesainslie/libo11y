@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"os/exec"
 	"strings"
@@ -494,3 +495,40 @@ func TestMaskFloorProtectsMapKeys(t *testing.T) {
 		t.Errorf("unmasked map should render sorted by key: %s", out)
 	}
 }
+
+func TestStructRendersOpaqueLeafTypes(t *testing.T) {
+	when := time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)
+	type holder struct {
+		At     time.Time
+		IP     net.IP
+		Masked net.IP `o11y:"mask"`
+	}
+	var buf bytes.Buffer
+	slog.New(slog.NewJSONHandler(&buf, nil)).Info("m", "v", redact.Struct(holder{
+		At: when, IP: net.ParseIP("10.1.2.3"), Masked: net.ParseIP("10.9.9.9"),
+	}))
+	out := buf.String()
+	if !strings.Contains(out, `"At":"2026-10-11T12:00:00Z"`) {
+		t.Errorf("time.Time not rendered as text: %s", out)
+	}
+	if !strings.Contains(out, `"IP":"10.1.2.3"`) {
+		t.Errorf("net.IP not rendered as text: %s", out)
+	}
+	if strings.Contains(out, "10.9.9.9") || !strings.Contains(out, `"Masked":"XXXXXXXX"`) {
+		t.Errorf("masked net.IP not masked as text: %s", out)
+	}
+}
+
+func TestStructTaggedTextMarshalerStillWalksFields(t *testing.T) {
+	var buf bytes.Buffer
+	slog.New(slog.NewJSONHandler(&buf, nil)).Info("m", "v", redact.Struct(taggedMarshaler{Token: "raw-token"}))
+	if strings.Contains(buf.String(), "raw-token") {
+		t.Errorf("tagged field leaked through MarshalText: %s", buf.String())
+	}
+}
+
+type taggedMarshaler struct {
+	Token string `o11y:"secret"`
+}
+
+func (t taggedMarshaler) MarshalText() ([]byte, error) { return []byte("token=" + t.Token), nil }

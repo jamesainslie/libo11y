@@ -36,6 +36,7 @@
 package redact
 
 import (
+	"encoding"
 	"fmt"
 	"io"
 	"log/slog"
@@ -253,6 +254,12 @@ func protectValue(v reflect.Value, floor protection, depth int) slog.Value {
 			return resolveProtected(valuer, floor, depth)
 		}
 	}
+	if text, ok := leafText(v); ok {
+		if floor == mask {
+			return slog.StringValue(maskString(text))
+		}
+		return slog.StringValue(text)
+	}
 
 	switch v.Kind() {
 	case reflect.Struct:
@@ -315,6 +322,39 @@ func protectValue(v reflect.Value, floor protection, depth int) slog.Value {
 		}
 		return slog.AnyValue(v.Interface())
 	}
+}
+
+// leafText returns the text form of values that are opaque leaves rather
+// than containers to walk: types implementing encoding.TextMarshaler or
+// fmt.Stringer, unless they are structs with o11y-tagged fields (walking
+// those fields keeps the tags authoritative).
+func leafText(v reflect.Value) (string, bool) {
+	if !v.IsValid() || !v.CanInterface() {
+		return "", false
+	}
+	if v.Kind() == reflect.Struct && hasProtectedField(v.Type()) {
+		return "", false
+	}
+	switch x := v.Interface().(type) {
+	case encoding.TextMarshaler:
+		b, err := x.MarshalText()
+		if err != nil {
+			return "", false
+		}
+		return string(b), true
+	case fmt.Stringer:
+		return x.String(), true
+	}
+	return "", false
+}
+
+func hasProtectedField(t reflect.Type) bool {
+	for _, p := range plansFor(t) {
+		if p.protection != passthrough {
+			return true
+		}
+	}
+	return false
 }
 
 // maskString renders s as a run of 'X' of equal rune count.
