@@ -214,18 +214,10 @@ func canonicalAny(x any) string {
 	if b, ok := x.([]byte); ok {
 		return base64.StdEncoding.EncodeToString(b)
 	}
+	if text, ok := textForm(x); ok {
+		return text
+	}
 	rv := reflect.ValueOf(x)
-	if rv.Kind() == reflect.Pointer && rv.IsNil() {
-		return fmt.Sprint(x) // a nil pointer's methods may panic
-	}
-	if m, ok := x.(encoding.TextMarshaler); ok {
-		if text, err := m.MarshalText(); err == nil {
-			return string(text)
-		}
-	}
-	if s, ok := x.(fmt.Stringer); ok {
-		return s.String()
-	}
 	if rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array {
 		if v := slog.AnyValue(x); v.Kind() != slog.KindAny {
 			return canonicalSlog(v)
@@ -237,6 +229,28 @@ func canonicalAny(x any) string {
 		elems[i] = rv.Index(i).Interface()
 	}
 	return canonicalArray(elems, canonicalAny)
+}
+
+// textForm returns the text of a value implementing encoding.TextMarshaler
+// (when MarshalText succeeds) or else fmt.Stringer, and whether it has one.
+// These are caller-defined methods running inside the host's log call, so a
+// panic in either (a nil receiver or a nil field, for example) is recovered
+// and the value falls back to fmt.Sprint, which recovers panics itself.
+func textForm(x any) (text string, ok bool) {
+	defer func() {
+		if recover() != nil {
+			text, ok = fmt.Sprint(x), true
+		}
+	}()
+	if m, isMarshaler := x.(encoding.TextMarshaler); isMarshaler {
+		if b, err := m.MarshalText(); err == nil {
+			return string(b), true
+		}
+	}
+	if s, isStringer := x.(fmt.Stringer); isStringer {
+		return s.String(), true
+	}
+	return "", false
 }
 
 // canonicalFloat renders a float in the shortest form that round-trips.

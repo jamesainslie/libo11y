@@ -116,6 +116,47 @@ func TestPIIHashKeyIsCopied(t *testing.T) {
 	}
 }
 
+// panicStringer and panicMarshaler are non-nil values whose text methods
+// panic by dereferencing a nil field.
+type panicStringer struct{ s *string }
+
+func (p panicStringer) String() string { return *p.s }
+
+type panicMarshaler struct{ s *string }
+
+func (p panicMarshaler) MarshalText() ([]byte, error) { return []byte(*p.s), nil }
+
+// TestPIIHashSurvivesPanickingTextMethods pins that hashing a PII value never
+// crashes the host's log call, even when the value's own String or
+// MarshalText method panics.
+func TestPIIHashSurvivesPanickingTextMethods(t *testing.T) {
+	t.Parallel()
+	for name, value := range map[string]any{
+		"String":      panicStringer{},
+		"MarshalText": panicMarshaler{},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			sdk, _, _, console := newHermetic(t, o11y.WithPIIMode(o11y.PIIHash), o11y.WithPIIHashKey(testKey))
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						t.Fatalf("logging a PII value with a panicking %s method panicked: %v", name, r)
+					}
+				}()
+				sdk.Logger().LogAttrs(context.Background(), slog.LevelInfo, "m", slog.Any("host.ip", value))
+			}()
+			recs := consoleRecords(t, console)
+			if len(recs) != 1 {
+				t.Fatalf("got %d console records", len(recs))
+			}
+			if got, _ := recs[0]["host.ip"].(string); !strings.HasPrefix(got, tokenPrefix) {
+				t.Errorf("host.ip = %q, want a token", got)
+			}
+		})
+	}
+}
+
 // TestPIIHashSameTokenOnLogsAndSpans pins one canonical hash input across
 // signals: the same PII value, scalar or slice-valued, must produce the same
 // token on a log record and on an exported span, or tokens stop joining.

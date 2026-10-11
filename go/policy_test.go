@@ -129,3 +129,11 @@ func TestCanonicalRenderingIgnoresType(t *testing.T) {
 		t.Errorf("invalid UTF-8 slice elements render differently: %q vs %q", a, b)
 	}
 }
+
+// TestCanonicalAnyNilPointerWithValueMethods pins that a nil pointer whose
+// type has value-receiver text methods renders without panicking.
+func TestCanonicalAnyNilPointerWithValueMethods(t *testing.T) {
+	if got := canonicalAny((*net.IP)(nil)); got != "<nil>" {
+		t.Errorf("canonicalAny(nil *net.IP) = %q, want <nil>", got)
+	}
+}
