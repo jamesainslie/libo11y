@@ -15,6 +15,7 @@ package main
 import (
 	"bytes"
 	"cmp"
+	"errors"
 	"flag"
 	"fmt"
 	"go/format"
@@ -87,25 +88,43 @@ func (a attr) requirement() string {
 }
 
 // enumMembers extracts enum member values when the type is a member map.
+// The type mapping has passed decodeRegistry's strict validation, so the
+// decode here cannot fail on a registry that loaded.
 func (a attr) enumMembers() []enumMember {
 	if a.Type.Kind != yaml.MappingNode {
 		return nil
 	}
-	var typeSpec struct {
-		Members []struct {
-			ID    string `yaml:"id"`
-			Value string `yaml:"value"`
-			Brief string `yaml:"brief"`
-		} `yaml:"members"`
-	}
-	if err := a.Type.Decode(&typeSpec); err != nil {
+	var spec enumTypeSpec
+	if err := a.Type.Decode(&spec); err != nil {
 		return nil
 	}
-	members := make([]enumMember, 0, len(typeSpec.Members))
-	for _, m := range typeSpec.Members {
+	members := make([]enumMember, 0, len(spec.Members))
+	for _, m := range spec.Members {
 		members = append(members, enumMember{ID: m.ID, Value: m.Value, Brief: m.Brief})
 	}
 	return members
+}
+
+// enumTypeSpec is the mapping form of an attribute type: a closed enum.
+type enumTypeSpec struct {
+	Members []enumMemberSpec `yaml:"members"`
+}
+
+// enumMemberSpec lists every field an enum member may carry.
+type enumMemberSpec struct {
+	ID         string           `yaml:"id"`
+	Value      string           `yaml:"value"`
+	Brief      string           `yaml:"brief"`
+	Note       string           `yaml:"note"`
+	Stability  string           `yaml:"stability"`
+	Deprecated *deprecationSpec `yaml:"deprecated"`
+}
+
+// deprecationSpec is the mapping form of a deprecated field.
+type deprecationSpec struct {
+	Reason    string `yaml:"reason"`
+	RenamedTo string `yaml:"renamed_to"`
+	Note      string `yaml:"note"`
 }
 
 // scalarType returns the scalar type name for defined attributes
@@ -230,14 +249,85 @@ func load(root string) (*model, error) {
 // decodeRegistry parses one registry file strictly: an unknown key (a
 // misspelled requirement_level, say) is an error rather than a field the
 // checks and the generator silently never see.
+// The nested mappings (enum type specs, enum members, deprecation records)
+// are decoded strictly too. An empty or comment-only file holds no groups;
+// a second YAML document in one file is an error.
 func decodeRegistry(raw []byte) (registryFile, error) {
 	dec := yaml.NewDecoder(bytes.NewReader(raw))
 	dec.KnownFields(true)
 	var file registryFile
 	if err := dec.Decode(&file); err != nil {
+		if errors.Is(err, io.EOF) {
+			return registryFile{}, nil
+		}
+		return registryFile{}, markUnknownField(err)
+	}
+	var extra yaml.Node
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			err = errors.New("a registry file holds one YAML document, found a second")
+		}
+		return registryFile{}, err
+	}
+	if err := validateNested(file); err != nil {
 		return registryFile{}, err
 	}
 	return file, nil
+}
+
+// validateNested strictly decodes the mappings the top-level decode keeps
+// as raw nodes, so a misspelled member or deprecation key is a load error.
+func validateNested(file registryFile) error {
+	for _, g := range file.Groups {
+		for _, a := range g.Attributes {
+			if a.Type.Kind == yaml.MappingNode {
+				var spec enumTypeSpec
+				if err := decodeStrict(&a.Type, &spec); err != nil {
+					return fmt.Errorf("attribute %s type: %w", a.name(), err)
+				}
+				if len(spec.Members) == 0 {
+					return fmt.Errorf("attribute %s: enum type declares no members", a.name())
+				}
+			}
+			if a.Deprecated.Kind == yaml.MappingNode {
+				var spec deprecationSpec
+				if err := decodeStrict(&a.Deprecated, &spec); err != nil {
+					return fmt.Errorf("attribute %s deprecated: %w", a.name(), err)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// decodeStrict decodes node into out, rejecting unknown fields. A
+// yaml.Node has no strict decode, so the node is re-encoded and decoded
+// again with KnownFields; line numbers in errors are relative to the node.
+func decodeStrict(node *yaml.Node, out any) error {
+	raw, err := yaml.Marshal(node)
+	if err != nil {
+		return err
+	}
+	dec := yaml.NewDecoder(bytes.NewReader(raw))
+	dec.KnownFields(true)
+	if err := dec.Decode(out); err != nil {
+		return markUnknownField(err)
+	}
+	return nil
+}
+
+// markUnknownField prefixes an unknown-field decode error with its rule ID
+// so it reads like the policy violations; other errors pass through.
+func markUnknownField(err error) error {
+	var typeErr *yaml.TypeError
+	if errors.As(err, &typeErr) {
+		for _, msg := range typeErr.Errors {
+			if strings.Contains(msg, " not found in type ") {
+				return fmt.Errorf("libo11y_registry_unknown_field: %w", err)
+			}
+		}
+	}
+	return err
 }
 
 func (m *model) classify(g group) {
