@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"go.opentelemetry.io/contrib/bridges/otelslog"
 	"go.opentelemetry.io/otel/attribute"
@@ -227,10 +228,10 @@ func assertNoValue(t *testing.T, sinks map[string]map[string][]string, want stri
 	}
 }
 
-// A self-referencing map is walked to a bounded depth: members are judged on
-// their effective keys at every level walked (host.ip is classified, the
-// deeper host.self.ip is not), and what lies past the bound is dropped
-// rather than forwarded raw, so no sink receives the cycle itself.
+// A self-referencing map is cut where it refers back to itself: its other
+// members are judged on their effective keys, the reference is dropped
+// rather than walked again or forwarded raw, so no sink receives the cycle
+// itself.
 func TestSlogSelfReferencingMapFailsClosed(t *testing.T) {
 	t.Parallel()
 	m := map[string]any{"ip": "10.9.9.9", "name": "web-1"}
@@ -255,8 +256,12 @@ func TestSlogSelfReferencingMapFailsClosed(t *testing.T) {
 		if got := attrs["host.name"]; len(got) != 1 || got[0] != "web-1" {
 			t.Errorf("%s host.name = %v, want [web-1]", sink, got)
 		}
-		if got := attrs["host.self.name"]; len(got) != 1 || got[0] != "web-1" {
-			t.Errorf("%s host.self.name = %v, want [web-1]", sink, got)
+		// The reference back to m is cut where it occurs: host.self is
+		// dropped rather than walked again.
+		for key := range attrs {
+			if strings.HasPrefix(key, "host.self") {
+				t.Errorf("%s kept the cycle member %s", sink, key)
+			}
 		}
 	}
 }
@@ -288,6 +293,99 @@ func TestSlogMapUnderClassifiedKeyTokenMatchesBridge(t *testing.T) {
 	sdk, _, _, console := newHermetic(t, o11y.WithLogExporter(exp),
 		o11y.WithPIIMode(o11y.PIIHash), o11y.WithPIIHashKey(testKey))
 	value := map[string]any{"v4": "10.9.9.9", "port": 22}
+	sdk.Logger().Info("own", "host.ip", value)
+	otelslog.NewLogger("thirdparty", otelslog.WithLoggerProvider(sdk.LoggerProvider())).Info("bridged", "host.ip", value)
+	if err := sdk.ForceFlush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	consoleToken, _ := consoleRecords(t, console)[0]["host.ip"].(string)
+	recs := exp.snapshot()
+	ownToken, bridgeToken := logAttrs(recs[0])["host.ip"], logAttrs(recs[1])["host.ip"]
+	if !strings.HasPrefix(consoleToken, "hmac-sha256:") || ownToken != consoleToken || bridgeToken != consoleToken {
+		t.Errorf("console %q, OTLP leg %q, bridge %q: want one token", consoleToken, ownToken, bridgeToken)
+	}
+}
+
+// A map with several references back to itself would expand exponentially
+// with depth. The walk cuts a reference back into the current path and caps
+// the nodes it visits, so logging it stays fast, the cycle members are
+// dropped, and no sink receives the raw cycle or a classified value.
+func TestSlogMultiBackReferenceCycleIsBounded(t *testing.T) {
+	t.Parallel()
+	for _, refs := range []int{3, 4} {
+		t.Run(fmt.Sprint(refs), func(t *testing.T) {
+			t.Parallel()
+			m := map[string]any{"ip": "10.9.9.9", "name": "web-1"}
+			for i := range refs {
+				m[fmt.Sprintf("self%d", i)] = m
+			}
+			start := time.Now()
+			sinks := ownSinks(t, m)
+			if elapsed := time.Since(start); elapsed > 2*time.Second {
+				t.Errorf("logging a %d-reference cycle took %v", refs, elapsed)
+			}
+			for sink, attrs := range sinks {
+				if got := attrs["host.name"]; len(got) != 1 || got[0] != "web-1" {
+					t.Errorf("%s host.name = %v, want [web-1]", sink, got)
+				}
+				for key, values := range attrs {
+					if key == "host.ip" || strings.HasPrefix(key, "host.self") {
+						t.Errorf("%s kept %s=%v; want the cycle members dropped", sink, key, values)
+					}
+					for _, v := range values {
+						if strings.Contains(v, "!ERROR") || strings.Contains(v, "max depth") {
+							t.Errorf("%s forwarded the raw cycle: %s=%s", sink, key, v)
+						}
+					}
+				}
+			}
+		})
+	}
+}
+
+// A wide DAG (one map shared by several members on every level) has no cycle
+// but expands exponentially. The walk caps the nodes it visits and drops
+// what lies past the cap, so logging it stays fast and small.
+func TestSlogWideSharedMapIsBounded(t *testing.T) {
+	t.Parallel()
+	var level any = map[string]any{"ip": "10.9.9.9", "name": "web-1"}
+	for range 10 {
+		level = map[string]any{"a": level, "b": level, "c": level}
+	}
+	exp := &memLogExporter{}
+	sdk, _, _, console := newHermetic(t, o11y.WithLogExporter(exp))
+	start := time.Now()
+	sdk.Logger().Info("own", "host", level, "name", "kept")
+	if err := sdk.ForceFlush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("logging a wide shared map took %v", elapsed)
+	}
+	if n := console.Len(); n > 512<<10 {
+		t.Errorf("console line is %d bytes; want the expansion capped", n)
+	}
+	if n := len(fmt.Sprint(logAttrs(exp.snapshot()[0]))); n > 512<<10 {
+		t.Errorf("OTLP record renders to %d bytes; want the expansion capped", n)
+	}
+	if got := consoleRecords(t, console)[0]["name"]; got != "kept" {
+		t.Errorf("sibling attribute name = %v, want kept", got)
+	}
+}
+
+type hostInfo struct {
+	V4   string
+	Port int
+}
+
+// A struct is a leaf rendered as %+v, as otelslog renders it, so under
+// PIIHash a struct under a classified key has one token on every path.
+func TestSlogStructUnderClassifiedKeyTokenMatchesBridge(t *testing.T) {
+	t.Parallel()
+	exp := &memLogExporter{}
+	sdk, _, _, console := newHermetic(t, o11y.WithLogExporter(exp),
+		o11y.WithPIIMode(o11y.PIIHash), o11y.WithPIIHashKey(testKey))
+	value := hostInfo{V4: "10.9.9.9", Port: 22}
 	sdk.Logger().Info("own", "host.ip", value)
 	otelslog.NewLogger("thirdparty", otelslog.WithLoggerProvider(sdk.LoggerProvider())).Info("bridged", "host.ip", value)
 	if err := sdk.ForceFlush(context.Background()); err != nil {

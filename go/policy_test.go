@@ -1,10 +1,12 @@
 package o11y
 
 import (
+	"fmt"
 	"log/slog"
 	"net"
 	"strings"
 	"testing"
+	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 
@@ -172,7 +174,44 @@ func ptr[T any](v T) *T { return &v }
 func TestCanonicalAnySelfReferencingMapTerminates(t *testing.T) {
 	m := map[string]any{"ip": "1"}
 	m["self"] = m
-	if got := canonicalAny(m); !strings.Contains(got, canonicalDepthExceeded) {
-		t.Errorf("canonicalAny(cycle) = %q, want it cut at %q", got, canonicalDepthExceeded)
+	if got := canonicalAny(m); !strings.Contains(got, canonicalTruncated) {
+		t.Errorf("canonicalAny(cycle) = %q, want it cut at %q", got, canonicalTruncated)
+	}
+}
+
+func TestCanonicalAnyRendersStructsAsOtelslogDoes(t *testing.T) {
+	v := struct {
+		V4   string
+		Port int
+	}{"10.0.0.1", 22}
+	if got, want := canonicalAny(v), "{V4:10.0.0.1 Port:22}"; got != want {
+		t.Errorf("canonicalAny(struct) = %q, want %q (otelslog%%+v)", got, want)
+	}
+}
+
+// Several references back into a value, and a map shared by every member of
+// every level, would expand exponentially; the canonical walk cuts cycles and
+// caps the nodes it renders.
+func TestCanonicalAnyBoundsSharedReferences(t *testing.T) {
+	cyclic := map[string]any{"ip": "1"}
+	for i := range 4 {
+		cyclic[fmt.Sprint("self", i)] = cyclic
+	}
+	var dag any = map[string]any{"ip": "1"}
+	for range 12 {
+		dag = map[string]any{"a": dag, "b": dag, "c": dag}
+	}
+	for name, v := range map[string]any{"cycle": cyclic, "dag": dag} {
+		start := time.Now()
+		got := canonicalAny(v)
+		if elapsed := time.Since(start); elapsed > 2*time.Second {
+			t.Errorf("%s: rendering took %v", name, elapsed)
+		}
+		if !strings.Contains(got, canonicalTruncated) || len(got) > 256<<10 {
+			t.Errorf("%s: rendering is %d bytes, truncated=%v; want it capped", name, len(got), strings.Contains(got, canonicalTruncated))
+		}
+		if again := canonicalAny(v); again != got {
+			t.Errorf("%s: truncated rendering is not deterministic", name)
+		}
 	}
 }

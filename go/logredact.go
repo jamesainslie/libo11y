@@ -80,10 +80,17 @@ func (c *classifier) Handle(ctx context.Context, record slog.Record) error {
 // classifyAttr classifies one attribute at the given group path, recursing
 // into groups, and into Go maps, slices of them, and pointers to either
 // logged under an unclassified key (see classifyComposite), so every leaf is
-// judged on its effective dotted key. A value under a classified key is judged whole. Change
-// tracking comes from the classification action, never from comparing slog
-// values, because slog.Value.Equal panics on uncomparable values.
+// judged on its effective dotted key. A value under a classified key is
+// judged whole. Change tracking comes from the classification action, never
+// from comparing slog values, because slog.Value.Equal panics on
+// uncomparable values.
 func (c *classifier) classifyAttr(groups []string, a slog.Attr) (out slog.Attr, keep, changed bool) {
+	return c.classifyAttrIn(groups, a, nil)
+}
+
+// classifyAttrIn is classifyAttr within an ongoing composite walk; w is nil
+// at the top of an attribute, and a walk starts when a composite is found.
+func (c *classifier) classifyAttrIn(groups []string, a slog.Attr, w *compositeWalk) (out slog.Attr, keep, changed bool) {
 	a.Value = a.Value.Resolve()
 	if a.Value.Kind() == slog.KindGroup {
 		path := groups
@@ -94,7 +101,7 @@ func (c *classifier) classifyAttr(groups []string, a slog.Attr) (out slog.Attr, 
 		kept := make([]slog.Attr, 0, len(members))
 		memberChanged := false
 		for _, m := range members {
-			mo, mk, mc := c.classifyAttr(path, m)
+			mo, mk, mc := c.classifyAttrIn(path, m, w)
 			memberChanged = memberChanged || mc
 			if mk {
 				kept = append(kept, mo)
@@ -113,8 +120,11 @@ func (c *classifier) classifyAttr(groups []string, a slog.Attr) (out slog.Attr, 
 	class := c.policy.lookup(attribute.Key(effectiveKey(groups, a.Key)))
 	if c.policy.actionFor(class) == actionKeep {
 		if a.Value.Kind() == slog.KindAny && a.Key != "" {
+			if w == nil {
+				w = newCompositeWalk()
+			}
 			path := append(slices.Clone(groups), a.Key)
-			if v, vk, vc, ok := c.classifyComposite(path, a.Value.Any(), 0); ok {
+			if v, vk, vc, ok := c.classifyComposite(path, a.Value.Any(), 0, w); ok {
 				switch {
 				case !vc:
 					return a, true, false
@@ -134,43 +144,107 @@ func (c *classifier) classifyAttr(groups []string, a slog.Attr) (out slog.Attr, 
 	return res, true, true
 }
 
-// maxCompositeDepth bounds how deeply classifyComposite walks: nested maps
-// by effective key length, and nested slices and pointer indirections by
-// walk depth, so a self-referencing value cannot recurse forever. A map or
-// slice past the bound is dropped rather than forwarded unexamined.
+// maxCompositeDepth bounds how deeply a composite walk goes: nested maps by
+// effective key length, and nested slices and pointer indirections by walk
+// depth. The key-length bound counts the handler's own groups too, so a
+// composite under very deeply grouped handlers fails closed even when it is
+// shallow itself; that is deliberate, since the bound must hold whatever the
+// nesting came from. A map or slice past the bound is dropped rather than
+// forwarded unexamined.
 const maxCompositeDepth = 16
+
+// compositeWalkBudget caps the nodes (maps, slices, pointers, and their
+// members) one walk visits. Shared references make a value without cycles
+// (a map referenced by several members on every level) expand exponentially
+// when walked; past the budget the walk drops what remains, so the work, and
+// the rebuilt value every sink then encodes, stays bounded.
+const compositeWalkBudget = 2048
+
+// compositeWalk is the state of one walk over a composite value: the
+// identities of the maps, slices, and pointers on the current path, to cut
+// references back into it, and the remaining node budget.
+type compositeWalk struct {
+	onPath []uintptr
+	budget int
+}
+
+func newCompositeWalk() *compositeWalk { return &compositeWalk{budget: compositeWalkBudget} }
+
+// spend takes one node from the budget and reports whether any remained.
+func (w *compositeWalk) spend() bool {
+	w.budget--
+	return w.budget >= 0
+}
+
+// enter records that the walk descends into v and reports false when v is
+// already on the current path (a cycle). leave must follow a successful
+// enter. Values without an identity (arrays, nil, zero-length slices with no
+// backing array) are always entered.
+func (w *compositeWalk) enter(v reflect.Value) bool {
+	id := identity(v)
+	if id != 0 && slices.Contains(w.onPath, id) {
+		return false
+	}
+	w.onPath = append(w.onPath, id)
+	return true
+}
+
+func (w *compositeWalk) leave() { w.onPath = w.onPath[:len(w.onPath)-1] }
+
+// identity returns the address that identifies a map, slice, or pointer, or
+// 0 for anything else.
+func identity(v reflect.Value) uintptr {
+	switch v.Kind() {
+	case reflect.Map, reflect.Slice, reflect.Pointer:
+		return v.Pointer()
+	default:
+		return 0
+	}
+}
 
 // classifyComposite walks a Go value logged as one slog value when it is a
 // map, or a slice or array that can hold one, so its members are judged on
 // their dotted effective keys under path (the holder's effective key) like
 // slog groups are. Non-nil pointers and interfaces are followed, and map
 // keys that are not strings are rendered with %+v, as otelslog does, so the
-// walk covers everything the bridge converts into map values: the console,
-// extra sinks, the OTLP leg, and other bridges therefore agree. ok is false
-// for any other value, which stays a leaf.
+// walk covers the map values otelslog makes (it also turns complex numbers
+// into small maps of their parts, which carry nothing to classify). The
+// console, extra sinks, the OTLP leg, and other bridges therefore agree. ok
+// is false for any other value, which stays a leaf.
 //
 // A map or slice emptied by classification is dropped (keep false); a
 // changed one is rebuilt as map[string]any or []any holding the surviving
-// members, and an unchanged one is returned as is. Past maxCompositeDepth a
-// map or slice is dropped (keep false, changed true): classification fails
-// closed.
-func (c *classifier) classifyComposite(path []string, x any, depth int) (out any, keep, changed, ok bool) {
+// members, and an unchanged one is returned as is. The walk fails closed:
+// past maxCompositeDepth, on a reference back into the current path, or once
+// the walk's node budget is spent, a map or slice (or what remains of one) is
+// dropped, reported as a change, and never forwarded unexamined.
+func (c *classifier) classifyComposite(path []string, x any, depth int, w *compositeWalk) (out any, keep, changed, ok bool) {
 	rv := reflect.ValueOf(x)
+	entered := 0
+	defer func() {
+		for range entered {
+			w.leave()
+		}
+	}()
 	for rv.IsValid() && (rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface) {
 		if rv.IsNil() {
 			return x, true, false, false
 		}
-		if depth++; depth >= maxCompositeDepth {
-			return nil, false, true, true
+		if rv.Kind() == reflect.Pointer {
+			if depth++; depth >= maxCompositeDepth || !w.spend() || !w.enter(rv) {
+				return nil, false, true, true
+			}
+			entered++
 		}
 		rv = rv.Elem()
 	}
 	if !rv.IsValid() || !mayHoldMap(rv) {
 		return x, true, false, false
 	}
-	if depth >= maxCompositeDepth || len(path) > maxCompositeDepth {
+	if depth >= maxCompositeDepth || len(path) > maxCompositeDepth || !w.spend() || !w.enter(rv) {
 		return nil, false, true, true
 	}
+	entered++
 	if rv.Kind() == reflect.Map {
 		type member struct {
 			key   string
@@ -183,7 +257,11 @@ func (c *classifier) classifyComposite(path []string, x any, depth int) (out any
 		slices.SortFunc(members, func(a, b member) int { return strings.Compare(a.key, b.key) })
 		kept := make(map[string]any, len(members))
 		for _, m := range members {
-			mo, mk, mc := c.classifyAttr(path, slog.Any(m.key, m.value))
+			if !w.spend() {
+				changed = true // the budget is spent: drop the remaining members
+				break
+			}
+			mo, mk, mc := c.classifyAttrIn(path, slog.Any(m.key, m.value), w)
 			changed = changed || mc
 			if mk {
 				kept[m.key] = mo.Value.Any()
@@ -196,8 +274,12 @@ func (c *classifier) classifyComposite(path []string, x any, depth int) (out any
 	}
 	kept := make([]any, 0, rv.Len())
 	for i := range rv.Len() {
+		if !w.spend() {
+			changed = true // the budget is spent: drop the remaining elements
+			break
+		}
 		e := rv.Index(i).Interface()
-		eo, ek, ec, eok := c.classifyComposite(path, e, depth+1)
+		eo, ek, ec, eok := c.classifyComposite(path, e, depth+1, w)
 		if !eok {
 			kept = append(kept, e)
 			continue

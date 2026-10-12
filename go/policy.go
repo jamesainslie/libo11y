@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"log/slog"
 	"reflect"
+	"slices"
 	"strconv"
+	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
 
@@ -228,7 +230,7 @@ func canonicalAttr(v attribute.Value) string { return renderCanonical(attrNode(v
 func canonicalSlog(v slog.Value) string { return renderCanonical(slogNode(v)) }
 
 // canonicalAny renders an arbitrary slog payload in the canonical form.
-func canonicalAny(x any) string { return renderCanonical(anyNode(x, 0)) }
+func canonicalAny(x any) string { return renderCanonical(anyNode(x, 0, newCompositeWalk())) }
 
 // A canonical node is a string (a scalar's canonical text), a []any (an
 // array of nodes), or a map[string]any (an object of nodes). Composite
@@ -293,26 +295,34 @@ func slogNode(v slog.Value) any {
 	case slog.KindString:
 		return v.String()
 	case slog.KindAny:
-		return anyNode(v.Any(), 0)
+		return anyNode(v.Any(), 0, newCompositeWalk())
 	default:
 		return v.String()
 	}
 }
 
-// canonicalDepthExceeded stands in for a value nested deeper than
-// maxCompositeDepth, so a self-referencing value renders in bounded time.
-const canonicalDepthExceeded = "max depth exceeded"
+// canonicalTruncated stands in for the part of a value the canonical walk
+// does not render: anything nested deeper than maxCompositeDepth, a
+// reference back into the current path (a cycle), and whatever remains once
+// the walk's node budget is spent. A self-referencing or widely shared value
+// therefore renders in bounded time and size.
+const canonicalTruncated = "truncated"
 
 // anyNode builds the canonical node of an arbitrary slog payload: plain byte
 // slices as base64; types with a text form (encoding.TextMarshaler, then
 // fmt.Stringer) as that text, so a net.IP or net.HardwareAddr matches the
 // string a span would carry for it; non-nil pointers as what they point to;
 // other slices and arrays as an array of their elements; maps as an object,
-// keys rendered as a log bridge renders them; and everything else through
-// its slog value. Nesting past maxCompositeDepth renders as a fixed marker.
-func anyNode(x any, depth int) any {
-	if depth > maxCompositeDepth {
-		return canonicalDepthExceeded
+// keys rendered as a log bridge renders them and visited in sorted order so
+// truncation is deterministic; scalars through their slog value; and
+// anything else (structs, for example) with %+v, as otelslog renders it.
+//
+// The walk w bounds the rendering like the classifier's composite walk: a
+// value whose rendering exceeds it is truncated, so its token is stable but
+// can differ from the token a bridge's attribute value gets.
+func anyNode(x any, depth int, w *compositeWalk) any {
+	if depth > maxCompositeDepth || !w.spend() {
+		return canonicalTruncated
 	}
 	if b, ok := x.([]byte); ok {
 		return base64.StdEncoding.EncodeToString(b)
@@ -322,27 +332,44 @@ func anyNode(x any, depth int) any {
 	}
 	rv := reflect.ValueOf(x)
 	switch rv.Kind() {
+	case reflect.Pointer, reflect.Slice, reflect.Array, reflect.Map:
+		if rv.Kind() == reflect.Pointer && rv.IsNil() {
+			break
+		}
+		if !w.enter(rv) {
+			return canonicalTruncated
+		}
+		defer w.leave()
+	}
+	switch rv.Kind() {
 	case reflect.Pointer:
 		if !rv.IsNil() {
-			return anyNode(rv.Elem().Interface(), depth+1)
+			return anyNode(rv.Elem().Interface(), depth+1, w)
 		}
 	case reflect.Slice, reflect.Array:
 		arr := make([]any, rv.Len())
 		for i := range arr {
-			arr[i] = anyNode(rv.Index(i).Interface(), depth+1)
+			arr[i] = anyNode(rv.Index(i).Interface(), depth+1, w)
 		}
 		return arr
 	case reflect.Map:
-		obj := make(map[string]any, rv.Len())
-		for it := rv.MapRange(); it.Next(); {
-			obj[mapKey(it.Key())] = anyNode(it.Value().Interface(), depth+1)
+		keys := rv.MapKeys()
+		names := make([]string, len(keys))
+		order := make([]int, len(keys))
+		for i, k := range keys {
+			names[i], order[i] = mapKey(k), i
+		}
+		slices.SortFunc(order, func(a, b int) int { return strings.Compare(names[a], names[b]) })
+		obj := make(map[string]any, len(keys))
+		for _, i := range order {
+			obj[names[i]] = anyNode(rv.MapIndex(keys[i]).Interface(), depth+1, w)
 		}
 		return obj
 	}
 	if v := slog.AnyValue(x); v.Kind() != slog.KindAny {
 		return slogNode(v)
 	}
-	return fmt.Sprint(x)
+	return fmt.Sprintf("%+v", x)
 }
 
 // textForm returns the text of a value implementing encoding.TextMarshaler
