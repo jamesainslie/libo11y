@@ -140,9 +140,11 @@ func configAttr(key, value string) slog.Attr {
 //
 // A credential containing an unencoded '/', '?', or '#' ends the URL
 // authority early, so the parser never sees it as userinfo and part of it
-// lands in the host, path, or query. Any '@' that did not parse as the
-// userinfo separator, or that survives into the output, therefore withholds
-// the whole value rather than echoing a fragment of the secret.
+// lands in the host, path, or query. An '@' inside the password followed by
+// a '?' or '#' likewise makes the parser take the password's tail as the
+// host. Any '@' other than a single userinfo separator, or any '@' that
+// survives into the output, therefore withholds the whole value rather than
+// echoing a fragment of the secret.
 func sanitizeEndpoint(raw string) string {
 	const withheld = "unparseable"
 	schemeless := !strings.Contains(raw, "://")
@@ -153,7 +155,7 @@ func sanitizeEndpoint(raw string) string {
 	if err != nil || u.Host == "" {
 		return withheld
 	}
-	if u.User == nil && strings.Contains(raw, "@") {
+	if n := strings.Count(raw, "@"); n > 1 || (n == 1 && u.User == nil) {
 		return withheld
 	}
 	u.User = nil

@@ -59,6 +59,48 @@ func TestStartupSummaryConformsAndHidesCredentials(t *testing.T) {
 	}
 }
 
+// TestSummaryReportsPerSignalEndpointsSanitized pins that the metrics and
+// logs endpoints are reported, and sanitized, like the generic one.
+func TestSummaryReportsPerSignalEndpointsSanitized(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "https://m:pw1@metrics.example:4318/v1/metrics?token=t1")
+	t.Setenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "https://logs.example:4318/v1/logs#l0g")
+	sdk, _, _, _ := newHermetic(t)
+
+	config := sdk.EffectiveConfig()
+	for _, want := range []string{
+		"o11y.config.metrics_endpoint=https://metrics.example:4318/v1/metrics",
+		"o11y.config.logs_endpoint=https://logs.example:4318/v1/logs",
+	} {
+		if !strings.Contains(config, want) {
+			t.Errorf("EffectiveConfig missing %q: %s", want, config)
+		}
+	}
+	for _, leak := range []string{"pw1", "t1", "l0g"} {
+		if strings.Contains(config, leak) {
+			t.Errorf("EffectiveConfig leaked %q: %s", leak, config)
+		}
+	}
+}
+
+// TestSummaryListsNoEndpointsWithoutOTELEnv pins that WithoutOTELEnv,
+// which never builds an exporter from the environment, reports no
+// environment endpoint.
+func TestSummaryListsNoEndpointsWithoutOTELEnv(t *testing.T) {
+	for _, env := range []string{
+		"OTEL_EXPORTER_OTLP_ENDPOINT",
+		"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+		"OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+		"OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+	} {
+		t.Setenv(env, "https://collector.example:4318")
+	}
+	sdk, _, _, _ := newHermetic(t, o11y.WithoutOTELEnv())
+
+	if config := sdk.EffectiveConfig(); strings.Contains(config, "endpoint=") {
+		t.Errorf("EffectiveConfig lists an endpoint under WithoutOTELEnv: %s", config)
+	}
+}
+
 // TestEffectiveConfigReportsFallbackForUnsupportedSampler pins that a
 // sampler name other SDKs accept but the Go SDK rejects is reported as the
 // fallback the Go SDK actually applies.
@@ -104,6 +146,11 @@ func TestSanitizeEndpoint(t *testing.T) {
 		{"https://user:/s3cr3t@collector.example", "unparseable"},
 		{"https://user:12?ab@collector.example:4318", "unparseable"},
 		{"https://u:p@x/y@collector.example", "unparseable"},
+		// An '@' inside the password followed by '?' or '#' makes the
+		// parser take the password tail as the host.
+		{"https://u:p@ss?word@collector.example:4318", "unparseable"},
+		{"https://u:S3cr3t@abc?x@collector.example:4318/v1", "unparseable"},
+		{"u:p@ss?word@collector.example:4317", "unparseable"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.raw, func(t *testing.T) {
