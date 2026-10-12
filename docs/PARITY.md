@@ -24,11 +24,11 @@ implemented (rationale given).
 | W3C TraceContext + Baggage default propagator | full | composite, replaceable via variadic `WithPropagators`; the baggage egress filter still wraps a replacement |
 | Baggage egress filter | full | inject-only filter seam around every configured propagator, including one from `WithPropagators`; default predicate allows every key; extraction is never altered |
 | Standard env interop (OTEL_*) | full | delegated to autoexport and resource detection; no proprietary env vars |
-| Hermetic mode independent of OTEL_* | full | `WithoutOTELEnv`: options and library defaults only, un-injected signals disabled, environment resource keys shadowed with empty values; the experimental `OTEL_GO_X_PER_SERIES_START_TIMESTAMPS` and `OTEL_GO_X_DEPRECATED_RUNTIME_METRICS` switches have no overriding option and still apply |
-| Init canary (sink-verified startup) | full | `o11y.telemetry.configured` event forced through the pipeline in `Setup`; a synchronously-rejecting sink fails Setup |
+| Hermetic mode independent of OTEL_* | full | `WithoutOTELEnv`: options and library defaults only, un-injected signals disabled, environment resource keys the library resource does not define shadowed with empty values; the experimental `OTEL_GO_X_PER_SERIES_START_TIMESTAMPS` and `OTEL_GO_X_DEPRECATED_RUNTIME_METRICS` switches have no overriding option and still apply |
+| Init canary (sink-verified startup) | full | `o11y.telemetry.configured` event forced through the pipeline in `Setup`; a synchronously-rejecting sink fails Setup; `New` runs no canary |
 | Effective-config line | full | startup event with `o11y.config.*` attributes (endpoints without userinfo, query, or fragment) + `SDK.EffectiveConfig()` |
 | Always-emit mechanism for audit records | full | `o11y.ForceEmit(ctx)` context marker bypassing level gates |
-| Attribute replacer across all sinks | full | `WithAttrReplacer`, uniform on console/OTLP/extra sinks |
+| Attribute replacer across all slog sinks | full | `WithAttrReplacer`, uniform on the console, OTLP slog, and extra sinks; records from other bridges on `SDK.LoggerProvider` do not pass through it |
 | Capture-time redaction | full | `slog.LogValuer` + `o11y` struct tags (`mask`, `redact`, `omit`, and the spec vocabulary `confidential` and `secret`) via `redact.Secret`, `redact.Masked`, `redact.Struct`; guards slog, fmt, and JSON surfaces; cycles and depth fail closed |
 | Middleware: HTTP server | full | `o11yhttp` over otelhttp, route-aware names, stable HTTP semconv, `WithPublicEndpoint` |
 | Middleware: HTTP client | full | `o11yhttp.NewTransport` |
@@ -44,7 +44,7 @@ implemented (rationale given).
 | Exemplars (metric-to-trace reconciliation) | full | on by default (trace-based); `WithExemplarFilter` + OTEL_METRICS_EXEMPLAR_FILTER; verified through otelhttp instruments; `o11ytest.Recorder.Exemplars` for consumer assertions |
 | Sampler configuration | full | OTEL_TRACES_SAMPLER + `WithTraceSampler` |
 | TLS for exporters | full | standard OTEL_EXPORTER_OTLP_CERTIFICATE et al. (env-driven, exporter-owned) |
-| Signal-driven shutdown helper | full | `SDK.ShutdownOnSignals` (blocks, restores handling on first signal, bounded flush) |
+| Signal-driven shutdown helper | full | `SDK.ShutdownOnSignals` (blocks until a signal or the context ends, restores handling on first signal, bounded flush) |
 | Hermetic test harness | full | `o11ytest` (built with `WithoutOTELEnv`) with span/metric/log recorders, correlation and conformance assertions (`AssertConforms`, `AssertCorrelated`) |
 | OTLP wire-level verification | full | in-process OTLP gRPC and HTTP receivers assert exported payloads, sensitivity, and correlation, through injected exporters and through environment configuration |
 | Centralized telemetry specification | full | semconv-format registry under `spec/`, Go policy checks (`make spec-check`), code generation to `go/spec` + `go/internal/spectables`, `docs/taxonomy` |
@@ -57,7 +57,7 @@ implemented (rationale given).
 | Sensitivity: span redaction | full | exporter wrapper redacts span, event, and link attributes; each violation counted once |
 | Sensitivity: span processor wrapping | full | injected processors receive redacted spans in `OnEnd`; `OnStart` sees the live span |
 | Sensitivity: resource classification | full | resource classified at construction; dropped environment keys shadowed with empty values |
-| Sensitivity: metric classification | full | wrapped views and exemplar reservoirs on every stream; PII dropped even under `PIIHash`; instrument advisory attribute keys no longer honored |
+| Sensitivity: metric classification | full | wrapped views and exemplar reservoirs on every stream of the SDK's own instruments; PII dropped even under `PIIHash`; instrument advisory attribute keys no longer honored; metrics from producers (`OTEL_METRICS_PRODUCERS`, readers built with `sdkmetric.WithProducer`) bypass views and are not classified |
 | Event API and wide events | full | `SDK.Event`, `Record` accumulator, `o11yhttp.WithCanonicalLine` |
 | Emit-time span validator | planned | dev-on/prod-observe validating span processor and metric-label allowlist |
 | Cross-language OTLP conformance (golden corpus) | planned | harness is language-agnostic; wired when a second language starts |

@@ -53,8 +53,9 @@ attributes are defined by that release and never redefined here.
   validates that sequence for the next unreleased version
   (`RELEASE_VERSION`, default `v0.1.0`) against a throwaway local remote;
   it never touches real refs. Bump the default after each release.
-- The specification versions separately (`spec/vX.Y.Z` tags and a schema
-  file served at its schema URL); see [SPEC.md](SPEC.md), section 7.
+- The specification versions separately: once released, each version has a
+  `spec/vX.Y.Z` tag and a schema file served at its schema URL. Neither
+  exists yet for 1.0.0; see [SPEC.md](SPEC.md), section 7.
 - The repository is private: consumers set
   `GOPRIVATE=github.com/jamesainslie/libo11y` so the Go toolchain fetches
   it directly instead of through the public proxy and checksum database.
@@ -90,9 +91,12 @@ Example: `go: feat: add o11ytest recorder harness`
 
 ## Quality gates
 
-`make ci` runs every gate locally, and `.github/workflows/ci.yml` calls the
-same Makefile targets on pushes to `main` and on pull requests (Go 1.26.x,
-split into parallel jobs). Keep the two in step when adding a gate.
+`make ci` runs every gate locally, and `.github/workflows/ci.yml` runs the
+same gates on pushes to `main` and on pull requests (Go 1.26.x, split into
+parallel jobs). Every CI job calls the Makefile target except lint, which
+runs the same golangci-lint version (v2.12.2) through
+`golangci/golangci-lint-action` on each module. Keep the two in step when
+adding a gate.
 
 | Target | Gate |
 |---|---|

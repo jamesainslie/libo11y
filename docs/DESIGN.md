@@ -122,8 +122,9 @@ library defaults, and a signal with nothing injected is disabled rather
 than built from the environment. In Go, two experimental switches with no
 overriding SDK option (`OTEL_GO_X_PER_SERIES_START_TIMESTAMPS` and
 `OTEL_GO_X_DEPRECATED_RUNTIME_METRICS`) still apply, and keys named in
-`OTEL_RESOURCE_ATTRIBUTES` are exported with empty values because the OTEL
-providers always merge the environment resource.
+`OTEL_RESOURCE_ATTRIBUTES` that the library resource does not define are
+exported with empty values because the OTEL providers always merge the
+environment resource.
 
 Service identity: `service.name` must resolve from option or environment;
 implementations refuse to start production telemetry as `unknown_service`.
@@ -142,7 +143,9 @@ Three complementary layers, all language-idiomatic:
    `omit` (field absent). Strictest wins through nesting. The spec's
    vocabulary maps onto them: `confidential` masks and `secret` redacts.
 2. **Emit-time replacer**: an attribute-replacer hook applied to every log
-   record on every sink, as a catch-all for third-party attributes.
+   record on every sink of the language's logging facade (Go: every slog
+   sink; records from other log bridges do not pass through it), as a
+   catch-all for third-party attributes.
 3. **Specification classification**: one sensitivity policy per SDK
    decides, by attribute key, what happens to every attribute the
    specification classifies: secrets are always dropped, and PII is
@@ -154,15 +157,18 @@ Three complementary layers, all language-idiomatic:
    exporter and each injected span processor's end-of-span callback (span,
    event, and link attributes); the resource, classified once at
    construction; and the metric views and exemplar reservoirs of every
-   metric stream, where PII is dropped even in hash mode because a token
-   per value would multiply series cardinality. The policy runs after the
+   stream of the SDK's own instruments, where PII is dropped even in hash
+   mode because a token per value would multiply series cardinality.
+   Metrics from metric producers bypass views and are not classified. The policy runs after the
    user replacer, so renaming a key to a classified name cannot bypass it.
 
 Key-based classification is not fail-closed: a value under a key the
 specification does not classify passes through, and that gap is the
-capture-time layer's job. Log bodies, instrumentation scope attributes,
-members of map-valued span and metric attributes, attributes a span
-processor reads at span start, and baggage are outside the policy; each
+capture-time layer's job. Log bodies and other free text (span names,
+span status descriptions, span event names), instrumentation scope
+attributes, metrics from metric producers, members of map-valued span and
+metric attributes, attributes a span processor reads at span start, and
+baggage are outside the policy; each
 implementation documents these gaps with its per-signal guarantees (see
 [SPEC.md](SPEC.md), section 5). Baggage egress passes through a filter seam
 on every propagator whose default allows every key.

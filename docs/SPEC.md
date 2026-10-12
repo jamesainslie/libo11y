@@ -41,7 +41,7 @@ rules `identity_service_name`, `identity_environment`,
 |---|---|---|
 | `service.name` | option or environment | never blank, never `unknown_service` |
 | `service.version` | option, env, or build info | falls back to `0.0.0-unknown` with a flag, never an error |
-| `deployment.environment.name` | option or environment | validated against `production`, `staging`, `development`, `test`, plus registered extensions |
+| `deployment.environment.name` | option or environment | validated against `production`, `staging`, `development`, `test`, plus values the application adds in code (Go: `WithEnvironmentValues`) |
 | `telemetry.sdk.*` | SDK | set automatically |
 | `telemetry.distro.*` | SDK | recommended; the Go implementation does not set it yet |
 
@@ -149,19 +149,24 @@ names inside `otel.*`, `o11y.*`, or any semconv-owned namespace.
 ### Events
 
 An Event is a record emitted through the event API (`SDK.Event` in Go, and
-`Record.EmitEvent`, which calls it): it carries a registered `event.name`,
-is contract-bearing, and is force-emitted, so it is exempt from level
-gating. The exemption is structural. A record that merely carries an
-`event.name` attribute, emitted through the ordinary logger without
-force-emit, is subject to the level gate like any other record. No log
-sampler exists yet, so no record is sampled. libo11y v1 registers:
+`Record.EmitEvent`, which calls it): it carries the given name as
+`event.name` and is force-emitted, so it is exempt from level gating. The
+API accepts any name; the registered names below are contract-bearing (their
+required attributes are checked by the conformance harness). The exemption
+is structural. A record that merely carries an `event.name` attribute,
+emitted through the ordinary logger without force-emit, is subject to the
+level gate like any other record. No log sampler exists yet, so no record
+is sampled. libo11y v1 registers:
 
 | Event | Purpose |
 |---|---|
-| `o11y.telemetry.configured` | startup summary and initialization canary; carries the resolved configuration as `o11y.config.<key>` attributes |
+| `o11y.telemetry.configured` | startup summary and initialization canary (emitted by `Setup` only); carries the resolved configuration as `o11y.config.<key>` attributes |
 | `o11y.request.summary` | the per-request wide event (canonical log line) |
 | `o11y.telemetry.dropped` | buffered telemetry that failed to flush at shutdown, emitted best effort to the sinks still running |
-| `exception` | the semconv exception convention |
+
+Exceptions are not a registered event. The semconv exception attributes
+(`exception.type`, `exception.message`, `exception.stacktrace`) are
+registered as record attributes required on exception records.
 
 ### Audit class
 
@@ -190,7 +195,8 @@ justification.
 | logs on every sink (console, extra sinks, OTLP), and records from any log bridge on the SDK's logger provider | dropped | dropped | HMAC token | kept |
 | span attributes, span event attributes, span link attributes, as exported and as delivered to injected span processors at end | dropped | dropped | HMAC token | kept |
 | resource (every signal) | dropped | dropped | HMAC token | kept |
-| metric data point attributes and exemplar filtered attributes | dropped | dropped | dropped (a token per value would multiply series cardinality) | kept |
+| metric data point attributes and exemplar filtered attributes, on streams from the SDK's own instruments | dropped | dropped | dropped (a token per value would multiply series cardinality) | kept |
+| metrics from metric producers (bridges that feed a reader directly) | not classified | not classified | not classified | not classified |
 | baggage | not classified | not classified | not classified | not classified |
 
 On logs, a grouped attribute is judged on its dotted effective key, and
@@ -198,8 +204,9 @@ composite values (maps, slices of maps, pointers) are walked so their
 members are judged the same way; the walk fails closed at cycles, at a
 depth bound, and at a node budget, dropping what it did not examine.
 
-The sensitivity layer runs after any user attribute replacer, so renaming
-a key to a classified name cannot bypass it. Each drop or rewrite on logs,
+The sensitivity layer runs after any user attribute replacer (in Go, the
+replacer runs on the slog sinks only), so renaming a key to a classified
+name cannot bypass it. Each drop or rewrite on logs,
 spans, and the resource is counted in the `o11y.schema.violations` metric
 (rules `secret_attribute` and `pii_attribute`); metric-side drops are not
 counted, because the filter runs on the measurement hot path.
@@ -209,14 +216,20 @@ it does not cover:
 
 - values under keys the specification does not classify (capture-time
   redaction, the `redact` package in Go, protects those);
-- log record bodies;
+- log record bodies and other free text: span names, span status
+  descriptions, and span event names;
 - instrumentation scope attributes;
+- metrics from metric producers (in Go, `OTEL_METRICS_PRODUCERS` through
+  autoexport, or a reader built with `sdkmetric.WithProducer`, such as the
+  Prometheus bridge), which bypass the SDK's views;
 - members of map-valued span and metric attributes, which are judged on
   their own key only;
 - attributes a span processor reads when a span starts, before redaction;
 - baggage, which crosses process boundaries unclassified. The Go egress
   filter wraps every propagator but its default predicate allows every key;
-- an environment-provided resource key that is dropped: OpenTelemetry Go
+- an environment-provided resource key that is dropped (or, in Go's
+  hermetic mode, any environment key the library resource does not
+  define): OpenTelemetry Go
   providers always merge the environment resource underneath the one they
   are given, so the key is exported with an empty value instead of being
   omitted, and collector processors that insert only absent keys treat it
@@ -285,7 +298,8 @@ repository.
    - resource classification at construction, with environment-provided
      keys the policy drops shadowed by empty values;
    - metric views (data point attributes) and exemplar reservoirs (filtered
-     attributes) on every metric stream;
+     attributes) on every stream of the SDK's own instruments (metric
+     producers bypass views and are not covered);
    - the baggage egress filter, a seam on every propagator's inject path
      whose default predicate allows every key.
 5. **CI conformance** (`make spec-check` policy validation, the

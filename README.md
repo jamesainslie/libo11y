@@ -23,7 +23,9 @@ native logging facade, and everything is correlated and exported over OTLP.
    environment variables are honored, never shadowed by a parallel namespace
    (an explicit, opt-in mode ignores them for hermetic tests). Stable
    semantic conventions by default for the instrumentation libo11y wires
-   (HTTP spans and metrics). Resource detectors also record upstream
+   (HTTP spans and metrics). Not everything emitted is stable: gRPC spans
+   and metrics follow the `rpc.*` conventions (release candidate), runtime
+   metrics (`go.*`) are not yet stable, resource detectors record upstream
    attributes that are not yet stable (`host.*`, `container.id`,
    `vcs.ref.head.revision`), and the libo11y registry's own groups and
    overlays are marked development.
@@ -36,9 +38,11 @@ native logging facade, and everything is correlated and exported over OTLP.
    bounded `Shutdown` that reports per-signal errors. The library never
    panics, never calls exit, and never blocks startup on collector
    connectivity.
-5. **Locally testable.** Every guarantee the library makes can be asserted in
-   a consumer's own test suite with the bundled hermetic test harness. No
-   global state is mutated in tests.
+5. **Locally testable.** The library's guarantees can be asserted in a
+   consumer's own test suite with the bundled hermetic test harness. One
+   exception: secret attributes on metric measurements are dropped without
+   being counted, so the conformance assertion cannot report them (inspect
+   the recorded metrics instead). No global state is mutated in tests.
 6. **Safe in the dark.** With no configuration at all, applications run
    normally: telemetry degrades gracefully instead of crashing the host.
 

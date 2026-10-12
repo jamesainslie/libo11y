@@ -119,7 +119,8 @@ Downward API attributes, otherwise a random UUIDv4 per process.
   never nest inside groups.
 - **Sensitivity classification on every signal.** Attributes the
   specification classifies `secret` are dropped and `pii` attributes are
-  dropped by default, on logs, spans, metrics, and the resource. See
+  dropped by default, on logs, spans, metrics from the SDK's instruments,
+  and the resource. See
   [Sensitivity and redaction](#sensitivity-and-redaction) for the exact
   per-signal guarantees and the gaps.
 - **Service identity, enforced.** See [Required environment](#required-environment).
@@ -141,7 +142,8 @@ Downward API attributes, otherwise a random UUIDv4 per process.
   fragment are removed, and a value with an ambiguous `@` is withheld as
   `unparseable`. URL paths are kept, so do not put credentials in an
   endpoint path. The same line is available from `sdk.EffectiveConfig()`,
-  and `WithoutStartupSummary` disables the event.
+  and `WithoutStartupSummary` disables the event. Only `Setup` emits it;
+  `New` runs no canary.
 - **Runtime metrics** (`go.*`) on by default, histogram buckets adjustable
   per instrument with `WithHistogramBuckets`.
 - **Signal reconciliation.** Logs and spans join on trace and span ID.
@@ -177,16 +179,16 @@ Downward API attributes, otherwise a random UUIDv4 per process.
 | `WithExtraLogHandler` | another `slog.Handler` sink; receives flattened, correlated, classified records synchronously |
 | `WithoutLogExport` | disable the OTLP log pipeline; `SDK.LoggerProvider` then returns a no-op provider |
 | `WithLogExporter` | inject a log exporter instead of building one from the environment; records are still batched. It re-enables log export after `WithoutLogExport`; `WithLogExporter(nil)` disables log export. If a later `WithoutLogExport` disables export, the injected exporter is never used and the SDK never shuts it down |
-| `WithAttrReplacer` | user replacer applied to every log attribute on every sink, before classification |
+| `WithAttrReplacer` | user replacer applied to every attribute on every slog sink (console, OTLP slog leg, extra handlers), before classification; not applied to other bridges on `SDK.LoggerProvider` |
 | `WithoutSlogDefault` | `Setup` leaves the slog default alone |
 | `WithPIIMode` | `PIIDrop` (default), `PIIHash`, or `PIIAllow` |
 | `WithPIIHashKey` | HMAC key for `PIIHash`, at least 32 bytes, otherwise `ErrPIIHashKey` |
 | `WithTraceSampler` | sampler (default from `OTEL_TRACES_SAMPLER`, else `parentbased_always_on`) |
 | `WithTraceExporter` | inject a span exporter; spans are batched and redacted |
-| `WithSpanProcessor` | add a span processor; `OnEnd` sees redacted spans, `OnStart` the live span. Alone, it owns the export path (no exporter is built from the environment); with `WithTraceExporter`, both run |
+| `WithSpanProcessor` | set the span processor (the SDK holds one; a later call replaces an earlier one); `OnEnd` sees redacted spans, `OnStart` the live span. Alone, it owns the export path (no exporter is built from the environment); with `WithTraceExporter`, both run |
 | `WithPropagators` | replace the default W3C Trace Context and Baggage composite; the baggage egress filter still wraps it |
 | `WithMetricReader` | inject a metric reader instead of building one from the environment |
-| `WithViews`, `WithHistogramBuckets` | metric views and bucket boundaries; every stream still applies the sensitivity policy |
+| `WithViews`, `WithHistogramBuckets` | metric views and bucket boundaries; every instrument stream still applies the sensitivity policy |
 | `WithExemplarFilter` | exemplar filter (default trace-based) |
 | `WithoutRuntimeMetrics` | disable `go.*` runtime metrics |
 | `WithoutStartupSummary` | `Setup` emits no startup event |
@@ -206,9 +208,11 @@ overriding option in OpenTelemetry Go v1.47.0 and still apply:
 some variables, and report malformed values to the global OTEL error
 handler. Because the OTEL providers always merge the environment resource
 underneath the one they are given, every key named in
-`OTEL_RESOURCE_ATTRIBUTES` is shadowed: it is exported with an empty
+`OTEL_RESOURCE_ATTRIBUTES` (or set by `OTEL_SERVICE_NAME`) that the library
+resource does not itself define is shadowed: it is exported with an empty
 value, so a collector processor that inserts only absent keys (the
-resource processor's `insert` action) sees it as present.
+resource processor's `insert` action) sees it as present. A key the library
+resource does define keeps the library's value.
 
 Typed errors: `ErrAlreadySetup`, `ErrNoServiceName`, `ErrNoEnvironment`,
 `ErrInvalidEnvironment` (wrapped with the value and the allowed set), and
@@ -288,15 +292,16 @@ and `WithCanonicalLine` have no Gin counterpart.
 
 `SDK.Event` emits a contract-bearing event: a log record carrying
 `event.name`, force-emitted so it is exempt from level gating, correlated to
-the active span, and classified like any record. Delivery is best effort
-(`Event` has no error return; a rejecting sink is caught once, by the
-startup canary). The library sets `event.name` itself and removes any
+the active span, and classified like any record. It accepts any name; the
+names registered in the specification carry a contract. Delivery is best
+effort (`Event` has no error return; under `Setup`, a rejecting sink is
+caught once, by the startup canary, which `New` does not run). The library sets `event.name` itself and removes any
 caller-supplied one, and duplicate attribute keys keep the last value.
 
 ```go
 sdk.Event(ctx, spec.EventRequestSummary,
     slog.String("http.request.method", "GET"),
-    spec.OutcomeValue(spec.OutcomeSuccess),
+    slog.String(string(spec.OutcomeKey), string(spec.OutcomeSuccess)),
 )
 ```
 
@@ -325,8 +330,8 @@ slog.InfoContext(o11y.ForceEmit(ctx), "role changed",
 ```
 
 For the common daemon shape, `ShutdownOnSignals` blocks until SIGINT or
-SIGTERM, then flushes with the usual bounded deadline; a second signal
-terminates immediately:
+SIGTERM (or until its context ends), then flushes with the usual bounded
+deadline; a second signal terminates immediately:
 
 ```go
 go server.Run()
@@ -353,7 +358,8 @@ classification on every signal:
 | OTLP logs, slog and any bridge on the SDK's LoggerProvider | dropped | dropped | HMAC token | kept |
 | span attributes, span events, span links (exporters and injected processors' `OnEnd`) | dropped | dropped | HMAC token | kept |
 | resource (all signals) | dropped | dropped | HMAC token | kept |
-| metric data point attributes and exemplar filtered attributes | dropped | dropped | dropped (hashing would multiply cardinality) | kept |
+| metric data point attributes and exemplar filtered attributes, on streams from the SDK's own instruments | dropped | dropped | dropped (hashing would multiply cardinality) | kept |
+| metrics from metric producers (`OTEL_METRICS_PRODUCERS`, or a reader built with `sdkmetric.WithProducer`, such as the Prometheus bridge) | not classified | not classified | not classified | not classified |
 | baggage | not classified | not classified | not classified | not classified |
 
 - Classification is by key. On logs a grouped attribute is judged on its
@@ -370,9 +376,11 @@ classification on every signal:
   stable; rotating it breaks joins. A composite value too large or deep to
   render in full hashes its truncated rendering, which may not match the
   token a bridge produces for the same value.
-- `WithAttrReplacer` runs before classification, so renaming a key to a
-  classified name cannot bypass the policy (renaming a classified key to an
-  unclassified one is the replacer's own decision).
+- `WithAttrReplacer` runs on every slog sink before classification, so
+  renaming a key to a classified name cannot bypass the policy (renaming a
+  classified key to an unclassified one is the replacer's own decision).
+  Other bridges on `SDK.LoggerProvider` are classified but never see the
+  replacer.
 - Every drop or rewrite on logs, spans, and the resource is counted on the
   `o11y.schema.violations` metric (attributes `o11y.signal` and
   `o11y.rule`, `secret_attribute` or `pii_attribute`). Metric-side drops are
@@ -384,8 +392,13 @@ classification on every signal:
 Not covered, by design or by OpenTelemetry Go's structure:
 
 - values logged under unclassified keys (protect those with `redact`);
-- log record bodies (messages);
+- log record bodies (messages) and other free text: span names, span
+  status descriptions, and span event names;
 - instrumentation scope attributes;
+- metrics from metric producers (`OTEL_METRICS_PRODUCERS` through
+  autoexport, or a reader passed to `WithMetricReader` that was built with
+  `sdkmetric.WithProducer`, such as the Prometheus bridge): producer
+  metrics bypass the SDK's views, so the policy never sees them;
 - members of `attribute.MAP`-valued span and metric attributes (judged on
   their own key only; log records do walk map members);
 - attributes an injected span processor reads in `OnStart` (it sees the
@@ -393,7 +406,7 @@ Not covered, by design or by OpenTelemetry Go's structure:
 - baggage: the egress filter wraps every propagator, including one from
   `WithPropagators`, but its predicate allows every key;
 - an instrument's experimental advisory attribute keys, which are no longer
-  honored because every metric stream carries the policy's attribute
+  honored because every instrument stream carries the policy's attribute
   filter.
 
 ### Capture-time protection (the `redact` package)
@@ -448,7 +461,9 @@ o11y.WithAttrReplacer(func(groups []string, a slog.Attr) slog.Attr {
 })
 ```
 
-The replacer is a log-only catch-all applied uniformly to every log sink.
+The replacer is a log-only catch-all applied uniformly to every slog sink
+(console, the OTLP slog leg, and extra handlers). Records from other
+bridges on `SDK.LoggerProvider` do not pass through it.
 
 ## Testing your telemetry
 
@@ -479,7 +494,8 @@ func TestCheckoutEmitsTelemetry(t *testing.T) {
 `OTEL_GO_X_*` switches listed above (runtime metrics are off in the
 harness, so only the start-timestamp switch can apply). The resource still
 carries host and process detector values, and keys named in
-`OTEL_RESOURCE_ATTRIBUTES` appear with empty values.
+`OTEL_RESOURCE_ATTRIBUTES` that the harness resource does not define appear
+with empty values.
 
 - `AssertCorrelated` fails unless every log record emitted inside a span
   carries that span's trace identity.
