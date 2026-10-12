@@ -268,11 +268,12 @@ item is never renamed or removed without a major version bump.
   1.0.0 are recorded only as registry tombstones (the
   pre-spec `vcs.revision`, `vcs.time`, and `vcs.modified` build-info keys).
 - **Release steps.** Publishing a spec version means tagging the commit
-  `spec/vX.Y.Z` and serving the schema file at its schema URL.
+  `spec/vX.Y.Z` and serving the schema file at its schema URL. Schema
+  files are served from the separate `jamesainslie/o11y.ing` repository,
+  which copies them verbatim from `spec/schemas`.
 
-Status: neither step has been taken for 1.0.0. No `spec/v*` tag exists and
-the schema URL is not yet served; the artifact exists only in this
-repository.
+Status: the 1.0.0 schema file is served at its schema URL. No `spec/v*`
+tag exists yet.
 
 ## 8. Enforcement layers
 

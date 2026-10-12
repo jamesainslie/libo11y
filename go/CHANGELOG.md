@@ -89,9 +89,8 @@ anyone tracking a pre-release commit can see what moved.
   `identity_environment_invalid`), and `spec.SignalResource` names that
   signal.
 - Schema artifact: the generator writes the OpenTelemetry schema file
-  `spec/schemas/1.0.0` (file format 1.1.0) for the schema URL. Publishing
-  it at the URL, and tagging `spec/v1.0.0`, are release steps not yet
-  taken.
+  `spec/schemas/1.0.0` (file format 1.1.0) for the schema URL, which
+  serves it. Tagging `spec/v1.0.0` is a release step not yet taken.
 - Spec-check rules for references, tombstones, enums, units, annotations,
   stabilities, requirement levels, and generated-name collisions; every
   rule ID is listed in `docs/SPEC.md`, section 8.
@@ -147,8 +146,8 @@ anyone tracking a pre-release commit can see what moved.
   handles them.
 - Breaking (pre-1.0): `spec.SchemaURL` is
   `https://schemas.o11y.ing/libo11y/1.0.0` (it was a
-  raw.githubusercontent.com URL), stamped on every resource. The URL is not
-  yet served.
+  raw.githubusercontent.com URL), stamped on every resource and serving
+  the schema file.
 - Breaking (pre-1.0): `o11ytest.Start` builds its SDK with
   `WithoutOTELEnv`, so ambient `OTEL_*` variables no longer change harness
   behavior. Keys named in `OTEL_RESOURCE_ATTRIBUTES` that the harness

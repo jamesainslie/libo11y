@@ -2,8 +2,8 @@ name: libo11y
 description: The libo11y telemetry specification registry.
 # The schema URL identifies spec version 1.0.0. Its last path segment is the
 # version and carries no file extension. The generated OpenTelemetry schema
-# file lives at spec/schemas/<version>; publishing it at this URL is a
-# release step (see docs/SPEC.md, Versioning). Released versions are
+# file lives at spec/schemas/<version> and is served at this URL (see
+# docs/SPEC.md, Versioning). Released versions are
 # immutable; a spec change bumps the version and adds a new file.
 schema_url: https://schemas.o11y.ing/libo11y/1.0.0
 # The upstream OpenTelemetry semantic conventions release this registry
