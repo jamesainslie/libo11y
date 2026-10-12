@@ -4,7 +4,7 @@
 # Package parallelism for go test; lower it on a loaded machine.
 GO_TEST_P ?= 4
 
-.PHONY: spec-check spec-generate spec-drift test lint vet tidy-check vuln release-check ci
+.PHONY: spec-check spec-generate spec-drift test lint vet tidy-check vuln release-check schema-published schema-published-test ci
 
 # Validate the spec registry against the libo11y policy suite (naming,
 # ownership, sensitivity, cardinality, events, units).
@@ -59,6 +59,15 @@ RELEASE_VERSION ?= v0.1.0
 release-check:
 	scripts/release-check.sh $(RELEASE_VERSION)
 
+# Release step, not a ci gate (it needs the network): confirm the schema URL
+# serves spec/schemas/<version> byte for byte before tagging spec/vX.Y.Z.
+schema-published:
+	scripts/schema-published-check.sh
+
+# Test schema-published-check.sh against a loopback HTTP server.
+schema-published-test:
+	scripts/schema-published-check_test.sh
+
 # vuln runs last: it depends on the advisory database and the toolchain's
 # patch level, so local runs exercise every other gate first.
-ci: lint vet test tidy-check spec-check spec-drift release-check vuln
+ci: lint vet test tidy-check spec-check spec-drift schema-published-test release-check vuln

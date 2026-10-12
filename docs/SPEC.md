@@ -270,7 +270,9 @@ item is never renamed or removed without a major version bump.
 - **Release steps.** Publishing a spec version means tagging the commit
   `spec/vX.Y.Z` and serving the schema file at its schema URL. Schema
   files are served from the separate `jamesainslie/o11y.ing` repository,
-  which copies them verbatim from `spec/schemas`.
+  which copies them verbatim from `spec/schemas`. Serving comes first:
+  `make schema-published` fails unless the schema URL serves the generated
+  file byte for byte, and it must pass before the tag is created.
 
 Status: the 1.0.0 schema file is served at its schema URL. No `spec/v*`
 tag exists yet.

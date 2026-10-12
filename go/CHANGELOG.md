@@ -98,10 +98,15 @@ anyone tracking a pre-release commit can see what moved.
   sequence, `go/vX.Y.Z` then `go/o11ygin/vX.Y.Z`, against a throwaway local
   remote. `go/o11ygin` now requires `github.com/jamesainslie/libo11y/go`
   v0.1.0 instead of a placeholder pseudo-version.
+- `make schema-published` (`scripts/schema-published-check.sh`) confirms
+  the schema URL serves `spec/schemas/<version>` byte for byte, a release
+  step before tagging `spec/vX.Y.Z`. Its loopback test,
+  `make schema-published-test`, runs in `make ci`.
 - CI: `.github/workflows/ci.yml` runs the same gates as `make ci` (lint,
-  vet, race tests, tidy check, spec check and drift, release check,
-  govulncheck). Every job calls the Makefile target except lint, which runs
-  the same golangci-lint version through `golangci/golangci-lint-action`.
+  vet, race tests, tidy check, spec check and drift, the schema-published
+  check test, release check, govulncheck). Every job calls the Makefile
+  target except lint, which runs the same golangci-lint version through
+  `golangci/golangci-lint-action`.
 - `ExampleNew`, a smoke test for `examples/httpserver`, and OTLP wire-level
   tests against in-process gRPC and HTTP receivers.
 

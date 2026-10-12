@@ -55,8 +55,9 @@ attributes are defined by that release and never redefined here.
   it never touches real refs. Bump the default after each release.
 - The specification versions separately: once released, each version has a
   `spec/vX.Y.Z` tag and a schema file served at its schema URL. The 1.0.0
-  schema file is served; the `spec/v1.0.0` tag does not exist yet. See
-  [SPEC.md](SPEC.md), section 7.
+  schema file is served; the `spec/v1.0.0` tag does not exist yet. Before
+  tagging, `make schema-published` confirms the schema URL serves the
+  generated file byte for byte. See [SPEC.md](SPEC.md), section 7.
 - The repository is private: consumers set
   `GOPRIVATE=github.com/jamesainslie/libo11y` so the Go toolchain fetches
   it directly instead of through the public proxy and checksum database.
