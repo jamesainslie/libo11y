@@ -1,7 +1,11 @@
-# Registered libo11y events. A log record carrying one of these names is
-# an Event: contract-bearing, never sampled, never level-gated. The event
-# name travels as the event.name attribute (the semconv-sanctioned carrier
-# for bridges that cannot set the top-level EventName field yet).
+# Registered libo11y events. An Event is a record emitted through the event
+# API (SDK.Event in Go, which Record.EmitEvent calls): contract-bearing and
+# force-emitted, so exempt from level gating. The exemption is structural,
+# not by name: a record that merely carries one of these names in
+# event.name, emitted through the ordinary logger, is level-gated like any
+# other record. No log sampler exists yet. The event name travels as the
+# event.name attribute (the semconv-sanctioned carrier for bridges that
+# cannot set the top-level EventName field yet).
 groups:
   - id: event.o11y.telemetry.configured
     type: event
