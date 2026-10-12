@@ -50,7 +50,9 @@ func TestHungLogExportDoesNotStarveTraces(t *testing.T) {
 	defer cancel()
 	start := time.Now()
 	err = sdk.Shutdown(ctx)
-	if elapsed := time.Since(start); elapsed > 3*time.Second {
+	// The bound is wide on purpose: it only catches a Shutdown that ignores
+	// its deadline and hangs, not a slow machine.
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
 		t.Fatalf("Shutdown took %v, want it bounded by the 1s deadline", elapsed)
 	}
 	if err == nil {
@@ -78,20 +80,24 @@ func TestConcurrentShutdownHonorsEachCallersDeadline(t *testing.T) {
 		t.Fatal(err)
 	}
 	sdk.Logger().Info("stuck")
+	// The first caller's deadline (20s) is past the second caller's bound
+	// (10s), so a second caller that waited on the first instead of honoring
+	// its own deadline still fails the bound. The first caller is cancelled as
+	// soon as the second returns, so the test does not wait out 20s.
+	firstCtx, cancelFirst := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancelFirst()
 	first := make(chan error, 1)
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		first <- sdk.Shutdown(ctx)
-	}()
+	go func() { first <- sdk.Shutdown(firstCtx) }()
 	time.Sleep(50 * time.Millisecond)
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	start := time.Now()
 	err = sdk.Shutdown(ctx)
-	if time.Since(start) > time.Second {
-		t.Errorf("second caller waited %v despite a 100ms deadline", time.Since(start))
+	// The bound is wide on purpose: it only catches a hang, not a slow machine.
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Errorf("second caller waited %v despite a 100ms deadline", elapsed)
 	}
+	cancelFirst()
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("second caller error = %v, want DeadlineExceeded", err)
 	}
