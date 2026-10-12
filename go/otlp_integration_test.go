@@ -280,45 +280,104 @@ func httpExporters(t *testing.T, addr string) wireExporters {
 	return exp
 }
 
+// classifiedWireKeys are the keys the policy under test must never let onto
+// the wire: host.ip is PII (dropped under the default PIIDrop mode) and
+// test.secret is classified Secret by secretTable.
+var classifiedWireKeys = map[string]bool{"host.ip": true, "test.secret": true}
+
+// newWireSDK builds an SDK and registers a timeout-bounded Shutdown cleanup,
+// so the pipelines are closed even when the test stops before its own
+// Shutdown call. Shutdown is idempotent; the test's explicit call reports the
+// result and the cleanup's second call is a no-op.
+func newWireSDK(t *testing.T, opts ...o11y.Option) *o11y.SDK {
+	t.Helper()
+	sdk, err := o11y.New(context.Background(), opts...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = sdk.Shutdown(ctx)
+	})
+	return sdk
+}
+
+// shutdownAndCapture flushes every pipeline through Shutdown, bounded by a
+// timeout, and returns what the receiver decoded.
+func shutdownAndCapture(t *testing.T, sdk *o11y.SDK, sink *otlpSink) ([]*tracepb.ResourceSpans, []*metricpb.ResourceMetrics, []*logpb.ResourceLogs) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := sdk.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	traces, metrics, logs := sink.snapshot()
+	if len(traces) == 0 || len(metrics) == 0 || len(logs) == 0 {
+		t.Fatalf("received traces=%d metrics=%d logs=%d", len(traces), len(metrics), len(logs))
+	}
+	return traces, metrics, logs
+}
+
 // wireChecker holds the per-payload assertions shared by the wire tests.
 type wireChecker struct {
 	t *testing.T
 }
 
 // resource asserts identity is present, the schema URL is stamped, and no
-// PII or secret reached the resource. Under WithoutOTELEnv the env-only keys
-// are shadowed with empty values; those are expected and not a leak.
+// classified key or sentinel reached the resource. Under WithoutOTELEnv the
+// env-only keys are shadowed with empty values; those are expected and not a
+// leak.
 func (c wireChecker) resource(where string, attrs []*commonpb.KeyValue, schemaURL string) {
 	c.t.Helper()
 	res := pbAttrs(attrs)
 	if res["service.name"] == "" || res["deployment.environment.name"] == "" {
 		c.t.Errorf("%s: resource lacks identity: %v", where, res)
 	}
-	if _, leaked := res["host.ip"]; leaked {
-		c.t.Errorf("%s: resource carries host.ip", where)
-	}
 	if schemaURL != spec.SchemaURL {
 		c.t.Errorf("%s: schema URL %q, want %q", where, schemaURL, spec.SchemaURL)
 	}
-	c.noLeak(where+" resource", res)
+	c.noLeak(where+" resource", attrs)
 }
 
-// noLeak asserts no attribute key is a classified key and no value carries
-// either sentinel.
-func (c wireChecker) noLeak(where string, attrs map[string]string) {
+// noLeak asserts no attribute, at any nesting depth, has a classified key or
+// a value carrying either sentinel. Grouped attributes arrive as kvlist
+// values, so the walk descends into them and checks each member's effective
+// dotted key (group path plus member key), the key the policy classifies.
+func (c wireChecker) noLeak(where string, kvs []*commonpb.KeyValue) {
 	c.t.Helper()
-	for k, v := range attrs {
-		if k == "test.secret" {
-			c.t.Errorf("%s: secret key %s exported (value %q)", where, k, v)
-		}
-		if strings.Contains(v, wirePII) || strings.Contains(v, wireSecret) {
-			c.t.Errorf("%s: %s=%s leaked", where, k, v)
-		}
+	for _, kv := range kvs {
+		c.noLeakKV(where, "", kv)
 	}
 }
 
-// noLeakText asserts a free-text field (a log body, a span name) carries
-// neither sentinel.
+func (c wireChecker) noLeakKV(where, prefix string, kv *commonpb.KeyValue) {
+	c.t.Helper()
+	path := prefix + kv.GetKey()
+	if classifiedWireKeys[path] {
+		c.t.Errorf("%s: classified key %s exported (value %q)", where, path, anyValueString(kv.GetValue()))
+	}
+	c.noLeakValue(where, path, kv.GetValue())
+}
+
+func (c wireChecker) noLeakValue(where, path string, v *commonpb.AnyValue) {
+	c.t.Helper()
+	switch x := v.GetValue().(type) {
+	case *commonpb.AnyValue_KvlistValue:
+		for _, kv := range x.KvlistValue.GetValues() {
+			c.noLeakKV(where, path+".", kv)
+		}
+	case *commonpb.AnyValue_ArrayValue:
+		for i, e := range x.ArrayValue.GetValues() {
+			c.noLeakValue(where, path+"["+strconv.Itoa(i)+"]", e)
+		}
+	default:
+		c.noLeakText(where+" "+path, anyValueString(v))
+	}
+}
+
+// noLeakText asserts a free-text field (a scalar value, a span name)
+// carries neither sentinel.
 func (c wireChecker) noLeakText(where, text string) {
 	c.t.Helper()
 	if strings.Contains(text, wirePII) || strings.Contains(text, wireSecret) {
@@ -326,6 +385,8 @@ func (c wireChecker) noLeakText(where, text string) {
 	}
 }
 
+// spans runs the resource and leak checks over every exported span, span
+// event, and span link.
 func (c wireChecker) spans(traces []*tracepb.ResourceSpans) {
 	c.t.Helper()
 	for _, rs := range traces {
@@ -333,16 +394,87 @@ func (c wireChecker) spans(traces []*tracepb.ResourceSpans) {
 		for _, ss := range rs.GetScopeSpans() {
 			for _, s := range ss.GetSpans() {
 				c.noLeakText("span name", s.GetName())
-				c.noLeak("span "+s.GetName(), pbAttrs(s.GetAttributes()))
+				c.noLeak("span "+s.GetName(), s.GetAttributes())
 				for _, e := range s.GetEvents() {
-					c.noLeak("span event "+e.GetName(), pbAttrs(e.GetAttributes()))
+					c.noLeak("span event "+e.GetName(), e.GetAttributes())
 				}
 				for _, l := range s.GetLinks() {
-					c.noLeak("span link", pbAttrs(l.GetAttributes()))
+					c.noLeak("span link", l.GetAttributes())
 				}
 			}
 		}
 	}
+}
+
+// wireSpan returns the exported span with the given name and trace ID, or
+// fails the test: the leak checks over spans are only meaningful when the
+// span under test actually crossed the wire.
+func (c wireChecker) wireSpan(traces []*tracepb.ResourceSpans, name string, traceID trace.TraceID) *tracepb.Span {
+	c.t.Helper()
+	for _, rs := range traces {
+		for _, ss := range rs.GetScopeSpans() {
+			for _, s := range ss.GetSpans() {
+				if s.GetName() == name && bytes.Equal(s.GetTraceId(), traceID[:]) {
+					return s
+				}
+			}
+		}
+	}
+	c.t.Fatalf("span %q with trace ID %s was not exported", name, traceID)
+	return nil
+}
+
+// logs runs the resource and leak checks over every exported log record and
+// reports whether the "inside" record and the request summary event carry
+// traceID.
+func (c wireChecker) logs(logs []*logpb.ResourceLogs, traceID trace.TraceID) (sawCorrelated, sawEvent bool) {
+	c.t.Helper()
+	for _, rl := range logs {
+		c.resource("logs", rl.GetResource().GetAttributes(), rl.GetSchemaUrl())
+		for _, sl := range rl.GetScopeLogs() {
+			for _, lr := range sl.GetLogRecords() {
+				c.noLeak("log", lr.GetAttributes())
+				c.noLeakValue("log", "body", lr.GetBody())
+				correlated := bytes.Equal(lr.GetTraceId(), traceID[:])
+				if anyValueString(lr.GetBody()) == "inside" && correlated {
+					sawCorrelated = true
+				}
+				eventName := pbAttrs(lr.GetAttributes())[spec.EventNameKey]
+				if (eventName == spec.EventRequestSummary || lr.GetEventName() == spec.EventRequestSummary) && correlated {
+					sawEvent = true
+				}
+			}
+		}
+	}
+	return sawCorrelated, sawEvent
+}
+
+// histogram runs the resource and leak checks over every exported metric
+// and the named histogram's points and exemplars, and reports whether the
+// histogram has a point and an exemplar carrying traceID.
+func (c wireChecker) histogram(metrics []*metricpb.ResourceMetrics, name string, traceID trace.TraceID) (sawPoint, sawExemplar bool) {
+	c.t.Helper()
+	for _, rm := range metrics {
+		c.resource("metrics", rm.GetResource().GetAttributes(), rm.GetSchemaUrl())
+		for _, sm := range rm.GetScopeMetrics() {
+			for _, m := range sm.GetMetrics() {
+				if m.GetName() != name {
+					continue
+				}
+				for _, dp := range m.GetHistogram().GetDataPoints() {
+					sawPoint = true
+					c.noLeak("metric point", dp.GetAttributes())
+					for _, ex := range dp.GetExemplars() {
+						c.noLeak("exemplar", ex.GetFilteredAttributes())
+						if bytes.Equal(ex.GetTraceId(), traceID[:]) {
+							sawExemplar = true
+						}
+					}
+				}
+			}
+		}
+	}
+	return sawPoint, sawExemplar
 }
 
 func TestOTLPWirePayloads(t *testing.T) {
@@ -360,7 +492,7 @@ func TestOTLPWirePayloads(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			exp, sink := setup(t)
-			sdk, err := o11y.New(context.Background(),
+			sdk := newWireSDK(t,
 				o11y.WithServiceName("otlp-wire"), o11y.WithEnvironment(spec.EnvironmentTest),
 				o11y.WithoutOTELEnv(), o11y.WithoutConsoleLog(), o11y.WithoutRuntimeMetrics(),
 				o11y.WithTraceExporter(exp.trace),
@@ -368,9 +500,6 @@ func TestOTLPWirePayloads(t *testing.T) {
 				o11y.WithLogExporter(exp.log),
 				o11y.WithResourceAttributes(attribute.String("host.ip", wirePII)),
 				o11y.WithSensitivityForTest(secretTable))
-			if err != nil {
-				t.Fatal(err)
-			}
 			ctx, span := sdk.TracerProvider().Tracer("t").Start(context.Background(), "op",
 				trace.WithAttributes(attribute.String("host.ip", wirePII), attribute.String("test.secret", wireSecret)))
 			span.AddEvent("step", trace.WithAttributes(attribute.String("test.secret", wireSecret)))
@@ -380,42 +509,28 @@ func TestOTLPWirePayloads(t *testing.T) {
 			}
 			hist.Record(ctx, 0.5, metric.WithAttributes(
 				attribute.String("host.ip", wirePII), attribute.String("test.secret", wireSecret)))
-			sdk.Logger().InfoContext(ctx, "inside", "host.ip", wirePII, "test.secret", wireSecret)
+			sdk.Logger().InfoContext(ctx, "inside", "host.ip", wirePII, "test.secret", wireSecret,
+				slog.Group("test", slog.String("secret", wireSecret)))
 			sdk.Event(ctx, spec.EventRequestSummary, slog.String("http.request.method", "GET"))
 			span.End()
 
-			flushCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			if err := sdk.Shutdown(flushCtx); err != nil {
-				t.Fatalf("Shutdown: %v", err)
-			}
-			traces, metrics, logs := sink.snapshot()
-			if len(traces) == 0 || len(metrics) == 0 || len(logs) == 0 {
-				t.Fatalf("received traces=%d metrics=%d logs=%d", len(traces), len(metrics), len(logs))
-			}
+			traces, metrics, logs := shutdownAndCapture(t, sdk, sink)
 			wantTrace := span.SpanContext().TraceID()
 			check := wireChecker{t: t}
 
 			check.spans(traces)
-
-			var sawCorrelated, sawEvent bool
-			for _, rl := range logs {
-				check.resource("logs", rl.GetResource().GetAttributes(), rl.GetSchemaUrl())
-				for _, sl := range rl.GetScopeLogs() {
-					for _, lr := range sl.GetLogRecords() {
-						attrs := pbAttrs(lr.GetAttributes())
-						check.noLeak("log", attrs)
-						check.noLeakText("log body", anyValueString(lr.GetBody()))
-						if anyValueString(lr.GetBody()) == "inside" && bytes.Equal(lr.GetTraceId(), wantTrace[:]) {
-							sawCorrelated = true
-						}
-						if (attrs[spec.EventNameKey] == spec.EventRequestSummary || lr.GetEventName() == spec.EventRequestSummary) &&
-							bytes.Equal(lr.GetTraceId(), wantTrace[:]) {
-							sawEvent = true
-						}
-					}
+			op := check.wireSpan(traces, "op", wantTrace)
+			sawStep := false
+			for _, e := range op.GetEvents() {
+				if e.GetName() == "step" {
+					sawStep = true
 				}
 			}
+			if !sawStep {
+				t.Error(`span "op" was exported without its "step" event`)
+			}
+
+			sawCorrelated, sawEvent := check.logs(logs, wantTrace)
 			if !sawCorrelated {
 				t.Error("the log record written inside the span does not carry the span's trace ID")
 			}
@@ -423,25 +538,9 @@ func TestOTLPWirePayloads(t *testing.T) {
 				t.Error("the request summary event was not exported with the span's trace ID")
 			}
 
-			var sawExemplar bool
-			for _, rm := range metrics {
-				check.resource("metrics", rm.GetResource().GetAttributes(), rm.GetSchemaUrl())
-				for _, sm := range rm.GetScopeMetrics() {
-					for _, m := range sm.GetMetrics() {
-						if m.GetName() != "work.duration" {
-							continue
-						}
-						for _, dp := range m.GetHistogram().GetDataPoints() {
-							check.noLeak("metric point", pbAttrs(dp.GetAttributes()))
-							for _, ex := range dp.GetExemplars() {
-								check.noLeak("exemplar", pbAttrs(ex.GetFilteredAttributes()))
-								if bytes.Equal(ex.GetTraceId(), wantTrace[:]) {
-									sawExemplar = true
-								}
-							}
-						}
-					}
-				}
+			sawPoint, sawExemplar := check.histogram(metrics, "work.duration", wantTrace)
+			if !sawPoint {
+				t.Error("the work.duration histogram was not exported")
 			}
 			if !sawExemplar {
 				t.Error("no exemplar links the histogram to the span's trace")
@@ -455,42 +554,44 @@ func TestOTLPWirePayloads(t *testing.T) {
 // environment variables. It cannot run in parallel because of t.Setenv.
 func TestOTLPWireViaEnvironmentConfiguration(t *testing.T) {
 	addr, sink := startHTTPReceiver(t)
+	// Neutralize ambient configuration that would redirect a signal, disable
+	// the SDK, or add resource attributes. The OTLP exporters and autoexport
+	// treat an empty value as unset.
+	for _, key := range []string{
+		"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+		"OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL", "OTEL_EXPORTER_OTLP_LOGS_PROTOCOL",
+		"OTEL_SDK_DISABLED", "OTEL_RESOURCE_ATTRIBUTES",
+	} {
+		t.Setenv(key, "")
+	}
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://"+addr)
 	t.Setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf")
 	t.Setenv("OTEL_TRACES_EXPORTER", "otlp")
 	t.Setenv("OTEL_METRICS_EXPORTER", "otlp")
 	t.Setenv("OTEL_LOGS_EXPORTER", "otlp")
 	t.Setenv("OTEL_METRIC_EXPORT_INTERVAL", "3600000")
-	sdk, err := o11y.New(context.Background(),
+	sdk := newWireSDK(t,
 		o11y.WithServiceName("otlp-env"), o11y.WithEnvironment(spec.EnvironmentTest),
 		o11y.WithoutConsoleLog(), o11y.WithoutRuntimeMetrics())
+	ctx, span := sdk.TracerProvider().Tracer("t").Start(context.Background(), "op",
+		trace.WithAttributes(attribute.String("host.ip", wirePII)))
+	hist, err := sdk.MeterProvider().Meter("t").Float64Histogram("env.work.duration")
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, span := sdk.TracerProvider().Tracer("t").Start(context.Background(), "op",
-		trace.WithAttributes(attribute.String("host.ip", wirePII)))
+	hist.Record(ctx, 0.5, metric.WithAttributes(attribute.String("host.ip", wirePII)))
 	sdk.Logger().InfoContext(ctx, "inside", "host.ip", wirePII)
 	span.End()
-	flushCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := sdk.Shutdown(flushCtx); err != nil {
-		t.Fatal(err)
-	}
-	traces, _, logs := sink.snapshot()
-	if len(traces) == 0 {
-		t.Fatal("autoexport path exported no spans")
-	}
-	if len(logs) == 0 {
-		t.Fatal("autoexport path exported no logs")
-	}
+
+	traces, metrics, logs := shutdownAndCapture(t, sdk, sink)
+	wantTrace := span.SpanContext().TraceID()
 	check := wireChecker{t: t}
 	check.spans(traces)
-	for _, rl := range logs {
-		check.resource("logs", rl.GetResource().GetAttributes(), rl.GetSchemaUrl())
-		for _, sl := range rl.GetScopeLogs() {
-			for _, lr := range sl.GetLogRecords() {
-				check.noLeak("log", pbAttrs(lr.GetAttributes()))
-			}
-		}
+	check.wireSpan(traces, "op", wantTrace)
+	if sawCorrelated, _ := check.logs(logs, wantTrace); !sawCorrelated {
+		t.Error("autoexport path: the log record written inside the span does not carry the span's trace ID")
+	}
+	if sawPoint, _ := check.histogram(metrics, "env.work.duration", wantTrace); !sawPoint {
+		t.Error("autoexport path: the env.work.duration histogram was not exported")
 	}
 }
