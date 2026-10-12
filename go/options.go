@@ -400,7 +400,8 @@ func WithTraceExporter(exporter sdktrace.SpanExporter) Option {
 	return func(s *settings) { s.spanExporter = exporter }
 }
 
-// WithSpanProcessor adds a span processor. When no exporter is injected with
+// WithSpanProcessor sets the span processor. The SDK holds one: a later
+// WithSpanProcessor replaces an earlier one. When no exporter is injected with
 // [WithTraceExporter], the processor owns the export path and no exporter is
 // built from the environment; when one is, both run. Spans delivered to the
 // processor's OnEnd are redacted by the sensitivity policy; OnStart receives

@@ -11,13 +11,14 @@ import (
 )
 
 // Event emits a contract-bearing event: a log record identified by name,
-// exempt from level gating and sampling (via force-emit), correlated to the
-// active span. Events are the schema'd, dashboard-and-audit-facing records
-// the specification distinguishes from free-form messages.
+// exempt from level gating (via force-emit), correlated to the active span.
+// Events are the schema'd, dashboard-and-audit-facing records the
+// specification distinguishes from free-form messages. Any name is
+// accepted; the names registered in the specification carry a contract.
 //
 //	sdk.Event(ctx, spec.EventRequestSummary,
 //		slog.String("http.request.method", "GET"),
-//		spec.OutcomeValue(spec.OutcomeSuccess),
+//		slog.String(string(spec.OutcomeKey), string(spec.OutcomeSuccess)),
 //	)
 //
 // The name travels as the event.name attribute, the convention-sanctioned
@@ -35,10 +36,10 @@ func (s *SDK) Event(ctx context.Context, name string, attrs ...slog.Attr) {
 // emitEvent is the structural force-emit path shared by Event, the startup
 // summary, and, later, app-event registration and the log sampler. It
 // builds the named record, stamps the event.name attribute, and force-emits
-// through the handler so the record is exempt from level gating and
-// sampling by construction, not by name matching. The exemption is the
-// ForceEmit marker on the context; a bare record carrying event.name without
-// it stays subject to the level gate. The handler's error is returned so
+// through the handler so the record is exempt from level gating by
+// construction, not by name matching (no log sampler exists yet). The
+// exemption is the ForceEmit marker on the context; a bare record carrying
+// event.name without it stays subject to the level gate. The handler's error is returned so
 // the startup summary can serve as the initialization canary.
 func (s *SDK) emitEvent(ctx context.Context, level slog.Level, name string, attrs []slog.Attr) error {
 	attrs = eventAttrs(attrs)
