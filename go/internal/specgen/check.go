@@ -57,6 +57,7 @@ var (
 var registryWideRules = map[string]bool{
 	"libo11y_attr_duplicate":          true,
 	"libo11y_classification_conflict": true,
+	"libo11y_go_name_collision":       true,
 }
 
 // index is a whole-registry view built in a first pass and consulted by the
@@ -65,7 +66,9 @@ var registryWideRules = map[string]bool{
 // names defined by the registry; cardinality maps each defined attribute to
 // its cardinality class so a bare ref resolves to it; definitions counts the
 // definitions of each attribute name; classByRef collects every sensitivity
-// class any occurrence of an attribute declares.
+// class any occurrence of an attribute declares; goNames maps each Go
+// identifier the generator derives for a minted or copied key to the
+// attribute names that produce it.
 //
 // Only o11y.* references are resolved: the registry vendors no upstream
 // semantic conventions, so references to upstream keys (http.*, k8s.*, ...)
@@ -79,6 +82,7 @@ type index struct {
 	cardinality  map[string]string          // defined attribute -> cardinality
 	definitions  map[string]int             // defined attribute -> definition count
 	classByRef   map[string]map[string]bool // attribute -> sensitivity classes seen anywhere
+	goNames      map[string]map[string]bool // generated Go name -> attribute names
 }
 
 // semconvEntry is a placeholder for the upstream attribute record the
@@ -98,6 +102,7 @@ func buildIndex(groups []group) *index {
 		cardinality:  map[string]string{},
 		definitions:  map[string]int{},
 		classByRef:   map[string]map[string]bool{},
+		goNames:      map[string]map[string]bool{},
 	}
 	for _, g := range groups {
 		for _, a := range g.Attributes {
@@ -118,6 +123,13 @@ func buildIndex(groups []group) *index {
 					idx.classByRef[a.name()] = map[string]bool{}
 				}
 				idx.classByRef[a.name()][class] = true
+			}
+			if generatesKey(a) {
+				id := goName(a.name())
+				if idx.goNames[id] == nil {
+					idx.goNames[id] = map[string]bool{}
+				}
+				idx.goNames[id][a.name()] = true
 			}
 		}
 	}
@@ -165,6 +177,29 @@ func dedupeRegistryWide(violations []violation) []violation {
 		kept = append(kept, v)
 	}
 	return kept
+}
+
+// generatesKey reports whether the generator emits a Go key constant for
+// a: every minted o11y.* definition and every ref copied from upstream
+// (o11y.gen: copy).
+func generatesKey(a attr) bool {
+	if a.ID != "" {
+		return strings.HasPrefix(a.ID, "o11y.")
+	}
+	return a.Annotations["o11y.gen"] == "copy"
+}
+
+// enumValues returns the raw closed value set an attribute declares: its
+// enum member values and the entries of any o11y.enum annotation.
+func enumValues(a attr) []string {
+	var values []string
+	for _, member := range a.enumMembers() {
+		values = append(values, member.Value)
+	}
+	if enum, ok := a.Annotations["o11y.enum"]; ok {
+		values = append(values, strings.Split(enum, ",")...)
+	}
+	return values
 }
 
 // deprecatedTarget returns the renamed_to target of a deprecated attribute
@@ -264,6 +299,25 @@ func checkAttribute(g group, a attr, idx *index) []violation {
 
 	if target := deprecatedTarget(a); strings.HasPrefix(target, "o11y.") && !idx.mintedNames[target] {
 		fail("libo11y_deprecated_target_undefined", "references", target)
+	}
+
+	// Two keys that map to one Go identifier would make the generated
+	// package fail to compile.
+	if generatesKey(a) && len(idx.goNames[goName(a.name())]) > 1 {
+		fail("libo11y_go_name_collision", "naming", a.name())
+	}
+
+	// Enum values are emitted verbatim as Go constants and runtime
+	// allowlists: each must be unique and carry no padding.
+	seenValues := map[string]bool{}
+	for _, v := range enumValues(a) {
+		if v != strings.TrimSpace(v) {
+			fail("libo11y_enum_value_whitespace", "enums", a.name())
+		}
+		if v = strings.TrimSpace(v); seenValues[v] {
+			fail("libo11y_enum_duplicate_value", "enums", a.name())
+		}
+		seenValues[v] = true
 	}
 
 	if a.Stability != "" && !stabilities[a.Stability] {

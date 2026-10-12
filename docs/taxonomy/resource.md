@@ -2,16 +2,6 @@
 
 Generated from `spec/registry`; do not edit. Semconv pin: v1.41.0.
 
-## forbidden
-
-| Attribute | Requirement | Source | Role | Sensitivity | Signals |
-|---|---|---|---|---|---|
-| `host.ip` | opt_in |  |  | pii |  |
-| `host.mac` | opt_in |  |  | pii |  |
-| `process.command_line` | opt_in |  |  | pii |  |
-| `process.command_args` | opt_in |  |  | pii |  |
-| `device.id` | opt_in |  |  | pii |  |
-
 ## tier0
 
 | Attribute | Requirement | Source | Role | Sensitivity | Signals |
@@ -73,6 +63,16 @@ Generated from `spec/registry`; do not edit. Semconv pin: v1.41.0.
 | `o11y.cost_center` | opt_in | option-or-collector | descriptive | internal | traces,logs |
 | `o11y.data.classification` | opt_in | option | descriptive | internal | traces,logs |
 | `o11y.label` | opt_in | option | descriptive | internal | traces,logs |
+
+## forbidden
+
+| Attribute | Requirement | Source | Role | Sensitivity | Signals |
+|---|---|---|---|---|---|
+| `host.ip` | opt_in |  |  | pii |  |
+| `host.mac` | opt_in |  |  | pii |  |
+| `process.command_line` | opt_in |  |  | pii |  |
+| `process.command_args` | opt_in |  |  | pii |  |
+| `device.id` | opt_in |  |  | pii |  |
 
 ## Registered events
 

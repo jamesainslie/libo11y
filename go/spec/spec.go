@@ -3,8 +3,9 @@
 package spec
 
 import (
-	"go.opentelemetry.io/otel/attribute"
 	"log/slog"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // Spec identity.

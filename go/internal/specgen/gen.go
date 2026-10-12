@@ -9,7 +9,7 @@ import (
 // genSpec renders the public go/spec package.
 func genSpec(m *model) string {
 	var b strings.Builder
-	header(&b, "spec", m, `"log/slog"`, `"go.opentelemetry.io/otel/attribute"`)
+	header(&b, "spec", m, "log/slog", "go.opentelemetry.io/otel/attribute")
 
 	fmt.Fprintf(&b, "// Spec identity.\nconst (\n")
 	fmt.Fprintf(&b, "\t// SchemaURL is stamped on every resource libo11y builds.\n")
@@ -100,12 +100,18 @@ const EventNameKey = "event.name"
 }
 
 // environmentValues reads the enum annotation off the tier0
-// deployment.environment.name ref.
+// deployment.environment.name ref. The policy suite rejects padded values
+// (libo11y_enum_value_whitespace); trimming here keeps the generator from
+// ever emitting one.
 func (m *model) environmentValues() []string {
 	for _, a := range m.tiers["tier0"] {
 		if a.name() == "deployment.environment.name" {
 			if enum, ok := a.Annotations["o11y.enum"]; ok {
-				return strings.Split(enum, ",")
+				values := strings.Split(enum, ",")
+				for i, v := range values {
+					values[i] = strings.TrimSpace(v)
+				}
+				return values
 			}
 		}
 	}
@@ -132,15 +138,19 @@ func (m *model) copiedRefs() []string {
 }
 
 // genTables renders go/internal/spectables.
-func genTables(m *model) string {
+func genTables(m *model) (string, error) {
 	var b strings.Builder
-	header(&b, "spectables", m, `"go.opentelemetry.io/otel/attribute"`)
+	header(&b, "spectables", m, "go.opentelemetry.io/otel/attribute")
 
-	b.WriteString(`// Sensitivity classifies an attribute for the redaction layer.
+	b.WriteString(`// Sensitivity classifies an attribute for the redaction layer. The zero
+// value, Unclassified, is what SensitivityOf yields for a key the spec has
+// no opinion on; the runtime treats unclassified keys like Public ones, but
+// the two stay distinguishable.
 type Sensitivity int
 
 const (
-	Public Sensitivity = iota
+	Unclassified Sensitivity = iota
+	Public
 	Internal
 	PII
 	Secret
@@ -209,7 +219,11 @@ type EventInfo struct {
 	sort.Strings(names)
 	b.WriteString("// SensitivityOf classifies every attribute the spec has an opinion on.\nvar SensitivityOf = map[attribute.Key]Sensitivity{\n")
 	for _, name := range names {
-		fmt.Fprintf(&b, "\t%q: %s,\n", name, sensitivityConst(m.classByName[name]))
+		class, err := sensitivityConst(m.classByName[name])
+		if err != nil {
+			return "", fmt.Errorf("attribute %s: %w", name, err)
+		}
+		fmt.Fprintf(&b, "\t%q: %s,\n", name, class)
 	}
 	b.WriteString("}\n\n")
 
@@ -249,7 +263,7 @@ type EventInfo struct {
 	}
 	b.WriteString("}\n")
 
-	return b.String()
+	return b.String(), nil
 }
 
 // eventRequirements splits an event's required attributes into literal keys
@@ -291,16 +305,21 @@ func requirementConst(level string) string {
 	}
 }
 
-func sensitivityConst(class string) string {
+// sensitivityConst maps a registry sensitivity class to its generated
+// constant. An unknown class is an error, never a guess: falling back to
+// any class would misclassify the key at runtime.
+func sensitivityConst(class string) (string, error) {
 	switch class {
 	case "public":
-		return "Public"
+		return "Public", nil
+	case "internal":
+		return "Internal", nil
 	case "pii":
-		return "PII"
+		return "PII", nil
 	case "secret":
-		return "Secret"
+		return "Secret", nil
 	default:
-		return "Internal"
+		return "", fmt.Errorf("unknown sensitivity class %q", class)
 	}
 }
 

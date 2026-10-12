@@ -7,14 +7,20 @@
 spec-check:
 	cd go && go run ./internal/specgen -root .. -check
 
-# Regenerate go/spec, go/internal/spectables, and docs/taxonomy from the
-# registry.
+# Directories holding generated artifacts.
+GENERATED := go/spec go/internal/spectables docs/taxonomy spec/schemas
+
+# Validate the registry, then regenerate go/spec, go/internal/spectables,
+# and docs/taxonomy from it. An invalid registry generates nothing.
 spec-generate:
 	cd go && go run ./internal/specgen -root ..
 
-# CI gate: generated artifacts must match the registry.
+# CI gate: generated artifacts must match the registry, and the generator
+# must not have produced files git does not track.
 spec-drift: spec-generate
-	git diff --exit-code -- go/spec go/internal/spectables docs/taxonomy
+	git diff --exit-code -- $(GENERATED)
+	@untracked="$$(git ls-files --others --exclude-standard -- $(GENERATED))"; \
+	if [ -n "$$untracked" ]; then echo "untracked generated files:"; echo "$$untracked"; exit 1; fi
 
 test:
 	cd go && go test -race ./...

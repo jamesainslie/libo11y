@@ -1,22 +1,31 @@
 // Command specgen generates the libo11y spec artifacts from the registry
 // at spec/registry: the public go/spec package (typed keys, enums, event
 // names, version constants), the go/internal/spectables validation tables,
-// and the docs/taxonomy markdown. Run via `make spec-generate`.
+// and the docs/taxonomy markdown. Run via `make spec-generate`. Every
+// artifact is rendered in memory first and nothing is written unless all of
+// them render.
 //
-// With -check it instead validates the registry against the libo11y policy
-// suite (naming, ownership, sensitivity, cardinality, events, units) and
-// exits non-zero on any violation. Run via `make spec-check`.
+// Both modes first validate the registry against the libo11y policy suite
+// (naming, ownership, references, sensitivity, cardinality, enums, events,
+// metrics, units) and exit non-zero on any violation, so an invalid
+// registry never generates. With -check specgen stops after validating.
+// Run via `make spec-check`.
 package main
 
 import (
 	"bytes"
+	"cmp"
 	"flag"
 	"fmt"
 	"go/format"
+	"io"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
-	"sort"
+	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -141,23 +150,32 @@ func main() {
 	check := flag.Bool("check", false, "validate the registry against the policy suite instead of generating")
 	flag.Parse()
 
-	m, err := load(*root)
+	if err := run(*root, *check, os.Stderr); err != nil {
+		log.Fatalf("specgen: %v", err)
+	}
+}
+
+// run loads the registry at root and validates it against the policy suite,
+// reporting every violation to stderr. Unless checkOnly, it then regenerates
+// every artifact; an invalid registry never reaches the generator.
+func run(root string, checkOnly bool, stderr io.Writer) error {
+	m, err := load(root)
 	if err != nil {
-		log.Fatalf("specgen: %v", err)
+		return err
 	}
-	if *check {
-		violations := checkGroups(m.groups, buildIndex(m.groups))
-		for _, v := range violations {
-			fmt.Fprintln(os.Stderr, v)
+	violations := checkGroups(m.groups, buildIndex(m.groups))
+	for _, v := range violations {
+		if _, err := fmt.Fprintln(stderr, v); err != nil {
+			return err
 		}
-		if len(violations) > 0 {
-			os.Exit(1)
-		}
-		return
 	}
-	if err := writeAll(*root, m); err != nil {
-		log.Fatalf("specgen: %v", err)
+	if len(violations) > 0 {
+		return fmt.Errorf("%d policy violations", len(violations))
 	}
+	if checkOnly {
+		return nil
+	}
+	return writeAll(root, m)
 }
 
 func load(root string) (*model, error) {
@@ -205,7 +223,7 @@ func load(root string) (*model, error) {
 	if err != nil {
 		return nil, err
 	}
-	sort.Strings(m.tierOrder)
+	m.tierOrder = sortTiers(m.tierOrder)
 	return m, nil
 }
 
@@ -257,28 +275,81 @@ func (m *model) classify(g group) {
 	}
 }
 
-func writeAll(root string, m *model) error {
-	if err := writeGo(filepath.Join(root, "go", "spec", "spec.go"), genSpec(m)); err != nil {
-		return err
+// render generates every artifact in memory and returns the repo-relative
+// path (slash-separated) of each mapped to its final, formatted content. It
+// fails on the first generator or formatting error, so a caller writes
+// either every output or none.
+func render(m *model) (map[string]string, error) {
+	tables, err := genTables(m)
+	if err != nil {
+		return nil, err
 	}
-	if err := writeGo(filepath.Join(root, "go", "internal", "spectables", "tables.go"), genTables(m)); err != nil {
-		return err
+	outputs := map[string]string{"docs/taxonomy/resource.md": genDocs(m)}
+	goSources := []struct{ rel, src string }{
+		{"go/spec/spec.go", genSpec(m)},
+		{"go/internal/spectables/tables.go", tables},
 	}
-	if err := os.MkdirAll(filepath.Join(root, "docs", "taxonomy"), 0o755); err != nil {
-		return err
+	for _, g := range goSources {
+		formatted, err := format.Source([]byte(g.src))
+		if err != nil {
+			return nil, fmt.Errorf("formatting %s: %w", g.rel, err)
+		}
+		outputs[g.rel] = string(formatted)
 	}
-	return os.WriteFile(filepath.Join(root, "docs", "taxonomy", "resource.md"), []byte(genDocs(m)), 0o644)
+	return outputs, nil
 }
 
-func writeGo(path, src string) error {
-	formatted, err := format.Source([]byte(src))
-	if err != nil {
-		return fmt.Errorf("formatting %s: %w", path, err)
+var tierNumber = regexp.MustCompile(`^tier([0-9]+)$`)
+
+// sortTiers returns tiers in presentation order: tierN names by N
+// numerically (tier2 before tier10), then any other names alphabetically.
+func sortTiers(tiers []string) []string {
+	sorted := slices.Clone(tiers)
+	slices.SortFunc(sorted, func(a, b string) int {
+		na, aNumbered := tierIndex(a)
+		nb, bNumbered := tierIndex(b)
+		switch {
+		case aNumbered && bNumbered:
+			return cmp.Or(cmp.Compare(na, nb), strings.Compare(a, b))
+		case aNumbered:
+			return -1
+		case bNumbered:
+			return 1
+		default:
+			return strings.Compare(a, b)
+		}
+	})
+	return sorted
+}
+
+// tierIndex parses the N of a tierN name.
+func tierIndex(name string) (int, bool) {
+	match := tierNumber.FindStringSubmatch(name)
+	if match == nil {
+		return 0, false
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	n, err := strconv.Atoi(match[1])
+	return n, err == nil
+}
+
+// writeAll renders every artifact and, only once all of them rendered,
+// writes them under root in a stable order.
+func writeAll(root string, m *model) error {
+	outputs, err := render(m)
+	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, formatted, 0o644)
+	for _, rel := range slices.Sorted(maps.Keys(outputs)) {
+		content := outputs[rel]
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 var initialisms = map[string]string{
@@ -302,14 +373,35 @@ func goName(attrName string) string {
 	return b.String()
 }
 
+// header writes the generated-file banner, the package clause, and the
+// imports, given as unquoted paths. Imports are grouped goimports-style:
+// standard library first (no dot in the first path element), a blank line,
+// then everything else, each group sorted.
 func header(b *strings.Builder, pkg string, m *model, imports ...string) {
 	fmt.Fprintf(b, "// Code generated by specgen from spec/registry (spec %s). DO NOT EDIT.\n\n", m.specVersion)
 	fmt.Fprintf(b, "package %s\n\n", pkg)
-	if len(imports) > 0 {
-		b.WriteString("import (\n")
-		for _, imp := range imports {
-			fmt.Fprintf(b, "\t%s\n", imp)
-		}
-		b.WriteString(")\n\n")
+	if len(imports) == 0 {
+		return
 	}
+	var std, other []string
+	for _, imp := range imports {
+		first, _, _ := strings.Cut(imp, "/")
+		if strings.Contains(first, ".") {
+			other = append(other, imp)
+		} else {
+			std = append(std, imp)
+		}
+	}
+	slices.Sort(std)
+	slices.Sort(other)
+	b.WriteString("import (\n")
+	for i, group := range [][]string{std, other} {
+		if i > 0 && len(std) > 0 && len(group) > 0 {
+			b.WriteString("\n")
+		}
+		for _, imp := range group {
+			fmt.Fprintf(b, "\t%q\n", imp)
+		}
+	}
+	b.WriteString(")\n\n")
 }

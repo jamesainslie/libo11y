@@ -68,3 +68,14 @@ func TestEventsRegistered(t *testing.T) {
 		t.Error("o11y.telemetry.dropped has no required attributes")
 	}
 }
+
+// TestUnknownKeyIsUnclassified pins that a key the spec has no opinion on
+// reads as Unclassified, distinct from a key explicitly classified Public.
+func TestUnknownKeyIsUnclassified(t *testing.T) {
+	if got := spectables.SensitivityOf["no.such.key"]; got != spectables.Unclassified {
+		t.Errorf("SensitivityOf[unknown] = %v, want Unclassified", got)
+	}
+	if got := spectables.SensitivityOf["service.name"]; got != spectables.Public {
+		t.Errorf("SensitivityOf[service.name] = %v, want Public", got)
+	}
+}

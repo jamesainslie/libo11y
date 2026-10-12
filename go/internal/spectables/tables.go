@@ -6,11 +6,15 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 )
 
-// Sensitivity classifies an attribute for the redaction layer.
+// Sensitivity classifies an attribute for the redaction layer. The zero
+// value, Unclassified, is what SensitivityOf yields for a key the spec has
+// no opinion on; the runtime treats unclassified keys like Public ones, but
+// the two stay distinguishable.
 type Sensitivity int
 
 const (
-	Public Sensitivity = iota
+	Unclassified Sensitivity = iota
+	Public
 	Internal
 	PII
 	Secret
@@ -45,11 +49,6 @@ type EventInfo struct {
 
 // Resource is the tiered resource-attribute taxonomy.
 var Resource = map[attribute.Key]AttrInfo{
-	"host.ip":                     {Tier: "forbidden", Requirement: OptIn, Source: "", Role: ""},
-	"host.mac":                    {Tier: "forbidden", Requirement: OptIn, Source: "", Role: ""},
-	"process.command_line":        {Tier: "forbidden", Requirement: OptIn, Source: "", Role: ""},
-	"process.command_args":        {Tier: "forbidden", Requirement: OptIn, Source: "", Role: ""},
-	"device.id":                   {Tier: "forbidden", Requirement: OptIn, Source: "", Role: ""},
 	"service.name":                {Tier: "tier0", Requirement: Required, Source: "option-or-env", Role: "identifying"},
 	"service.version":             {Tier: "tier0", Requirement: Required, Source: "option-or-env-or-buildinfo", Role: "descriptive"},
 	"deployment.environment.name": {Tier: "tier0", Requirement: Required, Source: "option-or-env", Role: "descriptive"},
@@ -92,6 +91,11 @@ var Resource = map[attribute.Key]AttrInfo{
 	"o11y.cost_center":            {Tier: "tier3", Requirement: OptIn, Source: "option-or-collector", Role: "descriptive"},
 	"o11y.data.classification":    {Tier: "tier3", Requirement: OptIn, Source: "option", Role: "descriptive"},
 	"o11y.label":                  {Tier: "tier3", Requirement: OptIn, Source: "option", Role: "descriptive"},
+	"host.ip":                     {Tier: "forbidden", Requirement: OptIn, Source: "", Role: ""},
+	"host.mac":                    {Tier: "forbidden", Requirement: OptIn, Source: "", Role: ""},
+	"process.command_line":        {Tier: "forbidden", Requirement: OptIn, Source: "", Role: ""},
+	"process.command_args":        {Tier: "forbidden", Requirement: OptIn, Source: "", Role: ""},
+	"device.id":                   {Tier: "forbidden", Requirement: OptIn, Source: "", Role: ""},
 }
 
 // RequiredTier0 lists the attributes Setup requires at init.
