@@ -7,6 +7,7 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
@@ -106,5 +107,58 @@ func TestSpanProcessorAloneBuildsNoEnvExporter(t *testing.T) {
 	t.Cleanup(func() { _ = sdk.Shutdown(context.Background()) })
 	if cfg := sdk.EffectiveConfig(); !strings.Contains(cfg, "traces=injected") {
 		t.Errorf("EffectiveConfig %q, want traces=injected", cfg)
+	}
+}
+
+// traceViolationPoints returns the o11y.schema.violations data points on
+// the traces signal.
+func traceViolationPoints(t *testing.T, reader *sdkmetric.ManualReader) []metricdata.DataPoint[int64] {
+	t.Helper()
+	var md metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &md); err != nil {
+		t.Fatal(err)
+	}
+	var points []metricdata.DataPoint[int64]
+	for _, sm := range md.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			sum, ok := m.Data.(metricdata.Sum[int64])
+			if m.Name != "o11y.schema.violations" || !ok {
+				continue
+			}
+			for _, p := range sum.DataPoints {
+				if signal, _ := p.Attributes.Value(spec.SignalKey); signal.AsString() == string(spec.SignalTraces) {
+					points = append(points, p)
+				}
+			}
+		}
+	}
+	return points
+}
+
+// One classified span attribute is one violation, however many span
+// destinations (an injected processor, an exporter, or both) redact it.
+func TestSpanViolationCountedOnce(t *testing.T) {
+	t.Parallel()
+	for name, extra := range map[string][]o11y.Option{
+		"processor":          nil,
+		"processor+exporter": {o11y.WithTraceExporter(tracetest.NewInMemoryExporter())},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			sdk, _, reader, _ := newHermetic(t, extra...)
+			_, span := sdk.TracerProvider().Tracer("t").Start(context.Background(), "op",
+				trace.WithAttributes(attribute.String("host.ip", "10.9.8.7")))
+			span.End()
+			if err := sdk.ForceFlush(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			points := traceViolationPoints(t, reader)
+			if len(points) != 1 || points[0].Value != 1 {
+				t.Fatalf("traces violation points = %+v, want one point with value 1", points)
+			}
+			if rule, _ := points[0].Attributes.Value(spec.RuleKey); rule.AsString() != "pii_attribute" {
+				t.Errorf("rule = %q, want pii_attribute", rule.AsString())
+			}
+		})
 	}
 }

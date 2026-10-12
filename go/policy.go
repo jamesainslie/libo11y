@@ -59,6 +59,15 @@ func newSensitivityPolicy(s *settings, rec *violationRecorder) *sensitivityPolic
 	return &sensitivityPolicy{lookup: lookup, pii: s.piiMode, key: s.piiHashKey, rec: rec}
 }
 
+// silent returns a copy of p that makes the same decisions and produces the
+// same output but records no violations. It serves a second redaction of
+// data another wrapper already counts, so one attribute is one violation.
+func (p *sensitivityPolicy) silent() *sensitivityPolicy {
+	quiet := *p
+	quiet.rec = nil
+	return &quiet
+}
+
 // classOf classifies key without recording anything: secret-classified keys
 // are always dropped, and PII-classified keys are handled per the PII mode.
 func (p *sensitivityPolicy) classOf(key attribute.Key) classAction {

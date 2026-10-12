@@ -182,8 +182,14 @@ func buildTracerProvider(ctx context.Context, s *settings, res *resource.Resourc
 	batch := traceBatchOptions(s)
 	if s.spanProcessor != nil {
 		// The injected processor sees the live span at OnStart and a
-		// redacted view of the ended span at OnEnd.
-		opts = append(opts, sdktrace.WithSpanProcessor(redactingProcessor(s.spanProcessor, policy)))
+		// redacted view of the ended span at OnEnd. When an injected
+		// exporter also runs, the exporter path counts the span's
+		// violations, so the processor's redaction records none.
+		procPolicy := policy
+		if s.spanExporter != nil {
+			procPolicy = policy.silent()
+		}
+		opts = append(opts, sdktrace.WithSpanProcessor(redactingProcessor(s.spanProcessor, procPolicy)))
 	}
 	switch {
 	case s.spanExporter != nil:
