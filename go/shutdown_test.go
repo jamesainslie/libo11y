@@ -3,6 +3,7 @@ package o11y_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -54,6 +55,13 @@ func TestHungLogExportDoesNotStarveTraces(t *testing.T) {
 	}
 	if err == nil {
 		t.Error("Shutdown returned nil despite the hung log export")
+	} else {
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("Shutdown error = %v, want it to wrap DeadlineExceeded", err)
+		}
+		if !strings.Contains(err.Error(), "shutdown logs") {
+			t.Errorf("Shutdown error = %q, want it to name the logs signal", err)
+		}
 	}
 	if n := len(spans.GetSpans()); n != 1 {
 		t.Errorf("traces exported %d spans, want 1: a hung log exporter starved the trace flush", n)
@@ -87,5 +95,25 @@ func TestConcurrentShutdownHonorsEachCallersDeadline(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("second caller error = %v, want DeadlineExceeded", err)
 	}
-	<-first
+	if firstErr := <-first; firstErr == nil {
+		t.Error("first caller's Shutdown returned nil despite the hung log export")
+	}
+}
+
+func TestShutdownAfterCompletionIgnoresCallerContext(t *testing.T) {
+	t.Parallel()
+	sdk, err := o11y.New(context.Background(),
+		o11y.WithServiceName("shutdown3"), o11y.WithEnvironment("test"),
+		o11y.WithoutOTELEnv(), o11y.WithoutConsoleLog(), o11y.WithoutRuntimeMetrics())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := sdk.Shutdown(context.Background())
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	for i := range 20 {
+		if got := sdk.Shutdown(cancelled); got != want { //nolint:errorlint // the identical stored result is expected
+			t.Fatalf("call %d after completion returned %v, want the shutdown result %v", i, got, want)
+		}
+	}
 }

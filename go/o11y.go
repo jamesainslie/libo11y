@@ -369,6 +369,13 @@ func (s *SDK) Shutdown(ctx context.Context) error {
 		s.runShutdown(ctx)
 		return s.shutdownErr
 	}
+	// A finished shutdown wins over a done ctx; select alone would choose
+	// between two ready cases at random.
+	select {
+	case <-s.shutdownDone:
+		return s.shutdownErr
+	default:
+	}
 	select {
 	case <-s.shutdownDone:
 		return s.shutdownErr
