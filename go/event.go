@@ -32,13 +32,13 @@ func (s *SDK) Event(ctx context.Context, name string, attrs ...slog.Attr) {
 }
 
 // emitEvent is the structural force-emit path shared by Event, the startup
-// summary, and, later, app-event registration and the log sampler. It builds the named record,
-// stamps the event.name attribute, and force-emits through the handler so the
-// record is exempt from level gating and sampling by construction, not by
-// name matching. The exemption is the ForceEmit marker on the context; a bare
-// record carrying event.name without it stays subject to the level gate.
-// The handler's error is returned so the startup summary can serve as the
-// initialization canary.
+// summary, and, later, app-event registration and the log sampler. It
+// builds the named record, stamps the event.name attribute, and force-emits
+// through the handler so the record is exempt from level gating and
+// sampling by construction, not by name matching. The exemption is the
+// ForceEmit marker on the context; a bare record carrying event.name without
+// it stays subject to the level gate. The handler's error is returned so
+// the startup summary can serve as the initialization canary.
 func (s *SDK) emitEvent(ctx context.Context, level slog.Level, name string, attrs []slog.Attr) error {
 	record := slog.NewRecord(time.Now(), level, name, 0)
 	record.AddAttrs(append([]slog.Attr{slog.String(spec.EventNameKey, name)}, attrs...)...)

@@ -177,7 +177,7 @@ groups:
         type: string
         stability: development
         brief: The specification rule a schema violation breached.
-        examples: ["required_resource_attribute", "secret_attribute"]
+        examples: ["secret_attribute", "pii_attribute", "identity_environment"]
         annotations:
           o11y.sensitivity: public
           o11y.cardinality: bounded

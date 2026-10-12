@@ -31,7 +31,12 @@ func CheckEvent(name string, keys []string) []string {
 	}
 	for _, tmpl := range info.RequiredTemplates {
 		prefix := string(tmpl) + "."
-		if !slices.ContainsFunc(keys, func(k string) bool { return strings.HasPrefix(k, prefix) }) {
+		// A bare "<template>." carries no key, so it does not satisfy the
+		// template.
+		satisfied := slices.ContainsFunc(keys, func(k string) bool {
+			return len(k) > len(prefix) && strings.HasPrefix(k, prefix)
+		})
+		if !satisfied {
 			problems = append(problems, fmt.Sprintf("event %s: missing required template attribute %s<key>", name, prefix))
 		}
 	}
