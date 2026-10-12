@@ -7,13 +7,17 @@ harness. Pure OTEL; the library wraps setup, never instrumentation.
 
 ## Installation
 
-The repository is private. Tell the Go toolchain to fetch it directly
-instead of through the public module proxy and checksum database, with git
-credentials that can read it:
+No version is tagged yet. Until the first release, `go get` resolves a
+pseudo-version from `main`:
 
 ```sh
-go env -w GOPRIVATE=github.com/jamesainslie/libo11y
-go get github.com/jamesainslie/libo11y/go
+go get github.com/jamesainslie/libo11y/go@main
+```
+
+The Gin integration requires the first tagged release of this module,
+`go/v0.1.0`, and installs once that tag exists:
+
+```sh
 go get github.com/jamesainslie/libo11y/go/o11ygin   # only for Gin
 ```
 

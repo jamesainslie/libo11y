@@ -58,9 +58,6 @@ attributes are defined by that release and never redefined here.
   schema file is served; the `spec/v1.0.0` tag does not exist yet. Before
   tagging, `make schema-published` confirms the schema URL serves the
   generated file byte for byte. See [SPEC.md](SPEC.md), section 7.
-- The repository is private: consumers set
-  `GOPRIVATE=github.com/jamesainslie/libo11y` so the Go toolchain fetches
-  it directly instead of through the public proxy and checksum database.
 
 ## Naming
 

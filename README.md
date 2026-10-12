@@ -71,15 +71,15 @@ feature-parity matrix across implementations.
 
 ## Installation (Go)
 
-The repository is private, so the Go toolchain must fetch it directly
-instead of through the public module proxy and checksum database:
+No version is tagged yet. Until the first release, `go get` resolves a
+pseudo-version from `main`:
 
 ```sh
-go env -w GOPRIVATE=github.com/jamesainslie/libo11y
-go get github.com/jamesainslie/libo11y/go
+go get github.com/jamesainslie/libo11y/go@main
 ```
 
-Your git credentials must be able to read the repository. The modules
+The Gin integration (`go/o11ygin`) requires the first tagged release of the
+main module, `go/v0.1.0`, and installs once that tag exists. The modules
 require Go 1.26.0 or later. Build with go1.26.9 or later on the 1.26 line
 (or go1.27.2 or later on the 1.27 line) to pick up the standard-library
 security fixes.
