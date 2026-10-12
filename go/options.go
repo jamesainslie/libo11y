@@ -224,7 +224,8 @@ func WithoutLogExport() Option {
 // WithLogExporter injects a log record exporter, bypassing the exporter that
 // would otherwise be built from OTEL_LOGS_EXPORTER and OTEL_EXPORTER_OTLP_*
 // environment variables. Records are still batched. It enables log export,
-// overriding an earlier [WithoutLogExport].
+// overriding an earlier [WithoutLogExport]. A nil exporter instead disables
+// log export, as [WithoutLogExport] does.
 func WithLogExporter(exporter sdklog.Exporter) Option {
 	return func(s *settings) {
 		s.logExporter = exporter
@@ -279,6 +280,11 @@ func WithPIIHashKey(key []byte) Option {
 // summary during [Setup]; it must not block, and it must not call [Setup]
 // or [SDK.Shutdown] (a Setup call from inside a sink reports
 // [ErrAlreadySetup]).
+//
+// The handler must not route records back into the SDK's LoggerProvider or
+// the global LoggerProvider (for example through an otelslog bridge): the
+// SDK has already classified them, and that provider would classify them a
+// second time.
 func WithExtraLogHandler(handler slog.Handler) Option {
 	return func(s *settings) { s.extraLogHandler = append(s.extraLogHandler, handler) }
 }
