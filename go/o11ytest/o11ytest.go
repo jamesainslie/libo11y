@@ -58,7 +58,11 @@ type Recorder struct {
 // LogRecord is one captured log record together with the span context that
 // was active when it was emitted, enabling correlation assertions.
 type LogRecord struct {
-	Record      slog.Record
+	// Record is a clone of the slog record as the handler received it,
+	// with its attributes already flattened by the fan-out pipeline.
+	Record slog.Record
+	// SpanContext is the span context found in the context passed to the
+	// handler; it is the zero value when no span was active.
 	SpanContext trace.SpanContext
 }
 
@@ -338,9 +342,12 @@ func (r *Recorder) AssertCorrelated(tb testing.TB) {
 // Exemplar is one metric exemplar in harness form: the trace identity and
 // value stamped onto a data point by a measurement inside a sampled span.
 type Exemplar struct {
+	// TraceID is the trace ID of the sampled span the measurement was made in.
 	TraceID trace.TraceID
-	SpanID  trace.SpanID
-	Value   float64
+	// SpanID is the span ID of the sampled span the measurement was made in.
+	SpanID trace.SpanID
+	// Value is the measured value, converted to float64 for int64 instruments.
+	Value float64
 }
 
 // Exemplars collects metrics and returns the exemplars recorded on the
