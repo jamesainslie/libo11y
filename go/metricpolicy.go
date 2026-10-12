@@ -62,7 +62,7 @@ func (p *sensitivityPolicy) protectStream(s sdkmetric.Stream) sdkmetric.Stream {
 	s.ExemplarReservoirProviderSelector = func(agg sdkmetric.Aggregation) exemplar.ReservoirProvider {
 		provider := selector(agg)
 		return func(attrs attribute.Set) exemplar.Reservoir {
-			return filterReservoir(provider(attrs), p.metricKeep)
+			return filterReservoir(provider(attrs), p)
 		}
 	}
 	return s
@@ -74,26 +74,26 @@ func (p *sensitivityPolicy) protectStream(s sdkmetric.Stream) sdkmetric.Stream {
 // calls them without a lock; the wrappers for those types embed them to keep
 // the marker (the policy filter itself holds no state). Any other reservoir
 // is wrapped plainly and the SDK serializes calls to it as before.
-func filterReservoir(inner exemplar.Reservoir, keep func(attribute.KeyValue) bool) exemplar.Reservoir {
+func filterReservoir(inner exemplar.Reservoir, policy *sensitivityPolicy) exemplar.Reservoir {
 	switch r := inner.(type) {
 	case *exemplar.FixedSizeReservoir:
-		return filteredFixedSizeReservoir{FixedSizeReservoir: r, keep: keep}
+		return filteredFixedSizeReservoir{FixedSizeReservoir: r, policy: policy}
 	case *exemplar.HistogramReservoir:
-		return filteredHistogramReservoir{HistogramReservoir: r, keep: keep}
+		return filteredHistogramReservoir{HistogramReservoir: r, policy: policy}
 	default:
-		return filteredReservoir{inner: inner, keep: keep}
+		return filteredReservoir{inner: inner, policy: policy}
 	}
 }
 
 // filteredReservoir removes classified attributes from the filtered
 // attributes offered to the reservoir it wraps.
 type filteredReservoir struct {
-	inner exemplar.Reservoir
-	keep  func(attribute.KeyValue) bool
+	inner  exemplar.Reservoir
+	policy *sensitivityPolicy
 }
 
 func (r filteredReservoir) Offer(ctx context.Context, t time.Time, v exemplar.Value, filtered []attribute.KeyValue) {
-	r.inner.Offer(ctx, t, v, keepAttrs(filtered, r.keep))
+	r.inner.Offer(ctx, t, v, r.policy.metricAttrs(filtered))
 }
 
 func (r filteredReservoir) Collect(dest *[]exemplar.Exemplar) { r.inner.Collect(dest) }
@@ -102,39 +102,39 @@ func (r filteredReservoir) Collect(dest *[]exemplar.Exemplar) { r.inner.Collect(
 // reservoir; embedding it promotes Collect and the concurrency marker.
 type filteredFixedSizeReservoir struct {
 	*exemplar.FixedSizeReservoir
-	keep func(attribute.KeyValue) bool
+	policy *sensitivityPolicy
 }
 
 func (r filteredFixedSizeReservoir) Offer(ctx context.Context, t time.Time, v exemplar.Value, filtered []attribute.KeyValue) {
-	r.FixedSizeReservoir.Offer(ctx, t, v, keepAttrs(filtered, r.keep))
+	r.FixedSizeReservoir.Offer(ctx, t, v, r.policy.metricAttrs(filtered))
 }
 
 // filteredHistogramReservoir is filteredReservoir for the SDK's histogram
 // reservoir; embedding it promotes Collect and the concurrency marker.
 type filteredHistogramReservoir struct {
 	*exemplar.HistogramReservoir
-	keep func(attribute.KeyValue) bool
+	policy *sensitivityPolicy
 }
 
 func (r filteredHistogramReservoir) Offer(ctx context.Context, t time.Time, v exemplar.Value, filtered []attribute.KeyValue) {
-	r.HistogramReservoir.Offer(ctx, t, v, keepAttrs(filtered, r.keep))
+	r.HistogramReservoir.Offer(ctx, t, v, r.policy.metricAttrs(filtered))
 }
 
-// keepAttrs returns attrs without the attributes keep rejects. The input
-// slice is returned untouched when keep accepts them all, so the common path
-// allocates nothing.
-func keepAttrs(attrs []attribute.KeyValue, keep func(attribute.KeyValue) bool) []attribute.KeyValue {
+// metricAttrs returns attrs without the attributes metricKeep rejects. The
+// input slice is returned untouched when every attribute is kept, so the
+// common path allocates nothing.
+func (p *sensitivityPolicy) metricAttrs(attrs []attribute.KeyValue) []attribute.KeyValue {
 	var kept []attribute.KeyValue
 	for i, kv := range attrs {
 		if kept == nil {
-			if keep(kv) {
+			if p.metricKeep(kv) {
 				continue
 			}
 			kept = make([]attribute.KeyValue, i, len(attrs))
 			copy(kept, attrs[:i])
 			continue
 		}
-		if keep(kv) {
+		if p.metricKeep(kv) {
 			kept = append(kept, kv)
 		}
 	}

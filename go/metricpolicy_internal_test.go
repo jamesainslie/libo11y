@@ -7,30 +7,36 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/metric/exemplar"
+
+	"github.com/jamesainslie/libo11y/go/internal/spectables"
 )
 
-// The SDK skips its lock around reservoirs that carry its unexported
-// concurrency marker, which only its built-in reservoirs do. The wrappers
-// for those embed the original so the marker is promoted; anything else gets
-// the plain wrapper.
+// The SDK skips its lock around reservoirs that carry its concurrency
+// marker, which only its built-in reservoirs do. The marker is an interface
+// with an unexported method declared in the SDK's internal reservoir package,
+// so code outside the SDK can neither name it in a type assertion nor see it
+// through reflection (reflect lists exported methods only). The test
+// therefore pins the mechanism that preserves it instead: the wrappers for
+// the built-in types embed the original reservoir, which promotes the
+// marker, and anything else gets the plain wrapper.
 func TestFilterReservoirKeepsBuiltInReservoirTypes(t *testing.T) {
-	keep := func(attribute.KeyValue) bool { return true }
+	policy := newSensitivityPolicy(newSettings(nil), nil)
 	fixed := exemplar.NewFixedSizeReservoir(1)
-	if r, ok := filterReservoir(fixed, keep).(filteredFixedSizeReservoir); !ok || r.FixedSizeReservoir != fixed {
-		t.Errorf("fixed-size reservoir wrapped as %T, want filteredFixedSizeReservoir around it", filterReservoir(fixed, keep))
+	if r, ok := filterReservoir(fixed, policy).(filteredFixedSizeReservoir); !ok || r.FixedSizeReservoir != fixed {
+		t.Errorf("fixed-size reservoir wrapped as %T, want filteredFixedSizeReservoir around it", filterReservoir(fixed, policy))
 	}
 	hist := exemplar.NewHistogramReservoir([]float64{1})
-	if r, ok := filterReservoir(hist, keep).(filteredHistogramReservoir); !ok || r.HistogramReservoir != hist {
-		t.Errorf("histogram reservoir wrapped as %T, want filteredHistogramReservoir around it", filterReservoir(hist, keep))
+	if r, ok := filterReservoir(hist, policy).(filteredHistogramReservoir); !ok || r.HistogramReservoir != hist {
+		t.Errorf("histogram reservoir wrapped as %T, want filteredHistogramReservoir around it", filterReservoir(hist, policy))
 	}
-	if _, ok := filterReservoir(customReservoir{}, keep).(filteredReservoir); !ok {
-		t.Errorf("custom reservoir wrapped as %T, want filteredReservoir", filterReservoir(customReservoir{}, keep))
+	if _, ok := filterReservoir(customReservoir{}, policy).(filteredReservoir); !ok {
+		t.Errorf("custom reservoir wrapped as %T, want filteredReservoir", filterReservoir(customReservoir{}, policy))
 	}
 }
 
 func TestFilterReservoirDropsRejectedAttributes(t *testing.T) {
-	keep := func(kv attribute.KeyValue) bool { return kv.Key != "drop" }
-	r := filterReservoir(exemplar.NewFixedSizeReservoir(1), keep)
+	s := newSettings([]Option{WithSensitivityForTest(map[attribute.Key]spectables.Sensitivity{"drop": spectables.Secret})})
+	r := filterReservoir(exemplar.NewFixedSizeReservoir(1), newSensitivityPolicy(s, nil))
 	r.Offer(context.Background(), time.Now(), exemplar.NewValue[int64](1),
 		[]attribute.KeyValue{attribute.String("drop", "x"), attribute.String("keep", "y")})
 	var got []exemplar.Exemplar

@@ -44,6 +44,20 @@ const (
 // Classification is key-based, so a value logged under an entirely
 // unclassified key escapes this layer; that residual gap is inherent and is
 // the redact package's job (capture-time protection of the value itself).
+//
+// Known limitations, outside this layer by design:
+//   - Map-valued span and metric attributes (attribute.MAP) are judged on
+//     their own key only; their members are not walked. Log records walk
+//     map members on every path.
+//   - Log record bodies are not classified.
+//   - Instrumentation scope attributes (set when a tracer, meter, or logger
+//     is obtained) bypass every wrapper.
+//   - An injected span processor's OnStart sees the live span before
+//     redaction.
+//   - Baggage is not classified.
+//   - Metric streams always carry the policy's attribute filter, so an
+//     instrument's experimental advisory attribute keys, which the SDK
+//     applies only to streams without a filter, are not honoured.
 type sensitivityPolicy struct {
 	lookup func(attribute.Key) spectables.Sensitivity
 	pii    PIIMode
@@ -101,7 +115,9 @@ func (p *sensitivityPolicy) decide(signal spec.Signal, key attribute.Key) classA
 // secret and PII attributes outright, even under PIIHash, because a distinct
 // token per value would multiply series cardinality. Metric-side removals are
 // not counted as violations: the filter runs on the measurement hot path.
-// It must never read p.rec, which newSDK attaches after the meter provider
+// Every measurement on every stream runs it once per attribute (one table
+// lookup each), and sampled exemplars run it again over the attributes the
+// stream filtered out. It must never read p.rec, which newSDK attaches after the meter provider
 // (and possibly its periodic reader and runtime metrics) is already running.
 func (p *sensitivityPolicy) metricKeep(kv attribute.KeyValue) bool {
 	switch p.lookup(kv.Key) {

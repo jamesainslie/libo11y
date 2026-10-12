@@ -16,6 +16,12 @@ import (
 // signal carries. Metric data point and exemplar filtered attributes drop PII
 // under every mode but [PIIAllow]: a distinct token per value would multiply
 // series cardinality.
+//
+// Classification is by attribute key. Not covered: values under unclassified
+// keys (protect those with the redact package), the members of map-valued
+// span and metric attributes, log record bodies, instrumentation scope
+// attributes, attributes an injected span processor reads in OnStart, and
+// baggage.
 type PIIMode int
 
 const (
