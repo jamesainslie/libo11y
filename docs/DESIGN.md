@@ -53,11 +53,15 @@ signals:
   trace-based (exemplars only from sampled spans); always-on and always-off
   must be selectable in code and via `OTEL_METRICS_EXEMPLAR_FILTER`.
 
-The result is 360-degree reconciliation: from a latency histogram bucket to
-the exact trace that landed in it, from that trace to its logs, and from any
-log line back to the request's metrics. The test harness must expose
-recorded exemplars so applications can assert the full triangle in their own
-suites.
+The result is reconciliation across all three signals, with one
+qualification. Logs and spans join on trace ID for every record emitted
+inside a span. Metrics join only through exemplars, which exist only on
+data points that a measurement inside a sampled span produced: from a
+latency histogram bucket to a trace that landed in it, from that trace to
+its logs, and from a log line to the metrics through the exemplars its
+trace stamped. Unsampled traffic, and measurements taken outside any span,
+reconcile to no trace. The test harness must expose recorded exemplars so
+applications can assert the triangle in their own suites.
 
 ## Lifecycle
 
@@ -71,8 +75,9 @@ suites.
   errors. It never panics, never exits the process, and never blocks on
   collector connectivity (exporters dial lazily).
 - Shutdown is idempotent, bounded by caller deadline (with a sane default),
-  flushes every signal, and reports per-signal failures in an aggregated,
-  inspectable error. A telemetry library must never be the reason its host
+  flushes every signal concurrently under that one deadline (so a hung
+  exporter on one signal cannot starve the others), and reports per-signal
+  failures in an aggregated, inspectable error. A telemetry library must never be the reason its host
   fails; it must also never silently drop buffered telemetry without saying so.
 
 ## Specification and enforcement
@@ -84,10 +89,12 @@ event catalog, and a sensitivity classification. The registry extends
 OpenTelemetry semantic conventions and is code-generated into each language
 so that runtime validators and the test harness share one source of truth.
 
-Enforcement is layered: a generated typed API, init-time validation of the
-required identity tier, an always-on emit-time sensitivity layer (secret
-attributes dropped, PII handled per policy), and CI conformance. Required
-identity is enforced at init; the hot path only ever observes and counts.
+Enforcement is layered: a generated typed API, registry policy checks,
+init-time validation of the required identity tier, an always-on
+emit-time sensitivity layer (secret attributes dropped, PII dropped by
+default, on every signal, with documented gaps; see Redaction below), and
+CI conformance. Required identity is enforced at init; the hot path only
+ever classifies, observes, and counts.
 
 ## Minimum identity
 
@@ -108,6 +115,16 @@ never invents a parallel variable for anything OTEL already specifies.
 Language implementations delegate env parsing to their OTEL SDK or contrib
 packages rather than reimplementing it.
 
+The one exception is explicit and opt-in: a hermetic mode (Go:
+`WithoutOTELEnv`, which the test harness uses) in which no `OTEL_*`
+variable affects behavior, configuration comes only from code options and
+library defaults, and a signal with nothing injected is disabled rather
+than built from the environment. In Go, two experimental switches with no
+overriding SDK option (`OTEL_GO_X_PER_SERIES_START_TIMESTAMPS` and
+`OTEL_GO_X_DEPRECATED_RUNTIME_METRICS`) still apply, and keys named in
+`OTEL_RESOURCE_ATTRIBUTES` are exported with empty values because the OTEL
+providers always merge the environment resource.
+
 Service identity: `service.name` must resolve from option or environment;
 implementations refuse to start production telemetry as `unknown_service`.
 Resources are composed from detectors (host, process, environment) with
@@ -116,22 +133,49 @@ convention version per release.
 
 ## Redaction
 
-Two complementary layers, both language-idiomatic:
+Three complementary layers, all language-idiomatic:
 
 1. **Capture-time**: type-level protection so sensitive values render redacted
    wherever they are logged (Go: `slog.LogValuer`; Rust: derive with
    `Display`-only output; Java: annotation processor or wrapper types).
    Protections: `mask` (same-length X string), `redact` (literal `REDACTED`),
-   `omit` (field absent). Strictest wins through nesting.
-2. **Emit-time**: an attribute-replacer hook applied to every log record on
-   every sink, as a catch-all for third-party attributes.
+   `omit` (field absent). Strictest wins through nesting. The spec's
+   vocabulary maps onto them: `confidential` masks and `secret` redacts.
+2. **Emit-time replacer**: an attribute-replacer hook applied to every log
+   record on every sink, as a catch-all for third-party attributes.
+3. **Specification classification**: one sensitivity policy per SDK
+   decides, by attribute key, what happens to every attribute the
+   specification classifies: secrets are always dropped, and PII is
+   dropped (the default), replaced by a keyed HMAC token, or kept, per the
+   configured mode. Every signal asks the same policy, so the signals
+   cannot drift apart. In Go its enforcement points are the classifying
+   wrapper on each slog sink; a processor on the SDK's OTLP logger
+   provider, covering every other log bridge; wrappers around the span
+   exporter and each injected span processor's end-of-span callback (span,
+   event, and link attributes); the resource, classified once at
+   construction; and the metric views and exemplar reservoirs of every
+   metric stream, where PII is dropped even in hash mode because a token
+   per value would multiply series cardinality. The policy runs after the
+   user replacer, so renaming a key to a classified name cannot bypass it.
+
+Key-based classification is not fail-closed: a value under a key the
+specification does not classify passes through, and that gap is the
+capture-time layer's job. Log bodies, instrumentation scope attributes,
+members of map-valued span and metric attributes, attributes a span
+processor reads at span start, and baggage are outside the policy; each
+implementation documents these gaps with its per-signal guarantees (see
+[SPEC.md](SPEC.md), section 5). Baggage egress passes through a filter seam
+on every propagator whose default allows every key.
 
 ## Testability
 
 Each implementation ships a hermetic test harness built on the OTEL SDK's
-in-memory exporters. The harness never mutates process globals, is safe under
-parallel tests, and lets consumers assert emitted spans, metrics, and log
-records, including correlation between them, in ordinary unit tests.
+in-memory exporters. The harness never mutates process globals, runs in the
+hermetic mode above so ambient `OTEL_*` configuration does not change its
+behavior, is safe under parallel tests,
+and lets consumers assert emitted spans, metrics, and log records,
+including correlation between them and conformance to the specification,
+in ordinary unit tests.
 
 ## Conformance (future)
 

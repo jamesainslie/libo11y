@@ -20,8 +20,13 @@ native logging facade, and everything is correlated and exported over OTLP.
 ## Design principles
 
 1. **Pure OTEL.** Traces, metrics, and logs over OTLP. Standard `OTEL_*`
-   environment variables are honored, never shadowed by a parallel namespace.
-   Stable semantic conventions only.
+   environment variables are honored, never shadowed by a parallel namespace
+   (an explicit, opt-in mode ignores them for hermetic tests). Stable
+   semantic conventions by default for the instrumentation libo11y wires
+   (HTTP spans and metrics). Resource detectors also record upstream
+   attributes that are not yet stable (`host.*`, `container.id`,
+   `vcs.ref.head.revision`), and the libo11y registry's own groups and
+   overlays are marked development.
 2. **One identity, three surfaces.** Logs, spans, and outgoing headers all read
    the active span context. No parallel trace-ID state, no desync.
 3. **Wrap setup, not instrumentation.** One call builds and wires the
@@ -45,7 +50,8 @@ rules, per-signal minimums, a registered event catalog, and a sensitivity
 classification that drives redaction. It extends OpenTelemetry semantic
 conventions (never redefining stable upstream attributes), is validated by
 the repository's own policy checks (`make spec-check`: naming, namespace
-ownership, sensitivity, cardinality, event, and metric-unit rules), and is
+ownership, sensitivity, cardinality, references, enums, event, and
+metric-unit rules, listed by ID in the specification), and is
 code-generated into each language: typed attribute keys, closed enums, and
 validation tables the runtime and test harness share. See [`docs/SPEC.md`](docs/SPEC.md) for the human-readable
 specification and [`docs/taxonomy/`](docs/taxonomy/) for the generated
@@ -58,6 +64,21 @@ contract, [`docs/SPEC.md`](docs/SPEC.md) for the telemetry specification,
 [`docs/CONVENTIONS.md`](docs/CONVENTIONS.md) for naming, versioning, and
 configuration conventions, and [`docs/PARITY.md`](docs/PARITY.md) for the
 feature-parity matrix across implementations.
+
+## Installation (Go)
+
+The repository is private, so the Go toolchain must fetch it directly
+instead of through the public module proxy and checksum database:
+
+```sh
+go env -w GOPRIVATE=github.com/jamesainslie/libo11y
+go get github.com/jamesainslie/libo11y/go
+```
+
+Your git credentials must be able to read the repository. The modules
+require Go 1.26.0 or later. Build with go1.26.9 or later on the 1.26 line
+(or go1.27.2 or later on the 1.27 line) to pick up the standard-library
+security fixes.
 
 ## Quick start (Go)
 
@@ -106,7 +127,10 @@ tested HTTP service.
 
 Each language library versions and releases independently with path-prefixed
 tags (for example `go/v0.1.0`). There is no lockstep release across languages;
-signal maturity differs per OpenTelemetry implementation.
+signal maturity differs per OpenTelemetry implementation. Nothing is
+released yet; the first Go tags will be `go/v0.1.0` and then
+`go/o11ygin/v0.1.0`, which requires it. `make release-check` validates that
+sequence against a throwaway local remote.
 
 ## License
 
