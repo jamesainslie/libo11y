@@ -76,7 +76,15 @@ func trackResponse(w http.ResponseWriter) (http.ResponseWriter, *statusTracker) 
 			return func(b []byte) (int, error) { st.observeWrite(); return next(b) }
 		},
 		ReadFrom: func(next httpsnoop.ReadFromFunc) httpsnoop.ReadFromFunc {
-			return func(src io.Reader) (int64, error) { st.observeWrite(); return next(src) }
+			// net/http commits a status from ReadFrom only once bytes are
+			// written, so an empty source must not be observed as a write.
+			return func(src io.Reader) (int64, error) {
+				n, err := next(src)
+				if n > 0 {
+					st.observeWrite()
+				}
+				return n, err
+			}
 		},
 		Flush: func(next httpsnoop.FlushFunc) httpsnoop.FlushFunc {
 			return func() { st.observeWrite(); next() }

@@ -55,6 +55,17 @@ func TestCanonicalSummaryReportsCommittedStatus(t *testing.T) {
 			w.WriteHeader(500)
 		}, false, 200, spec.OutcomeSuccess},
 		{"500", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(500) }, false, 500, spec.OutcomeFailure},
+		// net/http commits a status from ReadFrom only once bytes are written.
+		// The struct hides strings.Reader's WriteTo, so io.Copy reaches the
+		// writer's ReadFrom instead of returning early on the empty source.
+		{"empty readfrom then 500", func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = io.Copy(w, struct{ io.Reader }{strings.NewReader("")})
+			w.WriteHeader(500)
+		}, false, 500, spec.OutcomeFailure},
+		{"readfrom then 500", func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = io.Copy(w, struct{ io.Reader }{strings.NewReader("x")})
+			w.WriteHeader(500)
+		}, false, 200, spec.OutcomeSuccess},
 		{"panic before write", func(http.ResponseWriter, *http.Request) { panic("boom") }, true, 500, spec.OutcomeFailure},
 		{"panic after 201", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(201); panic("boom") }, true, 201, spec.OutcomeFailure},
 		// net/http panics inside WriteHeader on an invalid code, so the code
