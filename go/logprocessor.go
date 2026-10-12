@@ -22,15 +22,19 @@ import (
 // slog values before the bridge converts them (see [classifyingHandler]),
 // which keeps its tokens identical to the console's for values with a text
 // form such as net.IP, and classifying them again would hash a token. That
-// leg treats a Go map logged as one slog value as opaque, like the console.
+// leg walks Go maps (and slices of them) logged as one slog value on their
+// dotted member keys, as this processor walks the map values a bridge makes
+// of them, so both paths drop or tokenize the same members.
 type redactingLogProcessor struct {
 	policy *sensitivityPolicy
 }
 
-// Enabled reports false: the redactor never makes a record worth emitting
-// on its own, so it leaves that decision to the processors that export.
-// OnEmit runs for every emitted record regardless.
-func (redactingLogProcessor) Enabled(context.Context, sdklog.EnabledParameters) bool { return false }
+// Enabled reports true: the redactor cannot tell from the parameters
+// whether a record carries classified attributes, and sdk/log asks
+// processors to default to true when undecided. The batch processor
+// registered after it also always reports true, so this changes no
+// Logger.Enabled result.
+func (redactingLogProcessor) Enabled(context.Context, sdklog.EnabledParameters) bool { return true }
 
 // OnEmit drops or tokenizes classified attributes in place. A first pass
 // decides without recording whether anything is classified, so a record with

@@ -3,7 +3,11 @@ package o11y
 import (
 	"context"
 	"log/slog"
+	"reflect"
 	"slices"
+	"strings"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // sinkMode identifies which log sink a per-leg classifier is guarding. It is
@@ -70,7 +74,9 @@ func (c *classifier) Handle(ctx context.Context, record slog.Record) error {
 }
 
 // classifyAttr classifies one attribute at the given group path, recursing
-// into groups so every leaf is judged on its effective dotted key. Change
+// into groups, and into string-keyed Go maps and slices of them logged under
+// an unclassified key (see classifyComposite), so every leaf is judged on its
+// effective dotted key. A value under a classified key is judged whole. Change
 // tracking comes from the classification action, never from comparing slog
 // values, because slog.Value.Equal panics on uncomparable values.
 func (c *classifier) classifyAttr(groups []string, a slog.Attr) (out slog.Attr, keep, changed bool) {
@@ -98,6 +104,20 @@ func (c *classifier) classifyAttr(groups []string, a slog.Attr) (out slog.Attr, 
 		}
 		return slog.Attr{Key: a.Key, Value: slog.GroupValue(kept...)}, true, true
 	}
+	if a.Value.Kind() == slog.KindAny && a.Key != "" &&
+		c.policy.classOf(attribute.Key(effectiveKey(groups, a.Key))) == actionKeep {
+		path := append(slices.Clone(groups), a.Key)
+		if v, vk, vc, ok := c.classifyComposite(path, a.Value.Any(), 0); ok {
+			switch {
+			case !vc:
+				return a, true, false
+			case !vk:
+				return slog.Attr{}, false, true
+			default:
+				return slog.Any(a.Key, v), true, true
+			}
+		}
+	}
 	res, action := c.policy.slogAttr(groups, a)
 	switch action {
 	case actionDrop:
@@ -106,6 +126,75 @@ func (c *classifier) classifyAttr(groups []string, a slog.Attr) (out slog.Attr, 
 		return res, true, true
 	default:
 		return a, true, false
+	}
+}
+
+// maxCompositeDepth bounds how deeply classifyComposite walks nested maps
+// (by effective key length) and nested slices, so a self-referencing value
+// cannot recurse forever. Deeper values are opaque leaves under their
+// holder's key.
+const maxCompositeDepth = 16
+
+// classifyComposite walks a Go value logged as one slog value when it is a
+// map with string keys, or a slice or array that can hold such maps, so its
+// members are judged on their dotted effective keys under path (the holder's
+// effective key) like slog groups are. This matches what a log bridge
+// produces for the same value (map values, and slices of them), so the
+// console, extra sinks, the OTLP leg, and other bridges agree. ok is false
+// for any other value, which stays a leaf. A map or slice emptied by
+// classification is dropped (keep false); a changed one is rebuilt as
+// map[string]any or []any holding the surviving members, and an unchanged
+// one is returned as is.
+func (c *classifier) classifyComposite(path []string, x any, depth int) (out any, keep, changed, ok bool) {
+	rv := reflect.ValueOf(x)
+	if !rv.IsValid() || depth >= maxCompositeDepth || len(path) > maxCompositeDepth {
+		return x, true, false, false
+	}
+	switch rv.Kind() {
+	case reflect.Map:
+		if rv.Type().Key().Kind() != reflect.String {
+			return x, true, false, false
+		}
+		keys := rv.MapKeys()
+		slices.SortFunc(keys, func(a, b reflect.Value) int { return strings.Compare(a.String(), b.String()) })
+		kept := make(map[string]any, len(keys))
+		for _, k := range keys {
+			member := slog.Any(k.String(), rv.MapIndex(k).Interface())
+			mo, mk, mc := c.classifyAttr(path, member)
+			changed = changed || mc
+			if mk {
+				kept[k.String()] = mo.Value.Any()
+			}
+		}
+		if !changed {
+			return x, true, false, true
+		}
+		return kept, len(kept) > 0, true, true
+	case reflect.Slice, reflect.Array:
+		switch rv.Type().Elem().Kind() {
+		case reflect.Interface, reflect.Map, reflect.Slice, reflect.Array:
+		default:
+			return x, true, false, false // cannot hold a map: a plain leaf
+		}
+		kept := make([]any, 0, rv.Len())
+		for i := range rv.Len() {
+			e := rv.Index(i).Interface()
+			eo, ek, ec, eok := c.classifyComposite(path, e, depth+1)
+			if !eok {
+				kept = append(kept, e)
+				continue
+			}
+			changed = changed || ec
+			if ek {
+				kept = append(kept, eo)
+			}
+		}
+		if !changed {
+			return x, true, false, true
+		}
+		return kept, len(kept) > 0, true, true
+	default:
+		return x, true, false, false
 	}
 }
 
