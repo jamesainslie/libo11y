@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/exemplar"
 
 	o11y "github.com/jamesainslie/libo11y/go"
@@ -77,6 +78,45 @@ func TestHistogramExemplars(t *testing.T) {
 	}
 	if exemplars[0].Value != 0.25 {
 		t.Errorf("exemplar value = %v, want 0.25", exemplars[0].Value)
+	}
+}
+
+// TestExponentialHistogramExemplars pins exemplar extraction from base-2
+// exponential histograms, for both number kinds.
+func TestExponentialHistogramExemplars(t *testing.T) {
+	expo := sdkmetric.NewView(
+		sdkmetric.Instrument{Name: "expo.*"},
+		sdkmetric.Stream{Aggregation: sdkmetric.AggregationBase2ExponentialHistogram{MaxSize: 160, MaxScale: 20}},
+	)
+	rec := o11ytest.Start(t, o11y.WithViews(expo))
+
+	ctx, span := rec.SDK.TracerProvider().Tracer("svc").Start(context.Background(), "op")
+	meter := rec.SDK.MeterProvider().Meter("svc")
+	floats, err := meter.Float64Histogram("expo.float")
+	if err != nil {
+		t.Fatalf("Float64Histogram: %v", err)
+	}
+	ints, err := meter.Int64Histogram("expo.int")
+	if err != nil {
+		t.Fatalf("Int64Histogram: %v", err)
+	}
+	floats.Record(ctx, 0.5)
+	ints.Record(ctx, 7)
+	span.End()
+
+	wantTrace := rec.Spans()[0].SpanContext().TraceID()
+	for name, want := range map[string]float64{"expo.float": 0.5, "expo.int": 7} {
+		exemplars := rec.Exemplars(name)
+		if len(exemplars) != 1 {
+			t.Errorf("%s: got %d exemplars, want 1", name, len(exemplars))
+			continue
+		}
+		if exemplars[0].TraceID != wantTrace {
+			t.Errorf("%s: exemplar trace = %s, want %s", name, exemplars[0].TraceID, wantTrace)
+		}
+		if exemplars[0].Value != want {
+			t.Errorf("%s: exemplar value = %v, want %v", name, exemplars[0].Value, want)
+		}
 	}
 }
 

@@ -36,6 +36,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	o11y "github.com/jamesainslie/libo11y/go"
+	"github.com/jamesainslie/libo11y/go/internal/conformance"
 	"github.com/jamesainslie/libo11y/go/internal/spectables"
 	"github.com/jamesainslie/libo11y/go/spec"
 )
@@ -152,11 +153,25 @@ func (r *Recorder) Logs() []LogRecord {
 	return r.logs.snapshot()
 }
 
-// AssertConforms fails the test if the harness SDK's resource is missing
-// any attribute the specification requires at tier 0, or if any recorded
-// log record carries a secret-classified attribute in the clear. It is the
-// consumer-facing conformance gate: a service can prove in its own suite
-// that it satisfies the libo11y specification.
+// AssertConforms fails the test if the code under test broke the libo11y
+// specification. It is the consumer-facing conformance gate: a service can
+// prove in its own suite that it satisfies the specification. It reports:
+//   - any secret-classified attribute the code under test put on a log
+//     record or span, or that options put on the resource, detected
+//     through the o11y.schema.violations self-metric. The pipeline redacted
+//     it, but secrets must never be logged or traced. Secret attributes on
+//     metric measurements are dropped without being counted (the filter
+//     runs on the measurement hot path), so they are not reported;
+//   - any recorded event lacking an attribute its registered contract
+//     requires;
+//   - any secret-classified attribute visible in recorded logs or spans,
+//     which would be a redaction regression;
+//   - any required tier-0 attribute missing from the SDK's resource. The
+//     harness supplies service name and environment unless options
+//     override them.
+//
+// Call it from the test body, before the harness SDK shuts down in
+// t.Cleanup: it collects metrics, which fails after shutdown.
 func (r *Recorder) AssertConforms(tb testing.TB) {
 	tb.Helper()
 
@@ -170,20 +185,82 @@ func (r *Recorder) AssertConforms(tb testing.TB) {
 		}
 	}
 
+	if n := r.violationCount(tb, secretAttributeRule); n > 0 {
+		tb.Errorf("o11ytest: the code under test emitted secret-classified attributes "+
+			"(%d redaction(s) counted); they were redacted, but secrets must never be emitted", n)
+	}
+
 	for _, record := range r.Logs() {
+		var keys []string
 		record.Record.Attrs(func(a slog.Attr) bool {
+			keys = append(keys, a.Key)
 			if spectables.SensitivityOf[attribute.Key(a.Key)] == spectables.Secret {
 				tb.Errorf("o11ytest: log record %q carries secret-classified attribute %q in the clear",
 					record.Record.Message, a.Key)
 			}
 			return true
 		})
+		if name, ok := record.Attr(spec.EventNameKey); ok {
+			for _, problem := range conformance.CheckEvent(name, keys) {
+				tb.Errorf("o11ytest: %s", problem)
+			}
+		}
 	}
+
+	for _, span := range r.Spans() {
+		for _, kv := range span.Attributes() {
+			if spectables.SensitivityOf[kv.Key] == spectables.Secret {
+				tb.Errorf("o11ytest: span %q carries secret-classified attribute %q in the clear",
+					span.Name(), kv.Key)
+			}
+		}
+	}
+}
+
+// violationsMetric is the library's self-metric counting specification
+// violations, and secretAttributeRule the o11y.rule value it records when
+// classification removes a secret-classified attribute.
+const (
+	violationsMetric    = "o11y.schema.violations"
+	secretAttributeRule = "secret_attribute"
+)
+
+// violationCount sums the o11y.schema.violations data points recorded for
+// one rule, across every signal. A single emitted attribute may count more
+// than once (each log sink classifies independently), so callers should
+// treat any positive count as a violation rather than rely on its value.
+func (r *Recorder) violationCount(tb testing.TB, rule string) int64 {
+	tb.Helper()
+	var data metricdata.ResourceMetrics
+	if err := r.reader.Collect(context.Background(), &data); err != nil {
+		tb.Errorf("o11ytest: collecting metrics: %v", err)
+		return 0
+	}
+	var total int64
+	for _, sm := range data.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != violationsMetric {
+				continue
+			}
+			sum, ok := m.Data.(metricdata.Sum[int64])
+			if !ok {
+				continue
+			}
+			for _, dp := range sum.DataPoints {
+				if v, ok := dp.Attributes.Value(spec.RuleKey); ok && v.AsString() == rule {
+					total += dp.Value
+				}
+			}
+		}
+	}
+	return total
 }
 
 // AssertCorrelated fails the test unless every log record emitted inside a
 // span carries that span's trace identity, closing the log-to-trace leg of
 // the correlation triangle. Records emitted outside any span are ignored.
+// Records emitted without a context (Info instead of InfoContext) carry no
+// span and cannot be checked; prefer the Context variants.
 func (r *Recorder) AssertCorrelated(tb testing.TB) {
 	tb.Helper()
 	for _, record := range r.Logs() {
@@ -247,6 +324,14 @@ func exemplarsOf(data metricdata.Aggregation) []Exemplar {
 			out = append(out, convertExemplars(dp.Exemplars, func(v int64) float64 { return float64(v) })...)
 		}
 	case metricdata.Histogram[float64]:
+		for _, dp := range agg.DataPoints {
+			out = append(out, convertExemplars(dp.Exemplars, func(v float64) float64 { return v })...)
+		}
+	case metricdata.ExponentialHistogram[int64]:
+		for _, dp := range agg.DataPoints {
+			out = append(out, convertExemplars(dp.Exemplars, func(v int64) float64 { return float64(v) })...)
+		}
+	case metricdata.ExponentialHistogram[float64]:
 		for _, dp := range agg.DataPoints {
 			out = append(out, convertExemplars(dp.Exemplars, func(v float64) float64 { return v })...)
 		}

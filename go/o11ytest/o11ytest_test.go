@@ -59,23 +59,26 @@ func TestLogSpanCorrelation(t *testing.T) {
 	}
 }
 
+// TestHarnessesAreIsolated runs harnesses concurrently, each emitting a span
+// named after its own subtest, and requires every recorder to hold exactly
+// its own span. The outcome does not depend on scheduling: a harness that
+// leaked would show the other subtest's span.
 func TestHarnessesAreIsolated(t *testing.T) {
-	t.Run("first", func(t *testing.T) {
-		t.Parallel()
-		rec := o11ytest.Start(t)
-		_, span := rec.SDK.TracerProvider().Tracer("a").Start(context.Background(), "only-first")
-		span.End()
-		if len(rec.Spans()) != 1 {
-			t.Errorf("first harness sees %d spans, want 1", len(rec.Spans()))
-		}
-	})
-	t.Run("second", func(t *testing.T) {
-		t.Parallel()
-		rec := o11ytest.Start(t)
-		if len(rec.Spans()) != 0 {
-			t.Errorf("second harness sees %d spans, want 0 (isolation)", len(rec.Spans()))
-		}
-	})
+	for _, name := range []string{"first", "second"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			rec := o11ytest.Start(t)
+			_, span := rec.SDK.TracerProvider().Tracer("isolation").Start(context.Background(), t.Name())
+			span.End()
+			var got []string
+			for _, s := range rec.Spans() {
+				got = append(got, s.Name())
+			}
+			if want := []string{t.Name()}; !slices.Equal(got, want) {
+				t.Errorf("harness spans = %v, want %v (isolation)", got, want)
+			}
+		})
+	}
 }
 
 func TestUserOptionsOverrideDefaults(t *testing.T) {
