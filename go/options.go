@@ -236,9 +236,12 @@ func WithLogExporter(exporter sdklog.Exporter) Option {
 // every log sink. Use it as an emit-time redaction catch-all; prefer the
 // redact package for capture-time protection of your own types.
 //
-// The specification's sensitivity layer runs after this replacer and cannot
-// be bypassed by it: attributes the spec classifies secret are always
-// dropped, and PII attributes are handled per [WithPIIMode].
+// The specification's sensitivity layer runs after this replacer, so
+// renaming a key to a classified name cannot bypass it: attributes the spec
+// classifies secret are always dropped, and PII attributes are handled per
+// [WithPIIMode]. Classification is by key, so a replacer that renames a
+// classified key to an unclassified one takes that attribute out of the
+// layer's scope.
 func WithAttrReplacer(replace AttrReplacer) Option {
 	return func(s *settings) { s.attrReplacer = replace }
 }
