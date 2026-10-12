@@ -119,7 +119,7 @@ func unknownAnnotations(annotations map[string]string) []string {
 //
 // Only o11y.* references are resolved: the registry vendors no upstream
 // semantic conventions, so references to upstream keys (http.*, k8s.*, ...)
-// are not validated here. Phase 2 adds a pinned semconv snapshot, which will
+// are not validated here. A future pinned semconv snapshot will
 // populate upstreamKeys and extend the ref and deprecation rules to them;
 // until then upstreamKeys is empty.
 type index struct {
@@ -136,7 +136,7 @@ type index struct {
 }
 
 // semconvEntry is a placeholder for the upstream attribute record the
-// Phase 2 semconv snapshot will provide to the ref and deprecation rules.
+// future pinned semconv snapshot will provide to the ref and deprecation rules.
 type semconvEntry struct{}
 
 // buildIndex runs the first pass over the registry, collecting the

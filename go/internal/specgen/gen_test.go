@@ -124,9 +124,38 @@ groups:
 	}
 }
 
+// TestSpecPackageDocComment pins that the generated spec package carries a
+// package doc comment directly above the package clause, with the generated
+// code header kept first and separated from it by a blank line.
+func TestSpecPackageDocComment(t *testing.T) {
+	m, err := load("../../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(genSpec(m), "\n")
+	if !strings.HasPrefix(lines[0], "// Code generated ") || !strings.HasSuffix(lines[0], " DO NOT EDIT.") {
+		t.Fatalf("first line is not the generated code header: %q", lines[0])
+	}
+	if lines[1] != "" {
+		t.Fatalf("generated code header not followed by a blank line: %q", lines[1])
+	}
+	pkg := slices.Index(lines, "package spec")
+	if pkg < 0 {
+		t.Fatal("generated source has no package spec clause")
+	}
+	if pkg < 3 || !strings.HasPrefix(lines[2], "// Package spec ") {
+		t.Fatalf("no package doc comment after the header:\n%s", strings.Join(lines[:pkg+1], "\n"))
+	}
+	for i := 2; i < pkg; i++ {
+		if !strings.HasPrefix(lines[i], "//") {
+			t.Fatalf("package doc comment not directly above package spec: line %d is %q", i+1, lines[i])
+		}
+	}
+}
+
 func TestHeaderGroupsImports(t *testing.T) {
 	var b strings.Builder
-	header(&b, "spec", &model{specVersion: "1.0.0"}, "go.opentelemetry.io/otel/attribute", "strings")
+	header(&b, "spec", "", &model{specVersion: "1.0.0"}, "go.opentelemetry.io/otel/attribute", "strings")
 	src := b.String()
 	if !strings.Contains(src, "\"strings\"\n\n\t\"go.opentelemetry.io/otel/attribute\"") {
 		t.Errorf("imports not grouped stdlib-first:\n%s", src)
