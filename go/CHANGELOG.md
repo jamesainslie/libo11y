@@ -6,10 +6,15 @@ and the module adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-Nothing has been released yet. The first release will be `go/v0.1.0`,
-followed by `go/o11ygin/v0.1.0`. Entries under Changed, Fixed, and Security
-describe changes relative to earlier unreleased development commits, so
-anyone tracking a pre-release commit can see what moved.
+## [0.1.0] - 2026-10-12
+
+First release of both modules: `github.com/jamesainslie/libo11y/go`,
+tagged `go/v0.1.0`, and `github.com/jamesainslie/libo11y/go/o11ygin`,
+tagged `go/o11ygin/v0.1.0`. The `o11ygin` module is versioned alongside
+the parent and requires the parent module at the same version. Entries
+under Changed, Fixed, and Security describe changes relative to earlier
+untagged development commits (pseudo-versions from `main`), so anyone
+tracking one of those commits can see what moved.
 
 ### Added
 
@@ -90,7 +95,8 @@ anyone tracking a pre-release commit can see what moved.
   signal.
 - Schema artifact: the generator writes the OpenTelemetry schema file
   `spec/schemas/1.0.0` (file format 1.1.0) for the schema URL, which
-  serves it. Tagging `spec/v1.0.0` is a release step not yet taken.
+  serves it. Spec 1.0.0 is tagged `spec/v1.0.0` on the same commit as this
+  release.
 - Spec-check rules for references, tombstones, enums, units, annotations,
   stabilities, requirement levels, and generated-name collisions; every
   rule ID is listed in `docs/SPEC.md`, section 8.
@@ -151,8 +157,9 @@ anyone tracking a pre-release commit can see what moved.
   handles them.
 - Breaking (pre-1.0): `spec.SchemaURL` is
   `https://schemas.o11y.ing/libo11y/1.0.0` (it was a
-  raw.githubusercontent.com URL), stamped on every resource and serving
-  the schema file.
+  raw.githubusercontent.com URL, then
+  `https://jamesainslie.dev/schemas/libo11y/1.0.0`), stamped on every
+  resource and serving the schema file.
 - Breaking (pre-1.0): `o11ytest.Start` builds its SDK with
   `WithoutOTELEnv`, so ambient `OTEL_*` variables no longer change harness
   behavior. Keys named in `OTEL_RESOURCE_ATTRIBUTES` that the harness
@@ -292,3 +299,6 @@ anyone tracking a pre-release commit can see what moved.
   GO-2026-6090, GO-2026-6607), `html/template` (GO-2026-6091,
   GO-2026-6599, GO-2026-6600), `net/url` (GO-2026-6218), and
   `encoding/asn1` (GO-2026-5972).
+
+[Unreleased]: https://github.com/jamesainslie/libo11y/compare/go/v0.1.0...HEAD
+[0.1.0]: https://github.com/jamesainslie/libo11y/releases/tag/go/v0.1.0
