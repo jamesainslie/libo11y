@@ -11,13 +11,11 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 )
 
-// sinkMode identifies which log sink a per-leg classifier is guarding. It is
-// the seam that lets classification differ by destination: Phase 1 uses it to
-// withhold confidential attributes from the console while still exporting them
-// over OTLP. Through Phase 0 both modes classify identically. The OTLP leg
-// also marks each record's context as classified, so the LoggerProvider's
+// sinkMode identifies which log sink a per-leg classifier is guarding. Both
+// modes apply the same classification rules. The OTLP leg also marks each
+// record's context as classified, so the LoggerProvider's
 // [redactingLogProcessor], which classifies records from every other bridge,
-// leaves it alone.
+// leaves it alone instead of classifying it a second time.
 type sinkMode int
 
 const (
@@ -28,16 +26,13 @@ const (
 )
 
 // classifyingHandler wraps a single fan-out leg so every record's attributes
-// pass through the SDK's [sensitivityPolicy] before reaching inner. Moving
-// classification into each leg (rather than running it once in the shared
-// fan-out replacer) is what makes redaction sink-aware: each leg carries its
-// own [sinkMode]. The user replacer still runs once upstream in the fan-out,
-// so every leg sees identical attributes; only classification is per-leg.
-// Through Phase 0 both sinks classify identically, so mode is not yet
-// consulted (Phase 1 uses it for confidential-console-withhold). Because
-// classification is per leg, the walk of composite values (Go maps and
-// slices of them, see classifyComposite) also runs once per leg, by design:
-// each leg must be able to classify differently.
+// pass through the SDK's [sensitivityPolicy] before reaching inner. Each leg
+// classifies on its own and carries its own [sinkMode]. The user replacer runs
+// once upstream in the fan-out, so every leg sees identical attributes; only
+// classification is per leg. Every mode classifies with the same rules; the
+// mode only decides whether the record's context is marked as classified (see
+// [sinkMode]). Because classification is per leg, the walk of composite values
+// (Go maps and slices of them, see classifyComposite) also runs once per leg.
 func classifyingHandler(inner slog.Handler, mode sinkMode, policy *sensitivityPolicy) slog.Handler {
 	return &classifier{inner: inner, mode: mode, policy: policy}
 }

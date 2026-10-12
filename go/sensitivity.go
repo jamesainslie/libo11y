@@ -37,7 +37,9 @@ const (
 )
 
 // violationRecorder counts specification violations on the library's own
-// metric scope. It is nil when validation is disabled.
+// metric scope. A nil recorder is valid and counts nothing: the policy holds
+// nil until New attaches the recorder, and newViolationRecorder returns nil
+// when the counter cannot be created.
 type violationRecorder struct {
 	counter metric.Int64Counter
 }

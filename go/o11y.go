@@ -118,7 +118,7 @@ func newSDK(ctx context.Context, s *settings) (_ *SDK, err error) {
 	}
 	allow := s.baggageAllow
 	if allow == nil {
-		allow = func(string) bool { return true } // Phase 3 flips this default
+		allow = func(string) bool { return true } // by default every baggage key may leave the process
 	}
 	// The egress filter wraps whichever propagator is configured, so the
 	// baggage choke point cannot be bypassed by WithPropagators.

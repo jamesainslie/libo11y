@@ -10,9 +10,9 @@ import (
 // baggageEgress wraps a TextMapPropagator and filters baggage members on
 // Inject only: a member survives egress when allow(key) reports true. Extract
 // and Fields delegate to the inner propagator untouched, so ingress is never
-// altered. This makes baggage egress a fail-closed choke point once allow is
-// tightened; the Phase 0 wiring passes an allow-all predicate, preserving
-// behavior.
+// altered. Every propagator the SDK hands out is wrapped, so baggage egress
+// has a single choke point. When no predicate is configured, New passes one
+// that allows every key.
 type baggageEgress struct {
 	inner propagation.TextMapPropagator
 	allow func(key string) bool
