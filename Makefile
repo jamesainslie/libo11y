@@ -1,5 +1,5 @@
-# libo11y build targets. `make ci` runs every gate CI runs
-# (.github/workflows/ci.yml), so the two cannot drift.
+# libo11y build targets. `make ci` runs the same targets the CI workflow
+# (.github/workflows/ci.yml) calls; keep the two in step when adding a gate.
 
 # Package parallelism for go test; lower it on a loaded machine.
 GO_TEST_P ?= 4
@@ -59,4 +59,6 @@ RELEASE_VERSION ?= v0.1.0
 release-check:
 	scripts/release-check.sh $(RELEASE_VERSION)
 
-ci: lint vet test tidy-check spec-check spec-drift vuln release-check
+# vuln runs last: it depends on the advisory database and the toolchain's
+# patch level, so local runs exercise every other gate first.
+ci: lint vet test tidy-check spec-check spec-drift release-check vuln
