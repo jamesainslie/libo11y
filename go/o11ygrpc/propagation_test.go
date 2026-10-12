@@ -52,6 +52,13 @@ func (fx *healthFixture) next(t *testing.T) context.Context {
 
 func startHealthServer(t *testing.T, rec *o11ytest.Recorder, serverOpts ...o11ygrpc.Option) *healthFixture {
 	t.Helper()
+	return startHealthServerWith(t, rec, serverOpts, nil)
+}
+
+// startHealthServerWith is startHealthServer with extra options for the
+// client handler as well.
+func startHealthServerWith(t *testing.T, rec *o11ytest.Recorder, serverOpts, clientOpts []o11ygrpc.Option) *healthFixture {
+	t.Helper()
 	lis := bufconn.Listen(1 << 20)
 	got := make(chan context.Context, 8)
 	capture := func(ctx context.Context) {
@@ -80,7 +87,7 @@ func startHealthServer(t *testing.T, rec *o11ytest.Recorder, serverOpts ...o11yg
 	conn, err := grpc.NewClient("passthrough:///bufnet",
 		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) }),
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithStatsHandler(o11ygrpc.ClientHandler(o11ygrpc.WithSDK(rec.SDK))))
+		grpc.WithStatsHandler(o11ygrpc.ClientHandler(append([]o11ygrpc.Option{o11ygrpc.WithSDK(rec.SDK)}, clientOpts...)...)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,35 +182,50 @@ func TestGRPCPropagatesTraceContextAndBaggage(t *testing.T) {
 
 func TestGRPCIgnoreHealthChecks(t *testing.T) {
 	t.Parallel()
+	ignore := []o11ygrpc.Option{o11ygrpc.WithIgnoreHealthChecks()}
 	cases := map[string]struct {
-		opts       []o11ygrpc.Option
-		wantServer bool
+		serverOpts, clientOpts []o11ygrpc.Option
+		wantServer, wantClient bool
 	}{
-		"default records probes":            {nil, true},
-		"WithIgnoreHealthChecks skips them": {[]o11ygrpc.Option{o11ygrpc.WithIgnoreHealthChecks()}, false},
+		"default records probes":      {nil, nil, true, true},
+		"server handler skips probes": {ignore, nil, false, true},
+		"client handler skips probes": {nil, ignore, true, false},
+		"both handlers skip probes":   {ignore, ignore, false, false},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			rec := o11ytest.Start(t)
-			fx := startHealthServer(t, rec, tc.opts...)
-			if _, err := fx.client.Check(context.Background(), &healthpb.HealthCheckRequest{}); err != nil {
+			fx := startHealthServerWith(t, rec, tc.serverOpts, tc.clientOpts)
+			ctx, caller := rec.SDK.TracerProvider().Tracer("client").Start(context.Background(), "call")
+			if _, err := fx.client.Check(ctx, &healthpb.HealthCheckRequest{}); err != nil {
 				t.Fatalf("Check: %v", err)
+			}
+			caller.End()
+			// Filtering never stops propagation: the server context joins
+			// the caller's trace whichever handler skips the probe.
+			if tid := trace.SpanContextFromContext(fx.next(t)).TraceID(); tid != caller.SpanContext().TraceID() {
+				t.Errorf("server context trace %s, want caller trace %s", tid, caller.SpanContext().TraceID())
 			}
 			fx.drain()
 
 			spans := rec.Spans()
-			if findSpan(spans, trace.SpanKindClient, healthCheckMethod) == nil {
-				t.Fatalf("no client span for %s; the RPC was not observed", healthCheckMethod)
-			}
-			if got := findSpan(spans, trace.SpanKindServer, healthCheckMethod) != nil; got != tc.wantServer {
-				t.Errorf("server span recorded = %v, want %v", got, tc.wantServer)
-			}
-			gotMetrics := slices.ContainsFunc(rec.MetricNames(), func(n string) bool {
-				return strings.HasPrefix(n, "rpc.server.")
-			})
-			if gotMetrics != tc.wantServer {
-				t.Errorf("server RPC metrics recorded = %v, want %v (metrics %v)", gotMetrics, tc.wantServer, rec.MetricNames())
+			names := rec.MetricNames()
+			for _, side := range []struct {
+				kind   trace.SpanKind
+				prefix string
+				want   bool
+			}{
+				{trace.SpanKindServer, "rpc.server.", tc.wantServer},
+				{trace.SpanKindClient, "rpc.client.", tc.wantClient},
+			} {
+				if got := findSpan(spans, side.kind, healthCheckMethod) != nil; got != side.want {
+					t.Errorf("%s span recorded = %v, want %v", side.kind, got, side.want)
+				}
+				gotMetrics := slices.ContainsFunc(names, func(n string) bool { return strings.HasPrefix(n, side.prefix) })
+				if gotMetrics != side.want {
+					t.Errorf("%s metrics recorded = %v, want %v (metrics %v)", side.prefix, gotMetrics, side.want, names)
+				}
 			}
 		})
 	}
