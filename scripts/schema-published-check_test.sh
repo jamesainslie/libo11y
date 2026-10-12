@@ -11,7 +11,7 @@ version="$(sed -n 's|^schema_url: .*/||p' "$root/spec/registry/manifest.yaml")"
 work="$(mktemp -d)"
 server_pid=""
 cleanup() {
-	if [[ -n "$server_pid" ]]; then
+	if [[ -n "$server_pid" ]] && kill -0 "$server_pid" 2>/dev/null; then
 		kill "$server_pid"
 		local status=0
 		wait "$server_pid" || status=$?
@@ -28,15 +28,22 @@ mkdir -p "$work/match/libo11y" "$work/mismatch/libo11y"
 cp "$root/spec/schemas/$version" "$work/match/libo11y/$version"
 printf 'file_format: 1.1.0\n' > "$work/mismatch/libo11y/$version"
 
-port=18799
+port="$(python3 -I -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
 python3 -I -m http.server "$port" --bind 127.0.0.1 --directory "$work" > "$work/server.log" 2>&1 &
 server_pid=$!
+ready=false
 for _ in $(seq 1 50); do
-	if curl -fsS -o /dev/null "http://127.0.0.1:$port/"; then
+	if curl -fs -o /dev/null "http://127.0.0.1:$port/"; then
+		ready=true
 		break
 	fi
 	sleep 0.1
 done
+if [[ "$ready" != true ]]; then
+	echo "test server did not start on port $port" >&2
+	cat "$work/server.log" >&2
+	exit 1
+fi
 
 failures=0
 # expect <name> <pass|fail> <url>
