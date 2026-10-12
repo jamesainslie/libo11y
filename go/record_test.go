@@ -48,3 +48,33 @@ func TestRecordFromContextNoOpWhenAbsent(t *testing.T) {
 	record.Set(slog.String("k", "v"))
 	record.Add("n", 1)
 }
+
+func TestEventAttributesAreDeduplicated(t *testing.T) {
+	t.Parallel()
+	extra, captured := newSlogCapture()
+	sdk, _, _, _ := newHermetic(t, o11y.WithExtraLogHandler(extra))
+	ctx, rec := o11y.StartRecord(context.Background())
+	rec.Set(slog.Int("http.response.status_code", 200))
+	rec.EmitEvent(ctx, sdk, spec.EventRequestSummary,
+		slog.Int("http.response.status_code", 500), slog.String(spec.EventNameKey, "spoofed"))
+	r := captured()[0]
+	counts := map[string]int{}
+	var status int64
+	var name string
+	r.Attrs(func(a slog.Attr) bool {
+		counts[a.Key]++
+		switch a.Key {
+		case "http.response.status_code":
+			status = a.Value.Int64()
+		case spec.EventNameKey:
+			name = a.Value.String()
+		}
+		return true
+	})
+	if counts["http.response.status_code"] != 1 || status != 500 {
+		t.Errorf("status appears %d times, value %d; want once, 500", counts["http.response.status_code"], status)
+	}
+	if counts[spec.EventNameKey] != 1 || name != spec.EventRequestSummary {
+		t.Errorf("event.name appears %d times as %q; want once as %s", counts[spec.EventNameKey], name, spec.EventRequestSummary)
+	}
+}

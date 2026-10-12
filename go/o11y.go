@@ -104,13 +104,17 @@ func newSDK(ctx context.Context, s *settings) (_ *SDK, err error) {
 		return nil, err
 	}
 
-	propagator := s.propagator
-	if propagator == nil {
-		propagator = propagation.NewCompositeTextMapPropagator(
-			propagation.TraceContext{},
-			filterBaggageEgress(propagation.Baggage{}, func(string) bool { return true }),
-		)
+	base := s.propagator
+	if base == nil {
+		base = propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{})
 	}
+	allow := s.baggageAllow
+	if allow == nil {
+		allow = func(string) bool { return true } // Phase 3 flips this default
+	}
+	// The egress filter wraps whichever propagator is configured, so the
+	// baggage choke point cannot be bypassed by WithPropagators.
+	propagator := filterBaggageEgress(base, allow)
 
 	// Tear down partially constructed providers if a later step fails.
 	var cleanups []func(context.Context) error
@@ -321,7 +325,9 @@ func (s *SDK) TracerProvider() trace.TracerProvider { return s.tracerProvider }
 func (s *SDK) MeterProvider() metric.MeterProvider { return s.meterProvider }
 
 // Propagator returns the SDK's context propagator (by default a composite
-// of W3C Trace Context and W3C Baggage).
+// of W3C Trace Context and W3C Baggage). Whichever propagator is
+// configured, it is wrapped by the baggage egress filter, so the value
+// returned is not the one passed to [WithPropagators].
 func (s *SDK) Propagator() propagation.TextMapPropagator { return s.propagator }
 
 // Resource returns the resource describing this process's telemetry

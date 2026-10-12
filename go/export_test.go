@@ -23,5 +23,10 @@ func WithSensitivityForTest(table map[attribute.Key]spectables.Sensitivity) Opti
 	}
 }
 
+// WithBaggageEgressForTest sets the baggage egress predicate for one SDK.
+func WithBaggageEgressForTest(allow func(string) bool) Option {
+	return func(s *settings) { s.baggageAllow = allow }
+}
+
 // SanitizeEndpoint exposes sanitizeEndpoint to the external test package.
 var SanitizeEndpoint = sanitizeEndpoint

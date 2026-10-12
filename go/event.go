@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/jamesainslie/libo11y/go/spec"
@@ -40,9 +41,28 @@ func (s *SDK) Event(ctx context.Context, name string, attrs ...slog.Attr) {
 // it stays subject to the level gate. The handler's error is returned so
 // the startup summary can serve as the initialization canary.
 func (s *SDK) emitEvent(ctx context.Context, level slog.Level, name string, attrs []slog.Attr) error {
+	attrs = dedupeAttrs(slices.DeleteFunc(slices.Clone(attrs), func(a slog.Attr) bool {
+		return a.Key == spec.EventNameKey // the event name is set by the library, never by callers
+	}))
 	record := slog.NewRecord(time.Now(), level, name, 0)
 	record.AddAttrs(append([]slog.Attr{slog.String(spec.EventNameKey, name)}, attrs...)...)
 	return s.handler.Handle(ForceEmit(ctx), record)
+}
+
+// dedupeAttrs keeps the last occurrence of each key, preserving the order of
+// those survivors, so later attributes win without emitting duplicate keys.
+func dedupeAttrs(attrs []slog.Attr) []slog.Attr {
+	last := make(map[string]int, len(attrs))
+	for i, a := range attrs {
+		last[a.Key] = i
+	}
+	out := make([]slog.Attr, 0, len(last))
+	for i, a := range attrs {
+		if last[a.Key] == i {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 // emitDropped records the o11y.telemetry.dropped event when a signal fails

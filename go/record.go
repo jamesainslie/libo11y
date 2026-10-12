@@ -50,6 +50,7 @@ func (r *Record) Set(attrs ...slog.Attr) {
 
 // Add increments an integer counter on the wide event, creating it at delta
 // if absent. Useful for per-request tallies (queries issued, retries, bytes).
+// A key holding a value of another kind is replaced by delta.
 func (r *Record) Add(key string, delta int64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -63,7 +64,8 @@ func (r *Record) Add(key string, delta int64) {
 }
 
 // Max records the larger of the existing and new value for key (for example
-// the slowest downstream call in a request).
+// the slowest downstream call in a request). A key holding a value of
+// another kind is replaced by v.
 func (r *Record) Max(key string, v float64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -89,9 +91,8 @@ func (r *Record) snapshot() []slog.Attr {
 }
 
 // EmitEvent flushes the accumulated wide event under the given event name
-// through sdk. Additional attrs are appended (they win over accumulated
-// ones by later position). Intended to be deferred so it fires even if the
-// handler panics.
+// through sdk. Additional attrs replace accumulated attributes with the same
+// key. Intended to be deferred so it fires even if the handler panics.
 func (r *Record) EmitEvent(ctx context.Context, sdk *SDK, name string, attrs ...slog.Attr) {
 	sdk.Event(ctx, name, append(r.snapshot(), attrs...)...)
 }

@@ -68,6 +68,9 @@ type settings struct {
 
 	sampler    sdktrace.Sampler
 	propagator propagation.TextMapPropagator
+	// baggageAllow decides which baggage keys leave the process on inject;
+	// nil allows every key.
+	baggageAllow func(string) bool
 
 	views          []sdkmetric.View
 	exemplarFilter exemplar.Filter

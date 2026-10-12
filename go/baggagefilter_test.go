@@ -36,3 +36,33 @@ func TestBaggageEgressFilterStripsOnInject(t *testing.T) {
 		t.Fatalf("allowed key missing: %q", carrier["baggage"])
 	}
 }
+
+func TestEgressFilterWrapsCustomPropagator(t *testing.T) {
+	sdk, err := New(context.Background(), WithServiceName("bag"), WithEnvironment("test"),
+		WithoutOTELEnv(), WithoutConsoleLog(), WithoutRuntimeMetrics(),
+		WithPropagators(propagation.Baggage{}),
+		WithBaggageEgressForTest(func(k string) bool { return k != "internal.secret" }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := baggage.New(mustMember(t, "keep", "1"), mustMember(t, "internal.secret", "2"))
+	carrier := propagation.MapCarrier{}
+	sdk.Propagator().Inject(baggage.ContextWithBaggage(context.Background(), b), carrier)
+	if strings.Contains(carrier["baggage"], "internal.secret") || !strings.Contains(carrier["baggage"], "keep") {
+		t.Errorf("custom propagator bypassed the egress filter: %q", carrier["baggage"])
+	}
+}
+
+func TestDefaultEgressStillAllowsAll(t *testing.T) {
+	sdk, err := New(context.Background(), WithServiceName("bag"), WithEnvironment("test"),
+		WithoutOTELEnv(), WithoutConsoleLog(), WithoutRuntimeMetrics())
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := baggage.New(mustMember(t, "a", "1"), mustMember(t, "b", "2"))
+	carrier := propagation.MapCarrier{}
+	sdk.Propagator().Inject(baggage.ContextWithBaggage(context.Background(), b), carrier)
+	if !strings.Contains(carrier["baggage"], "a=1") || !strings.Contains(carrier["baggage"], "b=2") {
+		t.Errorf("default egress policy changed: %q", carrier["baggage"])
+	}
+}
