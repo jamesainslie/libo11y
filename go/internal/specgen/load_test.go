@@ -16,7 +16,7 @@ func writeRegistry(t *testing.T, files map[string]string) string {
 	if err := os.MkdirAll(reg, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	manifest := "name: test\nschema_url: https://jamesainslie.dev/schemas/libo11y/1.0.0\nsemconv_version: 1.41.0\n"
+	manifest := "name: test\nschema_url: https://schemas.o11y.ing/libo11y/1.0.0\nsemconv_version: 1.41.0\n"
 	if err := os.WriteFile(filepath.Join(reg, "manifest.yaml"), []byte(manifest), 0o644); err != nil {
 		t.Fatal(err)
 	}

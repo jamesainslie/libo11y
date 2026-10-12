@@ -13,7 +13,7 @@ import (
 	"github.com/jamesainslie/libo11y/go/spec"
 )
 
-const wantSchemaURL = "https://jamesainslie.dev/schemas/libo11y/1.0.0"
+const wantSchemaURL = "https://schemas.o11y.ing/libo11y/1.0.0"
 
 // TestSchemaArtifactIsValidAndConsistent pins the schema contract: the
 // manifest, the generated spec package, and the committed OpenTelemetry
@@ -52,13 +52,13 @@ func TestSchemaArtifactIsValidAndConsistent(t *testing.T) {
 // load uses as the spec version and the schema file name.
 func TestManifestRejectsSchemaURLWithExtension(t *testing.T) {
 	for _, url := range []string{
-		"https://jamesainslie.dev/schemas/libo11y/1.0.0.yaml",
-		"https://jamesainslie.dev/schemas/libo11y/v1.0.0",
-		"https://jamesainslie.dev/schemas/libo11y/1.0",
-		"https://jamesainslie.dev/schemas/libo11y/01.0.0",
-		"https://jamesainslie.dev/schemas/libo11y/",
-		"jamesainslie.dev/schemas/libo11y/1.0.0",
-		"ftp://jamesainslie.dev/schemas/libo11y/1.0.0",
+		"https://schemas.o11y.ing/libo11y/1.0.0.yaml",
+		"https://schemas.o11y.ing/libo11y/v1.0.0",
+		"https://schemas.o11y.ing/libo11y/1.0",
+		"https://schemas.o11y.ing/libo11y/01.0.0",
+		"https://schemas.o11y.ing/libo11y/",
+		"schemas.o11y.ing/libo11y/1.0.0",
+		"ftp://schemas.o11y.ing/libo11y/1.0.0",
 		"",
 	} {
 		t.Run(url, func(t *testing.T) {
@@ -75,9 +75,9 @@ func TestManifestRejectsSchemaURLWithExtension(t *testing.T) {
 // segment becomes the spec version.
 func TestManifestAcceptsVersionedSchemaURL(t *testing.T) {
 	for url, version := range map[string]string{
-		"https://jamesainslie.dev/schemas/libo11y/1.0.0": "1.0.0",
-		"https://example.com/s/2.10.3":                   "2.10.3",
-		"http://example.com/0.1.0":                       "0.1.0",
+		"https://schemas.o11y.ing/libo11y/1.0.0": "1.0.0",
+		"https://example.com/s/2.10.3":           "2.10.3",
+		"http://example.com/0.1.0":               "0.1.0",
 	} {
 		t.Run(url, func(t *testing.T) {
 			m, err := load(writeManifest(t, url))
@@ -96,7 +96,7 @@ func TestManifestAcceptsVersionedSchemaURL(t *testing.T) {
 // schema file must list every earlier version and its transformations, and
 // rendering only the current node would silently drop them.
 func TestSchemaRenderingRefusesLaterVersions(t *testing.T) {
-	m, err := load(writeManifest(t, "https://jamesainslie.dev/schemas/libo11y/1.1.0"))
+	m, err := load(writeManifest(t, "https://schemas.o11y.ing/libo11y/1.1.0"))
 	if err != nil {
 		t.Fatal(err)
 	}

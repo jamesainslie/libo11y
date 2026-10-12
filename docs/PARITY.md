@@ -50,7 +50,7 @@ implemented (rationale given).
 | Centralized telemetry specification | full | semconv-format registry under `spec/`, Go policy checks (`make spec-check`), code generation to `go/spec` + `go/internal/spectables`, `docs/taxonomy` |
 | Tiered resource identity enforced at init | full | tier-0 required (`service.name`, `deployment.environment.name` enum-validated, `service.version` fallback); `WithEnvironment`, `WithServiceNamespace`, `WithoutStrictIdentity` |
 | service.instance.id derivation | full | UUIDv5 from k8s pod identity (Downward API), else UUIDv4 |
-| Single schema URL per resource | full | `spec.SchemaURL` (`https://jamesainslie.dev/schemas/libo11y/1.0.0`) restamped on the composed resource; schema file generated to `spec/schemas/1.0.0`, not yet served |
+| Single schema URL per resource | full | `spec.SchemaURL` (`https://schemas.o11y.ing/libo11y/1.0.0`) restamped on the composed resource; schema file generated to `spec/schemas/1.0.0`, not yet served |
 | Sensitivity classification: one policy | full | one key-based policy per SDK, generated table; secrets dropped; PII dropped by default (`WithPIIMode`), keyed HMAC tokens under `PIIHash` (`WithPIIHashKey`); `o11y.schema.violations` self-metric. Not fail-closed for values under unclassified keys (use `redact`) |
 | Sensitivity: slog sinks | full | classifying wrapper on the console, extra, and OTLP slog legs; grouped keys and Go maps, slices, and pointers walked with cycle detection and a 2048-node budget, failing closed |
 | Sensitivity: OTLP log processor | full | redacting processor on the SDK's LoggerProvider classifies every record from other bridges, including through the global provider after `Setup`; record bodies not classified |

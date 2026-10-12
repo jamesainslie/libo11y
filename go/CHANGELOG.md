@@ -146,7 +146,7 @@ anyone tracking a pre-release commit can see what moved.
   removed). They remain classified, so the sensitivity policy still
   handles them.
 - Breaking (pre-1.0): `spec.SchemaURL` is
-  `https://jamesainslie.dev/schemas/libo11y/1.0.0` (it was a
+  `https://schemas.o11y.ing/libo11y/1.0.0` (it was a
   raw.githubusercontent.com URL), stamped on every resource. The URL is not
   yet served.
 - Breaking (pre-1.0): `o11ytest.Start` builds its SDK with

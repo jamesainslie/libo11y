@@ -254,7 +254,7 @@ release stamps one schema URL and pins one semconv version. A stable spec
 item is never renamed or removed without a major version bump.
 
 - **Schema URL.** The URL ends in the bare spec version:
-  `https://jamesainslie.dev/schemas/libo11y/1.0.0` (`spec.SchemaURL` in
+  `https://schemas.o11y.ing/libo11y/1.0.0` (`spec.SchemaURL` in
   Go), stamped on every resource.
 - **Schema file.** The generator writes the matching OpenTelemetry schema
   file (file format 1.1.0) to `spec/schemas/<version>`, so 1.0.0 is

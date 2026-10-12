@@ -5,7 +5,7 @@ description: The libo11y telemetry specification registry.
 # file lives at spec/schemas/<version>; publishing it at this URL is a
 # release step (see docs/SPEC.md, Versioning). Released versions are
 # immutable; a spec change bumps the version and adds a new file.
-schema_url: https://jamesainslie.dev/schemas/libo11y/1.0.0
+schema_url: https://schemas.o11y.ing/libo11y/1.0.0
 # The upstream OpenTelemetry semantic conventions release this registry
 # extends. Referenced attributes (http.*, k8s.*, ...) are defined by that
 # release; libo11y never redefines them. Move the pin deliberately.
