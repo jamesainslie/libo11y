@@ -1,13 +1,11 @@
 name: libo11y
 description: The libo11y telemetry specification registry.
-# The schema URL identifies spec version 1.0.0 (tagged spec/vX.Y.Z).
-# Language modules declare which spec version they implement via generated
-# constants.
-#
-# PLACEHOLDER BASE: replace the host with https://schemas.<domain>/libo11y/
-# before the spec/v1.0.0 release (custom-domain decision recorded in the
-# plan; only the string must be final by then, serving can follow).
-schema_url: https://raw.githubusercontent.com/jamesainslie/libo11y/main/spec/schemas/1.0.0
+# The schema URL identifies spec version 1.0.0. Its last path segment is the
+# version and carries no file extension. The generated OpenTelemetry schema
+# file lives at spec/schemas/<version>; publishing it at this URL is a
+# release step (see docs/SPEC.md, Versioning). Released versions are
+# immutable; a spec change bumps the version and adds a new file.
+schema_url: https://jamesainslie.dev/schemas/libo11y/1.0.0
 # The upstream OpenTelemetry semantic conventions release this registry
 # extends. Referenced attributes (http.*, k8s.*, ...) are defined by that
 # release; libo11y never redefines them. Move the pin deliberately.

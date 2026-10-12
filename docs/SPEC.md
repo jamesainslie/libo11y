@@ -170,6 +170,14 @@ version, and records renames as both a registry tombstone and a schema
 transform. A stable spec item is never renamed or removed without a major
 version bump.
 
+The schema URL ends in the bare spec version
+(`https://jamesainslie.dev/schemas/libo11y/1.0.0`). The generator writes
+the matching OpenTelemetry schema file to `spec/schemas/<version>`;
+publishing that file at the schema URL is a release step. A released
+schema file is immutable: a spec change bumps the version and adds a new
+file. Renames made before 1.0.0, the first versioned release, are recorded
+only as registry tombstones.
+
 ## 8. Enforcement layers
 
 1. **Generated typed API** (`go/spec`): typed keys and closed enums make

@@ -11,7 +11,8 @@ spec-check:
 GENERATED := go/spec go/internal/spectables docs/taxonomy spec/schemas
 
 # Validate the registry, then regenerate go/spec, go/internal/spectables,
-# and docs/taxonomy from it. An invalid registry generates nothing.
+# docs/taxonomy, and spec/schemas from it. An invalid registry generates
+# nothing.
 spec-generate:
 	cd go && go run ./internal/specgen -root ..
 

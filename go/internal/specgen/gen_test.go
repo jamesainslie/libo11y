@@ -189,7 +189,7 @@ groups:
 	if !strings.Contains(stderr.String(), "libo11y_sensitivity_missing") {
 		t.Errorf("violations not reported; stderr = %q", stderr.String())
 	}
-	for _, rel := range []string{"go/spec/spec.go", "go/internal/spectables/tables.go", "docs/taxonomy/resource.md"} {
+	for _, rel := range []string{"go/spec/spec.go", "go/internal/spectables/tables.go", "docs/taxonomy/resource.md", "spec/schemas/1.0.0"} {
 		if _, err := os.Stat(filepath.Join(root, rel)); !os.IsNotExist(err) {
 			t.Errorf("%s written despite violations (stat err %v)", rel, err)
 		}

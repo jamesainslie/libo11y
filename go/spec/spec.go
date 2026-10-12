@@ -11,7 +11,7 @@ import (
 // Spec identity.
 const (
 	// SchemaURL is stamped on every resource libo11y builds.
-	SchemaURL = "https://raw.githubusercontent.com/jamesainslie/libo11y/main/spec/schemas/1.0.0"
+	SchemaURL = "https://jamesainslie.dev/schemas/libo11y/1.0.0"
 	// SpecVersion is the libo11y specification version this module implements.
 	SpecVersion = "1.0.0"
 	// SemconvVersion is the pinned OpenTelemetry semantic conventions version.

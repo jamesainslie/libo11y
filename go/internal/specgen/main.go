@@ -1,7 +1,8 @@
 // Command specgen generates the libo11y spec artifacts from the registry
 // at spec/registry: the public go/spec package (typed keys, enums, event
 // names, version constants), the go/internal/spectables validation tables,
-// and the docs/taxonomy markdown. Run via `make spec-generate`. Every
+// the docs/taxonomy markdown, and the OpenTelemetry schema file at
+// spec/schemas/<version>. Run via `make spec-generate`. Every
 // artifact is rendered in memory first and nothing is written unless all of
 // them render.
 //
@@ -22,6 +23,7 @@ import (
 	"io"
 	"log"
 	"maps"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -199,6 +201,29 @@ func run(root string, checkOnly bool, stderr io.Writer) error {
 	return writeAll(root, m)
 }
 
+// bareSemver matches the last path segment of the manifest's schema_url:
+// a MAJOR.MINOR.PATCH version with no prefix or file extension, which
+// becomes the spec version and the schema file's name under spec/schemas.
+var bareSemver = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
+
+// errSchemaURL reports a manifest schema_url that cannot identify a spec
+// version.
+var errSchemaURL = errors.New("manifest schema_url must be an absolute http(s) URL ending in a bare semantic version")
+
+// schemaVersion validates the manifest's schema URL and returns the spec
+// version it names: its last path segment, a bare MAJOR.MINOR.PATCH.
+func schemaVersion(schemaURL string) (string, error) {
+	u, err := url.Parse(schemaURL)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+		return "", fmt.Errorf("%w: %q", errSchemaURL, schemaURL)
+	}
+	version := u.Path[strings.LastIndex(u.Path, "/")+1:]
+	if !bareSemver.MatchString(version) {
+		return "", fmt.Errorf("%w: %q", errSchemaURL, schemaURL)
+	}
+	return version, nil
+}
+
 func load(root string) (*model, error) {
 	m := &model{
 		tiers:       map[string][]attr{},
@@ -220,7 +245,11 @@ func load(root string) (*model, error) {
 		return nil, fmt.Errorf("parsing manifest: %w", err)
 	}
 	m.schemaURL = manifestDoc.SchemaURL
-	m.specVersion = m.schemaURL[strings.LastIndex(m.schemaURL, "/")+1:]
+	version, err := schemaVersion(m.schemaURL)
+	if err != nil {
+		return nil, err
+	}
+	m.specVersion = version
 	m.semconvVersion = manifestDoc.SemconvVersion
 
 	registryDir := filepath.Join(root, "spec", "registry")
@@ -386,7 +415,14 @@ func render(m *model) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	outputs := map[string]string{"docs/taxonomy/resource.md": genDocs(m)}
+	schemaFile, err := genSchema(m)
+	if err != nil {
+		return nil, err
+	}
+	outputs := map[string]string{
+		"docs/taxonomy/resource.md":     genDocs(m),
+		"spec/schemas/" + m.specVersion: schemaFile,
+	}
 	goSources := []struct{ rel, src string }{
 		{"go/spec/spec.go", genSpec(m)},
 		{"go/internal/spectables/tables.go", tables},
