@@ -85,7 +85,12 @@ func (p *sensitivityPolicy) silent() *sensitivityPolicy {
 // classOf classifies key without recording anything: secret-classified keys
 // are always dropped, and PII-classified keys are handled per the PII mode.
 func (p *sensitivityPolicy) classOf(key attribute.Key) classAction {
-	switch p.lookup(key) {
+	return p.actionFor(p.lookup(key))
+}
+
+// actionFor maps a sensitivity class to the action this policy takes on it.
+func (p *sensitivityPolicy) actionFor(class spectables.Sensitivity) classAction {
+	switch class {
 	case spectables.Secret:
 		return actionDrop
 	case spectables.PII:
@@ -104,9 +109,15 @@ func (p *sensitivityPolicy) classOf(key attribute.Key) classAction {
 
 // decide classifies key and records a violation for every action taken.
 func (p *sensitivityPolicy) decide(signal spec.Signal, key attribute.Key) classAction {
-	act := p.classOf(key)
+	return p.decideClass(signal, p.lookup(key))
+}
+
+// decideClass is decide for a class already looked up, so a caller that
+// needs the class first does not look the key up twice.
+func (p *sensitivityPolicy) decideClass(signal spec.Signal, class spectables.Sensitivity) classAction {
+	act := p.actionFor(class)
 	if act != actionKeep {
-		p.rec.record(signal, ruleFor(p.lookup(key)))
+		p.rec.record(signal, ruleFor(class))
 	}
 	return act
 }
@@ -154,9 +165,10 @@ func (p *sensitivityPolicy) token(v string) string {
 	return "hmac-sha256:" + hex.EncodeToString(mac.Sum(nil)[:16])
 }
 
-// slogAttr classifies a leaf slog attribute on its effective grouped key.
-func (p *sensitivityPolicy) slogAttr(groups []string, a slog.Attr) (slog.Attr, classAction) {
-	switch act := p.decide(spec.SignalLogs, attribute.Key(effectiveKey(groups, a.Key))); act {
+// slogLeaf classifies a leaf slog attribute whose effective grouped key has
+// the given class.
+func (p *sensitivityPolicy) slogLeaf(a slog.Attr, class spectables.Sensitivity) (slog.Attr, classAction) {
+	switch act := p.decideClass(spec.SignalLogs, class); act {
 	case actionDrop:
 		return slog.Attr{}, act
 	case actionRewrite:

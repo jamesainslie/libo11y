@@ -34,7 +34,10 @@ const (
 // own [sinkMode]. The user replacer still runs once upstream in the fan-out,
 // so every leg sees identical attributes; only classification is per-leg.
 // Through Phase 0 both sinks classify identically, so mode is not yet
-// consulted (Phase 1 uses it for confidential-console-withhold).
+// consulted (Phase 1 uses it for confidential-console-withhold). Because
+// classification is per leg, the walk of composite values (Go maps and
+// slices of them, see classifyComposite) also runs once per leg, by design:
+// each leg must be able to classify differently.
 func classifyingHandler(inner slog.Handler, mode sinkMode, policy *sensitivityPolicy) slog.Handler {
 	return &classifier{inner: inner, mode: mode, policy: policy}
 }
@@ -105,29 +108,30 @@ func (c *classifier) classifyAttr(groups []string, a slog.Attr) (out slog.Attr, 
 		}
 		return slog.Attr{Key: a.Key, Value: slog.GroupValue(kept...)}, true, true
 	}
-	if a.Value.Kind() == slog.KindAny && a.Key != "" &&
-		c.policy.classOf(attribute.Key(effectiveKey(groups, a.Key))) == actionKeep {
-		path := append(slices.Clone(groups), a.Key)
-		if v, vk, vc, ok := c.classifyComposite(path, a.Value.Any(), 0); ok {
-			switch {
-			case !vc:
-				return a, true, false
-			case !vk:
-				return slog.Attr{}, false, true
-			default:
-				return slog.Any(a.Key, v), true, true
+	// One classification lookup per attribute: the class decides both
+	// whether a composite value is walked and what happens to a leaf.
+	class := c.policy.lookup(attribute.Key(effectiveKey(groups, a.Key)))
+	if c.policy.actionFor(class) == actionKeep {
+		if a.Value.Kind() == slog.KindAny && a.Key != "" {
+			path := append(slices.Clone(groups), a.Key)
+			if v, vk, vc, ok := c.classifyComposite(path, a.Value.Any(), 0); ok {
+				switch {
+				case !vc:
+					return a, true, false
+				case !vk:
+					return slog.Attr{}, false, true
+				default:
+					return slog.Any(a.Key, v), true, true
+				}
 			}
 		}
-	}
-	res, action := c.policy.slogAttr(groups, a)
-	switch action {
-	case actionDrop:
-		return slog.Attr{}, false, true
-	case actionRewrite:
-		return res, true, true
-	default:
 		return a, true, false
 	}
+	res, action := c.policy.slogLeaf(a, class)
+	if action == actionDrop {
+		return slog.Attr{}, false, true
+	}
+	return res, true, true
 }
 
 // maxCompositeDepth bounds how deeply classifyComposite walks: nested maps

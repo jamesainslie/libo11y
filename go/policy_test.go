@@ -30,8 +30,9 @@ func TestPolicyUsesInjectedLookup(t *testing.T) {
 	if _, ok := spectables.SensitivityOf["test.secret"]; ok {
 		t.Fatal("the generated table was mutated")
 	}
-	if a, act := p.slogAttr([]string{"test"}, slog.String("secret", "x")); act != actionDrop || a.Key != "" {
-		t.Errorf("grouped injected secret not dropped: %v %v", a, act)
+	c := &classifier{policy: p}
+	if a, keep, changed := c.classifyAttr([]string{"test"}, slog.String("secret", "x")); keep || !changed || a.Key != "" {
+		t.Errorf("grouped injected secret not dropped: %v keep=%v changed=%v", a, keep, changed)
 	}
 }
 
