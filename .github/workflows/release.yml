@@ -1,0 +1,183 @@
+# Publishes a Go module release when its tag is pushed: go/vX.Y.Z for
+# github.com/jamesainslie/libo11y/go, go/o11ygin/vX.Y.Z for
+# github.com/jamesainslie/libo11y/go/o11ygin. Push the go/ tag first; both
+# tags go on the same commit. Rerunning a release is safe: an existing
+# GitHub Release has its notes replaced.
+name: release
+
+on:
+  push:
+    tags:
+      - "go/v*"
+      - "go/o11ygin/v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      dir: ${{ steps.tag.outputs.dir }}
+      module: ${{ steps.tag.outputs.module }}
+      version: ${{ steps.tag.outputs.version }}
+      prerelease: ${{ steps.tag.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.x"
+          check-latest: true
+          cache-dependency-path: |
+            go/go.sum
+            go/o11ygin/go.sum
+      - name: Derive the module and version from the tag
+        id: tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          case "$TAG" in
+          go/o11ygin/v*) dir=go/o11ygin ;;
+          go/v*) dir=go ;;
+          *)
+            echo "::error::$TAG is not a go/ or go/o11ygin/ release tag"
+            exit 1
+            ;;
+          esac
+          version="${TAG#"$dir"/v}"
+          # Strict semver X.Y.Z with an optional -prerelease suffix. A 0.x
+          # version is a normal release, not a prerelease.
+          semver='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+          if [[ ! "$version" =~ $semver ]]; then
+            echo "::error::$TAG: $version is not a semantic version X.Y.Z[-prerelease]"
+            exit 1
+          fi
+          prerelease=false
+          if [[ -n "${BASH_REMATCH[4]}" ]]; then
+            prerelease=true
+          fi
+          {
+            echo "dir=$dir"
+            echo "module=github.com/jamesainslie/libo11y/$dir"
+            echo "version=$version"
+            echo "prerelease=$prerelease"
+          } >>"$GITHUB_OUTPUT"
+          echo "$TAG releases github.com/jamesainslie/libo11y/$dir v$version (prerelease: $prerelease)"
+      - name: Require the parent tag on the same commit
+        if: steps.tag.outputs.dir == 'go/o11ygin'
+        env:
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          parent="go/v$VERSION"
+          git fetch --force --tags origin
+          if ! parent_commit="$(git rev-parse --verify --quiet "refs/tags/$parent^{commit}")"; then
+            echo "::error::$parent does not exist; push it before $TAG"
+            exit 1
+          fi
+          tag_commit="$(git rev-parse --verify "refs/tags/$TAG^{commit}")"
+          if [[ "$parent_commit" != "$tag_commit" ]]; then
+            echo "::error::$TAG is on $tag_commit but $parent is on $parent_commit; tag one commit"
+            exit 1
+          fi
+          required="$(cd go/o11ygin && go mod edit -json | jq -r '.Require[] | select(.Path == "github.com/jamesainslie/libo11y/go") | .Version')"
+          if [[ "$required" != "v$VERSION" ]]; then
+            echo "::error::go/o11ygin/go.mod requires the parent at ${required:-nothing}, not v$VERSION"
+            exit 1
+          fi
+      - name: Check the changelog has release notes
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: scripts/release-notes.sh "$VERSION"
+      - run: make vet test spec-check spec-drift GO_TEST_P=4
+
+  release:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          DIR: ${{ needs.verify.outputs.dir }}
+          MODULE: ${{ needs.verify.outputs.module }}
+          VERSION: ${{ needs.verify.outputs.version }}
+          PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+        run: |
+          notes="$RUNNER_TEMP/release-notes.md"
+          scripts/release-notes.sh "$VERSION" >"$notes"
+          title="$MODULE v$VERSION"
+          # The main module's release is the repository's Latest release; the
+          # Gin module's release, tagged on the same commit, never takes it.
+          latest=false
+          if [[ "$DIR" == "go" && "$PRERELEASE" == "false" ]]; then
+            latest=true
+          fi
+          if gh release view "$TAG" >/dev/null; then
+            echo "$TAG already has a release; replacing its title and notes"
+            gh release edit "$TAG" --title "$title" --notes-file "$notes" --prerelease="$PRERELEASE" --latest="$latest"
+          else
+            gh release create "$TAG" --title "$title" --notes-file "$notes" --verify-tag --prerelease="$PRERELEASE" --latest="$latest"
+          fi
+
+  proxy:
+    needs: [verify, release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      MODULE: ${{ needs.verify.outputs.module }}
+      VERSION: ${{ needs.verify.outputs.version }}
+      # Resolve like an external consumer: the public proxy and checksum
+      # database, no workspace, nothing private.
+      GOPROXY: https://proxy.golang.org
+      GOFLAGS: -mod=mod
+      GOWORK: "off"
+      GOPRIVATE: ""
+      GONOPROXY: ""
+      GONOSUMDB: ""
+    steps:
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.x"
+          check-latest: true
+          # No checkout and no cache: every module comes from the proxy.
+          cache: false
+      - name: Request the version from proxy.golang.org
+        working-directory: ${{ runner.temp }}
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if go list -m "$MODULE@v$VERSION"; then
+              exit 0
+            fi
+            echo "attempt $attempt: $MODULE@v$VERSION is not on the proxy yet" >&2
+            sleep $((attempt * 20))
+          done
+          echo "::error::proxy.golang.org did not serve $MODULE@v$VERSION"
+          exit 1
+      - name: Build a consumer against the published version
+        run: |
+          consumer="$(mktemp -d)"
+          cd "$consumer"
+          go mod init example.com/consumer
+          printf 'package main\n\nimport _ "%s"\n\nfunc main() {}\n' "$MODULE" >main.go
+          go get "$MODULE@v$VERSION"
+          go build ./...

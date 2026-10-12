@@ -4,7 +4,7 @@
 # Package parallelism for go test; lower it on a loaded machine.
 GO_TEST_P ?= 4
 
-.PHONY: spec-check spec-generate spec-drift test lint vet tidy-check vuln release-check schema-published schema-published-test ci
+.PHONY: spec-check spec-generate spec-drift test lint vet tidy-check vuln release-check schema-published schema-published-test release-notes-test ci
 
 # Validate the spec registry against the libo11y policy suite (naming,
 # ownership, sensitivity, cardinality, events, units).
@@ -68,6 +68,11 @@ schema-published:
 schema-published-test:
 	scripts/schema-published-check_test.sh
 
+# Test release-notes.sh, which the release workflow uses to turn a
+# CHANGELOG section into GitHub Release notes, against fixture changelogs.
+release-notes-test:
+	scripts/release-notes_test.sh
+
 # vuln runs last: it depends on the advisory database and the toolchain's
 # patch level, so local runs exercise every other gate first.
-ci: lint vet test tidy-check spec-check spec-drift schema-published-test release-check vuln
+ci: lint vet test tidy-check spec-check spec-drift schema-published-test release-notes-test release-check vuln

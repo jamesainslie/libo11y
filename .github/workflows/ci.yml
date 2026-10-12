@@ -70,7 +70,7 @@ jobs:
           go-version: "1.26.x"
           check-latest: true
           cache-dependency-path: go/go.sum
-      - run: make spec-check spec-drift schema-published-test
+      - run: make spec-check spec-drift schema-published-test release-notes-test
 
   vuln:
     runs-on: ubuntu-latest
