@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/contrib/bridges/otelslog"
@@ -73,8 +74,11 @@ type SDK struct {
 	effectiveConfig string
 	summaryAttrs    []slog.Attr
 
-	shutdownOnce sync.Once
-	shutdownErr  error
+	// shutdownStarted elects the one caller that runs the shutdown;
+	// shutdownDone is closed once it has finished and shutdownErr is set.
+	shutdownStarted atomic.Bool
+	shutdownDone    chan struct{}
+	shutdownErr     error
 }
 
 // New builds an SDK without touching any process-global state: no global
@@ -163,6 +167,7 @@ func newSDK(ctx context.Context, s *settings) (_ *SDK, err error) {
 		handler:        handler,
 		logger:         slog.New(handler),
 		errorHandler:   errorHandler,
+		shutdownDone:   make(chan struct{}),
 	}
 	sdk.summaryAttrs, sdk.effectiveConfig = buildSummary(s, sdk)
 	return sdk, nil
@@ -344,39 +349,68 @@ func (s *SDK) LoggerProvider() log.LoggerProvider {
 // trace correlation.
 func (s *SDK) Logger() *slog.Logger { return s.logger }
 
-// Shutdown flushes and stops all telemetry pipelines: logs, then metrics,
-// then traces. It is idempotent; concurrent and repeated calls return the
-// first result. If ctx carries no deadline a 5 second timeout is applied.
-// The returned error aggregates per-signal failures and can be inspected
-// with [errors.Is]/[errors.As]; a non-nil error means buffered telemetry may
-// have been dropped, never that the host application is broken.
+// Shutdown flushes and stops all telemetry pipelines concurrently under one
+// deadline, so a hung exporter on one signal cannot consume the budget of
+// the others. It is idempotent: the first call performs the shutdown and
+// every call returns its result, but a concurrent caller stops waiting when
+// its own ctx ends. If ctx carries no deadline a 5 second timeout is
+// applied. The returned error aggregates per-signal failures and can be
+// inspected with [errors.Is]/[errors.As]; a non-nil error means buffered
+// telemetry may have been dropped, never that the host application is
+// broken.
 func (s *SDK) Shutdown(ctx context.Context) error {
-	s.shutdownOnce.Do(func() {
-		ctx, cancel := ensureDeadline(ctx)
-		defer cancel()
+	if s.shutdownStarted.CompareAndSwap(false, true) {
+		s.runShutdown(ctx)
+		return s.shutdownErr
+	}
+	select {
+	case <-s.shutdownDone:
+		return s.shutdownErr
+	case <-ctx.Done():
+		return fmt.Errorf("o11y: waiting for shutdown: %w", ctx.Err())
+	}
+}
 
-		var errs []error
-		if s.loggerProvider != nil {
-			if err := s.loggerProvider.Shutdown(ctx); err != nil {
-				errs = append(errs, fmt.Errorf("o11y: shutdown logs: %w", err))
-				s.emitDropped(ctx, "logs", err)
+// runShutdown performs the one shutdown, records its result in shutdownErr,
+// and closes shutdownDone so waiting callers observe it.
+func (s *SDK) runShutdown(ctx context.Context) {
+	defer close(s.shutdownDone)
+	ctx, cancel := ensureDeadline(ctx)
+	defer cancel()
+
+	type step struct {
+		signal   string
+		shutdown func(context.Context) error
+	}
+	var steps []step
+	if s.loggerProvider != nil {
+		steps = append(steps, step{"logs", s.loggerProvider.Shutdown})
+	}
+	steps = append(steps,
+		step{"metrics", s.meterProvider.Shutdown},
+		step{"traces", s.tracerProvider.Shutdown},
+	)
+	errs := make([]error, len(steps))
+	var wg sync.WaitGroup
+	for i, st := range steps {
+		wg.Go(func() {
+			if err := st.shutdown(ctx); err != nil {
+				errs[i] = fmt.Errorf("o11y: shutdown %s: %w", st.signal, err)
 			}
+		})
+	}
+	wg.Wait()
+	// The OTLP log leg is already down here, so dropped events reach the
+	// console and extra sinks only; delivery is best effort by design.
+	for i, st := range steps {
+		if errs[i] != nil {
+			s.emitDropped(ctx, st.signal, errs[i])
 		}
-		if err := s.meterProvider.Shutdown(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("o11y: shutdown metrics: %w", err))
-			s.emitDropped(ctx, "metrics", err)
-		}
-		if err := s.tracerProvider.Shutdown(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("o11y: shutdown traces: %w", err))
-			s.emitDropped(ctx, "traces", err)
-		}
-		s.shutdownErr = errors.Join(errs...)
-
-		if s.global {
-			releaseSetupGuard()
-		}
-	})
-	return s.shutdownErr
+	}
+	s.shutdownErr = errors.Join(errs...)
+	if s.global {
+		releaseSetupGuard()
+	}
 }
 
 // ForceFlush exports all buffered telemetry without stopping the pipelines.
