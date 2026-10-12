@@ -51,7 +51,7 @@ vuln:
 
 # Next unreleased version, validated by release-check. Bump it after each
 # release (see scripts/release-check.sh). CI uses this default.
-RELEASE_VERSION ?= v0.1.0
+RELEASE_VERSION ?= v0.2.0
 
 # Validate the release sequence (go/RELEASE_VERSION and
 # go/o11ygin/RELEASE_VERSION on HEAD) against a throwaway local remote.

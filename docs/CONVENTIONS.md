@@ -51,10 +51,11 @@ attributes are defined by that release and never redefined here.
 - Go releases tag `go/vX.Y.Z` first, then `go/o11ygin/vX.Y.Z`, whose
   `go.mod` requires the matching parent version. `make release-check`
   validates that sequence for the next unreleased version
-  (`RELEASE_VERSION`, default `v0.1.0`) against a throwaway local remote;
+  (`RELEASE_VERSION`, default `v0.2.0`) against a throwaway local remote;
   it never touches real refs. Bump the default after each release.
 - To release Go version X.Y.Z: move the changelog's entries into a
-  `## [X.Y.Z] - date` section, run `make release-check` on the commit to
+  `## [X.Y.Z] - date` section, set `go/o11ygin/go.mod`'s requirement on
+  the parent module to `vX.Y.Z`, run `make release-check` on the commit to
   release, then push `go/vX.Y.Z` and after it `go/o11ygin/vX.Y.Z`, both on
   that commit. Each tag starts the release workflow
   (`.github/workflows/release.yml`). It checks that the version is

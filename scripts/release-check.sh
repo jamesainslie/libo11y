@@ -4,14 +4,14 @@
 # It never touches the real repository's refs, its remote, or the shared
 # module cache.
 #
-# Usage: release-check.sh [VERSION]   (default v0.1.0; `make release-check`
+# Usage: release-check.sh [VERSION]   (default v0.2.0; `make release-check`
 # passes RELEASE_VERSION). The default names the next unreleased version.
-# After go/v0.1.0 is published, bump it (here and RELEASE_VERSION in the
+# After go/v0.2.0 is published, bump it (here and RELEASE_VERSION in the
 # Makefile) to the next unreleased version so the check keeps validating
 # the release that is actually coming.
 set -euo pipefail
 
-version="${1:-v0.1.0}"
+version="${1:-v0.2.0}"
 module="github.com/jamesainslie/libo11y"
 
 work="$(mktemp -d)"
