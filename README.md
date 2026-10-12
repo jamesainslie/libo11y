@@ -62,22 +62,35 @@ feature-parity matrix across implementations.
 ## Quick start (Go)
 
 ```go
+package main
+
 import (
+    "context"
+    "log"
+    "log/slog"
+
+    "go.opentelemetry.io/otel"
+
     o11y "github.com/jamesainslie/libo11y/go"
     "github.com/jamesainslie/libo11y/go/spec"
 )
 
-sdk, err := o11y.Setup(ctx,
-    o11y.WithServiceName("checkout"),
-    o11y.WithEnvironment(spec.EnvironmentProduction),
-)
-if err != nil {
-    return err
-}
-defer sdk.Shutdown(context.Background())
+func main() {
+    ctx := context.Background()
+    sdk, err := o11y.Setup(ctx,
+        o11y.WithServiceName("checkout"),
+        o11y.WithEnvironment(spec.EnvironmentProduction),
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer sdk.Shutdown(context.Background())
 
-slog.InfoContext(ctx, "ready")          // correlated, exported
-tracer := otel.Tracer("checkout")       // vanilla OTEL from here on
+    // Vanilla OTEL and log/slog from here on.
+    ctx, span := otel.Tracer("checkout").Start(ctx, "startup")
+    defer span.End()
+    slog.InfoContext(ctx, "ready") // correlated with the span, exported
+}
 ```
 
 A deployment environment is required. Set it with `WithEnvironment` or
@@ -85,7 +98,9 @@ A deployment environment is required. Set it with `WithEnvironment` or
 wins over the variable. Allowed values: production, staging, development,
 test (extend with `WithEnvironmentValues`).
 
-See [`go/README.md`](go/README.md) for the full Go documentation.
+See [`go/README.md`](go/README.md) for the full Go documentation and
+[`go/examples/httpserver`](go/examples/httpserver) for a complete,
+tested HTTP service.
 
 ## Versioning
 

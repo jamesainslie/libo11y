@@ -93,7 +93,8 @@ func run(ctx context.Context, addr string, ready func(net.Addr)) error {
 		// Demonstrates context propagation on egress.
 		req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, "https://example.com", nil)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			slog.ErrorContext(r.Context(), "building upstream request", "error", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
 		resp, err := client.Do(req)
@@ -138,7 +139,9 @@ func run(ctx context.Context, addr string, ready func(net.Addr)) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		return fmt.Errorf("draining requests: %w", err)
+		// The drain deadline passed: drop the remaining connections so
+		// run still returns and the telemetry flush still happens.
+		return fmt.Errorf("draining requests: %w", errors.Join(err, server.Close()))
 	}
 	if err := <-serveErr; !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("serving: %w", err)

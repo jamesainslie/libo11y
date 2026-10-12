@@ -6,12 +6,21 @@ redaction, and a hermetic test harness. Pure OTEL; the library wraps setup,
 never instrumentation.
 
 ```go
+package main
+
 import (
+    "context"
+    "log"
+    "log/slog"
+
+    "go.opentelemetry.io/otel"
+
     o11y "github.com/jamesainslie/libo11y/go"
     "github.com/jamesainslie/libo11y/go/spec"
 )
 
 func main() {
+    ctx := context.Background()
     sdk, err := o11y.Setup(ctx,
         o11y.WithServiceName("checkout"),
         o11y.WithEnvironment(spec.EnvironmentProduction),
@@ -21,11 +30,23 @@ func main() {
     }
     defer sdk.Shutdown(context.Background())
 
-    slog.InfoContext(ctx, "ready")          // correlated, exported over OTLP
-    tracer := otel.Tracer("checkout")       // vanilla OTEL from here on
-    meter := otel.Meter("checkout")
+    // Vanilla OTEL and log/slog from here on.
+    ctx, span := otel.Tracer("checkout").Start(ctx, "startup")
+    defer span.End()
+    slog.InfoContext(ctx, "ready") // correlated with the span, exported over OTLP
+
+    orders, err := otel.Meter("checkout").Int64Counter("checkout.orders")
+    if err != nil {
+        slog.ErrorContext(ctx, "creating counter", "error", err)
+        return
+    }
+    orders.Add(ctx, 1)
 }
 ```
+
+[`ExampleNew`](example_test.go) is the same setup as a hermetic, tested
+example, and [`examples/httpserver`](examples/httpserver) is a complete
+HTTP service.
 
 A deployment environment is required. Set it with `WithEnvironment` or
 `OTEL_RESOURCE_ATTRIBUTES=deployment.environment.name=production`; the option
