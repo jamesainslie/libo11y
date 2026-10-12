@@ -75,8 +75,8 @@ anyone tracking a pre-release commit can see what moved.
   and `OTEL_GO_X_DEPRECATED_RUNTIME_METRICS` switches, which have no
   overriding option. Configuration comes from options and library defaults,
   a signal with nothing injected is disabled, and keys named in
-  `OTEL_RESOURCE_ATTRIBUTES` are shadowed with empty values (they are
-  exported as `key=""`).
+  `OTEL_RESOURCE_ATTRIBUTES` that the library resource does not define are
+  shadowed with empty values (they are exported as `key=""`).
 - `WithPIIHashKey` and `ErrPIIHashKey` for keyed PII hashing.
 - `o11ygrpc.WithPublicEndpoint` (links inbound trace context instead of
   adopting it) and `o11ygrpc.WithIgnoreHealthChecks` (excludes
@@ -99,9 +99,10 @@ anyone tracking a pre-release commit can see what moved.
   sequence, `go/vX.Y.Z` then `go/o11ygin/vX.Y.Z`, against a throwaway local
   remote. `go/o11ygin` now requires `github.com/jamesainslie/libo11y/go`
   v0.1.0 instead of a placeholder pseudo-version.
-- CI: `.github/workflows/ci.yml` runs the same Makefile targets as
-  `make ci` (lint, vet, race tests, tidy check, spec check and drift,
-  release check, govulncheck).
+- CI: `.github/workflows/ci.yml` runs the same gates as `make ci` (lint,
+  vet, race tests, tidy check, spec check and drift, release check,
+  govulncheck). Every job calls the Makefile target except lint, which runs
+  the same golangci-lint version through `golangci/golangci-lint-action`.
 - `ExampleNew`, a smoke test for `examples/httpserver`, and OTLP wire-level
   tests against in-process gRPC and HTTP receivers.
 
@@ -148,13 +149,10 @@ anyone tracking a pre-release commit can see what moved.
   `https://jamesainslie.dev/schemas/libo11y/1.0.0` (it was a
   raw.githubusercontent.com URL), stamped on every resource. The URL is not
   yet served.
-- Breaking (pre-1.0): the generated `Sensitivity` zero value is
-  `Unclassified` (it was `Public`), and an unknown sensitivity class in the
-  registry is a generator error instead of a silent `Internal`.
 - Breaking (pre-1.0): `o11ytest.Start` builds its SDK with
   `WithoutOTELEnv`, so ambient `OTEL_*` variables no longer change harness
-  behavior. Keys named in `OTEL_RESOURCE_ATTRIBUTES` appear on recorded
-  telemetry with empty values.
+  behavior. Keys named in `OTEL_RESOURCE_ATTRIBUTES` that the harness
+  resource does not define appear on recorded telemetry with empty values.
 - Breaking (pre-1.0): `redact.Struct` output shapes. Maps render sorted by
   key text (ties broken by the key's dynamic type name). A map under a mask
   floor, with a key type that may carry protection, or with two keys of
@@ -168,9 +166,13 @@ anyone tracking a pre-release commit can see what moved.
   deadline instead of in sequence, so a hung exporter cannot consume the
   others' budget. The first call runs the shutdown and every call returns
   its result; a concurrent caller stops waiting when its own context ends.
-- Every metric stream now carries the sensitivity policy's attribute
-  filter, so an instrument's experimental advisory attribute keys are no
-  longer honored.
+- Every stream of the SDK's own instruments now carries the sensitivity
+  policy's attribute filter, so an instrument's experimental advisory
+  attribute keys are no longer honored.
+- Internal (no public API change): the generated `Sensitivity` zero value
+  in the internal `spectables` package is `Unclassified` (it was `Public`),
+  and an unknown sensitivity class in the registry is a generator error
+  instead of a silent `Internal`.
 - `SDK.Propagator` returns the configured propagator wrapped by the
   baggage egress filter, including a propagator passed to
   `WithPropagators`.
@@ -258,14 +260,18 @@ anyone tracking a pre-release commit can see what moved.
   are still shown.
 - Classification now covers every signal: the resource (including keys
   from `OTEL_RESOURCE_ATTRIBUTES`, shadowed with empty values when
-  dropped), metric data point and exemplar filtered attributes, span PII
-  (span, event, and link attributes, at export and in injected span
-  processors' `OnEnd`), and records from any log bridge on the SDK's
-  LoggerProvider, including the global provider after `Setup`.
-  Previously only the slog pipeline and span secrets were covered. Not
-  covered: values under unclassified keys, log bodies, instrumentation
-  scope attributes, members of `attribute.MAP`-valued span and metric
-  attributes, injected span processors' `OnStart`, and baggage.
+  dropped), metric data point and exemplar filtered attributes on streams
+  of the SDK's own instruments, span PII (span, event, and link
+  attributes, at export and in injected span processors' `OnEnd`), and
+  records from any log bridge on the SDK's LoggerProvider, including the
+  global provider after `Setup`. Previously only the slog pipeline and
+  span secrets were covered. Not covered: values under unclassified keys,
+  log bodies and other free text (span names, span status descriptions,
+  span event names), instrumentation scope attributes, metrics from metric
+  producers (`OTEL_METRICS_PRODUCERS`, or readers built with
+  `sdkmetric.WithProducer` such as the Prometheus bridge, which bypass
+  views), members of `attribute.MAP`-valued span and metric attributes,
+  injected span processors' `OnStart`, and baggage.
 - PII hashing is keyed (HMAC-SHA256), because an unkeyed hash of a
   low-entropy value such as an IPv4 address is reversible by enumeration.
 - Cleared every third-party module advisory reported by `govulncheck`:
