@@ -3,6 +3,7 @@ package o11y_test
 import (
 	"context"
 	"log/slog"
+	"slices"
 	"testing"
 
 	o11y "github.com/jamesainslie/libo11y/go"
@@ -55,14 +56,17 @@ func TestEventAttributesAreDeduplicated(t *testing.T) {
 	sdk, _, _, _ := newHermetic(t, o11y.WithExtraLogHandler(extra))
 	ctx, rec := o11y.StartRecord(context.Background())
 	rec.Set(slog.Int("http.response.status_code", 200))
+	rec.Set(slog.String("user.tier", "gold"))
 	rec.EmitEvent(ctx, sdk, spec.EventRequestSummary,
 		slog.Int("http.response.status_code", 500), slog.String(spec.EventNameKey, "spoofed"))
 	r := captured()[0]
 	counts := map[string]int{}
 	var status int64
 	var name string
+	var order []string
 	r.Attrs(func(a slog.Attr) bool {
 		counts[a.Key]++
+		order = append(order, a.Key)
 		switch a.Key {
 		case "http.response.status_code":
 			status = a.Value.Int64()
@@ -76,5 +80,10 @@ func TestEventAttributesAreDeduplicated(t *testing.T) {
 	}
 	if counts[spec.EventNameKey] != 1 || name != spec.EventRequestSummary {
 		t.Errorf("event.name appears %d times as %q; want once as %s", counts[spec.EventNameKey], name, spec.EventRequestSummary)
+	}
+	// The overriding status survives at its last position, after user.tier.
+	tier, st := slices.Index(order, "user.tier"), slices.Index(order, "http.response.status_code")
+	if tier < 0 || st < tier {
+		t.Errorf("attribute order = %v, want http.response.status_code after user.tier", order)
 	}
 }

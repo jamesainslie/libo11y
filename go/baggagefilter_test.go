@@ -45,7 +45,10 @@ func TestEgressFilterWrapsCustomPropagator(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, _ := baggage.New(mustMember(t, "keep", "1"), mustMember(t, "internal.secret", "2"))
+	b, err := baggage.New(mustMember(t, "keep", "1"), mustMember(t, "internal.secret", "2"))
+	if err != nil {
+		t.Fatalf("baggage.New: %v", err)
+	}
 	carrier := propagation.MapCarrier{}
 	sdk.Propagator().Inject(baggage.ContextWithBaggage(context.Background(), b), carrier)
 	if strings.Contains(carrier["baggage"], "internal.secret") || !strings.Contains(carrier["baggage"], "keep") {
@@ -59,7 +62,10 @@ func TestDefaultEgressStillAllowsAll(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, _ := baggage.New(mustMember(t, "a", "1"), mustMember(t, "b", "2"))
+	b, err := baggage.New(mustMember(t, "a", "1"), mustMember(t, "b", "2"))
+	if err != nil {
+		t.Fatalf("baggage.New: %v", err)
+	}
 	carrier := propagation.MapCarrier{}
 	sdk.Propagator().Inject(baggage.ContextWithBaggage(context.Background(), b), carrier)
 	if !strings.Contains(carrier["baggage"], "a=1") || !strings.Contains(carrier["baggage"], "b=2") {

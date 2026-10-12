@@ -41,29 +41,51 @@ func (s *SDK) Event(ctx context.Context, name string, attrs ...slog.Attr) {
 // it stays subject to the level gate. The handler's error is returned so
 // the startup summary can serve as the initialization canary.
 func (s *SDK) emitEvent(ctx context.Context, level slog.Level, name string, attrs []slog.Attr) error {
-	attrs = dedupeAttrs(slices.DeleteFunc(slices.Clone(attrs), func(a slog.Attr) bool {
-		return a.Key == spec.EventNameKey // the event name is set by the library, never by callers
-	}))
+	attrs = eventAttrs(attrs)
 	record := slog.NewRecord(time.Now(), level, name, 0)
 	record.AddAttrs(append([]slog.Attr{slog.String(spec.EventNameKey, name)}, attrs...)...)
 	return s.handler.Handle(ForceEmit(ctx), record)
 }
 
+// eventAttrs returns a copy of a caller's event attributes without any
+// event.name (the library sets it, never callers) and without duplicate
+// keys. The caller's slice is not modified.
+func eventAttrs(attrs []slog.Attr) []slog.Attr {
+	return dedupeAttrs(slices.DeleteFunc(slices.Clone(attrs), func(a slog.Attr) bool {
+		return a.Key == spec.EventNameKey
+	}))
+}
+
 // dedupeAttrs keeps the last occurrence of each key, preserving the order of
 // those survivors, so later attributes win without emitting duplicate keys.
+// Empty-key attributes (inline groups) are distinct by definition and always
+// pass through. Small inputs, the common case, are scanned without a map.
 func dedupeAttrs(attrs []slog.Attr) []slog.Attr {
+	out := make([]slog.Attr, 0, len(attrs))
+	if len(attrs) <= smallAttrsLen {
+		for i, a := range attrs {
+			later := slices.ContainsFunc(attrs[i+1:], func(b slog.Attr) bool { return b.Key == a.Key })
+			if a.Key == "" || !later {
+				out = append(out, a)
+			}
+		}
+		return out
+	}
 	last := make(map[string]int, len(attrs))
 	for i, a := range attrs {
 		last[a.Key] = i
 	}
-	out := make([]slog.Attr, 0, len(last))
 	for i, a := range attrs {
-		if last[a.Key] == i {
+		if a.Key == "" || last[a.Key] == i {
 			out = append(out, a)
 		}
 	}
 	return out
 }
+
+// smallAttrsLen is the attribute count up to which dedupeAttrs scans
+// pairwise instead of building a map.
+const smallAttrsLen = 8
 
 // emitDropped records the o11y.telemetry.dropped event when a signal fails
 // to flush at shutdown, so the loss reaches the surviving sinks (console
