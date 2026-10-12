@@ -2,6 +2,7 @@ package o11y
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"reflect"
 	"slices"
@@ -74,9 +75,9 @@ func (c *classifier) Handle(ctx context.Context, record slog.Record) error {
 }
 
 // classifyAttr classifies one attribute at the given group path, recursing
-// into groups, and into string-keyed Go maps and slices of them logged under
-// an unclassified key (see classifyComposite), so every leaf is judged on its
-// effective dotted key. A value under a classified key is judged whole. Change
+// into groups, and into Go maps, slices of them, and pointers to either
+// logged under an unclassified key (see classifyComposite), so every leaf is
+// judged on its effective dotted key. A value under a classified key is judged whole. Change
 // tracking comes from the classification action, never from comparing slog
 // values, because slog.Value.Equal panics on uncomparable values.
 func (c *classifier) classifyAttr(groups []string, a slog.Attr) (out slog.Attr, keep, changed bool) {
@@ -129,73 +130,108 @@ func (c *classifier) classifyAttr(groups []string, a slog.Attr) (out slog.Attr, 
 	}
 }
 
-// maxCompositeDepth bounds how deeply classifyComposite walks nested maps
-// (by effective key length) and nested slices, so a self-referencing value
-// cannot recurse forever. Deeper values are opaque leaves under their
-// holder's key.
+// maxCompositeDepth bounds how deeply classifyComposite walks: nested maps
+// by effective key length, and nested slices and pointer indirections by
+// walk depth, so a self-referencing value cannot recurse forever. A map or
+// slice past the bound is dropped rather than forwarded unexamined.
 const maxCompositeDepth = 16
 
 // classifyComposite walks a Go value logged as one slog value when it is a
-// map with string keys, or a slice or array that can hold such maps, so its
-// members are judged on their dotted effective keys under path (the holder's
-// effective key) like slog groups are. This matches what a log bridge
-// produces for the same value (map values, and slices of them), so the
-// console, extra sinks, the OTLP leg, and other bridges agree. ok is false
-// for any other value, which stays a leaf. A map or slice emptied by
-// classification is dropped (keep false); a changed one is rebuilt as
-// map[string]any or []any holding the surviving members, and an unchanged
-// one is returned as is.
+// map, or a slice or array that can hold one, so its members are judged on
+// their dotted effective keys under path (the holder's effective key) like
+// slog groups are. Non-nil pointers and interfaces are followed, and map
+// keys that are not strings are rendered with %+v, as otelslog does, so the
+// walk covers everything the bridge converts into map values: the console,
+// extra sinks, the OTLP leg, and other bridges therefore agree. ok is false
+// for any other value, which stays a leaf.
+//
+// A map or slice emptied by classification is dropped (keep false); a
+// changed one is rebuilt as map[string]any or []any holding the surviving
+// members, and an unchanged one is returned as is. Past maxCompositeDepth a
+// map or slice is dropped (keep false, changed true): classification fails
+// closed.
 func (c *classifier) classifyComposite(path []string, x any, depth int) (out any, keep, changed, ok bool) {
 	rv := reflect.ValueOf(x)
-	if !rv.IsValid() || depth >= maxCompositeDepth || len(path) > maxCompositeDepth {
-		return x, true, false, false
-	}
-	switch rv.Kind() {
-	case reflect.Map:
-		if rv.Type().Key().Kind() != reflect.String {
+	for rv.IsValid() && (rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface) {
+		if rv.IsNil() {
 			return x, true, false, false
 		}
-		keys := rv.MapKeys()
-		slices.SortFunc(keys, func(a, b reflect.Value) int { return strings.Compare(a.String(), b.String()) })
-		kept := make(map[string]any, len(keys))
-		for _, k := range keys {
-			member := slog.Any(k.String(), rv.MapIndex(k).Interface())
-			mo, mk, mc := c.classifyAttr(path, member)
-			changed = changed || mc
-			if mk {
-				kept[k.String()] = mo.Value.Any()
-			}
+		if depth++; depth >= maxCompositeDepth {
+			return nil, false, true, true
 		}
-		if !changed {
-			return x, true, false, true
-		}
-		return kept, len(kept) > 0, true, true
-	case reflect.Slice, reflect.Array:
-		switch rv.Type().Elem().Kind() {
-		case reflect.Interface, reflect.Map, reflect.Slice, reflect.Array:
-		default:
-			return x, true, false, false // cannot hold a map: a plain leaf
-		}
-		kept := make([]any, 0, rv.Len())
-		for i := range rv.Len() {
-			e := rv.Index(i).Interface()
-			eo, ek, ec, eok := c.classifyComposite(path, e, depth+1)
-			if !eok {
-				kept = append(kept, e)
-				continue
-			}
-			changed = changed || ec
-			if ek {
-				kept = append(kept, eo)
-			}
-		}
-		if !changed {
-			return x, true, false, true
-		}
-		return kept, len(kept) > 0, true, true
-	default:
+		rv = rv.Elem()
+	}
+	if !rv.IsValid() || !mayHoldMap(rv) {
 		return x, true, false, false
 	}
+	if depth >= maxCompositeDepth || len(path) > maxCompositeDepth {
+		return nil, false, true, true
+	}
+	if rv.Kind() == reflect.Map {
+		type member struct {
+			key   string
+			value any
+		}
+		members := make([]member, 0, rv.Len())
+		for it := rv.MapRange(); it.Next(); {
+			members = append(members, member{mapKey(it.Key()), it.Value().Interface()})
+		}
+		slices.SortFunc(members, func(a, b member) int { return strings.Compare(a.key, b.key) })
+		kept := make(map[string]any, len(members))
+		for _, m := range members {
+			mo, mk, mc := c.classifyAttr(path, slog.Any(m.key, m.value))
+			changed = changed || mc
+			if mk {
+				kept[m.key] = mo.Value.Any()
+			}
+		}
+		if !changed {
+			return x, true, false, true
+		}
+		return kept, len(kept) > 0, true, true
+	}
+	kept := make([]any, 0, rv.Len())
+	for i := range rv.Len() {
+		e := rv.Index(i).Interface()
+		eo, ek, ec, eok := c.classifyComposite(path, e, depth+1)
+		if !eok {
+			kept = append(kept, e)
+			continue
+		}
+		changed = changed || ec
+		if ek {
+			kept = append(kept, eo)
+		}
+	}
+	if !changed {
+		return x, true, false, true
+	}
+	return kept, len(kept) > 0, true, true
+}
+
+// mayHoldMap reports whether v is a map, or a slice or array whose elements
+// can be or lead to one. Slices of scalars ([]byte, []string) are leaves and
+// are never walked element by element.
+func mayHoldMap(v reflect.Value) bool {
+	switch v.Kind() {
+	case reflect.Map:
+		return true
+	case reflect.Slice, reflect.Array:
+		switch v.Type().Elem().Kind() {
+		case reflect.Interface, reflect.Map, reflect.Slice, reflect.Array, reflect.Pointer:
+			return true
+		}
+	}
+	return false
+}
+
+// mapKey renders a map key as otelslog does: strings as themselves, any
+// other key with %+v.
+func mapKey(k reflect.Value) string {
+	if k.Kind() == reflect.String {
+		return k.String()
+	}
+	return fmt.Sprintf("%+v", k.Interface())
 }
 
 // WithAttrs classifies the attributes at the handler's current group path

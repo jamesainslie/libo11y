@@ -93,14 +93,33 @@ func hostOfRecord(r sdklog.Record) map[string][]string {
 // unclassified members keep their values.
 func TestSlogMapValuesClassifiedOnEverySink(t *testing.T) {
 	t.Parallel()
-	table := map[attribute.Key]spectables.Sensitivity{"host.net.ip": spectables.PII}
+	table := map[attribute.Key]spectables.Sensitivity{"host.net.ip": spectables.PII, "host.7.ip": spectables.PII}
 	cases := map[string]struct {
 		value      any
 		classified string
+		kept       string // unclassified member key; default host.name
 	}{
-		"map":          {map[string]any{"ip": "10.9.9.9", "name": "web-1"}, "host.ip"},
-		"nested map":   {map[string]any{"net": map[string]any{"ip": "10.9.9.9"}, "name": "web-1"}, "host.net.ip"},
-		"slice of map": {[]map[string]any{{"ip": "10.9.9.9", "name": "web-1"}, {"ip": "10.9.9.8"}}, "host.ip"},
+		"map":          {map[string]any{"ip": "10.9.9.9", "name": "web-1"}, "host.ip", ""},
+		"nested map":   {map[string]any{"net": map[string]any{"ip": "10.9.9.9"}, "name": "web-1"}, "host.net.ip", ""},
+		"slice of map": {[]map[string]any{{"ip": "10.9.9.9", "name": "web-1"}, {"ip": "10.9.9.8"}}, "host.ip", ""},
+		"pointer to map": {
+			&map[string]any{"ip": "10.9.9.9", "name": "web-1"}, "host.ip", "",
+		},
+		"pointer to pointer": {
+			ptrTo(&map[string]any{"ip": "10.9.9.9", "name": "web-1"}), "host.ip", "",
+		},
+		"pointer to interface": {
+			ptrTo[any](map[string]any{"ip": "10.9.9.9", "name": "web-1"}), "host.ip", "",
+		},
+		"slice of pointers": {
+			[]*map[string]any{{"ip": "10.9.9.9", "name": "web-1"}}, "host.ip", "",
+		},
+		"map member pointer": {
+			map[string]any{"net": &map[string]any{"ip": "10.9.9.9"}, "name": "web-1"}, "host.net.ip", "",
+		},
+		"non-string keys": {
+			map[int]any{7: map[string]any{"ip": "10.9.9.9", "name": "web-1"}}, "host.7.ip", "host.7.name",
+		},
 	}
 	modes := map[string][]o11y.Option{
 		"drop": nil,
@@ -138,8 +157,12 @@ func TestSlogMapValuesClassifiedOnEverySink(t *testing.T) {
 					"otlp":    hostOfRecord(recs[0]),
 				}
 				bridge := hostOfRecord(recs[1])
-				if got := bridge["host.name"]; len(got) != 1 || got[0] != "web-1" {
-					t.Errorf("bridge lost unclassified host.name: %v", bridge)
+				kept := tc.kept
+				if kept == "" {
+					kept = "host.name"
+				}
+				if got := bridge[kept]; len(got) != 1 || got[0] != "web-1" {
+					t.Errorf("bridge lost unclassified %s: %v", kept, bridge)
 				}
 				for _, v := range bridge[tc.classified] {
 					if strings.HasPrefix(v, "10.9.9.") {
@@ -150,8 +173,8 @@ func TestSlogMapValuesClassifiedOnEverySink(t *testing.T) {
 					if !slices.Equal(got[tc.classified], bridge[tc.classified]) {
 						t.Errorf("%s %s = %v, bridge %v", sink, tc.classified, got[tc.classified], bridge[tc.classified])
 					}
-					if !slices.Equal(got["host.name"], bridge["host.name"]) {
-						t.Errorf("%s host.name = %v, bridge %v", sink, got["host.name"], bridge["host.name"])
+					if !slices.Equal(got[kept], bridge[kept]) {
+						t.Errorf("%s %s = %v, bridge %v", sink, kept, got[kept], bridge[kept])
 					}
 				}
 			})
@@ -159,21 +182,99 @@ func TestSlogMapValuesClassifiedOnEverySink(t *testing.T) {
 	}
 }
 
-// A self-referencing map is walked to a bounded depth, never forever.
-func TestSlogSelfReferencingMapTerminates(t *testing.T) {
-	t.Parallel()
+func ptrTo[T any](v T) *T { return &v }
+
+// ownSinks logs value under "host" through the SDK's own logger and returns
+// the flattened "host" attributes each slog sink received: console, extra
+// sink, and the OTLP leg.
+func ownSinks(t *testing.T, value any) map[string]map[string][]string {
+	t.Helper()
 	exp := &memLogExporter{}
-	sdk, _, _, console := newHermetic(t, o11y.WithLogExporter(exp))
-	m := map[string]any{"ip": "10.9.9.9"}
-	m["self"] = m
-	sdk.Logger().Info("own", "host", m)
+	extra, captured := newSlogCapture()
+	sdk, _, _, console := newHermetic(t, o11y.WithLogExporter(exp), o11y.WithExtraLogHandler(extra))
+	sdk.Logger().Info("own", "host", value)
 	if err := sdk.ForceFlush(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(console.String(), "10.9.9.9") {
-		t.Errorf("console leaked host.ip from a self-referencing map: %s", console.String())
+	lines := strings.Split(strings.TrimSpace(console.String()), "\n")
+	recs := exp.snapshot()
+	extras := captured()
+	if len(lines) != 1 || len(recs) != 1 || len(extras) != 1 {
+		t.Fatalf("console %d, OTLP %d, extra %d records; want 1 each", len(lines), len(recs), len(extras))
 	}
-	if len(exp.snapshot()) != 1 {
-		t.Errorf("OTLP got %d records, want 1", len(exp.snapshot()))
+	var extraLine bytes.Buffer
+	if err := slog.NewJSONHandler(&extraLine, nil).Handle(context.Background(), extras[0]); err != nil {
+		t.Fatal(err)
 	}
+	return map[string]map[string][]string{
+		"console": hostOfJSON(t, []byte(lines[0])),
+		"extra":   hostOfJSON(t, extraLine.Bytes()),
+		"otlp":    hostOfRecord(recs[0]),
+	}
+}
+
+// assertNoValue fails if any sink carries want anywhere under "host".
+func assertNoValue(t *testing.T, sinks map[string]map[string][]string, want string) {
+	t.Helper()
+	for sink, attrs := range sinks {
+		for key, values := range attrs {
+			for _, v := range values {
+				if strings.Contains(v, want) {
+					t.Errorf("%s leaked %s=%s", sink, key, v)
+				}
+			}
+		}
+	}
+}
+
+// A self-referencing map is walked to a bounded depth: members are judged on
+// their effective keys at every level walked (host.ip is classified, the
+// deeper host.self.ip is not), and what lies past the bound is dropped
+// rather than forwarded raw, so no sink receives the cycle itself.
+func TestSlogSelfReferencingMapFailsClosed(t *testing.T) {
+	t.Parallel()
+	m := map[string]any{"ip": "10.9.9.9", "name": "web-1"}
+	m["self"] = m
+	sinks := ownSinks(t, m)
+	for sink, attrs := range sinks {
+		if _, leaked := attrs["host.ip"]; leaked {
+			t.Errorf("%s leaked host.ip: %v", sink, attrs["host.ip"])
+		}
+		for key, values := range attrs {
+			// The raw cycle would render as a JSON encoding error on the
+			// console and nest to the bridge's depth limit on OTLP.
+			if depth := strings.Count(key, "."); depth > 17 {
+				t.Errorf("%s carries %s, deeper than the walk bound", sink, key)
+			}
+			for _, v := range values {
+				if strings.Contains(v, "!ERROR") || strings.Contains(v, "max depth") {
+					t.Errorf("%s forwarded the raw cycle: %s=%s", sink, key, v)
+				}
+			}
+		}
+		if got := attrs["host.name"]; len(got) != 1 || got[0] != "web-1" {
+			t.Errorf("%s host.name = %v, want [web-1]", sink, got)
+		}
+		if got := attrs["host.self.name"]; len(got) != 1 || got[0] != "web-1" {
+			t.Errorf("%s host.self.name = %v, want [web-1]", sink, got)
+		}
+	}
+}
+
+// Slice elements share their holder's key, so nesting slices does not grow
+// the effective key. A map nested deeper than the bound is dropped, never
+// forwarded raw.
+func TestSlogDeeplyNestedSlicesFailClosed(t *testing.T) {
+	t.Parallel()
+	var v any = map[string]any{"ip": "10.9.9.9"}
+	for range 17 {
+		v = []any{v}
+	}
+	assertNoValue(t, ownSinks(t, v), "10.9.9.9")
+}
+
+// A nil pointer is a leaf: logging it neither panics nor drops the record.
+func TestSlogNilPointerToMap(t *testing.T) {
+	t.Parallel()
+	ownSinks(t, (*map[string]any)(nil))
 }
