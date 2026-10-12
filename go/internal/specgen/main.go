@@ -9,6 +9,7 @@
 package main
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
 	"go/format"
@@ -25,9 +26,13 @@ type registryFile struct {
 	Groups []group `yaml:"groups"`
 }
 
+// group and attr mirror the registry schema field for field. Registry files
+// are decoded strictly (see decodeRegistry), so every key the registry uses
+// must appear here, and a misspelled key is a load error.
 type group struct {
 	ID          string            `yaml:"id"`
 	Type        string            `yaml:"type"`
+	DisplayName string            `yaml:"display_name"`
 	Name        string            `yaml:"name"`
 	MetricName  string            `yaml:"metric_name"`
 	Instrument  string            `yaml:"instrument"`
@@ -44,6 +49,7 @@ type attr struct {
 	Type             yaml.Node         `yaml:"type"`
 	Stability        string            `yaml:"stability"`
 	Brief            string            `yaml:"brief"`
+	Examples         yaml.Node         `yaml:"examples"`
 	RequirementLevel yaml.Node         `yaml:"requirement_level"`
 	Annotations      map[string]string `yaml:"annotations"`
 	Deprecated       yaml.Node         `yaml:"deprecated"`
@@ -186,8 +192,8 @@ func load(root string) (*model, error) {
 		if err != nil {
 			return err
 		}
-		var file registryFile
-		if err := yaml.Unmarshal(raw, &file); err != nil {
+		file, err := decodeRegistry(raw)
+		if err != nil {
 			return fmt.Errorf("parsing %s: %w", path, err)
 		}
 		for _, g := range file.Groups {
@@ -201,6 +207,19 @@ func load(root string) (*model, error) {
 	}
 	sort.Strings(m.tierOrder)
 	return m, nil
+}
+
+// decodeRegistry parses one registry file strictly: an unknown key (a
+// misspelled requirement_level, say) is an error rather than a field the
+// checks and the generator silently never see.
+func decodeRegistry(raw []byte) (registryFile, error) {
+	dec := yaml.NewDecoder(bytes.NewReader(raw))
+	dec.KnownFields(true)
+	var file registryFile
+	if err := dec.Decode(&file); err != nil {
+		return registryFile{}, err
+	}
+	return file, nil
 }
 
 func (m *model) classify(g group) {
