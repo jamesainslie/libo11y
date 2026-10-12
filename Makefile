@@ -1,6 +1,10 @@
-# libo11y build targets.
+# libo11y build targets. `make ci` runs every gate CI runs
+# (.github/workflows/ci.yml), so the two cannot drift.
 
-.PHONY: spec-check spec-generate spec-drift test lint release-check
+# Package parallelism for go test; lower it on a loaded machine.
+GO_TEST_P ?= 4
+
+.PHONY: spec-check spec-generate spec-drift test lint vet tidy-check vuln release-check ci
 
 # Validate the spec registry against the libo11y policy suite (naming,
 # ownership, sensitivity, cardinality, events, units).
@@ -23,13 +27,27 @@ spec-drift: spec-generate
 	@untracked="$$(git ls-files --others --exclude-standard -- $(GENERATED))"; \
 	if [ -n "$$untracked" ]; then echo "untracked generated files:"; echo "$$untracked"; exit 1; fi
 
+vet:
+	cd go && go vet ./...
+	cd go/o11ygin && go vet ./...
+
 test:
-	cd go && go test -race ./...
-	cd go/o11ygin && go test -race ./...
+	cd go && go test -race -p $(GO_TEST_P) -count=1 ./...
+	cd go/o11ygin && go test -race -p $(GO_TEST_P) -count=1 ./...
 
 lint:
 	cd go && golangci-lint run ./...
 	cd go/o11ygin && golangci-lint run ./...
+
+# Each module's go.mod and go.sum must already be tidy on its own.
+tidy-check:
+	cd go && GOWORK=off go mod tidy -diff
+	cd go/o11ygin && GOWORK=off go mod tidy -diff
+
+# Known vulnerabilities reachable from either module (needs govulncheck).
+vuln:
+	cd go && govulncheck ./...
+	cd go/o11ygin && govulncheck ./...
 
 # Release version validated by release-check.
 VERSION ?= v0.1.0
@@ -38,3 +56,5 @@ VERSION ?= v0.1.0
 # HEAD) against a throwaway local remote. Needs a clean working tree.
 release-check:
 	scripts/release-check.sh $(VERSION)
+
+ci: lint vet test tidy-check spec-check spec-drift vuln release-check

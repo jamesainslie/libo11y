@@ -1,0 +1,97 @@
+# Runs the same gates as `make ci`, split into parallel jobs.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [go, go/o11ygin]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.x"
+          check-latest: true
+          cache-dependency-path: ${{ matrix.module }}/go.sum
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2 # match `golangci-lint version` used locally
+          working-directory: ${{ matrix.module }}
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        # The go directive is 1.26.0 (golang.org/x/net requires it), so
+        # older toolchains cannot build the modules.
+        go: ["1.26.x"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ matrix.go }}
+          check-latest: true
+          cache-dependency-path: |
+            go/go.sum
+            go/o11ygin/go.sum
+      - run: make vet test tidy-check GO_TEST_P=4
+
+  spec:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.x"
+          check-latest: true
+          cache-dependency-path: go/go.sum
+      - run: make spec-check spec-drift
+
+  vuln:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.x"
+          check-latest: true
+          cache-dependency-path: |
+            go/go.sum
+            go/o11ygin/go.sum
+      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - run: make vuln
+
+  release-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.x"
+          check-latest: true
+          cache-dependency-path: |
+            go/go.sum
+            go/o11ygin/go.sum
+      - run: make release-check VERSION=v0.1.0
