@@ -49,12 +49,14 @@ vuln:
 	cd go && govulncheck ./...
 	cd go/o11ygin && govulncheck ./...
 
-# Release version validated by release-check.
-VERSION ?= v0.1.0
+# Next unreleased version, validated by release-check. Bump it after each
+# release (see scripts/release-check.sh). CI uses this default.
+RELEASE_VERSION ?= v0.1.0
 
-# Validate the first release sequence (go/VERSION and go/o11ygin/VERSION on
-# HEAD) against a throwaway local remote. Needs a clean working tree.
+# Validate the release sequence (go/RELEASE_VERSION and
+# go/o11ygin/RELEASE_VERSION on HEAD) against a throwaway local remote.
+# Needs a clean working tree.
 release-check:
-	scripts/release-check.sh $(VERSION)
+	scripts/release-check.sh $(RELEASE_VERSION)
 
 ci: lint vet test tidy-check spec-check spec-drift vuln release-check

@@ -94,4 +94,4 @@ jobs:
           cache-dependency-path: |
             go/go.sum
             go/o11ygin/go.sum
-      - run: make release-check VERSION=v0.1.0
+      - run: make release-check
