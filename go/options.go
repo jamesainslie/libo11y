@@ -347,8 +347,9 @@ func WithoutRuntimeMetrics() Option {
 
 // WithoutBuildInfo disables the build-info resource detector, which
 // otherwise records the compiled binary's module version (as
-// service.version when no explicit version is configured) and VCS stamp
-// (vcs.revision, vcs.time, vcs.modified) from the Go build info.
+// service.version when no explicit version is configured) and the VCS
+// stamp from the Go build info, under the spec's names
+// (vcs.ref.head.revision, o11y.build.time, o11y.build.modified).
 func WithoutBuildInfo() Option {
 	return func(s *settings) { s.buildInfo = false }
 }

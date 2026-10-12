@@ -652,3 +652,130 @@ func TestForbiddenGroupMatchedByIDSuffixOnly(t *testing.T) {
 		t.Error("the forbidden group was not recognized")
 	}
 }
+
+// TestLegacyKeyRequiresRename pins that an o11y.legacy_key annotation only
+// appears on a tombstone that names its replacement, so the generated
+// LegacyKeys table never maps a legacy key to nothing.
+func TestLegacyKeyRequiresRename(t *testing.T) {
+	assertViolations(t, `
+groups:
+  - id: registry.o11y.deprecated
+    type: attribute_group
+    attributes:
+      - id: o11y.deprecated.thing
+        type: string
+        deprecated:
+          reason: obsoleted
+        annotations: {o11y.sensitivity: public, o11y.legacy_key: thing}
+`, "libo11y_legacy_key_unrenamed")
+	assertViolations(t, `
+groups:
+  - id: registry.o11y
+    type: attribute_group
+    attributes:
+      - id: o11y.new.thing
+        type: string
+        annotations: {o11y.sensitivity: public, o11y.cardinality: bounded}
+  - id: registry.o11y.deprecated
+    type: attribute_group
+    attributes:
+      - id: o11y.deprecated.thing
+        type: string
+        deprecated:
+          reason: renamed
+          renamed_to: o11y.new.thing
+        annotations: {o11y.sensitivity: public, o11y.legacy_key: thing}
+`)
+}
+
+// TestLegacyKeyRules pins the remaining legacy-key rules: a legacy key on an
+// attribute that is not a renamed tombstone has no replacement, two
+// tombstones may not claim one legacy key, and a legacy key may not be
+// empty, its own replacement, or a name the registry still uses.
+func TestLegacyKeyRules(t *testing.T) {
+	const live = `
+  - id: registry.o11y
+    type: attribute_group
+    attributes:
+      - id: o11y.new.thing
+        type: string
+        annotations: {o11y.sensitivity: public, o11y.cardinality: bounded}
+      - id: o11y.other.thing
+        type: string
+        annotations: {o11y.sensitivity: public, o11y.cardinality: bounded}
+`
+	cases := []struct {
+		name string
+		doc  string
+		want []string
+	}{
+		{"not deprecated", `
+groups:
+  - id: registry.o11y
+    type: attribute_group
+    attributes:
+      - id: o11y.thing
+        type: string
+        annotations: {o11y.sensitivity: public, o11y.cardinality: bounded, o11y.legacy_key: thing}
+`, []string{"libo11y_legacy_key_unrenamed"}},
+		{"scalar deprecation", `
+groups:
+  - id: registry.o11y.deprecated
+    type: attribute_group
+    attributes:
+      - id: o11y.deprecated.thing
+        type: string
+        deprecated: replaced by something
+        annotations: {o11y.sensitivity: public, o11y.legacy_key: thing}
+`, []string{"libo11y_legacy_key_unrenamed"}},
+		{"duplicate", `
+groups:` + live + `
+  - id: registry.o11y.deprecated
+    type: attribute_group
+    attributes:
+      - id: o11y.deprecated.a
+        type: string
+        deprecated: {reason: renamed, renamed_to: o11y.new.thing}
+        annotations: {o11y.sensitivity: public, o11y.legacy_key: thing}
+      - id: o11y.deprecated.b
+        type: string
+        deprecated: {reason: renamed, renamed_to: o11y.other.thing}
+        annotations: {o11y.sensitivity: public, o11y.legacy_key: thing}
+`, []string{"libo11y_legacy_key_duplicate"}},
+		{"empty", `
+groups:` + live + `
+  - id: registry.o11y.deprecated
+    type: attribute_group
+    attributes:
+      - id: o11y.deprecated.a
+        type: string
+        deprecated: {reason: renamed, renamed_to: o11y.new.thing}
+        annotations: {o11y.sensitivity: public, o11y.legacy_key: " "}
+`, []string{"libo11y_legacy_key_invalid"}},
+		{"live name", `
+groups:` + live + `
+  - id: registry.o11y.deprecated
+    type: attribute_group
+    attributes:
+      - id: o11y.deprecated.a
+        type: string
+        deprecated: {reason: renamed, renamed_to: o11y.new.thing}
+        annotations: {o11y.sensitivity: public, o11y.legacy_key: o11y.other.thing}
+`, []string{"libo11y_legacy_key_invalid"}},
+		{"own replacement", `
+groups:
+  - id: registry.o11y.deprecated
+    type: attribute_group
+    attributes:
+      - id: o11y.deprecated.a
+        type: string
+        deprecated: {reason: renamed, renamed_to: vcs.thing}
+        annotations: {o11y.sensitivity: public, o11y.legacy_key: vcs.thing}
+`, []string{"libo11y_legacy_key_invalid"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assertViolations(t, tc.doc, tc.want...)
+		})
+	}
+}

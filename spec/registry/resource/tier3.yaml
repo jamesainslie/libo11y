@@ -1,6 +1,6 @@
-# Tier 3: opt-in. Never emitted without explicit configuration. The final
-# group lists attributes forbidden by default for PII reasons; enabling
-# them requires an explicit sensitivity override in code.
+# Tier 3: opt-in. Never emitted without explicit configuration. Keys
+# forbidden by default (PII and credentials) are not a tier; they are
+# documented in forbidden.yaml.
 groups:
   - id: libo11y.resource.tier3
     type: attribute_group
@@ -38,44 +38,3 @@ groups:
           o11y.signals: traces,logs
           o11y.role: descriptive
           o11y.gen: mint
-
-  - id: libo11y.resource.forbidden
-    type: attribute_group
-    display_name: Forbidden by default (PII)
-    brief: >
-      Attributes upstream flags as PII-bearing. libo11y never emits them by
-      default; the sensitivity layer drops them if they appear.
-    stability: development
-    annotations:
-      o11y.tier: "forbidden"
-    attributes:
-      - ref: host.ip
-        requirement_level: opt_in
-        annotations:
-          o11y.sensitivity: pii
-          o11y.gen: copy
-          o11y.type: string[]
-      - ref: host.mac
-        requirement_level: opt_in
-        annotations:
-          o11y.sensitivity: pii
-          o11y.gen: copy
-          o11y.type: string[]
-      - ref: process.command_line
-        requirement_level: opt_in
-        annotations:
-          o11y.sensitivity: pii
-          o11y.gen: copy
-          o11y.type: string
-      - ref: process.command_args
-        requirement_level: opt_in
-        annotations:
-          o11y.sensitivity: pii
-          o11y.gen: copy
-          o11y.type: string[]
-      - ref: device.id
-        requirement_level: opt_in
-        annotations:
-          o11y.sensitivity: pii
-          o11y.gen: copy
-          o11y.type: string

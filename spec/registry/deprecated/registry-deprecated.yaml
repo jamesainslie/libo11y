@@ -1,7 +1,10 @@
 # Tombstones. The Go module's pre-spec build-info detector emitted bare
 # vcs.* keys copied from Go build info; the spec renames them to their
-# semconv and o11y forms. Recorded here and as transforms in the next
-# schema file.
+# semconv and o11y forms. Each tombstone names the key the pre-spec
+# release emitted (o11y.legacy_key) and its replacement (renamed_to); the
+# generator turns the pairs into spectables.LegacyKeys. The renames predate
+# the first versioned schema (1.0.0), so they are recorded here rather than
+# as schema-file transforms.
 groups:
   - id: registry.o11y.deprecated
     type: attribute_group
@@ -19,6 +22,7 @@ groups:
           renamed_to: vcs.ref.head.revision
         annotations:
           o11y.sensitivity: public
+          o11y.legacy_key: vcs.revision
       - id: o11y.deprecated.vcs.time
         type: string
         stability: development
@@ -29,13 +33,15 @@ groups:
           renamed_to: o11y.build.time
         annotations:
           o11y.sensitivity: public
+          o11y.legacy_key: vcs.time
       - id: o11y.deprecated.vcs.modified
-        type: string
+        type: boolean
         stability: development
         brief: Deprecated alias recorded for the pre-spec vcs.modified key.
-        examples: ["true"]
+        examples: [true]
         deprecated:
           reason: renamed
           renamed_to: o11y.build.modified
         annotations:
           o11y.sensitivity: public
+          o11y.legacy_key: vcs.modified

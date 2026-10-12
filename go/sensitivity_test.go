@@ -6,7 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	"go.opentelemetry.io/otel/trace"
 
 	o11y "github.com/jamesainslie/libo11y/go"
 	"github.com/jamesainslie/libo11y/go/spec"
@@ -120,5 +122,33 @@ func TestEventBypassesLevelGate(t *testing.T) {
 	records := consoleRecords(t, console)
 	if len(records) != 1 {
 		t.Fatalf("event did not bypass the level gate: got %d records", len(records))
+	}
+}
+
+// TestSecretHeadersDroppedEverywhere pins that the credential-bearing HTTP
+// header keys the spec classifies secret never leave the process, on spans
+// or on logs (checked at the console sink).
+func TestSecretHeadersDroppedEverywhere(t *testing.T) {
+	t.Parallel()
+	sdk, spans, _, console := newHermetic(t)
+	_, span := sdk.TracerProvider().Tracer("t").Start(context.Background(), "op",
+		trace.WithAttributes(attribute.String("http.request.header.authorization", "Bearer raw-token")))
+	span.End()
+	sdk.Logger().Info("m", "http.request.header.cookie", "session=raw-cookie", "ok", "yes")
+	records := consoleRecords(t, console)
+	if len(records) == 0 || records[len(records)-1]["ok"] != "yes" {
+		t.Fatalf("log record did not reach the console: %v", records)
+	}
+	if strings.Contains(console.String(), "raw-cookie") {
+		t.Error("cookie header reached the console")
+	}
+	ended := spans.Ended()
+	if len(ended) != 1 {
+		t.Fatalf("recorded %d spans, want 1", len(ended))
+	}
+	for _, kv := range ended[0].Attributes() {
+		if strings.Contains(kv.Value.String(), "raw-token") {
+			t.Error("authorization header reached the span")
+		}
 	}
 }

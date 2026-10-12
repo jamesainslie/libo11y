@@ -227,6 +227,18 @@ type EventInfo struct {
 	}
 	b.WriteString("}\n\n")
 
+	// Legacy keys from the deprecation tombstones.
+	legacy := make([]string, 0, len(m.legacyKeys))
+	for name := range m.legacyKeys {
+		legacy = append(legacy, name)
+	}
+	sort.Strings(legacy)
+	b.WriteString("// LegacyKeys maps each attribute key a pre-spec libo11y release emitted\n// to the spec key that replaces it, from the registry's deprecation\n// tombstones.\nvar LegacyKeys = map[string]attribute.Key{\n")
+	for _, name := range legacy {
+		fmt.Fprintf(&b, "\t%q: %q,\n", name, m.legacyKeys[name])
+	}
+	b.WriteString("}\n\n")
+
 	// Metric resource label allowlist.
 	b.WriteString("// MetricResourceLabels is the identity quintet: the only resource\n// attributes permitted as effective metric labels.\nvar MetricResourceLabels = []attribute.Key{\n")
 	for _, a := range m.metricLabels {
@@ -336,6 +348,16 @@ func genDocs(m *model) string {
 			fmt.Fprintf(&b, "| `%s` | %s | %s | %s | %s | %s |\n",
 				a.name(), a.requirement(), a.Annotations["o11y.source"],
 				a.Annotations["o11y.role"], m.classByName[a.name()], a.Annotations["o11y.signals"])
+		}
+	}
+	if len(m.forbidden) > 0 {
+		b.WriteString("\n## Forbidden keys\n\n")
+		b.WriteString("Never emitted by default. The sensitivity layer drops `secret` keys on\n")
+		b.WriteString("every signal and `pii` keys unless a PII mode permits them. These keys\n")
+		b.WriteString("are not a tier and have no generated key constants.\n\n")
+		b.WriteString("| Attribute | Sensitivity | Reason |\n|---|---|---|\n")
+		for _, a := range m.forbidden {
+			fmt.Fprintf(&b, "| `%s` | %s | %s |\n", a.name(), m.classByName[a.name()], strings.TrimSpace(a.Brief))
 		}
 	}
 	b.WriteString("\n## Registered events\n\n| Event | Required attributes |\n|---|---|\n")

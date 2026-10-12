@@ -1,0 +1,79 @@
+# Forbidden keys. Not a resource tier: this group documents keys libo11y
+# never emits by default and classifies them so the sensitivity layer
+# drops them wherever they appear. PII keys are emitted only under an
+# explicit PII mode; secret keys are never emitted. No generated key
+# constant exists for any of them, and no signal group may reference a
+# secret key (libo11y_secret_referenced).
+groups:
+  - id: libo11y.resource.forbidden
+    type: attribute_group
+    display_name: Forbidden by default (PII and credentials)
+    brief: >
+      Attributes that carry personal data or credentials. libo11y never
+      emits them by default; the sensitivity layer drops them if they
+      appear.
+    stability: development
+    attributes:
+      - ref: host.ip
+        requirement_level: opt_in
+        brief: Network addresses identify a host and, on client devices, a person.
+        annotations:
+          o11y.sensitivity: pii
+          o11y.cardinality: unbounded
+          o11y.type: string[]
+      - ref: host.mac
+        requirement_level: opt_in
+        brief: A hardware address is a stable device identifier.
+        annotations:
+          o11y.sensitivity: pii
+          o11y.cardinality: unbounded
+          o11y.type: string[]
+      - ref: process.command_line
+        requirement_level: opt_in
+        brief: Command lines routinely carry credentials, tokens, and file paths.
+        annotations:
+          o11y.sensitivity: pii
+          o11y.cardinality: unbounded
+          o11y.type: string
+      - ref: process.command_args
+        requirement_level: opt_in
+        brief: Command arguments routinely carry credentials, tokens, and file paths.
+        annotations:
+          o11y.sensitivity: pii
+          o11y.cardinality: unbounded
+          o11y.type: string[]
+      - ref: device.id
+        requirement_level: opt_in
+        brief: A device identifier tracks one person's device across sessions.
+        annotations:
+          o11y.sensitivity: pii
+          o11y.cardinality: unbounded
+          o11y.type: string
+      - ref: http.request.header.authorization
+        requirement_level: opt_in
+        brief: Carries bearer tokens and basic-auth credentials.
+        annotations:
+          o11y.sensitivity: secret
+          o11y.cardinality: unbounded
+          o11y.type: string[]
+      - ref: http.request.header.proxy-authorization
+        requirement_level: opt_in
+        brief: Carries credentials for an intermediate proxy.
+        annotations:
+          o11y.sensitivity: secret
+          o11y.cardinality: unbounded
+          o11y.type: string[]
+      - ref: http.request.header.cookie
+        requirement_level: opt_in
+        brief: Carries session cookies, which authenticate the bearer.
+        annotations:
+          o11y.sensitivity: secret
+          o11y.cardinality: unbounded
+          o11y.type: string[]
+      - ref: http.response.header.set-cookie
+        requirement_level: opt_in
+        brief: Issues session cookies, which authenticate the bearer.
+        annotations:
+          o11y.sensitivity: secret
+          o11y.cardinality: unbounded
+          o11y.type: string[]

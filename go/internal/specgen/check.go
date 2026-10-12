@@ -76,6 +76,7 @@ var registryWideRules = map[string]bool{
 	"libo11y_classification_conflict": true,
 	"libo11y_go_name_collision":       true,
 	"libo11y_cardinality_conflict":    true,
+	"libo11y_legacy_key_duplicate":    true,
 }
 
 const ucumTerm = `(s|ms|us|ns|min|h|d|By|KiBy|MiBy|GiBy|bit|Hz|\{[a-z][a-z0-9_.]*\})`
@@ -112,7 +113,9 @@ func unknownAnnotations(annotations map[string]string) []string {
 // class any occurrence of an attribute declares and cardByRef every
 // cardinality class; goNames maps each Go
 // identifier the generator derives for a minted or copied key to the
-// attribute names that produce it.
+// attribute names that produce it; names holds every attribute name the
+// registry defines or references; legacyKeys counts the tombstones claiming
+// each o11y.legacy_key.
 //
 // Only o11y.* references are resolved: the registry vendors no upstream
 // semantic conventions, so references to upstream keys (http.*, k8s.*, ...)
@@ -128,6 +131,8 @@ type index struct {
 	classByRef   map[string]map[string]bool // attribute -> sensitivity classes seen anywhere
 	cardByRef    map[string]map[string]bool // attribute -> cardinality classes seen anywhere
 	goNames      map[string]map[string]bool // generated Go name -> attribute names
+	names        map[string]bool            // every attribute name defined or referenced
+	legacyKeys   map[string]int             // o11y.legacy_key value -> claiming tombstones
 }
 
 // semconvEntry is a placeholder for the upstream attribute record the
@@ -149,9 +154,15 @@ func buildIndex(groups []group) *index {
 		classByRef:   map[string]map[string]bool{},
 		cardByRef:    map[string]map[string]bool{},
 		goNames:      map[string]map[string]bool{},
+		names:        map[string]bool{},
+		legacyKeys:   map[string]int{},
 	}
 	for _, g := range groups {
 		for _, a := range g.Attributes {
+			idx.names[a.name()] = true
+			if legacy, ok := a.Annotations["o11y.legacy_key"]; ok {
+				idx.legacyKeys[legacy]++
+			}
 			if a.Annotations["o11y.sensitivity"] == "secret" {
 				idx.secretKeys[a.name()] = true
 			}
@@ -396,6 +407,34 @@ func checkAttribute(g group, a attr, idx *index) []violation {
 		fail("libo11y_requirement_unknown", "requirement", a.name())
 	}
 
+	if legacy, ok := a.Annotations["o11y.legacy_key"]; ok {
+		violations = append(violations, checkLegacyKey(g, a, legacy, idx)...)
+	}
+
+	return violations
+}
+
+// checkLegacyKey validates an o11y.legacy_key annotation, which feeds
+// spectables.LegacyKeys: the key a pre-spec release emitted, mapped to the
+// tombstone's replacement. The tombstone must name a replacement
+// (renamed_to); the legacy key must be non-empty, differ from that
+// replacement, and not be a name the registry still defines or references;
+// and only one tombstone may claim it.
+func checkLegacyKey(g group, a attr, legacy string, idx *index) []violation {
+	var violations []violation
+	fail := func(ruleID, attrName string) {
+		violations = append(violations, violation{RuleID: ruleID, Category: "references", Group: g.ID, Attr: attrName})
+	}
+	target := deprecatedTarget(a)
+	if target == "" {
+		fail("libo11y_legacy_key_unrenamed", a.name())
+	}
+	if strings.TrimSpace(legacy) == "" || legacy == target || idx.names[legacy] {
+		fail("libo11y_legacy_key_invalid", a.name())
+	}
+	if idx.legacyKeys[legacy] > 1 {
+		fail("libo11y_legacy_key_duplicate", legacy)
+	}
 	return violations
 }
 

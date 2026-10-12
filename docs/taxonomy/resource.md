@@ -64,15 +64,23 @@ Generated from `spec/registry`; do not edit. Semconv pin: v1.41.0.
 | `o11y.data.classification` | opt_in | option | descriptive | internal | traces,logs |
 | `o11y.label` | opt_in | option | descriptive | internal | traces,logs |
 
-## forbidden
+## Forbidden keys
 
-| Attribute | Requirement | Source | Role | Sensitivity | Signals |
-|---|---|---|---|---|---|
-| `host.ip` | opt_in |  |  | pii |  |
-| `host.mac` | opt_in |  |  | pii |  |
-| `process.command_line` | opt_in |  |  | pii |  |
-| `process.command_args` | opt_in |  |  | pii |  |
-| `device.id` | opt_in |  |  | pii |  |
+Never emitted by default. The sensitivity layer drops `secret` keys on
+every signal and `pii` keys unless a PII mode permits them. These keys
+are not a tier and have no generated key constants.
+
+| Attribute | Sensitivity | Reason |
+|---|---|---|
+| `host.ip` | pii | Network addresses identify a host and, on client devices, a person. |
+| `host.mac` | pii | A hardware address is a stable device identifier. |
+| `process.command_line` | pii | Command lines routinely carry credentials, tokens, and file paths. |
+| `process.command_args` | pii | Command arguments routinely carry credentials, tokens, and file paths. |
+| `device.id` | pii | A device identifier tracks one person's device across sessions. |
+| `http.request.header.authorization` | secret | Carries bearer tokens and basic-auth credentials. |
+| `http.request.header.proxy-authorization` | secret | Carries credentials for an intermediate proxy. |
+| `http.request.header.cookie` | secret | Carries session cookies, which authenticate the bearer. |
+| `http.response.header.set-cookie` | secret | Issues session cookies, which authenticate the bearer. |
 
 ## Registered events
 

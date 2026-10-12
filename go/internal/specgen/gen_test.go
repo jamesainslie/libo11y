@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -192,5 +193,148 @@ groups:
 		if _, err := os.Stat(filepath.Join(root, rel)); !os.IsNotExist(err) {
 			t.Errorf("%s written despite violations (stat err %v)", rel, err)
 		}
+	}
+}
+
+// TestForbiddenKeysAreNotPublicAPI pins that the forbidden group documents
+// keys rather than exporting them: no generated key constant, no resource
+// tier, and its own section in the taxonomy docs.
+func TestForbiddenKeysAreNotPublicAPI(t *testing.T) {
+	m, err := load("../../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := render(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	specSrc := out["go/spec/spec.go"]
+	for _, name := range []string{"HostIPKey", "HostMACKey", "ProcessCommandLineKey", "ProcessCommandArgsKey", "DeviceIDKey"} {
+		if strings.Contains(specSrc, name) {
+			t.Errorf("forbidden key constant %s is generated into the public spec package", name)
+		}
+	}
+	tables := out["go/internal/spectables/tables.go"]
+	if strings.Contains(tables, `Tier: "forbidden"`) {
+		t.Error("forbidden keys are listed as a resource tier")
+	}
+	if !strings.Contains(out["docs/taxonomy/resource.md"], "## Forbidden keys") {
+		t.Error("taxonomy docs lack a forbidden-keys section")
+	}
+	// Every key in the forbidden group, including the secret headers, stays
+	// out of the generated constants and in SensitivityOf, which runtime
+	// enforcement needs.
+	if len(m.forbidden) == 0 {
+		t.Fatal("registry has no forbidden keys")
+	}
+	_, sensitivity, _ := strings.Cut(tables, "var SensitivityOf = ")
+	sensitivity, _, _ = strings.Cut(sensitivity, "\n}\n")
+	for _, a := range m.forbidden {
+		if name := goName(a.name()) + "Key"; strings.Contains(specSrc, name) {
+			t.Errorf("forbidden key constant %s is generated into the public spec package", name)
+		}
+		if want := fmt.Sprintf("%q:", a.name()); !strings.Contains(sensitivity, want) {
+			t.Errorf("forbidden key %s missing from SensitivityOf", a.name())
+		}
+	}
+}
+
+// TestSecretHeadersClassified pins that the credential-bearing HTTP header
+// keys are classified secret, so the runtime drops them on every signal,
+// and that the forbidden-keys docs list them.
+func TestSecretHeadersClassified(t *testing.T) {
+	m, err := load("../../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{
+		"http.request.header.authorization",
+		"http.request.header.proxy-authorization",
+		"http.request.header.cookie",
+		"http.response.header.set-cookie",
+	} {
+		if got := m.classByName[key]; got != "secret" {
+			t.Errorf("%s classified %q, want secret", key, got)
+		}
+		if got := m.cardByName[key]; got != "unbounded" {
+			t.Errorf("%s cardinality %q, want unbounded", key, got)
+		}
+	}
+	if row := "| `http.request.header.authorization` | secret |"; !strings.Contains(genDocs(m), row) {
+		t.Errorf("forbidden-keys docs lack the row starting %s", row)
+	}
+}
+
+// TestLegacyKeysGenerated pins the generated table mapping each key a
+// pre-spec release emitted to its spec replacement.
+func TestLegacyKeysGenerated(t *testing.T) {
+	m, err := load("../../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := genTables(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(src, "var LegacyKeys = map[string]attribute.Key{") {
+		t.Fatal("generated tables lack LegacyKeys")
+	}
+	for legacy, replacement := range map[string]string{
+		"vcs.revision": "vcs.ref.head.revision",
+		"vcs.time":     "o11y.build.time",
+		"vcs.modified": "o11y.build.modified",
+	} {
+		if want := fmt.Sprintf("%q: %q,", legacy, replacement); !strings.Contains(src, want) {
+			t.Errorf("LegacyKeys lacks %s", want)
+		}
+	}
+}
+
+// TestRegistryTidyUps pins the smaller registry corrections: the
+// vcs.modified tombstone shares its replacement's boolean type, container.id
+// is generated like the other release-candidate upstream keys, and url.path
+// on the wide event is classified.
+func TestRegistryTidyUps(t *testing.T) {
+	m, err := load("../../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := m.typeByName["o11y.deprecated.vcs.modified"], m.typeByName["o11y.build.modified"]; got != want || got != "boolean" {
+		t.Errorf("vcs.modified tombstone type = %q, replacement type = %q, want both boolean", got, want)
+	}
+	if !slices.Contains(m.copiedRefs(), "container.id") {
+		t.Error("container.id is not generated as a copied key like k8s.pod.name")
+	}
+	if got := m.classByName["url.path"]; got != "internal" {
+		t.Errorf("url.path sensitivity = %q, want internal", got)
+	}
+	if got := m.cardByName["url.path"]; got != "unbounded" {
+		t.Errorf("url.path cardinality = %q, want unbounded", got)
+	}
+}
+
+// TestEveryForbiddenGroupStaysOutOfTiers pins that the generator and the
+// checker recognize forbidden groups the same way: a group whose ID ends in
+// .forbidden is documented as forbidden keys, never published as a tier.
+func TestEveryForbiddenGroupStaysOutOfTiers(t *testing.T) {
+	root := writeRegistry(t, map[string]string{"a.yaml": `
+groups:
+  - id: libo11y.resource.pci.forbidden
+    type: attribute_group
+    attributes:
+      - ref: card.number
+        requirement_level: opt_in
+        brief: Card numbers are cardholder data.
+        annotations: {o11y.sensitivity: secret, o11y.cardinality: unbounded}
+`})
+	m, err := load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.tiers) != 0 || len(m.tierOrder) != 0 {
+		t.Errorf("forbidden group published as a tier: %v", m.tierOrder)
+	}
+	if len(m.forbidden) != 1 || m.forbidden[0].name() != "card.number" {
+		t.Errorf("forbidden = %v, want card.number", m.forbidden)
 	}
 }

@@ -107,7 +107,8 @@ groups:
           o11y.sensitivity: internal
           o11y.signals: traces,logs
           o11y.role: identifying
-          o11y.gen: alias
+          o11y.gen: copy
+          o11y.type: string
       - ref: cloud.provider
         requirement_level: opt_in
         annotations:

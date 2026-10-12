@@ -154,6 +154,8 @@ type model struct {
 	minted       []attr            // defined in attributes/o11y.yaml
 	tiers        map[string][]attr // tier id -> refs, in file order
 	tierOrder    []string
+	forbidden    []attr            // forbidden groups' keys: classified, never a tier or constant
+	legacyKeys   map[string]string // pre-spec emitted key -> replacement key
 	events       []group
 	metrics      []group
 	spans        []group
@@ -200,6 +202,7 @@ func run(root string, checkOnly bool, stderr io.Writer) error {
 func load(root string) (*model, error) {
 	m := &model{
 		tiers:       map[string][]attr{},
+		legacyKeys:  map[string]string{},
 		classByName: map[string]string{},
 		cardByName:  map[string]string{},
 		typeByName:  map[string]string{},
@@ -330,6 +333,8 @@ func markUnknownField(err error) error {
 	return err
 }
 
+// classify records g's attributes in the model's lookup tables and files
+// the group under the artifact it feeds.
 func (m *model) classify(g group) {
 	for _, a := range g.Attributes {
 		if a.ID != "" {
@@ -345,11 +350,18 @@ func (m *model) classify(g group) {
 				m.cardByName[a.name()] = card
 			}
 		}
+		if legacy, ok := a.Annotations["o11y.legacy_key"]; ok {
+			if target := deprecatedTarget(a); target != "" {
+				m.legacyKeys[legacy] = target
+			}
+		}
 	}
 
 	switch {
 	case g.ID == "registry.o11y":
 		m.minted = g.Attributes
+	case isForbiddenGroup(g):
+		m.forbidden = append(m.forbidden, g.Attributes...)
 	case strings.HasPrefix(g.ID, "libo11y.resource."):
 		tier := strings.TrimPrefix(g.ID, "libo11y.resource.")
 		m.tiers[tier] = g.Attributes

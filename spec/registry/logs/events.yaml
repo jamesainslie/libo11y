@@ -50,6 +50,8 @@ groups:
         requirement_level: recommended
         annotations:
           o11y.gen: alias
+          o11y.sensitivity: internal
+          o11y.cardinality: unbounded
       - ref: server.address
         requirement_level: recommended
         annotations:
