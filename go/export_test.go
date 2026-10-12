@@ -22,3 +22,6 @@ func WithSensitivityForTest(table map[attribute.Key]spectables.Sensitivity) Opti
 		}
 	}
 }
+
+// SanitizeEndpoint exposes sanitizeEndpoint to the external test package.
+var SanitizeEndpoint = sanitizeEndpoint

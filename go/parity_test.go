@@ -35,15 +35,15 @@ func TestEffectiveConfigResolved(t *testing.T) {
 	config := sdk.EffectiveConfig()
 	for _, want := range []string{
 		"service.name=libo11y-test",
-		"traces=injected",
-		"metrics=injected",
-		"logs=none",
-		"console=json",
-		"level=INFO",
+		"o11y.config.traces=injected",
+		"o11y.config.metrics=injected",
+		"o11y.config.logs=none",
+		"o11y.config.console=json",
+		"o11y.config.level=INFO",
 		"traceparent",
 		"tracestate",
 		"baggage",
-		"runtime_metrics=false",
+		"o11y.config.runtime_metrics=false",
 	} {
 		if !strings.Contains(config, want) {
 			t.Errorf("EffectiveConfig %q missing %q", config, want)

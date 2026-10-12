@@ -28,8 +28,9 @@ const serviceVersionFallback = "0.0.0-unknown"
 // options, enforces the tier-0 identity contract, derives service.instance.id,
 // applies the sensitivity policy, and stamps the single libo11y schema URL.
 // It also returns how many resource attributes the policy dropped or
-// tokenized per violation rule, for newSDK to record once the violation
-// counter exists.
+// tokenized per violation rule, plus any identity violations tolerated under
+// [WithoutStrictIdentity], for newSDK to record once the violation counter
+// exists.
 //
 // Precedence, lowest to highest: build info, telemetry SDK identity, host,
 // process runtime, and container detectors, then the environment
@@ -83,7 +84,7 @@ func buildResource(ctx context.Context, s *settings, policy *sensitivityPolicy) 
 		}
 	}
 
-	res, err = enforceIdentity(res, s)
+	identityProblems, err := enforceIdentity(res, s)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -95,6 +96,9 @@ func buildResource(ctx context.Context, s *settings, policy *sensitivityPolicy) 
 	// never undefined. Required identity survives classification because
 	// tier-0 keys are classified public.
 	attrs, counts := classifyResourceAttrs(res.Attributes(), policy)
+	for _, rule := range identityProblems {
+		counts[rule]++
+	}
 	res = resource.NewWithAttributes(spec.SchemaURL, attrs...)
 
 	// The providers merge the environment resource underneath this one, so
@@ -133,15 +137,26 @@ func classifyResourceAttrs(attrs []attribute.KeyValue, p *sensitivityPolicy) ([]
 	return kept, counts
 }
 
+// Violation rules recorded on the resource signal when strict identity is
+// disabled and the tier-0 identity contract is not met.
+const (
+	ruleIdentityServiceName        = "identity_service_name"
+	ruleIdentityEnvironment        = "identity_environment"
+	ruleIdentityEnvironmentInvalid = "identity_environment_invalid"
+)
+
 // enforceIdentity applies the tier-0 identity contract: a usable
-// service.name and a valid deployment.environment.name, unless strict
-// identity is disabled (in which case violations are left for the emit-time
-// validator to observe).
-func enforceIdentity(res *resource.Resource, s *settings) (*resource.Resource, error) {
+// service.name and a valid deployment.environment.name. Under strict
+// identity a violation is an error. Otherwise each violation is returned as
+// a rule name, so it is counted on o11y.schema.violations rather than passing
+// silently.
+func enforceIdentity(res *resource.Resource, s *settings) ([]string, error) {
+	var problems []string
 	if !hasServiceName(res) {
 		if s.strictIdentity {
 			return nil, ErrNoServiceName
 		}
+		problems = append(problems, ruleIdentityServiceName)
 	}
 
 	env := resourceString(res, semconv.DeploymentEnvironmentNameKey)
@@ -150,12 +165,14 @@ func enforceIdentity(res *resource.Resource, s *settings) (*resource.Resource, e
 		if s.strictIdentity {
 			return nil, ErrNoEnvironment
 		}
+		problems = append(problems, ruleIdentityEnvironment)
 	case !s.environmentAllowed(env):
 		if s.strictIdentity {
 			return nil, fmt.Errorf("%w: %q (allowed: %s)", ErrInvalidEnvironment, env, s.allowedEnvironmentList())
 		}
+		problems = append(problems, ruleIdentityEnvironmentInvalid)
 	}
-	return res, nil
+	return problems, nil
 }
 
 // ensureServiceVersion records the fallback version when none resolved,

@@ -137,7 +137,11 @@ groups:
           Resolved configuration keys reported by the startup summary event
           (o11y.config.traces, o11y.config.metrics, o11y.config.logs,
           o11y.config.console, o11y.config.level, o11y.config.sampler,
-          o11y.config.propagators, o11y.config.endpoint).
+          o11y.config.propagators, o11y.config.runtime_metrics,
+          o11y.config.service_version_fallback, o11y.config.endpoint,
+          o11y.config.traces_endpoint, o11y.config.metrics_endpoint,
+          o11y.config.logs_endpoint). Endpoint values carry no userinfo,
+          query, or fragment.
         examples: ["o11y.config.traces=otlp"]
         annotations:
           o11y.sensitivity: public

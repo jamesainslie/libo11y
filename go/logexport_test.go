@@ -62,7 +62,7 @@ func TestLoggerProviderNoopWithoutLogExport(t *testing.T) {
 func TestEffectiveConfigReportsInjectedLogExporter(t *testing.T) {
 	t.Parallel()
 	sdk, _, _, _ := newHermetic(t, o11y.WithLogExporter(&memLogExporter{}))
-	if want := "logs=injected"; !strings.Contains(sdk.EffectiveConfig(), want) {
+	if want := "o11y.config.logs=injected"; !strings.Contains(sdk.EffectiveConfig(), want) {
 		t.Errorf("EffectiveConfig %q missing %q", sdk.EffectiveConfig(), want)
 	}
 }

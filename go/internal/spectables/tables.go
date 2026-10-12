@@ -34,9 +34,13 @@ type AttrInfo struct {
 	Role        string
 }
 
-// EventInfo describes a registered event.
+// EventInfo describes a registered event. Required lists literal
+// attribute keys the event must carry. RequiredTemplates lists template
+// attributes the event satisfies by carrying at least one
+// <template>.<key> attribute.
 type EventInfo struct {
-	Required []attribute.Key
+	Required          []attribute.Key
+	RequiredTemplates []attribute.Key
 }
 
 // Resource is the tiered resource-attribute taxonomy.
@@ -187,7 +191,7 @@ var MetricResourceLabels = []attribute.Key{
 
 // Events maps registered event names to their contracts.
 var Events = map[string]EventInfo{
-	"o11y.telemetry.configured": {Required: []attribute.Key{"o11y.config"}},
+	"o11y.telemetry.configured": {RequiredTemplates: []attribute.Key{"o11y.config"}},
 	"o11y.request.summary":      {Required: []attribute.Key{"http.request.method", "http.response.status_code", "o11y.outcome", "o11y.duration"}},
 	"o11y.telemetry.dropped":    {Required: []attribute.Key{"o11y.signal", "error.type"}},
 }

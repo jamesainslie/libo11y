@@ -65,7 +65,7 @@ func TestEffectiveConfigReportsSamplerFallback(t *testing.T) {
 	if strings.Contains(config, "bogus_sampler_name") {
 		t.Errorf("EffectiveConfig echoes rejected sampler: %s", config)
 	}
-	if !strings.Contains(config, "sampler=parentbased_always_on") {
+	if !strings.Contains(config, "o11y.config.sampler=parentbased_always_on") {
 		t.Errorf("EffectiveConfig does not report the actual fallback: %s", config)
 	}
 }

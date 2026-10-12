@@ -105,8 +105,8 @@ func TestSpanProcessorAloneBuildsNoEnvExporter(t *testing.T) {
 		t.Fatalf("New with only a span processor built an environment exporter: %v", err)
 	}
 	t.Cleanup(func() { _ = sdk.Shutdown(context.Background()) })
-	if cfg := sdk.EffectiveConfig(); !strings.Contains(cfg, "traces=injected") {
-		t.Errorf("EffectiveConfig %q, want traces=injected", cfg)
+	if cfg := sdk.EffectiveConfig(); !strings.Contains(cfg, "o11y.config.traces=injected") {
+		t.Errorf("EffectiveConfig %q, want o11y.config.traces=injected", cfg)
 	}
 }
 

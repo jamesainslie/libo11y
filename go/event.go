@@ -25,19 +25,24 @@ import (
 // above the configured level also record normally; force-emit ensures those
 // below it are not dropped.
 func (s *SDK) Event(ctx context.Context, name string, attrs ...slog.Attr) {
-	s.emitEvent(ctx, slog.LevelInfo, name, attrs)
+	// Delivery is best effort for application events: Event has no error
+	// return, and a synchronously rejecting sink is caught once, at Setup,
+	// by the startup canary.
+	_ = s.emitEvent(ctx, slog.LevelInfo, name, attrs)
 }
 
-// emitEvent is the structural force-emit path shared by Event and, later, by
-// app-event registration and the log sampler. It builds the named record,
+// emitEvent is the structural force-emit path shared by Event, the startup
+// summary, and, later, app-event registration and the log sampler. It builds the named record,
 // stamps the event.name attribute, and force-emits through the handler so the
 // record is exempt from level gating and sampling by construction, not by
 // name matching. The exemption is the ForceEmit marker on the context; a bare
 // record carrying event.name without it stays subject to the level gate.
-func (s *SDK) emitEvent(ctx context.Context, level slog.Level, name string, attrs []slog.Attr) {
+// The handler's error is returned so the startup summary can serve as the
+// initialization canary.
+func (s *SDK) emitEvent(ctx context.Context, level slog.Level, name string, attrs []slog.Attr) error {
 	record := slog.NewRecord(time.Now(), level, name, 0)
 	record.AddAttrs(append([]slog.Attr{slog.String(spec.EventNameKey, name)}, attrs...)...)
-	_ = s.handler.Handle(ForceEmit(ctx), record)
+	return s.handler.Handle(ForceEmit(ctx), record)
 }
 
 // emitDropped records the o11y.telemetry.dropped event when a signal fails

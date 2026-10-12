@@ -164,9 +164,13 @@ type AttrInfo struct {
 	Role        string
 }
 
-// EventInfo describes a registered event.
+// EventInfo describes a registered event. Required lists literal
+// attribute keys the event must carry. RequiredTemplates lists template
+// attributes the event satisfies by carrying at least one
+// <template>.<key> attribute.
 type EventInfo struct {
-	Required []attribute.Key
+	Required          []attribute.Key
+	RequiredTemplates []attribute.Key
 }
 
 `)
@@ -219,13 +223,15 @@ type EventInfo struct {
 	// Events registry.
 	b.WriteString("// Events maps registered event names to their contracts.\nvar Events = map[string]EventInfo{\n")
 	for _, ev := range m.events {
-		var required []string
-		for _, a := range ev.Attributes {
-			if a.requirement() == "required" {
-				required = append(required, fmt.Sprintf("%q", a.name()))
-			}
+		required, templates := m.eventRequirements(ev)
+		var fields []string
+		if len(required) > 0 {
+			fields = append(fields, fmt.Sprintf("Required: []attribute.Key{%s}", quoteAll(required)))
 		}
-		fmt.Fprintf(&b, "\t%q: {Required: []attribute.Key{%s}},\n", ev.Name, strings.Join(required, ", "))
+		if len(templates) > 0 {
+			fields = append(fields, fmt.Sprintf("RequiredTemplates: []attribute.Key{%s}", quoteAll(templates)))
+		}
+		fmt.Fprintf(&b, "\t%q: {%s},\n", ev.Name, strings.Join(fields, ", "))
 	}
 	b.WriteString("}\n\n")
 
@@ -244,6 +250,32 @@ type EventInfo struct {
 	b.WriteString("}\n")
 
 	return b.String()
+}
+
+// eventRequirements splits an event's required attributes into literal keys
+// and template attributes. An event satisfies a template requirement with
+// any <template>.<key> attribute, never with the bare template name.
+func (m *model) eventRequirements(ev group) (required, templates []string) {
+	for _, a := range ev.Attributes {
+		if a.requirement() != "required" {
+			continue
+		}
+		if strings.HasPrefix(m.typeByName[a.name()], "template") {
+			templates = append(templates, a.name())
+		} else {
+			required = append(required, a.name())
+		}
+	}
+	return required, templates
+}
+
+// quoteAll renders names as a comma-separated list of Go string literals.
+func quoteAll(names []string) string {
+	quoted := make([]string, len(names))
+	for i, name := range names {
+		quoted[i] = fmt.Sprintf("%q", name)
+	}
+	return strings.Join(quoted, ", ")
 }
 
 func requirementConst(level string) string {
@@ -289,13 +321,15 @@ func genDocs(m *model) string {
 	}
 	b.WriteString("\n## Registered events\n\n| Event | Required attributes |\n|---|---|\n")
 	for _, ev := range m.events {
-		var required []string
-		for _, a := range ev.Attributes {
-			if a.requirement() == "required" {
-				required = append(required, "`"+a.name()+"`")
-			}
+		required, templates := m.eventRequirements(ev)
+		cells := make([]string, 0, len(required)+len(templates))
+		for _, name := range required {
+			cells = append(cells, "`"+name+"`")
 		}
-		fmt.Fprintf(&b, "| `%s` | %s |\n", ev.Name, strings.Join(required, ", "))
+		for _, name := range templates {
+			cells = append(cells, "`"+name+".<key>`")
+		}
+		fmt.Fprintf(&b, "| `%s` | %s |\n", ev.Name, strings.Join(cells, ", "))
 	}
 	return b.String()
 }

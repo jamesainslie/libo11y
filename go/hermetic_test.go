@@ -32,7 +32,7 @@ func TestWithoutOTELEnvBuildsNoEnvExporters(t *testing.T) {
 			t.Errorf("EffectiveConfig %q leaked ambient %q", cfg, leak)
 		}
 	}
-	for _, want := range []string{"traces=none", "metrics=none", "logs=none"} {
+	for _, want := range []string{"o11y.config.traces=none", "o11y.config.metrics=none", "o11y.config.logs=none"} {
 		if !strings.Contains(cfg, want) {
 			t.Errorf("EffectiveConfig %q does not report %q for a signal with no injected exporter", cfg, want)
 		}
@@ -169,7 +169,7 @@ func TestWithoutOTELEnvPinsLogRecordLimits(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	t.Cleanup(func() { _ = sdk.Shutdown(context.Background()) })
-	if want := "logs=injected"; !strings.Contains(sdk.EffectiveConfig(), want) {
+	if want := "o11y.config.logs=injected"; !strings.Contains(sdk.EffectiveConfig(), want) {
 		t.Errorf("EffectiveConfig %q missing %q", sdk.EffectiveConfig(), want)
 	}
 

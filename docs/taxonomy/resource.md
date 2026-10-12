@@ -78,6 +78,6 @@ Generated from `spec/registry`; do not edit. Semconv pin: v1.41.0.
 
 | Event | Required attributes |
 |---|---|
-| `o11y.telemetry.configured` | `o11y.config` |
+| `o11y.telemetry.configured` | `o11y.config.<key>` |
 | `o11y.request.summary` | `http.request.method`, `http.response.status_code`, `o11y.outcome`, `o11y.duration` |
 | `o11y.telemetry.dropped` | `o11y.signal`, `error.type` |

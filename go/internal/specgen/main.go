@@ -127,6 +127,7 @@ type model struct {
 
 	classByName map[string]string // attribute -> sensitivity class
 	cardByName  map[string]string // attribute -> cardinality class
+	typeByName  map[string]string // defined attribute -> scalar type
 }
 
 func main() {
@@ -158,6 +159,7 @@ func load(root string) (*model, error) {
 		tiers:       map[string][]attr{},
 		classByName: map[string]string{},
 		cardByName:  map[string]string{},
+		typeByName:  map[string]string{},
 	}
 
 	manifest, err := os.ReadFile(filepath.Join(root, "spec", "registry", "manifest.yaml"))
@@ -203,6 +205,9 @@ func load(root string) (*model, error) {
 
 func (m *model) classify(g group) {
 	for _, a := range g.Attributes {
+		if a.ID != "" {
+			m.typeByName[a.ID] = a.scalarType()
+		}
 		if class, ok := a.Annotations["o11y.sensitivity"]; ok {
 			if _, seen := m.classByName[a.name()]; !seen {
 				m.classByName[a.name()] = class

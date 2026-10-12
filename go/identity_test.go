@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	o11y "github.com/jamesainslie/libo11y/go"
@@ -94,13 +95,84 @@ func TestEnvironmentExtensionAccepted(t *testing.T) {
 
 func TestWithoutStrictIdentityDowngradesToWarning(t *testing.T) {
 	// No service name, no environment, but strict identity disabled: Setup
-	// succeeds rather than erroring.
-	opts := append(bareOpts(), o11y.WithoutStrictIdentity())
+	// succeeds rather than erroring, and the downgraded violations are
+	// still counted on the resource signal. The later WithMetricReader
+	// replaces the one in bareOpts so the test can collect from it.
+	clearIdentityEnv(t)
+	reader := sdkmetric.NewManualReader()
+	opts := append(bareOpts(), o11y.WithMetricReader(reader), o11y.WithoutStrictIdentity())
 	sdk, err := o11y.New(context.Background(), opts...)
 	if err != nil {
 		t.Fatalf("New with WithoutStrictIdentity: %v", err)
 	}
 	t.Cleanup(func() { _ = sdk.Shutdown(context.Background()) })
+
+	rules := resourceViolationRules(t, reader)
+	for _, want := range []string{"identity_service_name", "identity_environment"} {
+		if rules[want] != 1 {
+			t.Errorf("o11y.schema.violations{o11y.rule=%s} = %d, want 1 (all: %v)", want, rules[want], rules)
+		}
+	}
+}
+
+func TestWithoutStrictIdentityCountsInvalidEnvironment(t *testing.T) {
+	clearIdentityEnv(t)
+	reader := sdkmetric.NewManualReader()
+	opts := append(bareOpts(),
+		o11y.WithMetricReader(reader),
+		o11y.WithServiceName("svc"),
+		o11y.WithEnvironment("not-an-environment"),
+		o11y.WithoutStrictIdentity(),
+	)
+	sdk, err := o11y.New(context.Background(), opts...)
+	if err != nil {
+		t.Fatalf("New with WithoutStrictIdentity: %v", err)
+	}
+	t.Cleanup(func() { _ = sdk.Shutdown(context.Background()) })
+
+	rules := resourceViolationRules(t, reader)
+	if rules["identity_environment_invalid"] != 1 {
+		t.Errorf("o11y.schema.violations{o11y.rule=identity_environment_invalid} = %d, want 1 (all: %v)",
+			rules["identity_environment_invalid"], rules)
+	}
+	if rules["identity_service_name"] != 0 || rules["identity_environment"] != 0 {
+		t.Errorf("unexpected identity violations: %v", rules)
+	}
+}
+
+// clearIdentityEnv blanks the ambient identity sources so an identity test
+// observes only the options it passes.
+func clearIdentityEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("OTEL_SERVICE_NAME", "")
+	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "")
+}
+
+// resourceViolationRules sums the o11y.schema.violations data points on the
+// resource signal by rule.
+func resourceViolationRules(t *testing.T, reader *sdkmetric.ManualReader) map[string]int64 {
+	t.Helper()
+	var md metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &md); err != nil {
+		t.Fatal(err)
+	}
+	rules := map[string]int64{}
+	for _, sm := range md.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			sum, ok := m.Data.(metricdata.Sum[int64])
+			if m.Name != "o11y.schema.violations" || !ok {
+				continue
+			}
+			for _, p := range sum.DataPoints {
+				if signal, _ := p.Attributes.Value(spec.SignalKey); signal.AsString() != string(spec.SignalResource) {
+					continue
+				}
+				rule, _ := p.Attributes.Value(spec.RuleKey)
+				rules[rule.AsString()] += p.Value
+			}
+		}
+	}
+	return rules
 }
 
 func TestSchemaURLStamped(t *testing.T) {
