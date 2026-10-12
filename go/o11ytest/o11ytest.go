@@ -24,6 +24,8 @@ package o11ytest
 import (
 	"context"
 	"log/slog"
+	"maps"
+	"slices"
 	"sync"
 	"testing"
 
@@ -127,11 +129,19 @@ func (r *Recorder) Spans() []sdktrace.ReadOnlySpan {
 // fails the test if collection fails.
 func (r *Recorder) Metrics() metricdata.ResourceMetrics {
 	r.tb.Helper()
-	var data metricdata.ResourceMetrics
-	if err := r.reader.Collect(context.Background(), &data); err != nil {
+	data, err := r.collect()
+	if err != nil {
 		r.tb.Fatalf("o11ytest: collecting metrics: %v", err)
 	}
 	return data
+}
+
+// collect reads the current state of every instrument from the harness's
+// manual reader.
+func (r *Recorder) collect() (metricdata.ResourceMetrics, error) {
+	var data metricdata.ResourceMetrics
+	err := r.reader.Collect(context.Background(), &data)
+	return data, err
 }
 
 // MetricNames returns the names of all instruments with recorded data,
@@ -157,11 +167,13 @@ func (r *Recorder) Logs() []LogRecord {
 // specification. It is the consumer-facing conformance gate: a service can
 // prove in its own suite that it satisfies the specification. It reports:
 //   - any secret-classified attribute the code under test put on a log
-//     record or span, or that options put on the resource, detected
-//     through the o11y.schema.violations self-metric. The pipeline redacted
-//     it, but secrets must never be logged or traced. Secret attributes on
-//     metric measurements are dropped without being counted (the filter
-//     runs on the measurement hot path), so they are not reported;
+//     record or span, detected through the o11y.schema.violations
+//     self-metric and reported per signal. The pipeline redacted it, but
+//     secrets must never be logged or traced. A secret that options passed
+//     to [Start] put on the resource is reported separately. Secret
+//     attributes on metric measurements are dropped without being counted
+//     (the filter runs on the measurement hot path), so they are not
+//     reported;
 //   - any recorded event lacking an attribute its registered contract
 //     requires;
 //   - any secret-classified attribute visible in recorded logs or spans,
@@ -170,8 +182,14 @@ func (r *Recorder) Logs() []LogRecord {
 //     harness supplies service name and environment unless options
 //     override them.
 //
-// Call it from the test body, before the harness SDK shuts down in
-// t.Cleanup: it collects metrics, which fails after shutdown.
+// Log attributes nested in slog groups are checked under their dotted keys
+// (slog.Group("http", slog.String("request.method", v)) is
+// http.request.method), matching the library's classification.
+//
+// It flushes the SDK first, so violations counted on an injected trace
+// exporter's batch path are included. Call it from the test body, before
+// the harness SDK shuts down in t.Cleanup: it collects metrics, which
+// fails after shutdown.
 func (r *Recorder) AssertConforms(tb testing.TB) {
 	tb.Helper()
 
@@ -185,19 +203,33 @@ func (r *Recorder) AssertConforms(tb testing.TB) {
 		}
 	}
 
-	if n := r.violationCount(tb, secretAttributeRule); n > 0 {
-		tb.Errorf("o11ytest: the code under test emitted secret-classified attributes "+
-			"(%d redaction(s) counted); they were redacted, but secrets must never be emitted", n)
+	// Span violations under an injected exporter are counted on the batch
+	// export path, so flush before reading the counter.
+	if err := r.SDK.ForceFlush(context.Background()); err != nil {
+		tb.Errorf("o11ytest: flushing before conformance checks: %v", err)
+	}
+	bySignal := r.violationsBySignal(tb, secretAttributeRule)
+	for _, signal := range slices.Sorted(maps.Keys(bySignal)) {
+		n := bySignal[signal]
+		if signal == string(spec.SignalResource) {
+			tb.Errorf("o11ytest: options passed to Start put a secret-classified attribute on the resource "+
+				"(%d redaction(s) counted); it was redacted, but secrets must never be emitted", n)
+			continue
+		}
+		tb.Errorf("o11ytest: the code under test emitted secret-classified attributes on %s "+
+			"(%d redaction(s) counted); they were redacted, but secrets must never be emitted", signal, n)
 	}
 
 	for _, record := range r.Logs() {
 		var keys []string
 		record.Record.Attrs(func(a slog.Attr) bool {
-			keys = append(keys, a.Key)
-			if spectables.SensitivityOf[attribute.Key(a.Key)] == spectables.Secret {
-				tb.Errorf("o11ytest: log record %q carries secret-classified attribute %q in the clear",
-					record.Record.Message, a.Key)
-			}
+			walkAttr("", a, func(key string) {
+				keys = append(keys, key)
+				if spectables.SensitivityOf[attribute.Key(key)] == spectables.Secret {
+					tb.Errorf("o11ytest: log record %q carries secret-classified attribute %q in the clear",
+						record.Record.Message, key)
+				}
+			})
 			return true
 		})
 		if name, ok := record.Attr(spec.EventNameKey); ok {
@@ -225,18 +257,19 @@ const (
 	secretAttributeRule = "secret_attribute"
 )
 
-// violationCount sums the o11y.schema.violations data points recorded for
-// one rule, across every signal. A single emitted attribute may count more
-// than once (each log sink classifies independently), so callers should
-// treat any positive count as a violation rather than rely on its value.
-func (r *Recorder) violationCount(tb testing.TB, rule string) int64 {
+// violationsBySignal sums the o11y.schema.violations data points recorded
+// for one rule, keyed by their o11y.signal value; signals with no
+// violations are absent. A single emitted attribute may count more than
+// once (each log sink classifies independently), so callers should treat
+// any positive count as a violation rather than rely on its value.
+func (r *Recorder) violationsBySignal(tb testing.TB, rule string) map[string]int64 {
 	tb.Helper()
-	var data metricdata.ResourceMetrics
-	if err := r.reader.Collect(context.Background(), &data); err != nil {
+	data, err := r.collect()
+	if err != nil {
 		tb.Errorf("o11ytest: collecting metrics: %v", err)
-		return 0
+		return nil
 	}
-	var total int64
+	totals := map[string]int64{}
 	for _, sm := range data.ScopeMetrics {
 		for _, m := range sm.Metrics {
 			if m.Name != violationsMetric {
@@ -247,13 +280,36 @@ func (r *Recorder) violationCount(tb testing.TB, rule string) int64 {
 				continue
 			}
 			for _, dp := range sum.DataPoints {
-				if v, ok := dp.Attributes.Value(spec.RuleKey); ok && v.AsString() == rule {
-					total += dp.Value
+				if v, ok := dp.Attributes.Value(spec.RuleKey); !ok || v.AsString() != rule || dp.Value <= 0 {
+					continue
 				}
+				signal, _ := dp.Attributes.Value(spec.SignalKey)
+				totals[signal.AsString()] += dp.Value
 			}
 		}
 	}
-	return total
+	return totals
+}
+
+// walkAttr calls visit with the dotted key of every leaf under a, joining
+// enclosing group names with "." exactly as the library's classification
+// does, so slog.Group("http", slog.String("request.method", v)) is read
+// as http.request.method. An empty-key group is inlined into its parent.
+func walkAttr(prefix string, a slog.Attr, visit func(key string)) {
+	key := a.Key
+	switch {
+	case key == "":
+		key = prefix
+	case prefix != "":
+		key = prefix + "." + key
+	}
+	if v := a.Value.Resolve(); v.Kind() == slog.KindGroup {
+		for _, member := range v.Group() {
+			walkAttr(key, member, visit)
+		}
+		return
+	}
+	visit(key)
 }
 
 // AssertCorrelated fails the test unless every log record emitted inside a
