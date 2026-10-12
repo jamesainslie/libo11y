@@ -2,10 +2,16 @@
 // one-call setup, route-aware server instrumentation, an instrumented
 // outbound client, capture-time redaction, and graceful shutdown.
 //
-// Run a collector (or nothing at all; export failures are non-fatal) and:
+// libo11y requires a deployment environment at startup. Run with one, and
+// optionally a collector (export failures are non-fatal):
 //
-//	OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317 go run .
+//	OTEL_RESOURCE_ATTRIBUTES=deployment.environment.name=development \
+//	OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 go run .
 //	curl localhost:8080/users/42
+//
+// Without a collector, also set OTEL_TRACES_EXPORTER=none
+// OTEL_METRICS_EXPORTER=none OTEL_LOGS_EXPORTER=none. Set ADDR to change
+// the listen address.
 package main
 
 import (
@@ -13,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -31,16 +38,22 @@ type user struct {
 }
 
 func main() {
-	if err := run(); err != nil {
+	addr := os.Getenv("ADDR")
+	if addr == "" {
+		addr = ":8080"
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	err := run(ctx, addr, nil)
+	stop() // explicit, not deferred: os.Exit below would skip a defer
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
-func run() error {
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
+// run serves until ctx ends, then drains in-flight requests before the
+// deferred telemetry flush. ready, when non-nil, receives the bound address.
+func run(ctx context.Context, addr string, ready func(net.Addr)) error {
 	sdk, err := o11y.Setup(ctx,
 		o11y.WithServiceName("httpserver-example"),
 		o11y.WithServiceVersion("0.1.0"),
@@ -85,7 +98,8 @@ func run() error {
 		}
 		resp, err := client.Do(req)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
+			slog.WarnContext(r.Context(), "upstream request failed", "error", err)
+			http.Error(w, "upstream request failed", http.StatusBadGateway)
 			return
 		}
 		defer func() {
@@ -98,25 +112,35 @@ func run() error {
 		}
 	})
 
-	server := &http.Server{
-		Addr: ":8080",
-		Handler: o11yhttp.NewHandler(mux, "httpserver",
-			o11yhttp.WithIgnorePaths("/healthz"),
-		),
-		ReadHeaderTimeout: 5 * time.Second,
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("listening: %w", err)
 	}
+	server := &http.Server{
+		Handler:           o11yhttp.NewHandler(mux, "httpserver", o11yhttp.WithIgnorePaths("/healthz")),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+	if ready != nil {
+		ready(ln.Addr())
+	}
+	slog.Info("listening", "addr", ln.Addr().String())
 
-	go func() {
-		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if err := server.Shutdown(shutdownCtx); err != nil {
-			slog.Error("server shutdown", "error", err)
-		}
-	}()
-
-	slog.Info("listening", "addr", server.Addr)
-	if err := server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- server.Serve(ln) }()
+	select {
+	case err := <-serveErr:
+		return fmt.Errorf("serving: %w", err)
+	case <-ctx.Done():
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		return fmt.Errorf("draining requests: %w", err)
+	}
+	if err := <-serveErr; !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("serving: %w", err)
 	}
 	return nil

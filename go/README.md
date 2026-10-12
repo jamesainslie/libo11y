@@ -8,10 +8,14 @@ never instrumentation.
 ```go
 import (
     o11y "github.com/jamesainslie/libo11y/go"
+    "github.com/jamesainslie/libo11y/go/spec"
 )
 
 func main() {
-    sdk, err := o11y.Setup(ctx, o11y.WithServiceName("checkout"))
+    sdk, err := o11y.Setup(ctx,
+        o11y.WithServiceName("checkout"),
+        o11y.WithEnvironment(spec.EnvironmentProduction),
+    )
     if err != nil {
         log.Fatal(err)
     }
@@ -22,6 +26,11 @@ func main() {
     meter := otel.Meter("checkout")
 }
 ```
+
+A deployment environment is required. Set it with `WithEnvironment` or
+`OTEL_RESOURCE_ATTRIBUTES=deployment.environment.name=production`; the option
+wins over the variable. Allowed values: production, staging, development,
+test (extend with `WithEnvironmentValues`).
 
 After `Setup`, your application code uses only the standard interfaces:
 `otel.Tracer`, `otel.Meter`, and `log/slog`. libo11y exports no span, metric,

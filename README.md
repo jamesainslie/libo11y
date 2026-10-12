@@ -62,7 +62,15 @@ feature-parity matrix across implementations.
 ## Quick start (Go)
 
 ```go
-sdk, err := o11y.Setup(ctx, o11y.WithServiceName("checkout"))
+import (
+    o11y "github.com/jamesainslie/libo11y/go"
+    "github.com/jamesainslie/libo11y/go/spec"
+)
+
+sdk, err := o11y.Setup(ctx,
+    o11y.WithServiceName("checkout"),
+    o11y.WithEnvironment(spec.EnvironmentProduction),
+)
 if err != nil {
     return err
 }
@@ -71,6 +79,11 @@ defer sdk.Shutdown(context.Background())
 slog.InfoContext(ctx, "ready")          // correlated, exported
 tracer := otel.Tracer("checkout")       // vanilla OTEL from here on
 ```
+
+A deployment environment is required. Set it with `WithEnvironment` or
+`OTEL_RESOURCE_ATTRIBUTES=deployment.environment.name=production`; the option
+wins over the variable. Allowed values: production, staging, development,
+test (extend with `WithEnvironmentValues`).
 
 See [`go/README.md`](go/README.md) for the full Go documentation.
 

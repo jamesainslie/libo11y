@@ -14,7 +14,10 @@ import (
 // Signal handling is restored on the first delivery, so a second signal
 // terminates the process immediately instead of waiting on the flush:
 //
-//	sdk, err := o11y.Setup(ctx, o11y.WithServiceName("worker"))
+//	sdk, err := o11y.Setup(ctx,
+//		o11y.WithServiceName("worker"),
+//		o11y.WithEnvironment(spec.EnvironmentProduction),
+//	)
 //	if err != nil {
 //		return err
 //	}

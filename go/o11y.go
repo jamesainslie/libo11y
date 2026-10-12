@@ -7,7 +7,10 @@
 // and metrics and the standard [log/slog] facade for logs; every signal is
 // correlated through the active span context and exported over OTLP.
 //
-//	sdk, err := o11y.Setup(ctx, o11y.WithServiceName("checkout"))
+//	sdk, err := o11y.Setup(ctx,
+//		o11y.WithServiceName("checkout"),
+//		o11y.WithEnvironment(spec.EnvironmentProduction),
+//	)
 //	if err != nil {
 //		return err
 //	}
@@ -15,6 +18,11 @@
 //
 //	slog.InfoContext(ctx, "ready")     // correlated, exported
 //	tracer := otel.Tracer("checkout")  // vanilla OTEL from here on
+//
+// A deployment environment is required. Set it with [WithEnvironment] or
+// OTEL_RESOURCE_ATTRIBUTES=deployment.environment.name=production; the
+// option wins over the variable. Allowed values: production, staging,
+// development, test (extend with [WithEnvironmentValues]).
 //
 // Configuration follows a strict precedence: explicit options override the
 // standard OTEL_* environment variables, which override library defaults.
