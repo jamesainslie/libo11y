@@ -542,6 +542,108 @@ groups:
 	}
 }
 
+func TestFixRound1Rules(t *testing.T) {
+	cases := []struct {
+		name string
+		doc  string
+		want []string
+	}{
+		{"enum member without value", `
+groups:
+  - id: registry.o11y
+    type: attribute_group
+    attributes:
+      - id: o11y.kind
+        annotations: {o11y.sensitivity: public, o11y.cardinality: enum}
+        type:
+          members:
+            - {id: alpha, stability: development}
+`, []string{"libo11y_enum_member_empty"}},
+		{"enum member without id", `
+groups:
+  - id: registry.o11y
+    type: attribute_group
+    attributes:
+      - id: o11y.kind
+        annotations: {o11y.sensitivity: public, o11y.cardinality: enum}
+        type:
+          members:
+            - {value: "alpha", stability: development}
+`, []string{"libo11y_enum_member_empty"}},
+		{"local bounded cannot override defined unbounded", `
+groups:
+  - id: registry.o11y
+    type: attribute_group
+    attributes:
+      - id: o11y.tenant.id
+        type: string
+        annotations: {o11y.sensitivity: internal, o11y.cardinality: unbounded}
+  - id: metric.o11y.requests
+    type: metric
+    metric_name: o11y.requests
+    instrument: counter
+    unit: "{request}"
+    attributes:
+      - ref: o11y.tenant.id
+        annotations: {o11y.cardinality: bounded}
+`, []string{"libo11y_unbounded_metric_label", "libo11y_cardinality_conflict"}},
+		{"spelled-out unit", `
+groups:
+  - id: metric.o11y.d
+    type: metric
+    metric_name: o11y.d
+    instrument: histogram
+    unit: seconds
+`, []string{"libo11y_metric_unit_invalid"}},
+		{"unknown attribute annotation", `
+groups:
+  - id: registry.o11y
+    type: attribute_group
+    attributes:
+      - id: o11y.a
+        type: string
+        annotations: {o11y.sensitivty: public, o11y.sensitivity: public, o11y.cardinality: bounded}
+`, []string{"libo11y_annotation_unknown"}},
+		{"unknown group annotation", `
+groups:
+  - id: libo11y.resource.tier9
+    type: attribute_group
+    annotations: {o11y.teir: "9"}
+`, []string{"libo11y_annotation_unknown"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			groups := parseGroups(t, tc.doc)
+			vs := checkGroups(groups, buildIndex(groups))
+			for _, want := range tc.want {
+				if !hasRule(vs, want) {
+					t.Errorf("rule %s not raised; got %v", want, violationIDs(vs))
+				}
+			}
+		})
+	}
+}
+
+// TestMetricUnitsAccepted pins the UCUM atoms the unit rule accepts, alone
+// and as a per-unit.
+func TestMetricUnitsAccepted(t *testing.T) {
+	for _, unit := range []string{"1", "%", "s", "ms", "us", "ns", "min", "h", "d", "By", "KiBy", "MiBy", "GiBy", "bit", "Hz", "{request}", "By/s", "{request}/s"} {
+		t.Run(unit, func(t *testing.T) {
+			groups := parseGroups(t, `
+groups:
+  - id: metric.o11y.u
+    type: metric
+    metric_name: o11y.u
+    instrument: counter
+    unit: "`+unit+`"
+`)
+			if vs := checkGroups(groups, buildIndex(groups)); len(vs) != 0 {
+				t.Errorf("unit %q rejected: %v", unit, violationIDs(vs))
+			}
+		})
+	}
+}
+
 func TestForbiddenGroupMatchedByIDSuffixOnly(t *testing.T) {
 	if isForbiddenGroup(group{ID: "libo11y.resource.forbiddenish"}) {
 		t.Error("substring match treated a non-forbidden group as forbidden")

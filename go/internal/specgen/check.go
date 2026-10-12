@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -42,10 +43,26 @@ var (
 	instruments       = map[string]bool{"counter": true, "updowncounter": true, "histogram": true, "gauge": true}
 	requirementLevels = map[string]bool{"required": true, "recommended": true, "opt_in": true, "conditionally_required": true}
 
-	// ucumUnit accepts the UCUM subset the registry uses: dimensionless 1,
-	// percent, a curly-brace annotation such as {request}, or a unit atom
-	// with an optional per-unit (By, ms, By/s).
-	ucumUnit = regexp.MustCompile(`^(1|%|\{[a-z][a-z0-9_.]*\}|[A-Za-z]+(/[A-Za-z]+)?)$`)
+	// ucumUnit accepts dimensionless 1, percent, or one UCUM term with an
+	// optional per-term (By/s, {request}/s). A term is an allowlisted UCUM
+	// atom or a curly-brace annotation such as {request}; spelled-out words
+	// such as seconds or bytes are not UCUM.
+	ucumUnit = regexp.MustCompile(`^(1|%|` + ucumTerm + `(/` + ucumTerm + `)?)$`)
+
+	// annotationKeys are the annotation keys the registry, the checks, and
+	// the generator understand. Anything else is a typo or an unreviewed
+	// extension.
+	annotationKeys = map[string]bool{
+		"o11y.sensitivity": true, "o11y.cardinality": true, "o11y.gen": true,
+		"o11y.source": true, "o11y.role": true, "o11y.signals": true,
+		"o11y.type": true, "o11y.tier": true, "o11y.enum": true,
+		"o11y.fallback": true, "o11y.derivation": true, "o11y.span.kind": true,
+		"o11y.metric_labels": true, "o11y.legacy_key": true,
+	}
+
+	// cardinalityRank orders cardinality classes from least to most
+	// dangerous as a metric label.
+	cardinalityRank = map[string]int{"enum": 1, "bounded": 2, "unbounded": 3}
 	// unitInName catches a unit smuggled into a metric name; units belong
 	// in the unit field only.
 	unitInName = regexp.MustCompile(`[._](ms|us|ns|s|seconds|milliseconds|bytes|by|kb|mb|percent)$`)
@@ -58,6 +75,32 @@ var registryWideRules = map[string]bool{
 	"libo11y_attr_duplicate":          true,
 	"libo11y_classification_conflict": true,
 	"libo11y_go_name_collision":       true,
+	"libo11y_cardinality_conflict":    true,
+}
+
+const ucumTerm = `(s|ms|us|ns|min|h|d|By|KiBy|MiBy|GiBy|bit|Hz|\{[a-z][a-z0-9_.]*\})`
+
+// stricterCardinality returns whichever of two cardinality classes is the
+// more dangerous as a metric label, so a local annotation can tighten a
+// definition's class but never loosen it.
+func stricterCardinality(a, b string) string {
+	if cardinalityRank[b] > cardinalityRank[a] {
+		return b
+	}
+	return a
+}
+
+// unknownAnnotations returns the annotation keys outside annotationKeys,
+// sorted for stable output.
+func unknownAnnotations(annotations map[string]string) []string {
+	var unknown []string
+	for key := range annotations {
+		if !annotationKeys[key] {
+			unknown = append(unknown, key)
+		}
+	}
+	slices.Sort(unknown)
+	return unknown
 }
 
 // index is a whole-registry view built in a first pass and consulted by the
@@ -66,7 +109,8 @@ var registryWideRules = map[string]bool{
 // names defined by the registry; cardinality maps each defined attribute to
 // its cardinality class so a bare ref resolves to it; definitions counts the
 // definitions of each attribute name; classByRef collects every sensitivity
-// class any occurrence of an attribute declares; goNames maps each Go
+// class any occurrence of an attribute declares and cardByRef every
+// cardinality class; goNames maps each Go
 // identifier the generator derives for a minted or copied key to the
 // attribute names that produce it.
 //
@@ -82,6 +126,7 @@ type index struct {
 	cardinality  map[string]string          // defined attribute -> cardinality
 	definitions  map[string]int             // defined attribute -> definition count
 	classByRef   map[string]map[string]bool // attribute -> sensitivity classes seen anywhere
+	cardByRef    map[string]map[string]bool // attribute -> cardinality classes seen anywhere
 	goNames      map[string]map[string]bool // generated Go name -> attribute names
 }
 
@@ -102,6 +147,7 @@ func buildIndex(groups []group) *index {
 		cardinality:  map[string]string{},
 		definitions:  map[string]int{},
 		classByRef:   map[string]map[string]bool{},
+		cardByRef:    map[string]map[string]bool{},
 		goNames:      map[string]map[string]bool{},
 	}
 	for _, g := range groups {
@@ -119,17 +165,13 @@ func buildIndex(groups []group) *index {
 				}
 			}
 			if class, ok := a.Annotations["o11y.sensitivity"]; ok {
-				if idx.classByRef[a.name()] == nil {
-					idx.classByRef[a.name()] = map[string]bool{}
-				}
-				idx.classByRef[a.name()][class] = true
+				addToSet(idx.classByRef, a.name(), class)
+			}
+			if card, ok := a.Annotations["o11y.cardinality"]; ok {
+				addToSet(idx.cardByRef, a.name(), card)
 			}
 			if generatesKey(a) {
-				id := goName(a.name())
-				if idx.goNames[id] == nil {
-					idx.goNames[id] = map[string]bool{}
-				}
-				idx.goNames[id][a.name()] = true
+				addToSet(idx.goNames, goName(a.name()), a.name())
 			}
 		}
 	}
@@ -202,15 +244,21 @@ func enumValues(a attr) []string {
 	return values
 }
 
+// addToSet adds value to the set held under key, creating it on first use.
+func addToSet(sets map[string]map[string]bool, key, value string) {
+	if sets[key] == nil {
+		sets[key] = map[string]bool{}
+	}
+	sets[key][value] = true
+}
+
 // deprecatedTarget returns the renamed_to target of a deprecated attribute
 // whose deprecation is written in mapping form, and "" otherwise.
 func deprecatedTarget(a attr) string {
 	if a.Deprecated.Kind != yaml.MappingNode {
 		return ""
 	}
-	var deprecation struct {
-		RenamedTo string `yaml:"renamed_to"`
-	}
+	var deprecation deprecationSpec
 	if err := a.Deprecated.Decode(&deprecation); err != nil {
 		return ""
 	}
@@ -253,6 +301,19 @@ func checkAttribute(g group, a attr, idx *index) []violation {
 		case hasCardinality && !cardinalityClasses[cardinality]:
 			fail("libo11y_cardinality_unknown", "cardinality", a.ID)
 		}
+	} else {
+		// A reference may restate a class; a restated class must still be
+		// a known one.
+		if class, ok := a.Annotations["o11y.sensitivity"]; ok && !sensitivityClasses[class] {
+			fail("libo11y_sensitivity_unknown", "sensitivity", a.Ref)
+		}
+		if class, ok := a.Annotations["o11y.cardinality"]; ok && !cardinalityClasses[class] {
+			fail("libo11y_cardinality_unknown", "cardinality", a.Ref)
+		}
+	}
+
+	for _, key := range unknownAnnotations(a.Annotations) {
+		fail("libo11y_annotation_unknown", "annotations", a.name()+" "+key)
 	}
 
 	// Secret-class attributes may exist only as documentation of a
@@ -280,16 +341,19 @@ func checkAttribute(g group, a attr, idx *index) []violation {
 		fail("libo11y_classification_conflict", "sensitivity", a.name())
 	}
 
+	// Every occurrence of a name must agree on its cardinality; otherwise a
+	// local annotation could relabel an unbounded key as bounded.
+	if classes := idx.cardByRef[a.name()]; len(classes) > 1 {
+		fail("libo11y_cardinality_conflict", "cardinality", a.name())
+	}
+
 	// Metric labels: unbounded attributes are forbidden, and every label
-	// must have a known cardinality, either annotated locally or resolved
-	// through the attribute's definition. Reported via name() so a defined
-	// label still names itself in the violation.
+	// must have a known cardinality, annotated locally or resolved through
+	// the attribute's definition. The stricter of the two applies, so a
+	// local annotation can never loosen the definition's class. Reported
+	// via name() so a defined label still names itself in the violation.
 	if g.Type == "metric" {
-		card := a.Annotations["o11y.cardinality"]
-		if card == "" {
-			card = idx.cardinality[a.name()]
-		}
-		switch card {
+		switch stricterCardinality(a.Annotations["o11y.cardinality"], idx.cardinality[a.name()]) {
 		case "unbounded":
 			fail("libo11y_unbounded_metric_label", "cardinality", a.name())
 		case "":
@@ -309,6 +373,11 @@ func checkAttribute(g group, a attr, idx *index) []violation {
 
 	// Enum values are emitted verbatim as Go constants and runtime
 	// allowlists: each must be unique and carry no padding.
+	for _, member := range a.enumMembers() {
+		if member.ID == "" || member.Value == "" {
+			fail("libo11y_enum_member_empty", "enums", a.name())
+		}
+	}
 	seenValues := map[string]bool{}
 	for _, v := range enumValues(a) {
 		if v != strings.TrimSpace(v) {
@@ -338,6 +407,9 @@ func checkGroup(g group) []violation {
 
 	if g.Stability != "" && !stabilities[g.Stability] {
 		fail("libo11y_stability_unknown", "stability", g.ID)
+	}
+	for _, key := range unknownAnnotations(g.Annotations) {
+		fail("libo11y_annotation_unknown", "annotations", key)
 	}
 
 	// Event discipline: names are static, dot-namespaced, owned (o11y.*),
