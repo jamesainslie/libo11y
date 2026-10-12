@@ -71,16 +71,14 @@ feature-parity matrix across implementations.
 
 ## Installation (Go)
 
-No version is tagged yet. Until the first release, `go get` resolves a
-pseudo-version from `main`:
-
 ```sh
-go get github.com/jamesainslie/libo11y/go@main
+go get github.com/jamesainslie/libo11y/go@v0.1.0
+go get github.com/jamesainslie/libo11y/go/o11ygin@v0.1.0   # only for Gin
 ```
 
-The Gin integration (`go/o11ygin`) requires the first tagged release of the
-main module, `go/v0.1.0`, and installs once that tag exists. The modules
-require Go 1.26.0 or later. Build with go1.26.9 or later on the 1.26 line
+The Gin integration (`go/o11ygin`) is a separate module released alongside
+the main module at the same version. The modules require Go 1.26.0 or
+later. Build with go1.26.9 or later on the 1.26 line
 (or go1.27.2 or later on the 1.27 line) to pick up the standard-library
 security fixes.
 
@@ -131,10 +129,11 @@ tested HTTP service.
 
 Each language library versions and releases independently with path-prefixed
 tags (for example `go/v0.1.0`). There is no lockstep release across languages;
-signal maturity differs per OpenTelemetry implementation. Nothing is
-released yet; the first Go tags will be `go/v0.1.0` and then
-`go/o11ygin/v0.1.0`, which requires it. `make release-check` validates that
-sequence against a throwaway local remote.
+signal maturity differs per OpenTelemetry implementation. The first Go
+release is `go/v0.1.0`, with `go/o11ygin/v0.1.0` tagged on the same commit.
+Each Go release is listed in [`go/CHANGELOG.md`](go/CHANGELOG.md) and on the
+GitHub releases page. `make release-check` validates the tag sequence
+against a throwaway local remote before a release.
 
 ## License
 

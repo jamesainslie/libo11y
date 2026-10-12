@@ -274,8 +274,8 @@ item is never renamed or removed without a major version bump.
   `make schema-published` fails unless the schema URL serves the generated
   file byte for byte, and it must pass before the tag is created.
 
-Status: the 1.0.0 schema file is served at its schema URL. No `spec/v*`
-tag exists yet.
+Status: spec 1.0.0 is released. Its schema file is served at its schema
+URL, and the commit is tagged `spec/v1.0.0` together with `go/v0.1.0`.
 
 ## 8. Enforcement layers
 

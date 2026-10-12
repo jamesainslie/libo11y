@@ -7,19 +7,13 @@ harness. Pure OTEL; the library wraps setup, never instrumentation.
 
 ## Installation
 
-No version is tagged yet. Until the first release, `go get` resolves a
-pseudo-version from `main`:
-
 ```sh
-go get github.com/jamesainslie/libo11y/go@main
+go get github.com/jamesainslie/libo11y/go@v0.1.0
+go get github.com/jamesainslie/libo11y/go/o11ygin@v0.1.0   # only for Gin
 ```
 
-The Gin integration requires the first tagged release of this module,
-`go/v0.1.0`, and installs once that tag exists:
-
-```sh
-go get github.com/jamesainslie/libo11y/go/o11ygin   # only for Gin
-```
+The Gin integration is a separate module released alongside this one at the
+same version. Releases are listed in [CHANGELOG.md](CHANGELOG.md).
 
 The modules require Go 1.26.0 or later (`golang.org/x/net` v0.60.0, the
 first release that fixes its published advisories, declares that floor).

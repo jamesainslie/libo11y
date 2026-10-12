@@ -80,7 +80,7 @@ require (
 	google.golang.org/protobuf v1.36.12 // indirect
 )
 
-// Local development of the unreleased parent. Downstream consumers ignore
-// replace directives and resolve the go/v0.1.0 tag; remove this once the tag
-// is published (scripts/release-check.sh validates the sequence).
+// Builds this checkout against the parent in the same checkout when the
+// go.work workspace is off. Downstream consumers ignore replace directives
+// and resolve the parent from its go/vX.Y.Z tag.
 replace github.com/jamesainslie/libo11y/go => ../
