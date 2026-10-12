@@ -2,13 +2,18 @@ package o11ygin_test
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/baggage"
+	"go.opentelemetry.io/otel/codes"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 
 	o11y "github.com/jamesainslie/libo11y/go"
 	"github.com/jamesainslie/libo11y/go/o11ygin"
@@ -68,10 +73,18 @@ func TestMiddlewareAdoptsInboundTraceContext(t *testing.T) {
 	sdk, recorder := newSDK(t)
 	router := newRouter(sdk)
 
+	var serverCtx context.Context
+	router.GET("/ctx", func(c *gin.Context) {
+		serverCtx = c.Request.Context()
+		c.Status(http.StatusOK)
+	})
+
 	const inboundTrace = "0af7651916cd43dd8448eb211c80319c"
+	const inboundSpan = "b7ad6b7169203331"
 	recorded := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/users/1", nil)
-	req.Header.Set("traceparent", "00-"+inboundTrace+"-b7ad6b7169203331-01")
+	req := httptest.NewRequest(http.MethodGet, "/ctx", nil)
+	req.Header.Set("traceparent", "00-"+inboundTrace+"-"+inboundSpan+"-01")
+	req.Header.Set("baggage", "tenant=acme")
 	router.ServeHTTP(recorded, req)
 
 	spans := recorder.Ended()
@@ -80,6 +93,69 @@ func TestMiddlewareAdoptsInboundTraceContext(t *testing.T) {
 	}
 	if got := spans[0].SpanContext().TraceID().String(); got != inboundTrace {
 		t.Errorf("trace = %s, want inbound %s", got, inboundTrace)
+	}
+	if got := spans[0].Parent().SpanID().String(); got != inboundSpan {
+		t.Errorf("parent span = %s, want inbound %s", got, inboundSpan)
+	}
+	if serverCtx == nil {
+		t.Fatal("handler did not run")
+	}
+	if got := trace.SpanContextFromContext(serverCtx).TraceID().String(); got != inboundTrace {
+		t.Errorf("handler context trace = %s, want inbound %s", got, inboundTrace)
+	}
+	if v := baggage.FromContext(serverCtx).Member("tenant").Value(); v != "acme" {
+		t.Errorf("handler baggage tenant = %q, want acme", v)
+	}
+}
+
+func TestSpanNameFormatter(t *testing.T) {
+	sdk, recorder := newSDK(t)
+	router := newRouter(sdk, o11ygin.WithSpanNameFormatter(func(c *gin.Context) string {
+		return "custom " + c.FullPath()
+	}))
+
+	router.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/users/9", nil))
+
+	spans := recorder.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("got %d spans, want 1", len(spans))
+	}
+	if got, want := spans[0].Name(), "custom /users/:id"; got != want {
+		t.Errorf("span name = %q, want %q", got, want)
+	}
+}
+
+// TestMiddlewareBeforeRecoveryRecordsPanic pins the documented middleware
+// order: registered before gin.Recovery, the middleware sees the 500 a
+// recovered panic produces and marks the span Error.
+func TestMiddlewareBeforeRecoveryRecordsPanic(t *testing.T) {
+	sdk, recorder := newSDK(t)
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(o11ygin.Middleware("api", o11ygin.WithSDK(sdk)), gin.RecoveryWithWriter(io.Discard))
+	router.GET("/boom", func(*gin.Context) { panic("boom") })
+
+	recorded := httptest.NewRecorder()
+	router.ServeHTTP(recorded, httptest.NewRequest(http.MethodGet, "/boom", nil))
+	if recorded.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", recorded.Code)
+	}
+
+	spans := recorder.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("got %d spans, want 1", len(spans))
+	}
+	if got := spans[0].Status().Code; got != codes.Error {
+		t.Errorf("span status = %v, want Error", got)
+	}
+	var status attribute.Value
+	for _, kv := range spans[0].Attributes() {
+		if kv.Key == "http.response.status_code" {
+			status = kv.Value
+		}
+	}
+	if status.AsInt64() != http.StatusInternalServerError {
+		t.Errorf("http.response.status_code = %v, want 500", status.String())
 	}
 }
 
