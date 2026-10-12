@@ -3,6 +3,7 @@ package o11y
 import (
 	"log/slog"
 	"net"
+	"strings"
 	"testing"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -62,6 +63,33 @@ func TestCanonicalRenderingMatchesAcrossValueKinds(t *testing.T) {
 		{
 			"net.IP slice", slog.AnyValue([]net.IP{net.ParseIP("10.9.8.7")}),
 			attribute.StringSliceValue([]string{"10.9.8.7"}), `["10.9.8.7"]`,
+		},
+		{
+			"map", slog.AnyValue(map[string]any{"b": 2, "a": "x"}),
+			attribute.MapValue(attribute.Int64("b", 2), attribute.String("a", "x")), `{"a":"x","b":"2"}`,
+		},
+		{"empty map", slog.AnyValue(map[string]int{}), attribute.MapValue(), `{}`},
+		{
+			"nested map", slog.AnyValue(map[string]any{"n": map[string]string{"ip": "1"}}),
+			attribute.MapValue(attribute.Map("n", attribute.String("ip", "1"))), `{"n":{"ip":"1"}}`,
+		},
+		{
+			"non-string keys", slog.AnyValue(map[int]string{7: "x"}),
+			attribute.MapValue(attribute.String("7", "x")), `{"7":"x"}`,
+		},
+		{
+			"pointer to map", slog.AnyValue(&map[string]string{"ip": "1"}),
+			attribute.MapValue(attribute.String("ip", "1")), `{"ip":"1"}`,
+		},
+		{"pointer to string", slog.AnyValue(ptr("10.0.0.1")), attribute.StringValue("10.0.0.1"), "10.0.0.1"},
+		{
+			"slice of maps", slog.AnyValue([]map[string]string{{"ip": "1"}}),
+			attribute.SliceValue(attribute.MapValue(attribute.String("ip", "1"))), `[{"ip":"1"}]`,
+		},
+		{
+			"nested slices", slog.AnyValue([][]string{{"a"}, {"b", "c"}}),
+			attribute.SliceValue(attribute.StringSliceValue([]string{"a"}), attribute.StringSliceValue([]string{"b", "c"})),
+			`[["a"],["b","c"]]`,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -135,5 +163,15 @@ func TestCanonicalRenderingIgnoresType(t *testing.T) {
 func TestCanonicalAnyNilPointerWithValueMethods(t *testing.T) {
 	if got := canonicalAny((*net.IP)(nil)); got != "<nil>" {
 		t.Errorf("canonicalAny(nil *net.IP) = %q, want <nil>", got)
+	}
+}
+
+func ptr[T any](v T) *T { return &v }
+
+func TestCanonicalAnySelfReferencingMapTerminates(t *testing.T) {
+	m := map[string]any{"ip": "1"}
+	m["self"] = m
+	if got := canonicalAny(m); !strings.Contains(got, canonicalDepthExceeded) {
+		t.Errorf("canonicalAny(cycle) = %q, want it cut at %q", got, canonicalDepthExceeded)
 	}
 }

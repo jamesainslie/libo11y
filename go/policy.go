@@ -182,13 +182,18 @@ func (p *sensitivityPolicy) kv(signal spec.Signal, kv attribute.KeyValue) (attri
 // slog values and spans and the resource carry attribute values, whose own
 // String methods disagree on slices (slog renders []string{"a", "b"} as
 // "[a b]", attribute as a JSON array), so both are rendered here to one
-// form: scalars as their strconv text (floats in the shortest 'g' form) and
-// slices as a JSON array of the elements' canonical strings, for example
-// ["10.0.0.1","10.0.0.2"] and ["1","2"]. Byte slices render as standard
-// base64 on both paths, and slog values with a text form (net.IP,
-// net.HardwareAddr, and other encoding.TextMarshaler or fmt.Stringer types)
-// render as that text. Values with no counterpart on the other path (slog
-// times, durations, and arbitrary types; attribute maps) fall back to their
+// form: scalars as their strconv text (floats in the shortest 'g' form),
+// slices as a JSON array of the elements' canonical forms, for example
+// ["10.0.0.1","10.0.0.2"] and ["1","2"], and maps (Go maps on the slog path,
+// map values on the attribute path, which is what a log bridge makes of a
+// Go map) as a JSON object of the members' canonical forms with sorted keys,
+// for example {"a":"x","b":"2"}; nested composites nest, as in
+// [{"ip":"1"}]. Go pointers render as what they point to, and Go map keys
+// that are not strings render with %+v, as otelslog renders them. Byte
+// slices render as standard base64 on both paths, and slog values with a
+// text form (net.IP, net.HardwareAddr, and other encoding.TextMarshaler or
+// fmt.Stringer types) render as that text. Values with no counterpart on the
+// other path (slog times, durations, and arbitrary types) fall back to their
 // own String rendering.
 //
 // The form deliberately does not encode the type, so values that render to
@@ -204,7 +209,31 @@ func (p *sensitivityPolicy) kv(signal spec.Signal, kv attribute.KeyValue) (attri
 // only in invalid bytes share a token.
 
 // canonicalAttr renders an attribute value in the canonical form.
-func canonicalAttr(v attribute.Value) string {
+func canonicalAttr(v attribute.Value) string { return renderCanonical(attrNode(v)) }
+
+// canonicalSlog renders a resolved, non-group slog value in the canonical
+// form.
+func canonicalSlog(v slog.Value) string { return renderCanonical(slogNode(v)) }
+
+// canonicalAny renders an arbitrary slog payload in the canonical form.
+func canonicalAny(x any) string { return renderCanonical(anyNode(x, 0)) }
+
+// A canonical node is a string (a scalar's canonical text), a []any (an
+// array of nodes), or a map[string]any (an object of nodes). Composite
+// values are built as one node tree and JSON-encoded once, so nesting never
+// re-escapes already encoded text.
+
+// renderCanonical renders a node: a scalar as its text, a composite as JSON.
+func renderCanonical(n any) string {
+	if s, ok := n.(string); ok {
+		return s
+	}
+	out, _ := json.Marshal(n) // strings, []any and map[string]any of them always marshal
+	return string(out)
+}
+
+// attrNode builds the canonical node of an attribute value.
+func attrNode(v attribute.Value) any {
 	switch v.Type() {
 	case attribute.BOOL:
 		return strconv.FormatBool(v.AsBool())
@@ -217,23 +246,29 @@ func canonicalAttr(v attribute.Value) string {
 	case attribute.BYTESLICE:
 		return base64.StdEncoding.EncodeToString(v.AsByteSlice())
 	case attribute.BOOLSLICE:
-		return canonicalArray(v.AsBoolSlice(), strconv.FormatBool)
+		return arrayNode(v.AsBoolSlice(), func(b bool) any { return strconv.FormatBool(b) })
 	case attribute.INT64SLICE:
-		return canonicalArray(v.AsInt64Slice(), func(i int64) string { return strconv.FormatInt(i, 10) })
+		return arrayNode(v.AsInt64Slice(), func(i int64) any { return strconv.FormatInt(i, 10) })
 	case attribute.FLOAT64SLICE:
-		return canonicalArray(v.AsFloat64Slice(), canonicalFloat)
+		return arrayNode(v.AsFloat64Slice(), func(f float64) any { return canonicalFloat(f) })
 	case attribute.STRINGSLICE:
-		return canonicalArray(v.AsStringSlice(), func(s string) string { return s })
+		return arrayNode(v.AsStringSlice(), func(s string) any { return s })
 	case attribute.SLICE:
-		return canonicalArray(v.AsSlice(), canonicalAttr)
+		return arrayNode(v.AsSlice(), attrNode)
+	case attribute.MAP:
+		members := v.AsMap()
+		obj := make(map[string]any, len(members))
+		for _, m := range members {
+			obj[string(m.Key)] = attrNode(m.Value)
+		}
+		return obj
 	default:
 		return v.String()
 	}
 }
 
-// canonicalSlog renders a resolved, non-group slog value in the canonical
-// form.
-func canonicalSlog(v slog.Value) string {
+// slogNode builds the canonical node of a resolved, non-group slog value.
+func slogNode(v slog.Value) any {
 	switch v.Kind() {
 	case slog.KindBool:
 		return strconv.FormatBool(v.Bool())
@@ -246,18 +281,27 @@ func canonicalSlog(v slog.Value) string {
 	case slog.KindString:
 		return v.String()
 	case slog.KindAny:
-		return canonicalAny(v.Any())
+		return anyNode(v.Any(), 0)
 	default:
 		return v.String()
 	}
 }
 
-// canonicalAny renders an arbitrary slog payload: plain byte slices as
-// base64; types with a text form (encoding.TextMarshaler, then fmt.Stringer)
-// as that text, so a net.IP or net.HardwareAddr matches the string a span
-// would carry for it; other slices and arrays as a canonical array of their
-// elements; and everything else through its slog value.
-func canonicalAny(x any) string {
+// canonicalDepthExceeded stands in for a value nested deeper than
+// maxCompositeDepth, so a self-referencing value renders in bounded time.
+const canonicalDepthExceeded = "max depth exceeded"
+
+// anyNode builds the canonical node of an arbitrary slog payload: plain byte
+// slices as base64; types with a text form (encoding.TextMarshaler, then
+// fmt.Stringer) as that text, so a net.IP or net.HardwareAddr matches the
+// string a span would carry for it; non-nil pointers as what they point to;
+// other slices and arrays as an array of their elements; maps as an object,
+// keys rendered as a log bridge renders them; and everything else through
+// its slog value. Nesting past maxCompositeDepth renders as a fixed marker.
+func anyNode(x any, depth int) any {
+	if depth > maxCompositeDepth {
+		return canonicalDepthExceeded
+	}
 	if b, ok := x.([]byte); ok {
 		return base64.StdEncoding.EncodeToString(b)
 	}
@@ -265,17 +309,28 @@ func canonicalAny(x any) string {
 		return text
 	}
 	rv := reflect.ValueOf(x)
-	if rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array {
-		if v := slog.AnyValue(x); v.Kind() != slog.KindAny {
-			return canonicalSlog(v)
+	switch rv.Kind() {
+	case reflect.Pointer:
+		if !rv.IsNil() {
+			return anyNode(rv.Elem().Interface(), depth+1)
 		}
-		return fmt.Sprint(x)
+	case reflect.Slice, reflect.Array:
+		arr := make([]any, rv.Len())
+		for i := range arr {
+			arr[i] = anyNode(rv.Index(i).Interface(), depth+1)
+		}
+		return arr
+	case reflect.Map:
+		obj := make(map[string]any, rv.Len())
+		for it := rv.MapRange(); it.Next(); {
+			obj[mapKey(it.Key())] = anyNode(it.Value().Interface(), depth+1)
+		}
+		return obj
 	}
-	elems := make([]any, rv.Len())
-	for i := range elems {
-		elems[i] = rv.Index(i).Interface()
+	if v := slog.AnyValue(x); v.Kind() != slog.KindAny {
+		return slogNode(v)
 	}
-	return canonicalArray(elems, canonicalAny)
+	return fmt.Sprint(x)
 }
 
 // textForm returns the text of a value implementing encoding.TextMarshaler
@@ -303,12 +358,11 @@ func textForm(x any) (text string, ok bool) {
 // canonicalFloat renders a float in the shortest form that round-trips.
 func canonicalFloat(f float64) string { return strconv.FormatFloat(f, 'g', -1, 64) }
 
-// canonicalArray renders elems as a JSON array of their canonical strings.
-func canonicalArray[T any](elems []T, render func(T) string) string {
-	strs := make([]string, len(elems))
+// arrayNode builds an array node from elems.
+func arrayNode[T any](elems []T, node func(T) any) []any {
+	arr := make([]any, len(elems))
 	for i, e := range elems {
-		strs[i] = render(e)
+		arr[i] = node(e)
 	}
-	out, _ := json.Marshal(strs) // a []string always marshals
-	return string(out)
+	return arr
 }

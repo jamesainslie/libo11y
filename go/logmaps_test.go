@@ -278,3 +278,25 @@ func TestSlogNilPointerToMap(t *testing.T) {
 	t.Parallel()
 	ownSinks(t, (*map[string]any)(nil))
 }
+
+// A whole map under a classified key is one value: under PIIHash the slog
+// pipeline and a bridge render it to the same canonical form and so produce
+// the same token.
+func TestSlogMapUnderClassifiedKeyTokenMatchesBridge(t *testing.T) {
+	t.Parallel()
+	exp := &memLogExporter{}
+	sdk, _, _, console := newHermetic(t, o11y.WithLogExporter(exp),
+		o11y.WithPIIMode(o11y.PIIHash), o11y.WithPIIHashKey(testKey))
+	value := map[string]any{"v4": "10.9.9.9", "port": 22}
+	sdk.Logger().Info("own", "host.ip", value)
+	otelslog.NewLogger("thirdparty", otelslog.WithLoggerProvider(sdk.LoggerProvider())).Info("bridged", "host.ip", value)
+	if err := sdk.ForceFlush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	consoleToken, _ := consoleRecords(t, console)[0]["host.ip"].(string)
+	recs := exp.snapshot()
+	ownToken, bridgeToken := logAttrs(recs[0])["host.ip"], logAttrs(recs[1])["host.ip"]
+	if !strings.HasPrefix(consoleToken, "hmac-sha256:") || ownToken != consoleToken || bridgeToken != consoleToken {
+		t.Errorf("console %q, OTLP leg %q, bridge %q: want one token", consoleToken, ownToken, bridgeToken)
+	}
+}
