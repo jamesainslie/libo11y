@@ -6,7 +6,7 @@ GO_TEST_P ?= 4
 
 # Every Go module in the repository. Each has its own go.mod and every Go
 # gate runs on each module separately.
-GO_MODULES := go go/o11ygin go/o11yconnect
+GO_MODULES := go go/o11ygin go/o11yconnect go/o11ysql
 
 .PHONY: spec-check spec-generate spec-drift test lint vet tidy-check vuln release-check schema-published schema-published-test release-notes-test ts-install ts-check ci
 
