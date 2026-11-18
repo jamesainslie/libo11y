@@ -13,12 +13,12 @@ RUM is libo11y's second product. libo11y core wraps OpenTelemetry setup and
 never instruments. RUM is an opinionated real-user-monitoring data model.
 It emits pure OTLP through the standard OpenTelemetry API, so any OTLP
 backend can store what it records. Its conventions are part of the libo11y
-specification, and every RUM platform follows them.
+specification. Every RUM platform follows them.
 
 RUM is private by default. Every feature can be switched on or off and
 tuned in code. RUM uses upstream instrumentation, such as
-`opentelemetry-js-contrib`, where that instrumentation is good, and owns
-the rest.
+`opentelemetry-js-contrib`, where that instrumentation is good. RUM
+implements everything that upstream instrumentation does not cover.
 
 ## Products and platforms
 

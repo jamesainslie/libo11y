@@ -80,9 +80,9 @@ and tests every package. `make ci` runs it.
   workflows pass, bump `RELEASE_VERSION` in the `Makefile` and the
   default in `scripts/release-check.sh` to the next unreleased version.
 - TypeScript releases are lockstep. Every `@libo11y/*` package publishes
-  at one shared version from a `ts/vX.Y.Z` tag, starting with step L3.
-  Until then `@libo11y/spec` is private at version `0.0.0`, and nothing
-  publishes it.
+  at one shared version from a `ts/vX.Y.Z` tag, starting with
+  `ts/v0.1.0`. Until then `@libo11y/spec` is private at version `0.0.0`,
+  and nothing publishes it.
 - The specification versions separately: once released, each version has a
   `spec/vX.Y.Z` tag and a schema file served at its schema URL. Spec
   1.0.0 is tagged `spec/v1.0.0` on the `go/v0.1.0` commit. Before

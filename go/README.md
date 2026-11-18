@@ -519,6 +519,8 @@ with empty values.
   guard and never mutates globals.
 - Semantic conventions are pinned per release (currently v1.41.0), and
   every resource carries the spec schema URL
-  `https://schemas.o11y.ing/libo11y/1.0.0` (`spec.SchemaURL`).
+  `https://schemas.o11y.ing/libo11y/1.1.0` (`spec.SchemaURL`). The
+  repository holds one schema file per spec version under `spec/schemas`,
+  and `spec/schemas/1.1.0` is the current one.
 
 See the runnable example in [`examples/httpserver`](examples/httpserver).

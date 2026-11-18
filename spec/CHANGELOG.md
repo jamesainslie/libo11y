@@ -17,7 +17,13 @@ at its schema URL.
   rules.
 - A manifest version history and one schema file per version.
 - A TypeScript codegen target (`ts/packages/spec`).
-- The rules `libo11y_rename_needs_transform` and `libo11y_rum_span_kind`.
+- The rules `libo11y_rename_needs_transform`, `libo11y_rum_span_kind` and
+  `libo11y_group_duplicate`.
+
+### Changed
+
+- `make spec-check` validates the manifest version history.
+- The manifest's `schema_url` may not carry a query or a fragment.
 
 ## [1.0.0] - 2026-10-12
 

@@ -1,12 +1,13 @@
 # The libo11y telemetry specification
 
-Version 1.1.0, in development. Normative keywords (MUST, SHOULD, MAY) follow RFC 2119.
+Version 1.1.0, in development. Normative keywords (MUST, SHOULD, MAY)
+follow RFC 2119.
 
 This document is the human-readable form of the machine registry under
-[`spec/registry`](../spec/registry). The registry is the source of truth;
-the generated attribute tables in `docs/taxonomy/`, the Go `spec` package
-and the TypeScript package `@libo11y/spec` are produced from it. Where this prose and the registry disagree, the
-registry wins.
+[`spec/registry`](../spec/registry). The registry is the source of truth.
+The generator produces the attribute tables in `docs/taxonomy/`, the Go
+`spec` package and the TypeScript package `@libo11y/spec` from it. Where
+this prose and the registry disagree, the registry wins.
 
 Where the Go implementation does not yet enforce a requirement, this
 document says so next to the requirement. Section 8 lists the enforcement
@@ -250,8 +251,8 @@ registry is a YAML file, such as `o11y-registry.yaml`, that gives each
 attribute a type, a sensitivity class and a cardinality budget. Once an SDK
 loads the registry, the sensitivity policy of section 5 classifies the
 application's keys exactly like spec keys. A key registered `pii` is then
-dropped or hashed according to the PII mode, and a key registered
-`internal` passes.
+dropped, hashed or kept according to the PII mode of section 5, which is
+`drop`, `hash` or `allow`. A key registered `internal` passes.
 
 Runtime loading is not implemented yet. It arrives in Go `go/v0.2.0`,
 through the option `WithAppRegistry`, and in TypeScript `ts/v0.1.0`. The
@@ -297,14 +298,14 @@ The rules check the schema, the namespace, the type, the classification
 and the enum values. Several rules are the same rules the spec registry
 checks use, under the same IDs. Section 8 lists every rule ID.
 
-An application may not claim a reserved namespace. The reserved namespaces
-are `o11y`, which belongs to libo11y, `otel`, which belongs to
-OpenTelemetry, and the root namespaces of the pinned semconv release,
-1.41.0. The semconv roots are the names of its model directories, spelled
-as attribute namespaces, plus the root of every attribute it defines,
-which includes `oracle`. The list is in
-`go/internal/appregistry/reserved.go`, and it moves with the semconv pin
-in `spec/registry/manifest.yaml`.
+An application may not claim a reserved namespace. `o11y` is reserved
+because it belongs to libo11y. `otel` is reserved because it belongs to
+OpenTelemetry. The pinned semconv release, 1.41.0, reserves the names of
+its model directories, spelled as attribute namespaces. It also reserves
+the root of every attribute it defines, which includes `oracle`. The list
+is in `go/internal/appregistry/reserved.go`. A test fails when the semconv
+pin in `spec/registry/manifest.yaml` names a release the list does not
+reflect.
 
 ### Checking a registry
 
@@ -312,8 +313,11 @@ in `spec/registry/manifest.yaml`.
 use in a consumer's CI. The command is built from `go/cmd/libo11y`. In
 this repository, run it as
 `cd go && go run ./cmd/libo11y registry check FILE...`. It prints one line
-per violation, in the form `FILE: RULE_ID: attribute NAME: detail`. A
-valid file prints `FILE: ok (N attributes in namespace NS)`.
+per violation. A violation of an attribute rule reads
+`FILE: RULE_ID: attribute NAME: detail`. A violation of a rule about the
+registry as a whole reads `FILE: RULE_ID: detail`. A valid file prints
+`FILE: ok (N attributes in namespace NS)`, with `1 attribute` when the
+registry declares one.
 
 | Exit status | Meaning |
 |---|---|
@@ -352,7 +356,8 @@ item is never renamed or removed without a major version bump.
   Go), stamped on every resource.
 - **Version history.** The manifest lists every spec version in
   `versions`, currently `[1.0.0, 1.1.0]`. The list starts at 1.0.0, ends
-  at the version in `schema_url`, and ascends.
+  at the version in `schema_url`, and ascends. `make spec-check` and
+  `make spec-generate` both fail on a history that breaks these rules.
 - **Schema file.** The generator writes one OpenTelemetry schema file
   (file format 1.1.0) per listed version to `spec/schemas/<version>`, so
   1.0.0 is `spec/schemas/1.0.0` and 1.1.0 is `spec/schemas/1.1.0`. Each
@@ -386,7 +391,9 @@ together with `go/v0.1.0`.
    `make spec-generate`): strict decoding of every registry file (unknown
    fields fail with `libo11y_registry_unknown_field`, and the manifest's
    `schema_url` must be an absolute http(s) URL ending in a bare semantic
-   version), followed by the rules below. Rule IDs are stable.
+   version, with no query or fragment), followed by the rules below. It
+   also validates the manifest version history against the rules of
+   section 7. Rule IDs are stable.
 3. **Init-time** (`Setup`/`New`): tier-0 identity is validated and
    required; `hash` mode without a key fails.
 4. **Emit-time** (always on): the sensitivity policy of section 5, applied
@@ -423,7 +430,7 @@ allowlist enforcing the identity quintet.
 | ownership | `libo11y_namespace_ownership` |
 | sensitivity | `libo11y_sensitivity_missing`, `libo11y_sensitivity_unknown`, `libo11y_secret_referenced`, `libo11y_classification_conflict` |
 | cardinality | `libo11y_cardinality_missing`, `libo11y_cardinality_unknown`, `libo11y_cardinality_conflict`, `libo11y_unbounded_metric_label`, `libo11y_metric_label_unclassified` |
-| references | `libo11y_ref_undefined`, `libo11y_attr_duplicate`, `libo11y_deprecated_target_undefined`, `libo11y_legacy_key_unrenamed`, `libo11y_legacy_key_invalid`, `libo11y_legacy_key_duplicate`, `libo11y_rename_needs_transform` |
+| references | `libo11y_ref_undefined`, `libo11y_attr_duplicate`, `libo11y_group_duplicate`, `libo11y_deprecated_target_undefined`, `libo11y_legacy_key_unrenamed`, `libo11y_legacy_key_invalid`, `libo11y_legacy_key_duplicate`, `libo11y_rename_needs_transform` |
 | enums | `libo11y_enum_member_empty`, `libo11y_enum_value_whitespace`, `libo11y_enum_duplicate_value` |
 | events | `libo11y_event_namespace`, `libo11y_event_stability` |
 | spans | `libo11y_rum_span_kind` |
