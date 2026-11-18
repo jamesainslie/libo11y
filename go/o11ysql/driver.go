@@ -3,6 +3,7 @@ package o11ysql
 import (
 	"context"
 	"database/sql/driver"
+	"errors"
 	"io"
 )
 
@@ -31,6 +32,12 @@ func (d *wrappedDriver) Open(name string) (driver.Conn, error) {
 }
 
 func (d *wrappedDriver) OpenConnector(name string) (driver.Connector, error) {
+	return d.openConnector(name)
+}
+
+// openConnector is OpenConnector returning the concrete connector, so
+// [Open] can attach the pool metrics registration to it.
+func (d *wrappedDriver) openConnector(name string) (*connector, error) {
 	if dc, ok := d.inner.(driver.DriverContext); ok {
 		c, err := dc.OpenConnector(name)
 		if err != nil {
@@ -46,6 +53,9 @@ type connector struct {
 	inner driver.Connector
 	ins   *instrumenter
 	drv   *wrappedDriver
+	// unregister ends the pool metrics registration [Open] made for the
+	// database over this connector; nil for [Wrap].
+	unregister func() error
 }
 
 var (
@@ -67,13 +77,18 @@ func (c *connector) Connect(ctx context.Context) (driver.Conn, error) {
 
 func (c *connector) Driver() driver.Driver { return c.drv }
 
-// Close closes the inner connector when it is an io.Closer, as sql.DB.Close
-// does for an unwrapped one.
+// Close ends the pool metrics registration [Open] made, and closes the
+// inner connector when it is an io.Closer, as sql.DB.Close does for an
+// unwrapped one. sql.DB.Close calls it once.
 func (c *connector) Close() error {
-	if closer, ok := c.inner.(io.Closer); ok {
-		return closer.Close()
+	var errs []error
+	if c.unregister != nil {
+		errs = append(errs, c.unregister())
 	}
-	return nil
+	if closer, ok := c.inner.(io.Closer); ok {
+		errs = append(errs, closer.Close())
+	}
+	return errors.Join(errs...)
 }
 
 // dsnConnector opens connections by name, for drivers without

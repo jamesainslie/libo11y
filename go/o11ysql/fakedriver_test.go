@@ -2,6 +2,7 @@ package o11ysql_test
 
 import (
 	"context"
+	"database/sql"
 	"database/sql/driver"
 	"errors"
 	"fmt"
@@ -22,10 +23,35 @@ func result(query string) error {
 	return nil
 }
 
+func init() {
+	sql.Register("o11ysql-fake", fakeDriver{})
+	sql.Register("o11ysql-fake-ctx", fakeDriverContext{})
+}
+
 // fakeDriver opens fakeConn connections.
 type fakeDriver struct{}
 
 func (fakeDriver) Open(string) (driver.Conn, error) { return &fakeConn{}, nil }
+
+// errNamePath is what fakeDriverContext.Open returns: a driver with
+// driver.DriverContext must be reached through its connector.
+var errNamePath = errors.New("fake: Open called on a driver.DriverContext, want OpenConnector")
+
+// fakeDriverContext implements driver.DriverContext, so o11ysql.Open takes
+// its connector path; fakeDriver takes the name path. Its Open fails, so a
+// statement succeeds only through the connector path.
+type fakeDriverContext struct{}
+
+func (fakeDriverContext) Open(string) (driver.Conn, error) { return nil, errNamePath }
+
+func (fakeDriverContext) OpenConnector(string) (driver.Connector, error) { return ctxConnector{}, nil }
+
+// ctxConnector is a fakeConnector whose Driver is fakeDriverContext, as a
+// real driver's connector reports its own driver. database/sql answers
+// sql.DB.Driver from the connector, so this is the driver o11ysql.Open sees.
+type ctxConnector struct{ fakeConnector }
+
+func (ctxConnector) Driver() driver.Driver { return fakeDriverContext{} }
 
 // fakeConnector connects to the fake database. With legacy set, its
 // connections implement only driver.Conn, as drivers written before Go 1.8
@@ -138,26 +164,30 @@ func (r *fakeRows) Next(dest []driver.Value) error {
 	return nil
 }
 
-// countingConn is a fakeConn that counts its closes. Like fakeConn, it
-// implements neither driver.SessionResetter nor driver.Validator.
-type countingConn struct {
+// signalConn is a fakeConn that signals each close on closed without
+// blocking. Like fakeConn, it implements neither driver.SessionResetter
+// nor driver.Validator.
+type signalConn struct {
 	fakeConn
-	closes *atomic.Int64
+	closed chan<- struct{}
 }
 
-func (c *countingConn) Close() error {
-	c.closes.Add(1)
+func (c *signalConn) Close() error {
+	select {
+	case c.closed <- struct{}{}:
+	default: // a close is already waiting to be seen
+	}
 	return nil
 }
 
-// countingConnector opens countingConn connections that share one count.
-type countingConnector struct{ closes *atomic.Int64 }
+// signalConnector opens signalConn connections that share one channel.
+type signalConnector struct{ closed chan<- struct{} }
 
-func (c countingConnector) Connect(context.Context) (driver.Conn, error) {
-	return &countingConn{closes: c.closes}, nil
+func (c signalConnector) Connect(context.Context) (driver.Conn, error) {
+	return &signalConn{closed: c.closed}, nil
 }
 
-func (countingConnector) Driver() driver.Driver { return fakeDriver{} }
+func (signalConnector) Driver() driver.Driver { return fakeDriver{} }
 
 // sessionConn is a fakeConn that implements driver.Pinger,
 // driver.SessionResetter, and driver.Validator, and counts each call.

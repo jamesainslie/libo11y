@@ -15,7 +15,15 @@
 //     the statement's span when there is one. The duration covers the
 //     driver call, not the iteration of returned rows;
 //   - db.client.connection.count by state (idle, used) and
-//     db.client.connection.max, read from sql.DB.Stats.
+//     db.client.connection.max, read from sql.DB.Stats and named by
+//     db.client.connection.pool.name (see [WithPoolName]). [Open] registers
+//     them until the database is closed; with [Wrap], register them with
+//     [RegisterPoolMetrics].
+//
+// The client span is started after the driver call returns and backdated
+// to when the call began, so the driver receives the caller's context:
+// any spans the driver makes, and any context it propagates to the
+// database, hang off the caller's span, not the database span.
 //
 // An error sets the span status to Error and adds error.type to the span
 // and the metric. The error message is not recorded, because database
@@ -26,6 +34,9 @@
 // postgresql, sqlite, mysql and mariadb. For any other system, including
 // the default other_sql, no rules are known to be correct, so the span
 // carries db.operation.name and db.collection.name but no db.query.text.
+// [Open] infers the system from well-known driver names, so a database
+// opened with the postgres or pgx driver records db.query.text, while one
+// opened with the sqlserver driver does not.
 //
 // It lives in its own Go module, so applications that do not use it never
 // download it:
@@ -33,6 +44,17 @@
 //	go get github.com/jamesainslie/libo11y/go/o11ysql
 //
 //	db, err := o11ysql.Open("sqlite", "file:app.db")
+//
+// To instrument a driver.Connector instead, wrap it and register the pool
+// metrics for the *sql.DB it opens. Each call takes its own options, so
+// pass [WithSystem] to both:
+//
+//	db := sql.OpenDB(o11ysql.Wrap(connector, o11ysql.WithSystem("postgresql")))
+//	reg, err := o11ysql.RegisterPoolMetrics(db, o11ysql.WithSystem("postgresql"))
+//	if err != nil {
+//		return err
+//	}
+//	// Unregister when db is closed.
 //
 // The wrapper needs the context interfaces database/sql has preferred
 // since Go 1.8: a connection that begins transactions must implement
@@ -67,12 +89,13 @@ var ErrLegacyDriver = errors.New("o11ysql: driver lacks the Go 1.8 context inter
 // name.
 const otherSQL = "other_sql"
 
-// Option configures [Wrap].
+// Option configures [Wrap], [Open], and [RegisterPoolMetrics].
 type Option func(*config)
 
 type config struct {
 	sdk       *o11y.SDK
 	system    string
+	poolName  string
 	queryText bool
 }
 
@@ -85,12 +108,20 @@ func WithSDK(sdk *o11y.SDK) Option {
 
 // WithSystem sets db.system.name to name, which should be the semantic
 // conventions' value for the database, such as postgresql, sqlite, mysql,
-// mariadb, or microsoft.sql_server. The default is other_sql. The system
-// also picks the lexical rules that remove literals from the query text:
-// db.query.text is recorded for postgresql, sqlite, mysql and mariadb, and
-// left off spans for every other system.
+// mariadb, or microsoft.sql_server. The default is other_sql, or for [Open]
+// the system its driver name implies. The system also picks the lexical
+// rules that remove literals from the query text: db.query.text is
+// recorded for postgresql, sqlite, mysql and mariadb, and left off spans
+// for every other system.
 func WithSystem(name string) Option {
 	return func(c *config) { c.system = name }
+}
+
+// WithPoolName sets db.client.connection.pool.name on the pool metrics. The
+// default is the db.system.name value; give each pool a distinct name when
+// an application opens several.
+func WithPoolName(name string) Option {
+	return func(c *config) { c.poolName = name }
 }
 
 // WithoutQueryText leaves db.query.text off spans. The sanitized text is

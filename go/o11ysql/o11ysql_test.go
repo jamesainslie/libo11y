@@ -6,6 +6,7 @@ import (
 	"database/sql/driver"
 	"errors"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -397,20 +398,18 @@ func TestOtherSQLStillNamesTheSpan(t *testing.T) {
 // otherwise closes it, because the connection may be mid-protocol.
 func TestCancelledTransactionClosesAConnectionWithoutSessionHooks(t *testing.T) {
 	rec := o11ytest.Start(t)
-	var closes atomic.Int64
-	db := openFake(t, rec, countingConnector{closes: &closes})
+	closed := make(chan struct{}, 1)
+	db := openFake(t, rec, signalConnector{closed: closed})
 	ctx, cancel := context.WithCancel(context.Background())
 	if _, err := db.BeginTx(ctx, nil); err != nil {
 		t.Fatalf("BeginTx: %v", err)
 	}
 	cancel()
 	// database/sql rolls back on its own goroutine once ctx ends.
-	deadline := time.Now().Add(10 * time.Second)
-	for closes.Load() == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("the connection was kept after its transaction was cancelled, want it closed")
-		}
-		time.Sleep(time.Millisecond)
+	select {
+	case <-closed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the connection was kept after its transaction was cancelled, want it closed")
 	}
 }
 
@@ -476,8 +475,8 @@ func TestNamedValueCheckers(t *testing.T) {
 				_, err = db.ExecContext(ctx, "UPDATE shapes SET at = ?", point{1, 2})
 			}
 			if tc.want == nil {
-				if err == nil {
-					t.Error("a point passed without a checker, want database/sql's conversion error")
+				if err == nil || !strings.Contains(err.Error(), "converting argument") {
+					t.Errorf("Exec error = %v, want database/sql's conversion error", err)
 				}
 				return
 			}
