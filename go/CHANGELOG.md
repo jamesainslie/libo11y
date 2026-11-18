@@ -6,6 +6,19 @@ and the module adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `spec`: key constants and enums for the spec 1.1.0 RUM conventions
+  (`RUMViewNameKey`, `RUMViewKind`, ...), event names (`EventRUMError`,
+  ...) and metric name constants for every registered metric
+  (`MetricSchemaViolations`, `MetricRUMVitalLcp`, ...).
+- `cmd/libo11y`: `libo11y registry check`, which validates application
+  attribute registries.
+
+### Changed
+
+- `spec.SchemaURL` and `spec.SpecVersion` name spec 1.1.0.
+
 ## [0.1.0] - 2026-10-12
 
 First release of both modules: `github.com/jamesainslie/libo11y/go`,

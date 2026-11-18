@@ -1,11 +1,11 @@
 # The libo11y telemetry specification
 
-Version 1.0.0. Normative keywords (MUST, SHOULD, MAY) follow RFC 2119.
+Version 1.1.0, in development. Normative keywords (MUST, SHOULD, MAY) follow RFC 2119.
 
 This document is the human-readable form of the machine registry under
 [`spec/registry`](../spec/registry). The registry is the source of truth;
-the generated attribute tables in `docs/taxonomy/` and the Go `spec` package
-are produced from it. Where this prose and the registry disagree, the
+the generated attribute tables in `docs/taxonomy/`, the Go `spec` package
+and the TypeScript package `@libo11y/spec` are produced from it. Where this prose and the registry disagree, the
 registry wins.
 
 Where the Go implementation does not yet enforce a requirement, this
@@ -146,6 +146,10 @@ within a segment, singular unless the value is an array, with no units in
 the name. Applications MUST namespace their own attributes and MUST NOT mint
 names inside `otel.*`, `o11y.*`, or any semconv-owned namespace.
 
+An application declares its own attributes in an application registry,
+described in section 5a. The registry validator refuses a namespace that
+belongs to libo11y, OpenTelemetry or semconv.
+
 ### Events
 
 An Event is a record emitted through the event API (`SDK.Event` in Go, and
@@ -163,6 +167,10 @@ is sampled. libo11y v1 registers:
 | `o11y.telemetry.configured` | startup summary and initialization canary (emitted by `Setup` only); carries the resolved configuration as `o11y.config.<key>` attributes |
 | `o11y.request.summary` | the per-request wide event (canonical log line) |
 | `o11y.telemetry.dropped` | buffered telemetry that failed to flush at shutdown, emitted best effort to the sinks still running |
+| `o11y.rum.error` | an error RUM captured (spec 1.1.0, see [RUM.md](RUM.md)) |
+| `o11y.rum.frustration` | a frustration signal on a UI element (spec 1.1.0) |
+| `o11y.rum.session.start` | the start of a RUM session (spec 1.1.0) |
+| `o11y.rum.session.end` | the end of a RUM session, with the reason its telemetry was kept (spec 1.1.0) |
 
 Exceptions are not a registered event. The semconv exception attributes
 (`exception.type`, `exception.message`, `exception.stacktrace`) are
@@ -235,6 +243,86 @@ it does not cover:
   omitted, and collector processors that insert only absent keys treat it
   as present.
 
+## 5a. Application attribute registry
+
+An application declares its own attributes in an application registry. The
+registry is a YAML file, such as `o11y-registry.yaml`, that gives each
+attribute a type, a sensitivity class and a cardinality budget. Once an SDK
+loads the registry, the sensitivity policy of section 5 classifies the
+application's keys exactly like spec keys. A key registered `pii` is then
+dropped or hashed according to the PII mode, and a key registered
+`internal` passes.
+
+Runtime loading is not implemented yet. It arrives in Go `go/v0.2.0`,
+through the option `WithAppRegistry`, and in TypeScript `ts/v0.1.0`. The
+file format, its rules and the `libo11y registry check` command exist
+today.
+
+### Schema
+
+A registry has three top-level fields. `schema` is
+`libo11y.app-registry/v1`, the only schema version. `namespace` is one
+snake_case segment, and every attribute name starts with it. `attributes`
+maps each attribute name to its declaration.
+
+```yaml
+schema: libo11y.app-registry/v1
+namespace: lor
+attributes:
+  lor.user.id:      {type: string, sensitivity: internal, cardinality: unbounded, brief: The portal's opaque user ID.}
+  lor.user.role:    {type: string, sensitivity: public, cardinality: enum, values: [studio, client]}
+  lor.project.id:   {type: string, sensitivity: internal, cardinality: unbounded}
+  lor.client.email: {type: string, sensitivity: pii, cardinality: unbounded}
+  lor.retry.count:  {type: int, sensitivity: public, cardinality: bounded}
+```
+
+| Field | Required | Allowed values |
+|---|---|---|
+| `type` | yes | `string`, `boolean`, `int`, `double`, `string[]`, `boolean[]`, `int[]`, `double[]` |
+| `sensitivity` | yes | `public`, `internal`, `pii`, `secret` |
+| `cardinality` | yes | `enum`, `bounded`, `unbounded` |
+| `values` | when `cardinality` is `enum` | the allowed values, refused for any other cardinality |
+| `brief` | no | a short description |
+
+The parser is strict. An unknown field or a second YAML document is a
+parse error, and its message starts with `parsing application registry:`.
+An empty file is an error too. A file that fails to parse is not
+validated.
+
+### Rules
+
+Validation reports every violation, not only the first. Rules about the
+registry as a whole come first. Then each attribute follows in name order.
+The rules check the schema, the namespace, the type, the classification
+and the enum values. Several rules are the same rules the spec registry
+checks use, under the same IDs. Section 8 lists every rule ID.
+
+An application may not claim a reserved namespace. The reserved namespaces
+are `o11y`, which belongs to libo11y, `otel`, which belongs to
+OpenTelemetry, and the root namespaces of the pinned semconv release,
+1.41.0. The semconv roots are the names of its model directories, spelled
+as attribute namespaces, plus the root of every attribute it defines,
+which includes `oracle`. The list is in
+`go/internal/appregistry/reserved.go`, and it moves with the semconv pin
+in `spec/registry/manifest.yaml`.
+
+### Checking a registry
+
+`libo11y registry check FILE...` validates one or more registry files, for
+use in a consumer's CI. The command is built from `go/cmd/libo11y`. In
+this repository, run it as
+`cd go && go run ./cmd/libo11y registry check FILE...`. It prints one line
+per violation, in the form `FILE: RULE_ID: attribute NAME: detail`. A
+valid file prints `FILE: ok (N attributes in namespace NS)`.
+
+| Exit status | Meaning |
+|---|---|
+| 0 | every file is valid |
+| 1 | a file breaks a policy rule |
+| 2 | a usage error, or a file that cannot be read or parsed |
+
+With several files, the highest status wins.
+
 ## 6. Metrics and spans
 
 Metric names are lowercase and dot-namespaced, carry UCUM units in the unit
@@ -247,6 +335,12 @@ enforce these rules for metrics the registry defines; they are not checked
 on application instruments at runtime. HTTP span and metric conventions are
 imported verbatim from stable semconv.
 
+Spec 1.1.0 adds the RUM conventions under `o11y.rum.*`. They define three
+span shapes, `view`, `action` and `app_load`, each with its required
+attributes. They also define RUM counters and one histogram per web vital,
+whose labels are all bounded or enums. [RUM.md](RUM.md) lists the shapes,
+the metrics and their labels.
+
 ## 7. Versioning
 
 The specification is versioned independently of the language modules. Each
@@ -254,17 +348,21 @@ release stamps one schema URL and pins one semconv version. A stable spec
 item is never renamed or removed without a major version bump.
 
 - **Schema URL.** The URL ends in the bare spec version:
-  `https://schemas.o11y.ing/libo11y/1.0.0` (`spec.SchemaURL` in
+  `https://schemas.o11y.ing/libo11y/1.1.0` (`spec.SchemaURL` in
   Go), stamped on every resource.
-- **Schema file.** The generator writes the matching OpenTelemetry schema
-  file (file format 1.1.0) to `spec/schemas/<version>`, so 1.0.0 is
-  `spec/schemas/1.0.0`. 1.0.0 is the first versioned release and declares
-  no transformations.
+- **Version history.** The manifest lists every spec version in
+  `versions`, currently `[1.0.0, 1.1.0]`. The list starts at 1.0.0, ends
+  at the version in `schema_url`, and ascends.
+- **Schema file.** The generator writes one OpenTelemetry schema file
+  (file format 1.1.0) per listed version to `spec/schemas/<version>`, so
+  1.0.0 is `spec/schemas/1.0.0` and 1.1.0 is `spec/schemas/1.1.0`. Each
+  file lists its own version and every earlier version. No version
+  declares transformations yet.
 - **Immutability.** A released schema file is immutable: a spec change
-  bumps the version and adds a new file. From the next version on, renames
-  MUST be recorded both as a registry tombstone and as a schema-file
-  transform; until the registry can carry that version history, the
-  generator refuses to render any version after 1.0.0. Renames made before
+  bumps the version and adds a new file. From 1.0.0 on, renames MUST be
+  recorded both as a registry tombstone and as a schema-file transform.
+  The generator cannot render transforms yet, so `make spec-check` refuses
+  such a rename with `libo11y_rename_needs_transform`. Renames made before
   1.0.0 are recorded only as registry tombstones (the
   pre-spec `vcs.revision`, `vcs.time`, and `vcs.modified` build-info keys).
 - **Release steps.** Publishing a spec version means tagging the commit
@@ -274,14 +372,16 @@ item is never renamed or removed without a major version bump.
   `make schema-published` fails unless the schema URL serves the generated
   file byte for byte, and it must pass before the tag is created.
 
-Status: spec 1.0.0 is released. Its schema file is served at its schema
-URL, and the commit is tagged `spec/v1.0.0` together with `go/v0.1.0`.
+Status: spec 1.1.0 is in development. Spec 1.0.0 is released. Its schema
+file is served at its schema URL, and the commit is tagged `spec/v1.0.0`
+together with `go/v0.1.0`.
 
 ## 8. Enforcement layers
 
-1. **Generated typed API** (`go/spec`): typed keys and closed enums make
-   many invalid states unrepresentable at compile time. Forbidden keys get
-   no constants.
+1. **Generated typed API** (`go/spec`, and the generated TypeScript
+   package `@libo11y/spec`): typed keys and closed enums make many invalid
+   states unrepresentable at compile time. Forbidden keys get no
+   constants.
 2. **Registry policy checks** (`make spec-check`, also run before every
    `make spec-generate`): strict decoding of every registry file (unknown
    fields fail with `libo11y_registry_unknown_field`, and the manifest's
@@ -323,8 +423,33 @@ allowlist enforcing the identity quintet.
 | ownership | `libo11y_namespace_ownership` |
 | sensitivity | `libo11y_sensitivity_missing`, `libo11y_sensitivity_unknown`, `libo11y_secret_referenced`, `libo11y_classification_conflict` |
 | cardinality | `libo11y_cardinality_missing`, `libo11y_cardinality_unknown`, `libo11y_cardinality_conflict`, `libo11y_unbounded_metric_label`, `libo11y_metric_label_unclassified` |
-| references | `libo11y_ref_undefined`, `libo11y_attr_duplicate`, `libo11y_deprecated_target_undefined`, `libo11y_legacy_key_unrenamed`, `libo11y_legacy_key_invalid`, `libo11y_legacy_key_duplicate` |
+| references | `libo11y_ref_undefined`, `libo11y_attr_duplicate`, `libo11y_deprecated_target_undefined`, `libo11y_legacy_key_unrenamed`, `libo11y_legacy_key_invalid`, `libo11y_legacy_key_duplicate`, `libo11y_rename_needs_transform` |
 | enums | `libo11y_enum_member_empty`, `libo11y_enum_value_whitespace`, `libo11y_enum_duplicate_value` |
 | events | `libo11y_event_namespace`, `libo11y_event_stability` |
+| spans | `libo11y_rum_span_kind` |
 | metrics and units | `libo11y_instrument_unknown`, `libo11y_metric_total_suffix`, `libo11y_metric_count_suffix`, `libo11y_metric_unit_in_name`, `libo11y_metric_unit_missing`, `libo11y_metric_unit_invalid`, `libo11y_metric_namespace` |
 | schema hygiene | `libo11y_stability_unknown`, `libo11y_requirement_unknown`, `libo11y_annotation_unknown` |
+
+### Application registry rule IDs
+
+`libo11y registry check` applies these rules to an application registry
+(section 5a). Rule IDs are stable. A rule marked shared has the same ID
+and the same meaning as the spec-check rule.
+
+| Rule ID | Fails when | Shared |
+|---|---|---|
+| `libo11y_app_schema_unknown` | `schema` is not `libo11y.app-registry/v1` | no |
+| `libo11y_app_namespace_invalid` | `namespace` is not one snake_case segment | no |
+| `libo11y_app_namespace_reserved` | `namespace` is reserved for libo11y, OpenTelemetry or semconv | no |
+| `libo11y_app_attributes_empty` | the registry declares no attributes | no |
+| `libo11y_app_attr_outside_namespace` | an attribute name does not start with the namespace | no |
+| `libo11y_attr_naming` | an attribute name is not dotted snake_case with at least two segments | yes |
+| `libo11y_app_type_unknown` | `type` is not an allowed type | no |
+| `libo11y_sensitivity_missing` | an attribute has no sensitivity class | yes |
+| `libo11y_sensitivity_unknown` | the sensitivity class is not `public`, `internal`, `pii` or `secret` | yes |
+| `libo11y_cardinality_missing` | an attribute has no cardinality budget | yes |
+| `libo11y_cardinality_unknown` | the cardinality is not `enum`, `bounded` or `unbounded` | yes |
+| `libo11y_app_enum_values_missing` | an `enum` attribute declares no values | no |
+| `libo11y_app_values_without_enum` | an attribute declares values without cardinality `enum` | no |
+| `libo11y_enum_value_whitespace` | a value has leading or trailing whitespace | yes |
+| `libo11y_enum_duplicate_value` | two values are the same after trimming whitespace | yes |

@@ -8,6 +8,7 @@ libo11y/
   spec/          telemetry specification registry: the shared,
                  language-neutral source of truth
   go/            Go module (github.com/jamesainslie/libo11y/go)
+  ts/            TypeScript workspace: Bun, the @libo11y/* packages
   rust/          Rust workspace (planned)
   java/          Java/Maven module (planned)
   zig/           Zig package (planned)
@@ -30,8 +31,9 @@ module itself. Make targets from the repository root:
   discipline, and metric naming/unit rules. Rule IDs are listed in
   [SPEC.md](SPEC.md), section 8.
 - `make spec-generate` validates first, then regenerates `go/spec`,
-  `go/internal/spectables`, `docs/taxonomy`, and the OpenTelemetry schema
-  file under `spec/schemas` from the registry. An invalid registry
+  `go/internal/spectables`, `docs/taxonomy`,
+  `ts/packages/spec/src/generated`, and the OpenTelemetry schema files
+  under `spec/schemas` from the registry. An invalid registry
   generates nothing. Generated files are never edited by hand.
 - `make spec-drift` fails if generated artifacts are stale or if the
   generator produced files git does not track. CI runs it, and a golden
@@ -41,12 +43,21 @@ The upstream semantic-conventions release the registry extends is pinned
 as `semconv_version` in `spec/registry/manifest.yaml`; referenced upstream
 attributes are defined by that release and never redefined here.
 
+## TypeScript toolchain
+
+The TypeScript workspace in `ts/` pins its toolchain exactly. It uses
+`bun@1.3.13` as the package manager and runtime, `typescript@7.0.2`,
+`@biomejs/biome@2.6.8` for linting and formatting, and `@types/bun@1.4.4`.
+`make ts-check` installs the locked dependencies, then lints, typechecks
+and tests every package. `make ci` runs it.
+
 ## Versioning and releases
 
 - Independent per-language versioning, path-prefixed tags: `go/v0.1.0`,
   `rust/v0.1.0`.
 - Semantic versioning per language ecosystem norms.
-- No lockstep releases. A change to shared docs never forces a release.
+- No lockstep releases across languages. A change to shared docs never
+  forces a release.
 - Each language keeps a `CHANGELOG.md` in Keep a Changelog format.
 - Go releases tag `go/vX.Y.Z` first, then `go/o11ygin/vX.Y.Z`, whose
   `go.mod` requires the matching parent version. `make release-check`
@@ -68,6 +79,10 @@ attributes are defined by that release and never redefined here.
   `proxy.golang.org` and builds a consumer against it. After both
   workflows pass, bump `RELEASE_VERSION` in the `Makefile` and the
   default in `scripts/release-check.sh` to the next unreleased version.
+- TypeScript releases are lockstep. Every `@libo11y/*` package publishes
+  at one shared version from a `ts/vX.Y.Z` tag, starting with step L3.
+  Until then `@libo11y/spec` is private at version `0.0.0`, and nothing
+  publishes it.
 - The specification versions separately: once released, each version has a
   `spec/vX.Y.Z` tag and a schema file served at its schema URL. Spec
   1.0.0 is tagged `spec/v1.0.0` on the `go/v0.1.0` commit. Before
@@ -96,7 +111,7 @@ OTEL specification catches up.
 ## Commit messages
 
 `<area>: <type>: <description>` all lowercase, where area is one of `go`,
-`spec`, `rust`, `java`, `zig`, `docs`, `general`, and type follows
+`ts`, `spec`, `rust`, `java`, `zig`, `docs`, `general`, and type follows
 Conventional Commits (`feat`, `fix`, `docs`, `refactor`, `test`, `chore`,
 `build`, `ci`, `perf`, `revert`) or names a Keep a Changelog category
 (`change`, `removed`).
