@@ -111,8 +111,10 @@ func ServerInterceptor(opts ...Option) (connect.Interceptor, error) {
 // outbound RPCs and injects trace context and baggage with the configured
 // propagator. It fails only when otelconnect cannot create its instruments.
 // Like every otelconnect interceptor it also works on handlers, where it
-// behaves as [ServerInterceptor] does, so passing the wrong one never
-// changes whether inbound context is trusted.
+// traces and measures inbound RPCs, decides trust in inbound context, and
+// marks a panicking RPC's span as [ServerInterceptor] does, so passing the
+// wrong one never changes whether inbound context is trusted. It never
+// emits the canonical line ([WithCanonicalLine]), which is the server's.
 func ClientInterceptor(opts ...Option) (connect.Interceptor, error) {
 	return newConfig(opts).interceptor(nil) // the canonical line is the server's
 }

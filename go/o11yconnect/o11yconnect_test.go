@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"connectrpc.com/connect"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/baggage"
 	"go.opentelemetry.io/otel/codes"
@@ -41,7 +42,8 @@ type fixture struct {
 	rec    *o11ytest.Recorder
 	url    string
 	client *http.Client
-	// handled receives the server-side context of each RPC, in arrival order.
+	// handled receives the server-side context of each RPC, in arrival
+	// order, while its buffer of 8 has room; echo drops the rest.
 	handled chan context.Context
 }
 
@@ -93,7 +95,6 @@ func start(t *testing.T, rec *o11ytest.Recorder, serverOpts ...o11yconnect.Optio
 // wrap wraps the whole mux, as HTTP middleware in front of Connect would.
 func serve(t *testing.T, rec *o11ytest.Recorder, interceptor connect.Interceptor, wrap func(http.Handler) http.Handler) *fixture {
 	t.Helper()
-	// handled holds the first 8 RPC contexts; later ones are dropped.
 	fx := &fixture{rec: rec, handled: make(chan context.Context, 8)}
 	mux := http.NewServeMux()
 	for _, procedure := range []string{echoProcedure, healthProcedure} {
@@ -295,42 +296,58 @@ func TestClientInterceptorOnAHandlerStillAdopts(t *testing.T) {
 
 // TestBehindInstrumentedHTTPTheOuterLayerDecidesTrust pins the documented
 // composition with o11yhttp: the HTTP layer has already started a span, so
-// otelconnect extracts nothing and nests the RPC span under it, and a
-// public endpoint must be declared on the HTTP layer to keep callers out.
+// otelconnect extracts nothing and nests the RPC span under it. The trust
+// decision is therefore the HTTP layer's. The Connect layer is declared
+// public in both cases, yet the RPC joins the caller's trace when the HTTP
+// layer trusts it, so a public endpoint must be declared on the HTTP layer.
 func TestBehindInstrumentedHTTPTheOuterLayerDecidesTrust(t *testing.T) {
-	rec := o11ytest.Start(t)
-	interceptor, err := o11yconnect.ServerInterceptor(o11yconnect.WithSDK(rec.SDK), o11yconnect.WithPublicEndpoint())
-	if err != nil {
-		t.Fatalf("ServerInterceptor: %v", err)
-	}
-	fx := serve(t, rec, interceptor, func(h http.Handler) http.Handler {
-		return o11yhttp.NewHandler(h, "api", o11yhttp.WithSDK(rec.SDK), o11yhttp.WithPublicEndpoint())
-	})
-	ctx, caller := rec.SDK.TracerProvider().Tracer("test").Start(context.Background(), "caller")
-	if err := fx.call(ctx, t, echoProcedure, "hi", o11yconnect.WithSDK(rec.SDK)); err != nil {
-		t.Fatalf("call: %v", err)
-	}
-	caller.End()
+	for _, tc := range []struct {
+		name       string
+		httpOpts   []o11yhttp.Option
+		wantJoined bool
+	}{
+		{name: "http trusts", wantJoined: true},
+		{name: "http public", httpOpts: []o11yhttp.Option{o11yhttp.WithPublicEndpoint()}, wantJoined: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := o11ytest.Start(t)
+			interceptor, err := o11yconnect.ServerInterceptor(o11yconnect.WithSDK(rec.SDK), o11yconnect.WithPublicEndpoint())
+			if err != nil {
+				t.Fatalf("ServerInterceptor: %v", err)
+			}
+			fx := serve(t, rec, interceptor, func(h http.Handler) http.Handler {
+				return o11yhttp.NewHandler(h, "api", append([]o11yhttp.Option{o11yhttp.WithSDK(rec.SDK)}, tc.httpOpts...)...)
+			})
+			ctx, caller := rec.SDK.TracerProvider().Tracer("test").Start(context.Background(), "caller")
+			if err := fx.call(ctx, t, echoProcedure, "hi", o11yconnect.WithSDK(rec.SDK)); err != nil {
+				t.Fatalf("call: %v", err)
+			}
+			caller.End()
 
-	var rpc, outer sdktrace.ReadOnlySpan
-	for _, s := range rec.Spans() {
-		if s.SpanKind() != trace.SpanKindServer {
-			continue
-		}
-		if s.Name() == echoMethod {
-			rpc = s
-		} else {
-			outer = s
-		}
-	}
-	if rpc == nil || outer == nil {
-		t.Fatalf("want an HTTP and an RPC server span, got rpc=%v http=%v", rpc, outer)
-	}
-	if rpc.Parent().SpanID() != outer.SpanContext().SpanID() {
-		t.Errorf("rpc span parent = %v, want the HTTP server span %v", rpc.Parent().SpanID(), outer.SpanContext().SpanID())
-	}
-	if rpc.SpanContext().TraceID() == caller.SpanContext().TraceID() {
-		t.Error("rpc span joined the caller's trace")
+			var rpc, outer sdktrace.ReadOnlySpan
+			for _, s := range rec.Spans() {
+				if s.SpanKind() != trace.SpanKindServer {
+					continue
+				}
+				if s.Name() == echoMethod {
+					rpc = s
+				} else {
+					outer = s
+				}
+			}
+			if rpc == nil || outer == nil {
+				t.Fatalf("want an HTTP and an RPC server span, got rpc=%v http=%v", rpc, outer)
+			}
+			if rpc.Parent().SpanID() != outer.SpanContext().SpanID() {
+				t.Errorf("rpc span parent = %v, want the HTTP server span %v", rpc.Parent().SpanID(), outer.SpanContext().SpanID())
+			}
+			if joined := rpc.SpanContext().TraceID() == caller.SpanContext().TraceID(); joined != tc.wantJoined {
+				t.Errorf("rpc span joined the caller's trace = %v, want %v", joined, tc.wantJoined)
+			}
+			if links := rpc.Links(); len(links) != 0 {
+				t.Errorf("rpc span links = %v, want none: the Connect layer extracted nothing", links)
+			}
+		})
 	}
 }
 
@@ -361,6 +378,7 @@ func TestPanicMarksTheServerSpan(t *testing.T) {
 }
 
 func TestIgnoreHealthChecks(t *testing.T) {
+	durations := []string{"rpc.server.call.duration", "rpc.client.call.duration"}
 	rec := o11ytest.Start(t)
 	fx := start(t, rec, o11yconnect.WithIgnoreHealthChecks())
 	client := []o11yconnect.Option{o11yconnect.WithSDK(rec.SDK), o11yconnect.WithIgnoreHealthChecks()}
@@ -370,19 +388,69 @@ func TestIgnoreHealthChecks(t *testing.T) {
 	if spans := rec.Spans(); len(spans) != 0 {
 		t.Fatalf("health check produced %d spans, want none", len(spans))
 	}
+	// The SDK collects only instruments with data points, so an absent
+	// name means the health RPC recorded none.
+	names := rec.MetricNames()
+	for _, name := range durations {
+		if slices.Contains(names, name) {
+			t.Errorf("health check recorded a %s data point, want none", name)
+		}
+	}
 	if err := fx.call(context.Background(), t, echoProcedure, "hi", client...); err != nil {
 		t.Fatalf("echo call: %v", err)
 	}
 	if spans := rec.Spans(); len(spans) != 2 {
 		t.Errorf("echo produced %d spans, want a client and a server span", len(spans))
 	}
+	names = rec.MetricNames()
+	for _, name := range durations {
+		if !slices.Contains(names, name) {
+			t.Errorf("echo recorded no %s data point; metrics %v", name, names)
+		}
+	}
 }
 
+// TestInterceptorsWithoutSDKUseGlobals pins that, without WithSDK, both
+// interceptors trace, measure and propagate through the process globals,
+// as they are after o11y.Setup. It swaps the globals, so it must not run
+// in parallel. The restore is best effort: OTel's first Set permanently
+// delegates the default providers, so later code sees a shut-down SDK,
+// not no-ops.
 func TestInterceptorsWithoutSDKUseGlobals(t *testing.T) {
-	if _, err := o11yconnect.ServerInterceptor(); err != nil {
-		t.Errorf("ServerInterceptor() error = %v", err)
+	rec := o11ytest.Start(t)
+	prevTracer, prevMeter, prevPropagator := otel.GetTracerProvider(), otel.GetMeterProvider(), otel.GetTextMapPropagator()
+	t.Cleanup(func() {
+		otel.SetTracerProvider(prevTracer)
+		otel.SetMeterProvider(prevMeter)
+		otel.SetTextMapPropagator(prevPropagator)
+	})
+	otel.SetTracerProvider(rec.SDK.TracerProvider())
+	otel.SetMeterProvider(rec.SDK.MeterProvider())
+	otel.SetTextMapPropagator(rec.SDK.Propagator())
+
+	server, err := o11yconnect.ServerInterceptor()
+	if err != nil {
+		t.Fatalf("ServerInterceptor() error = %v", err)
 	}
-	if _, err := o11yconnect.ClientInterceptor(); err != nil {
-		t.Errorf("ClientInterceptor() error = %v", err)
+	client, err := o11yconnect.ClientInterceptor()
+	if err != nil {
+		t.Fatalf("ClientInterceptor() error = %v", err)
+	}
+	fx := serve(t, rec, server, nil)
+	if err := fx.unary(context.Background(), echoProcedure, "hi", connect.WithInterceptors(client)); err != nil {
+		t.Fatalf("call: %v", err)
+	}
+
+	serverSpan := spanByKind(t, rec.Spans(), trace.SpanKindServer)
+	clientSpan := spanByKind(t, rec.Spans(), trace.SpanKindClient)
+	if serverSpan.Parent().SpanID() != clientSpan.SpanContext().SpanID() {
+		t.Errorf("server parent = %v, want the client span %v (the global propagator carried it)",
+			serverSpan.Parent().SpanID(), clientSpan.SpanContext().SpanID())
+	}
+	names := rec.MetricNames()
+	for _, name := range []string{"rpc.server.call.duration", "rpc.client.call.duration"} {
+		if !slices.Contains(names, name) {
+			t.Errorf("metrics %v lack %s", names, name)
+		}
 	}
 }
