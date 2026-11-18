@@ -19,7 +19,7 @@ func TestPolicyUsesInjectedLookup(t *testing.T) {
 		WithPIIMode(PIIDrop),
 		WithSensitivityForTest(map[attribute.Key]spectables.Sensitivity{"test.secret": spectables.Secret}),
 	})
-	p := newSensitivityPolicy(s, nil)
+	p := newSensitivityPolicy(s, nil, nil)
 	if got := p.decide(spec.SignalLogs, "test.secret"); got != actionDrop {
 		t.Errorf("injected secret: %v, want drop", got)
 	}
@@ -116,7 +116,7 @@ func TestClassifyResourceAttrsCountsPerRule(t *testing.T) {
 		attribute.String("test.secret", "s3cr3t"),
 		attribute.String("host.ip", "10.0.0.1"),
 		attribute.String("host.mac", "aa:bb"),
-	}, newSensitivityPolicy(s, nil))
+	}, newSensitivityPolicy(s, nil, nil))
 
 	if counts["secret_attribute"] != 1 || counts["pii_attribute"] != 2 || len(counts) != 2 {
 		t.Errorf("counts = %v, want 1 secret_attribute and 2 pii_attribute", counts)
@@ -212,6 +212,27 @@ func TestCanonicalAnyBoundsSharedReferences(t *testing.T) {
 		}
 		if again := canonicalAny(v); again != got {
 			t.Errorf("%s: truncated rendering is not deterministic", name)
+		}
+	}
+}
+
+func TestPolicyFallsBackToAppClasses(t *testing.T) {
+	app := map[attribute.Key]spectables.Sensitivity{
+		"lor.api.token":   spectables.Secret,
+		"lor.user.id":     spectables.Internal,
+		"service.name":    spectables.Secret, // a spec key: the spec class wins
+		"lor.client.mail": spectables.PII,
+	}
+	p := newSensitivityPolicy(newSettings([]Option{WithPIIMode(PIIDrop)}), app, nil)
+	for key, want := range map[attribute.Key]classAction{
+		"lor.api.token":   actionDrop,
+		"lor.client.mail": actionDrop,
+		"lor.user.id":     actionKeep,
+		"service.name":    actionKeep,
+		"lor.unlisted":    actionKeep,
+	} {
+		if got := p.decide(spec.SignalLogs, key); got != want {
+			t.Errorf("%s: %v, want %v", key, got, want)
 		}
 	}
 }

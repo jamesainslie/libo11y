@@ -224,6 +224,10 @@ func (r *Recorder) AssertConforms(tb testing.TB) {
 			"(%d redaction(s) counted); they were redacted, but secrets must never be emitted", signal, n)
 	}
 
+	// The in-the-clear checks below read only the specification table, so a
+	// key an application registry (o11y.WithAppRegistry) classifies secret
+	// is not checked here. The violation-count check above does see it,
+	// because the SDK's policy records the drop.
 	for _, record := range r.Logs() {
 		var keys []string
 		record.Record.Attrs(func(a slog.Attr) bool {

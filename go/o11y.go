@@ -101,12 +101,16 @@ func newSDK(ctx context.Context, s *settings) (_ *SDK, err error) {
 	if s.piiMode == PIIHash && len(s.piiHashKey) < minPIIHashKeyLen {
 		return nil, ErrPIIHashKey
 	}
+	appClasses, err := loadAppRegistries(s.appRegistries)
+	if err != nil {
+		return nil, err
+	}
 	// One policy serves every signal. The resource and the meter provider's
 	// views need it before the violation counter (built on that provider)
 	// exists, so the recorder is attached below, before any provider is
 	// handed out or used concurrently. Resource classification counts its
 	// violations separately, and metric filtering never records any.
-	policy := newSensitivityPolicy(s, nil)
+	policy := newSensitivityPolicy(s, appClasses, nil)
 	res, resourceViolations, err := buildResource(ctx, s, policy)
 	if err != nil {
 		return nil, err

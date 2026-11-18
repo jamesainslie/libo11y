@@ -92,6 +92,10 @@ type settings struct {
 	// sensitivity overrides the classification lookup when non-nil. It is
 	// set only by test options; production SDKs use the generated table.
 	sensitivity func(attribute.Key) spectables.Sensitivity
+
+	// appRegistries are the registries WithAppRegistry named. newSDK loads
+	// them before it builds the sensitivity policy.
+	appRegistries []appRegistrySource
 }
 
 func newSettings(opts []Option) *settings {

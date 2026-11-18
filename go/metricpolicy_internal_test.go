@@ -20,7 +20,7 @@ import (
 // the built-in types embed the original reservoir, which promotes the
 // marker, and anything else gets the plain wrapper.
 func TestFilterReservoirKeepsBuiltInReservoirTypes(t *testing.T) {
-	policy := newSensitivityPolicy(newSettings(nil), nil)
+	policy := newSensitivityPolicy(newSettings(nil), nil, nil)
 	fixed := exemplar.NewFixedSizeReservoir(1)
 	if r, ok := filterReservoir(fixed, policy).(filteredFixedSizeReservoir); !ok || r.FixedSizeReservoir != fixed {
 		t.Errorf("fixed-size reservoir wrapped as %T, want filteredFixedSizeReservoir around it", filterReservoir(fixed, policy))
@@ -36,7 +36,7 @@ func TestFilterReservoirKeepsBuiltInReservoirTypes(t *testing.T) {
 
 func TestFilterReservoirDropsRejectedAttributes(t *testing.T) {
 	s := newSettings([]Option{WithSensitivityForTest(map[attribute.Key]spectables.Sensitivity{"drop": spectables.Secret})})
-	r := filterReservoir(exemplar.NewFixedSizeReservoir(1), newSensitivityPolicy(s, nil))
+	r := filterReservoir(exemplar.NewFixedSizeReservoir(1), newSensitivityPolicy(s, nil, nil))
 	r.Offer(context.Background(), time.Now(), exemplar.NewValue[int64](1),
 		[]attribute.KeyValue{attribute.String("drop", "x"), attribute.String("keep", "y")})
 	var got []exemplar.Exemplar

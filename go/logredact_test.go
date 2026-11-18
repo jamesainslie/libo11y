@@ -53,5 +53,5 @@ func TestClassifierUncomparableValueDoesNotPanic(t *testing.T) {
 // dropPolicy is a PIIDrop policy with no violation recorder, built from
 // the generated classification table.
 func dropPolicy() *sensitivityPolicy {
-	return newSensitivityPolicy(newSettings([]Option{WithPIIMode(PIIDrop)}), nil)
+	return newSensitivityPolicy(newSettings([]Option{WithPIIMode(PIIDrop)}), nil, nil)
 }

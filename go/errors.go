@@ -27,3 +27,9 @@ var ErrPIIHashKey = errors.New("o11y: PIIHash requires WithPIIHashKey with a key
 // ErrInvalidEnvironment is returned when the resolved deployment environment
 // is not in the allowed set. Extend the set with [WithEnvironmentValues].
 var ErrInvalidEnvironment = errors.New("o11y: deployment environment not in the allowed set")
+
+// ErrInvalidAppRegistry is returned by [New] and [Setup] when a registry
+// passed to [WithAppRegistry] breaks a registry rule, or when two
+// registries declare the same namespace. The message lists every rule
+// violation by rule ID, or names both files that declare the namespace.
+var ErrInvalidAppRegistry = errors.New("o11y: invalid application registry")
