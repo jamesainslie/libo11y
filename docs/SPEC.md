@@ -1,6 +1,6 @@
 # The libo11y telemetry specification
 
-Version 1.1.0, in development. Normative keywords (MUST, SHOULD, MAY)
+Version 1.1.0. Normative keywords (MUST, SHOULD, MAY)
 follow RFC 2119.
 
 This document is the human-readable form of the machine registry under
@@ -377,9 +377,9 @@ item is never renamed or removed without a major version bump.
   `make schema-published` fails unless the schema URL serves the generated
   file byte for byte, and it must pass before the tag is created.
 
-Status: spec 1.1.0 is in development. Spec 1.0.0 is released. Its schema
-file is served at its schema URL, and the commit is tagged `spec/v1.0.0`
-together with `go/v0.1.0`.
+Status: spec 1.1.0 is released. Its schema file is served at its schema
+URL, and the commit is tagged `spec/v1.1.0`. Spec 1.0.0 is tagged
+`spec/v1.0.0` together with `go/v0.1.0`.
 
 ## 8. Enforcement layers
 

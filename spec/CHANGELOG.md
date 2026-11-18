@@ -8,9 +8,14 @@ at its schema URL.
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-18
+
+Tagged `spec/v1.1.0`. Its schema file is served at
+`https://schemas.o11y.ing/libo11y/1.1.0`.
+
 ### Added
 
-- Spec 1.1.0. RUM conventions under `o11y.rum.*`: the platform-neutral
+- RUM conventions under `o11y.rum.*`: the platform-neutral
   attributes, the browser group, the `view`, `action` and `app_load` span
   shapes, the RUM metrics and the RUM events. See `docs/RUM.md`.
 - The application attribute registry (`libo11y.app-registry/v1`) and its
