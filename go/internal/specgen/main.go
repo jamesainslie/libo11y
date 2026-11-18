@@ -151,6 +151,7 @@ type model struct {
 	schemaURL      string
 	specVersion    string
 	semconvVersion string
+	versions       []string // manifest version history, oldest first; empty means [specVersion]
 
 	groups       []group           // every group in the registry, for checks
 	minted       []attr            // defined in attributes/o11y.yaml
@@ -238,8 +239,9 @@ func load(root string) (*model, error) {
 		return nil, fmt.Errorf("reading manifest: %w", err)
 	}
 	var manifestDoc struct {
-		SchemaURL      string `yaml:"schema_url"`
-		SemconvVersion string `yaml:"semconv_version"`
+		SchemaURL      string   `yaml:"schema_url"`
+		SemconvVersion string   `yaml:"semconv_version"`
+		Versions       []string `yaml:"versions"`
 	}
 	if err := yaml.Unmarshal(manifest, &manifestDoc); err != nil {
 		return nil, fmt.Errorf("parsing manifest: %w", err)
@@ -251,6 +253,7 @@ func load(root string) (*model, error) {
 	}
 	m.specVersion = version
 	m.semconvVersion = manifestDoc.SemconvVersion
+	m.versions = manifestDoc.Versions
 
 	registryDir := filepath.Join(root, "spec", "registry")
 	err = filepath.WalkDir(registryDir, func(path string, entry os.DirEntry, err error) error {
@@ -415,13 +418,15 @@ func render(m *model) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	schemaFile, err := genSchema(m)
+	schemas, err := genSchemas(m)
 	if err != nil {
 		return nil, err
 	}
 	outputs := map[string]string{
-		"docs/taxonomy/resource.md":     genDocs(m),
-		"spec/schemas/" + m.specVersion: schemaFile,
+		"docs/taxonomy/resource.md": genDocs(m),
+	}
+	for version, file := range schemas {
+		outputs["spec/schemas/"+version] = file
 	}
 	goSources := []struct{ rel, src string }{
 		{"go/spec/spec.go", genSpec(m)},

@@ -10,3 +10,6 @@ schema_url: https://schemas.o11y.ing/libo11y/1.0.0
 # extends. Referenced attributes (http.*, k8s.*, ...) are defined by that
 # release; libo11y never redefines them. Move the pin deliberately.
 semconv_version: 1.41.0
+# Every spec version, oldest first. The generator renders one schema file
+# per version (spec/schemas/<version>), and a released file never changes.
+versions: [1.0.0]
