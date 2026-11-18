@@ -400,6 +400,13 @@ groups:
 	if err != nil {
 		t.Fatal(err)
 	}
+	var mintedNames []string
+	for _, a := range m.minted {
+		mintedNames = append(mintedNames, a.ID)
+	}
+	if want := []string{"o11y.outcome", "o11y.rum.view.name"}; !slices.Equal(mintedNames, want) {
+		t.Errorf("minted = %v, want %v", mintedNames, want)
+	}
 	src := genSpec(m)
 	for _, want := range []string{
 		`OutcomeKey attribute.Key = "o11y.outcome"`,
