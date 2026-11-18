@@ -1,0 +1,43 @@
+# RUM span shapes. Each group names its shape in o11y.rum.span; the
+# generator turns the required attributes into RUMSpanRequired (Go) and
+# RUM_SPAN_REQUIRED (TypeScript). app_load is the document load on the web
+# and the app start on mobile.
+groups:
+  - id: libo11y.rum.span.view
+    type: attribute_group
+    display_name: RUM View Span
+    brief: Required shape of the span RUM records for each view.
+    stability: development
+    annotations: {o11y.rum.span: view}
+    attributes:
+      - {ref: o11y.rum.platform, requirement_level: required, annotations: {o11y.gen: mint}}
+      - {ref: o11y.rum.view.name, requirement_level: required, annotations: {o11y.gen: mint}}
+      - {ref: o11y.rum.view.id, requirement_level: required, annotations: {o11y.gen: mint}}
+      - {ref: o11y.rum.view.kind, requirement_level: required, annotations: {o11y.gen: mint}}
+      - {ref: session.id, requirement_level: required, annotations: {o11y.gen: alias}}
+
+  - id: libo11y.rum.span.action
+    type: attribute_group
+    display_name: RUM Action Span
+    brief: Required shape of the span RUM records for each user action.
+    stability: development
+    annotations: {o11y.rum.span: action}
+    attributes:
+      - {ref: o11y.rum.action.type, requirement_level: required, annotations: {o11y.gen: mint}}
+      - {ref: o11y.rum.view.id, requirement_level: required, annotations: {o11y.gen: mint}}
+      - {ref: session.id, requirement_level: required, annotations: {o11y.gen: alias}}
+      - ref: o11y.rum.action.name
+        requirement_level:
+          conditionally_required: When the element has a data-o11y label or a privacy-safe accessible name.
+        annotations: {o11y.gen: mint}
+
+  - id: libo11y.rum.span.app_load
+    type: attribute_group
+    display_name: RUM App Load Span
+    brief: Required shape of the span for a document load (web) or an app start (mobile).
+    stability: development
+    annotations: {o11y.rum.span: app_load}
+    attributes:
+      - {ref: o11y.rum.platform, requirement_level: required, annotations: {o11y.gen: mint}}
+      - {ref: o11y.rum.view.id, requirement_level: required, annotations: {o11y.gen: mint}}
+      - {ref: session.id, requirement_level: required, annotations: {o11y.gen: alias}}

@@ -59,3 +59,19 @@ func TestMetricNamesRegistered(t *testing.T) {
 		t.Errorf("MetricSchemaViolations = %q", spec.MetricSchemaViolations)
 	}
 }
+
+func TestRUMConventions(t *testing.T) {
+	for got, want := range map[string]string{
+		string(spec.RUMPlatformKey):    "o11y.rum.platform",
+		string(spec.RUMViewNameKey):    "o11y.rum.view.name",
+		string(spec.RUMElementTextKey): "o11y.rum.element.text",
+		spec.MetricRUMVitalLcp:         "o11y.rum.vital.lcp",
+		spec.MetricRUMViews:            "o11y.rum.views",
+		spec.EventRUMError:             "o11y.rum.error",
+		string(spec.RUMViewKindScreen): "screen",
+	} {
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	}
+}

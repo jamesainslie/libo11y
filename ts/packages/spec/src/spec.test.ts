@@ -1,14 +1,19 @@
 import { expect, test } from "bun:test";
 import {
   ATTR_OUTCOME,
+  ATTR_RUM_VIEW_NAME,
   ENVIRONMENT_VALUES,
+  EVENT_RUM_ERROR,
   EVENT_TELEMETRY_CONFIGURED,
   EVENTS,
+  METRIC_RUM_VITAL_LCP,
   METRIC_SCHEMA_VIOLATIONS,
   OUTCOME_VALUES,
   type Outcome,
   REQUIRED_TIER0,
   RESOURCE,
+  RUM_SPAN_REQUIRED,
+  RUM_VIEW_KIND_VALUES,
   SCHEMA_URL,
   SENSITIVITY_OF,
   SPEC_VERSION,
@@ -51,4 +56,20 @@ test("event contracts and metric names", () => {
     requiredTemplates: ["o11y.config"],
   });
   expect(METRIC_SCHEMA_VIOLATIONS).toBe("o11y.schema.violations");
+});
+
+test("RUM conventions", () => {
+  expect(ATTR_RUM_VIEW_NAME).toBe("o11y.rum.view.name");
+  expect(METRIC_RUM_VITAL_LCP).toBe("o11y.rum.vital.lcp");
+  expect(EVENT_RUM_ERROR).toBe("o11y.rum.error");
+  expect(RUM_VIEW_KIND_VALUES).toContain("screen");
+  expect(RUM_SPAN_REQUIRED.get("view")).toEqual([
+    "o11y.rum.platform",
+    "o11y.rum.view.name",
+    "o11y.rum.view.id",
+    "o11y.rum.view.kind",
+    "session.id",
+  ]);
+  expect(SENSITIVITY_OF.get("o11y.rum.element.text")).toBe("pii");
+  expect(SENSITIVITY_OF.get("session.id")).toBe("internal");
 });

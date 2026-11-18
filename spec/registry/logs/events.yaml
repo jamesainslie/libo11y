@@ -77,3 +77,47 @@ groups:
         requirement_level: required
         annotations:
           o11y.gen: alias
+
+  # Registered RUM events. RUM also emits semconv's browser.web_vital event
+  # as upstream defines it; that event is upstream's and is not registered
+  # here.
+  - id: event.o11y.rum.error
+    type: event
+    name: o11y.rum.error
+    stability: development
+    brief: An error RUM captured, with its source and, after symbolication, its fingerprint.
+    attributes:
+      - {ref: o11y.rum.error.source, requirement_level: required, annotations: {o11y.gen: mint}}
+      - {ref: exception.type, requirement_level: required, annotations: {o11y.gen: alias}}
+      - {ref: session.id, requirement_level: required, annotations: {o11y.gen: alias}}
+      - {ref: o11y.rum.view.id, requirement_level: required, annotations: {o11y.gen: mint}}
+      - {ref: o11y.rum.error.fingerprint, annotations: {o11y.gen: mint}}
+
+  - id: event.o11y.rum.frustration
+    type: event
+    name: o11y.rum.frustration
+    stability: development
+    brief: A frustration signal on a UI element.
+    attributes:
+      - {ref: o11y.rum.frustration.type, requirement_level: required, annotations: {o11y.gen: mint}}
+      - {ref: session.id, requirement_level: required, annotations: {o11y.gen: alias}}
+      - {ref: o11y.rum.view.id, requirement_level: required, annotations: {o11y.gen: mint}}
+      - {ref: o11y.rum.element.selector, annotations: {o11y.gen: mint}}
+
+  - id: event.o11y.rum.session.start
+    type: event
+    name: o11y.rum.session.start
+    stability: development
+    brief: A RUM session started.
+    attributes:
+      - {ref: session.id, requirement_level: required, annotations: {o11y.gen: alias}}
+      - {ref: o11y.rum.platform, requirement_level: required, annotations: {o11y.gen: mint}}
+
+  - id: event.o11y.rum.session.end
+    type: event
+    name: o11y.rum.session.end
+    stability: development
+    brief: A RUM session ended, with the reason its telemetry was kept.
+    attributes:
+      - {ref: session.id, requirement_level: required, annotations: {o11y.gen: alias}}
+      - {ref: o11y.rum.session.retained, requirement_level: required, annotations: {o11y.gen: mint}}

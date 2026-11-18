@@ -1,0 +1,233 @@
+# Attributes minted by libo11y RUM. The centre is platform-neutral, so the
+# web, extension, React Native, iOS and Android RUM libraries all use these
+# names, and a new platform adds values or a platform group without renaming
+# anything (see docs/RUM.md). Upstream keys RUM uses are classified in
+# libo11y.rum.upstream below, never redefined.
+groups:
+  - id: registry.o11y.rum
+    type: attribute_group
+    display_name: libo11y RUM Attributes
+    brief: Platform-neutral attributes minted by libo11y RUM, under the o11y.rum namespace.
+    stability: development
+    attributes:
+      - id: o11y.rum.platform
+        type:
+          members:
+            - {id: web, value: "web", stability: development, brief: A web page.}
+            - {id: webext, value: "webext", stability: development, brief: A browser extension.}
+            - {id: react_native, value: "react_native", stability: development, brief: A React Native app.}
+            - {id: ios, value: "ios", stability: development, brief: A native iOS app.}
+            - {id: android, value: "android", stability: development, brief: A native Android app.}
+        stability: development
+        brief: The RUM platform that recorded the telemetry.
+        examples: ["web", "ios"]
+        annotations: {o11y.sensitivity: public, o11y.cardinality: enum}
+
+      - id: o11y.rum.view.name
+        type: string
+        stability: development
+        brief: >
+          Name of the view: the route template on the web (never the raw URL)
+          or the screen name on mobile.
+        examples: ["/projects/$projectId", "ProjectDetail"]
+        annotations: {o11y.sensitivity: public, o11y.cardinality: bounded}
+
+      - id: o11y.rum.view.id
+        type: string
+        stability: development
+        brief: Random identifier of one view instance within a session.
+        examples: ["6f1c2b9e-3d4a-4e5f-8a7b-9c0d1e2f3a4b"]
+        annotations: {o11y.sensitivity: internal, o11y.cardinality: unbounded}
+
+      - id: o11y.rum.view.kind
+        type:
+          members:
+            - {id: initial, value: "initial", stability: development, brief: The first view of a page load.}
+            - {id: soft, value: "soft", stability: development, brief: A client-side navigation in a single-page app.}
+            - {id: bfcache_restore, value: "bfcache_restore", stability: development, brief: A page restored from the back/forward cache.}
+            - {id: prerender, value: "prerender", stability: development, brief: A prerendered page that was activated.}
+            - {id: screen, value: "screen", stability: development, brief: A screen in a native or React Native app.}
+        stability: development
+        brief: How the view started.
+        examples: ["initial", "screen"]
+        annotations: {o11y.sensitivity: public, o11y.cardinality: enum}
+
+      - id: o11y.rum.action.type
+        type:
+          members:
+            - {id: click, value: "click", stability: development, brief: A pointer click.}
+            - {id: tap, value: "tap", stability: development, brief: A touch tap.}
+            - {id: long_press, value: "long_press", stability: development, brief: A touch long press.}
+            - {id: swipe, value: "swipe", stability: development, brief: A touch swipe.}
+            - {id: scroll, value: "scroll", stability: development, brief: A deliberate scroll.}
+            - {id: submit, value: "submit", stability: development, brief: A form submission.}
+            - {id: key_press, value: "key_press", stability: development, brief: A key press that triggers behaviour.}
+            - {id: custom, value: "custom", stability: development, brief: An action the application recorded itself.}
+        stability: development
+        brief: The kind of user interaction.
+        examples: ["click", "tap"]
+        annotations: {o11y.sensitivity: public, o11y.cardinality: enum}
+
+      - id: o11y.rum.action.name
+        type: string
+        stability: development
+        brief: >
+          Name of the action: the element's data-o11y label (or the platform's
+          equivalent), or a privacy-safe accessible name. Never free text the
+          user typed.
+        examples: ["send-agreement", "open-project"]
+        annotations: {o11y.sensitivity: internal, o11y.cardinality: bounded}
+
+      - id: o11y.rum.frustration.type
+        type:
+          members:
+            - {id: rage, value: "rage", stability: development, brief: Repeated rapid interactions on one element.}
+            - {id: dead, value: "dead", stability: development, brief: An interaction that produced no response.}
+            - {id: error, value: "error", stability: development, brief: An interaction followed by an error.}
+        stability: development
+        brief: The kind of frustration signal.
+        examples: ["rage"]
+        annotations: {o11y.sensitivity: public, o11y.cardinality: enum}
+
+      - id: o11y.rum.error.source
+        type:
+          members:
+            - {id: uncaught, value: "uncaught", stability: development, brief: An uncaught exception.}
+            - {id: unhandled_rejection, value: "unhandled_rejection", stability: development, brief: An unhandled promise rejection.}
+            - {id: console, value: "console", stability: development, brief: A captured console error.}
+            - {id: boundary, value: "boundary", stability: development, brief: An error a UI framework boundary caught.}
+            - {id: resource, value: "resource", stability: development, brief: A resource that failed to load.}
+            - {id: csp, value: "csp", stability: development, brief: A Content Security Policy violation.}
+            - {id: network, value: "network", stability: development, brief: A failed network request.}
+            - {id: crash, value: "crash", stability: development, brief: A native crash.}
+            - {id: anr, value: "anr", stability: development, brief: An Android application-not-responding event.}
+            - {id: hang, value: "hang", stability: development, brief: A main-thread hang.}
+            - {id: custom, value: "custom", stability: development, brief: An error the application reported itself.}
+        stability: development
+        brief: Where an error RUM recorded came from.
+        examples: ["uncaught", "crash"]
+        annotations: {o11y.sensitivity: public, o11y.cardinality: enum}
+
+      - id: o11y.rum.error.fingerprint
+        type: string
+        stability: development
+        brief: Stable grouping key for an error, computed after symbolication.
+        examples: ["c1a9f0e2b7d34e58"]
+        annotations: {o11y.sensitivity: internal, o11y.cardinality: bounded}
+
+      - id: o11y.rum.element.selector
+        type: string
+        stability: development
+        brief: >
+          Selector or view identifier of the UI element an action, vital, or
+          frustration signal refers to.
+        examples: ["main > button.send"]
+        annotations: {o11y.sensitivity: internal, o11y.cardinality: unbounded}
+
+      - id: o11y.rum.element.text
+        type: string
+        stability: development
+        brief: >
+          Visible text of a UI element. PII by default, because UI text can
+          show names, addresses and other personal data.
+        examples: ["Send agreement"]
+        annotations: {o11y.sensitivity: pii, o11y.cardinality: unbounded}
+
+      - id: o11y.rum.device.class
+        type:
+          members:
+            - {id: desktop, value: "desktop", stability: development, brief: A desktop or laptop.}
+            - {id: mobile, value: "mobile", stability: development, brief: A phone.}
+            - {id: tablet, value: "tablet", stability: development, brief: A tablet.}
+            - {id: tv, value: "tv", stability: development, brief: A television or set-top device.}
+            - {id: bot, value: "bot", stability: development, brief: An automated client.}
+            - {id: unknown, value: "unknown", stability: development, brief: The class could not be determined.}
+        stability: development
+        brief: Coarse class of the user's device.
+        examples: ["desktop", "mobile"]
+        annotations: {o11y.sensitivity: public, o11y.cardinality: enum}
+
+      - id: o11y.rum.connection.type
+        type:
+          members:
+            - {id: wifi, value: "wifi", stability: development, brief: Wi-Fi.}
+            - {id: cellular, value: "cellular", stability: development, brief: A cellular network.}
+            - {id: ethernet, value: "ethernet", stability: development, brief: A wired network.}
+            - {id: offline, value: "offline", stability: development, brief: No network.}
+            - {id: unknown, value: "unknown", stability: development, brief: The type could not be determined.}
+        stability: development
+        brief: The physical network the device used.
+        examples: ["wifi"]
+        annotations: {o11y.sensitivity: public, o11y.cardinality: enum}
+
+      - id: o11y.rum.connection.effective
+        type:
+          members:
+            - {id: slow_2g, value: "slow-2g", stability: development, brief: Effective speed of slow 2G.}
+            - {id: type_2g, value: "2g", stability: development, brief: Effective speed of 2G.}
+            - {id: type_3g, value: "3g", stability: development, brief: Effective speed of 3G.}
+            - {id: type_4g, value: "4g", stability: development, brief: Effective speed of 4G or better.}
+        stability: development
+        brief: The effective connection speed the platform estimated.
+        examples: ["4g"]
+        annotations: {o11y.sensitivity: public, o11y.cardinality: enum}
+
+      - id: o11y.rum.vital.rating
+        type:
+          members:
+            - {id: good, value: "good", stability: development, brief: Within the good threshold.}
+            - {id: needs_improvement, value: "needs-improvement", stability: development, brief: Between the good and poor thresholds.}
+            - {id: poor, value: "poor", stability: development, brief: Beyond the poor threshold.}
+        stability: development
+        brief: The vital's rating against its published thresholds.
+        examples: ["good"]
+        annotations: {o11y.sensitivity: public, o11y.cardinality: enum}
+
+      - id: o11y.rum.session.retained
+        type:
+          members:
+            - {id: head_sampled, value: "head_sampled", stability: development, brief: Kept by the per-session head sample.}
+            - {id: error, value: "error", stability: development, brief: Kept by retroactive sampling because of an error.}
+            - {id: frustration, value: "frustration", stability: development, brief: Kept by retroactive sampling because of a frustration signal.}
+        stability: development
+        brief: Why a session's telemetry was kept.
+        examples: ["head_sampled"]
+        annotations: {o11y.sensitivity: public, o11y.cardinality: enum}
+
+      - id: o11y.rum.replay.segment
+        type: int
+        stability: development
+        brief: Index of the replay segment within the session.
+        examples: [0, 3]
+        annotations: {o11y.sensitivity: public, o11y.cardinality: unbounded}
+
+      - id: o11y.rum.config.version
+        type: string
+        stability: development
+        brief: Version of the remote configuration the session ran under.
+        examples: ["2026-11-18.1"]
+        annotations: {o11y.sensitivity: public, o11y.cardinality: bounded}
+
+  - id: registry.o11y.rum.browser
+    type: attribute_group
+    display_name: libo11y RUM Browser Attributes
+    brief: Attributes RUM records only in browsers and browser extensions.
+    stability: development
+    attributes:
+      - id: o11y.rum.browser.family
+        type: string
+        stability: development
+        brief: Browser family parsed from the user agent by the gateway.
+        examples: ["chrome", "firefox", "safari", "edge", "other"]
+        annotations: {o11y.sensitivity: public, o11y.cardinality: bounded}
+
+  - id: libo11y.rum.upstream
+    type: attribute_group
+    display_name: Upstream attributes RUM uses
+    brief: Upstream semconv attributes RUM uses, with their libo11y classification.
+    stability: development
+    attributes:
+      - ref: session.id
+        annotations: {o11y.sensitivity: internal, o11y.cardinality: unbounded, o11y.gen: alias}
+      - ref: geo.country.iso_code
+        annotations: {o11y.sensitivity: public, o11y.cardinality: bounded, o11y.gen: alias}
