@@ -24,17 +24,19 @@ native logging facade, and everything is correlated and exported over OTLP.
    environment variables are honored, never shadowed by a parallel namespace
    (an explicit, opt-in mode ignores them for hermetic tests). Stable
    semantic conventions by default for the instrumentation libo11y wires
-   (HTTP spans and metrics). Not everything emitted is stable: gRPC spans
-   and metrics follow the `rpc.*` conventions (release candidate), runtime
-   metrics (`go.*`) are not yet stable, resource detectors record upstream
-   attributes that are not yet stable (`host.*`, `container.id`,
-   `vcs.ref.head.revision`), and the libo11y registry's own groups and
-   overlays are marked development.
+   (HTTP spans and metrics). Not everything emitted is stable: gRPC and
+   Connect spans and metrics follow the `rpc.*` conventions (release
+   candidate), runtime metrics (`go.*`) are not yet stable, resource
+   detectors record upstream attributes that are not yet stable
+   (`host.*`, `container.id`, `vcs.ref.head.revision`), and the libo11y
+   registry's own groups and overlays are marked development.
 2. **One identity, three surfaces.** Logs, spans, and outgoing headers all read
    the active span context. No parallel trace-ID state, no desync.
 3. **Wrap setup, not instrumentation.** One call builds and wires the
    providers; afterwards users call the vanilla OTEL API and their language's
    standard logging interface. libo11y exports no span or metric wrapper types.
+   The Go `o11ysql` package is the one place libo11y writes its own
+   instrumentation, and [its README](go/o11ysql/README.md) explains why.
 4. **Owned lifecycle.** Initialization returns a handle with an idempotent,
    bounded `Shutdown` that reports per-signal errors. The library never
    panics, never calls exit, and never blocks startup on collector
@@ -78,11 +80,14 @@ feature-parity matrix across implementations.
 ## Installation (Go)
 
 ```sh
-go get github.com/jamesainslie/libo11y/go@v0.1.0
-go get github.com/jamesainslie/libo11y/go/o11ygin@v0.1.0   # only for Gin
+go get github.com/jamesainslie/libo11y/go@v0.2.0
+go get github.com/jamesainslie/libo11y/go/o11ygin@v0.2.0       # only for Gin
+go get github.com/jamesainslie/libo11y/go/o11yconnect@v0.2.0   # only for Connect
+go get github.com/jamesainslie/libo11y/go/o11ysql@v0.2.0       # only for database/sql
 ```
 
-The Gin integration (`go/o11ygin`) is a separate module released alongside
+The Gin, Connect, and database/sql integrations (`go/o11ygin`,
+`go/o11yconnect`, `go/o11ysql`) are separate modules released alongside
 the main module at the same version. The modules require Go 1.26.0 or
 later. Build with go1.26.9 or later on the 1.26 line
 (or go1.27.2 or later on the 1.27 line) to pick up the standard-library
@@ -137,7 +142,8 @@ Each language library versions and releases independently with path-prefixed
 tags (for example `go/v0.1.0`). There is no lockstep release across languages;
 signal maturity differs per OpenTelemetry implementation. The first Go
 release is `go/v0.1.0`, with `go/o11ygin/v0.1.0` tagged on the same commit.
-Each Go release is listed in [`go/CHANGELOG.md`](go/CHANGELOG.md) and on the
+From `go/v0.2.0`, each release also tags `go/o11yconnect/vX.Y.Z` and
+`go/o11ysql/vX.Y.Z` on that commit. Each Go release is listed in [`go/CHANGELOG.md`](go/CHANGELOG.md) and on the
 GitHub releases page. `make release-check` validates the tag sequence
 against a throwaway local remote before a release.
 

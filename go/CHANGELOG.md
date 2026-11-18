@@ -17,10 +17,56 @@ and the module adheres to [Semantic Versioning](https://semver.org/).
   `RUMErrorSourceCSP`.
 - `cmd/libo11y`: `libo11y registry check`, which validates application
   attribute registries.
+- `WithAppRegistry(fs.FS, path)` loads an application attribute registry
+  (`libo11y.app-registry/v1`) when the SDK is built. The sensitivity
+  policy classifies its keys like specification keys on logs, spans,
+  metrics, and the resource. A registry that breaks a rule fails `New`
+  and `Setup` with `ErrInvalidAppRegistry`. The option can be given once
+  per registry, and two registries that declare the same namespace are an
+  error.
+- Detached work: `Capture` returns a `Carrier` holding the active
+  traceparent, tracestate, and the baggage the propagator would send out
+  of the process, after the egress filter. It serializes to text
+  (`MarshalText`, `UnmarshalText`) and to a SQL column (`Value`, `Scan`).
+  The text never exceeds 32 KiB. When a captured context would exceed
+  it, the carrier drops the tracestate, then the baggage, and always keeps
+  the link. `UnmarshalText` keeps the valid baggage members and drops the
+  invalid ones. Text over 32 KiB, or without a valid traceparent, fails
+  with `ErrInvalidCarrier`. `StartLinked` starts a new root span linked to the
+  captured context, and merges the carrier's baggage onto the baggage in
+  the context, with the carrier's value winning on a shared key.
+  `SDK.Capture` and `SDK.StartLinked` bind them to an SDK built with
+  `New`.
+- `o11yproc`: `Env` and `FromEnv` pass `TRACEPARENT` and `TRACESTATE` to a
+  child process, and `Inject` and `Extract` carry trace context in framed
+  socket messages. Inside a valid span, `Env` always returns both
+  variables, with `TRACESTATE` empty when the context has none, so an
+  inherited `TRACESTATE` is overridden. Outside any span it returns nil.
+- `o11yconnect`, a new module: Connect server and client interceptors on
+  `connectrpc.com/otelconnect` v0.12.0 with `WithSDK`,
+  `WithPublicEndpoint`, `WithIgnoreHealthChecks`, and `WithCanonicalLine`.
+  Inbound trace context is adopted by default. A handler that panics
+  leaves its server span with status Error. `rpc.system.name` reports the
+  wire protocol, `connectrpc` or `grpc`. It supports connect-go v1.
+- `o11ysql`, a new module: `Wrap`, `Open`, and `RegisterPoolMetrics`
+  instrument `database/sql` with semconv client spans (`db.system.name`,
+  `db.operation.name`, `db.collection.name`), `db.client.operation.duration`,
+  and the `db.client.connection.count` and `db.client.connection.max` pool
+  metrics. Spans start only under an existing span. The sanitized
+  `db.query.text` is recorded only for `postgresql`, `sqlite`, `mysql`, and
+  `mariadb`, the systems with a matching SQL lexer. `Open` infers
+  `db.system.name` from the driver name and unregisters its pool metrics
+  when the database is closed. Options are `WithSDK`, `WithSystem`,
+  `WithPoolName`, and `WithoutQueryText`. A driver without the Go 1.8
+  context interfaces fails with `ErrLegacyDriver`.
 
 ### Changed
 
 - `spec.SchemaURL` and `spec.SpecVersion` name spec 1.1.0.
+- The Go modules release in lockstep. `go/o11ygin`, `go/o11yconnect`, and
+  `go/o11ysql` are tagged at the same version as the core module, on the
+  same commit, and each requires the core module at that version.
+  `go/o11ygin` requires `github.com/jamesainslie/libo11y/go` v0.2.0.
 
 ## [0.1.0] - 2026-10-12
 
