@@ -779,3 +779,38 @@ groups:
 		})
 	}
 }
+
+// TestRenameNeedsTransform pins that a rename recorded only as a tombstone
+// is refused unless it is a pre-1.0.0 rename (it names its legacy key):
+// renames from 1.0.0 on need a schema-file transform the generator cannot
+// render yet.
+func TestRenameNeedsTransform(t *testing.T) {
+	const live = `
+  - id: registry.o11y
+    type: attribute_group
+    attributes:
+      - id: o11y.new.thing
+        type: string
+        annotations: {o11y.sensitivity: public, o11y.cardinality: bounded}
+`
+	assertViolations(t, `
+groups:`+live+`
+  - id: registry.o11y.deprecated
+    type: attribute_group
+    attributes:
+      - id: o11y.old.thing
+        type: string
+        deprecated: {reason: renamed, renamed_to: o11y.new.thing}
+        annotations: {o11y.sensitivity: public}
+`, "libo11y_rename_needs_transform")
+	assertViolations(t, `
+groups:`+live+`
+  - id: registry.o11y.deprecated
+    type: attribute_group
+    attributes:
+      - id: o11y.old.thing
+        type: string
+        deprecated: {reason: obsoleted}
+        annotations: {o11y.sensitivity: public}
+`)
+}

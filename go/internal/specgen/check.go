@@ -370,6 +370,15 @@ func checkAttribute(g group, a attr, idx *index) []violation {
 		fail("libo11y_deprecated_target_undefined", "references", target)
 	}
 
+	// A rename from 1.0.0 on needs a schema-file transform, which the
+	// generator cannot render yet. Only pre-1.0.0 tombstones, which name
+	// the key the old release emitted, may record a rename.
+	if deprecatedTarget(a) != "" {
+		if _, legacy := a.Annotations["o11y.legacy_key"]; !legacy {
+			fail("libo11y_rename_needs_transform", "references", a.name())
+		}
+	}
+
 	// Two keys that map to one Go identifier would make the generated
 	// package fail to compile.
 	if generatesKey(a) && len(idx.goNames[goName(a.name())]) > 1 {
