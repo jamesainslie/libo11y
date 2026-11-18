@@ -75,7 +75,7 @@ func Parse(raw []byte) (*Registry, error) {
 		if err == nil {
 			err = errors.New("an application registry holds one YAML document, found a second")
 		}
-		return nil, err
+		return nil, fmt.Errorf("parsing application registry: %w", err)
 	}
 	return &reg, nil
 }

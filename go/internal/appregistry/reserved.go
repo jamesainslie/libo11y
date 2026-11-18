@@ -17,7 +17,7 @@ var reservedNamespaces = map[string]bool{
 	"host": true, "http": true, "hw": true, "ios": true, "jsonrpc": true, "jvm": true, "k8s": true,
 	"kestrel": true, "linux": true, "log": true, "mainframe": true, "mcp": true, "message": true,
 	"messaging": true, "net": true, "network": true, "nfs": true, "nodejs": true, "oci": true,
-	"onc_rpc": true, "openai": true, "openshift": true, "opentracing": true, "oracle_cloud": true,
+	"onc_rpc": true, "openai": true, "openshift": true, "opentracing": true, "oracle": true, "oracle_cloud": true,
 	"oracledb": true, "os": true, "peer": true, "pool": true, "pprof": true, "process": true,
 	"profile": true, "rpc": true, "security_rule": true, "server": true, "service": true,
 	"session": true, "signalr": true, "source": true, "system": true, "telemetry": true, "test": true,

@@ -71,6 +71,10 @@ func TestValidateRules(t *testing.T) {
 			"schema: libo11y.app-registry/v1\nnamespace: http\nattributes:\n  http.thing: {type: string, sensitivity: public, cardinality: bounded}\n",
 			[]string{"libo11y_app_namespace_reserved"},
 		},
+		"oracle namespace": {
+			"schema: libo11y.app-registry/v1\nnamespace: oracle\nattributes:\n  oracle.db.name: {type: string, sensitivity: public, cardinality: bounded}\n",
+			[]string{"libo11y_app_namespace_reserved"},
+		},
 		"o11y namespace": {
 			"schema: libo11y.app-registry/v1\nnamespace: o11y\nattributes:\n  o11y.thing: {type: string, sensitivity: public, cardinality: bounded}\n",
 			[]string{"libo11y_app_namespace_reserved"},
@@ -119,5 +123,27 @@ func TestViolationString(t *testing.T) {
 	v := appregistry.Violation{RuleID: "libo11y_attr_naming", Attribute: "lor.User", Detail: "not a dotted snake_case name"}
 	if got := v.String(); !strings.Contains(got, "libo11y_attr_naming") || !strings.Contains(got, "lor.User") {
 		t.Errorf("String() = %q", got)
+	}
+}
+
+// TestValidateOrder pins the output order Validate documents: registry-level
+// rules first, then attributes in name order, each attribute's rules in a
+// fixed order.
+func TestValidateOrder(t *testing.T) {
+	doc := "schema: libo11y.app-registry/v2\nnamespace: lor\nattributes:\n" +
+		"  lor.a: {type: uuid, cardinality: bounded}\n" +
+		"  lor.B: {type: string, sensitivity: public, cardinality: bounded}\n"
+	reg, err := appregistry.Parse([]byte(doc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"libo11y_app_schema_unknown",
+		"libo11y_attr_naming",
+		"libo11y_app_type_unknown",
+		"libo11y_sensitivity_missing",
+	}
+	if got := ruleIDs(reg.Validate()); !slices.Equal(got, want) {
+		t.Errorf("Validate() = %v, want %v", got, want)
 	}
 }
