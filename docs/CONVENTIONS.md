@@ -59,26 +59,31 @@ and tests every package. `make ci` runs it.
 - No lockstep releases across languages. A change to shared docs never
   forces a release.
 - Each language keeps a `CHANGELOG.md` in Keep a Changelog format.
-- Go releases tag `go/vX.Y.Z` first, then `go/o11ygin/vX.Y.Z`, whose
-  `go.mod` requires the matching parent version. `make release-check`
-  validates that sequence for the next unreleased version
-  (`RELEASE_VERSION`, default `v0.2.0`) against a throwaway local remote;
-  it never touches real refs. Bump the default after each release.
+- The Go family is four modules: `github.com/jamesainslie/libo11y/go` and
+  the submodules `go/o11ygin`, `go/o11yconnect` and `go/o11ysql`. They
+  release together at one version. A release tags `go/vX.Y.Z` first, then
+  `go/o11ygin/vX.Y.Z`, `go/o11yconnect/vX.Y.Z` and `go/o11ysql/vX.Y.Z`, all
+  on the same commit, and each submodule's `go.mod` requires the parent at
+  that version. `make release-check` validates the sequence for the next
+  unreleased version (`RELEASE_VERSION`, default `v0.2.0`) against a
+  throwaway local remote; it never touches real refs. Bump the default
+  after each release.
 - To release Go version X.Y.Z: move the changelog's entries into a
-  `## [X.Y.Z] - date` section, set `go/o11ygin/go.mod`'s requirement on
-  the parent module to `vX.Y.Z`, run `make release-check` on the commit to
-  release, then push `go/vX.Y.Z` and after it `go/o11ygin/vX.Y.Z`, both on
-  that commit. Each tag starts the release workflow
+  `## [X.Y.Z] - date` section, set each submodule's requirement on the
+  parent module to `vX.Y.Z`, run `make release-check` on the commit to
+  release, then push `go/vX.Y.Z` and after it the three submodule tags,
+  all on that commit. Each tag starts the release workflow
   (`.github/workflows/release.yml`). It checks that the version is
-  semantic, that the gin tag's parent tag exists on the same commit and
-  matches its `go.mod` requirement, and that the changelog has the
+  semantic, that a submodule tag's parent tag exists on the same commit
+  and matches its `go.mod` requirement, and that the changelog has the
   section, then runs vet, the tests, and the spec gates. It publishes a
   GitHub Release whose notes are that changelog section
-  (`scripts/release-notes.sh`), marked as a prerelease only for versions
-  with a `-prerelease` suffix, and requests the version from
-  `proxy.golang.org` and builds a consumer against it. After both
-  workflows pass, bump `RELEASE_VERSION` in the `Makefile` and the
-  default in `scripts/release-check.sh` to the next unreleased version.
+  (`scripts/release-notes.sh`, reading `go/CHANGELOG.md`, which covers all
+  four modules), marked as a prerelease only for versions with a
+  `-prerelease` suffix, and requests the version from `proxy.golang.org`
+  and builds a consumer against it. After every workflow passes, bump
+  `RELEASE_VERSION` in the `Makefile` and the default in
+  `scripts/release-check.sh` to the next unreleased version.
 - TypeScript releases are lockstep. Every `@libo11y/*` package publishes
   at one shared version from a `ts/vX.Y.Z` tag, starting with
   `ts/v0.1.0`. Until then `@libo11y/spec` is private at version `0.0.0`,
@@ -129,13 +134,13 @@ adding a gate.
 
 | Target | Gate |
 |---|---|
-| `make lint` | golangci-lint v2 (with gofumpt) on both Go modules, zero issues; `golangci-lint fmt` applies the formatter |
-| `make vet` | `go vet` on both modules |
-| `make test` | `go test -race` on both modules (`GO_TEST_P` sets package parallelism), including the `testing/slogtest` handler contract, the OTLP wire tests, and the generator's golden test |
+| `make lint` | golangci-lint v2 (with gofumpt) on every Go module, zero issues; `golangci-lint fmt` applies the formatter |
+| `make vet` | `go vet` on every Go module |
+| `make test` | `go test -race` on every Go module (`GO_TEST_P` sets package parallelism), including the `testing/slogtest` handler contract, the OTLP wire tests, and the generator's golden test |
 | `make tidy-check` | each module's `go.mod` and `go.sum` tidy on its own (`GOWORK=off`) |
 | `make spec-check`, `make spec-drift` | registry policy checks and generated-artifact drift |
 | `make release-check` | the Go release sequence (needs a clean tree) |
-| `make vuln` | `govulncheck` on both modules; runs last because it depends on the advisory database and the toolchain's patch level |
+| `make vuln` | `govulncheck` on every Go module; runs last because it depends on the advisory database and the toolchain's patch level |
 
 - Go: the gates above. Standard-library advisories are fixed by the
   toolchain, not the module: build with go1.26.9 or later on the 1.26 line
