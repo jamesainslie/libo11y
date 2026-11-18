@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/jamesainslie/libo11y/go/internal/specrules"
 )
 
 // The policy suite below is the normative validation for the libo11y
@@ -26,14 +28,6 @@ func (v violation) String() string {
 }
 
 var (
-	sensitivityClasses = map[string]bool{"public": true, "internal": true, "pii": true, "secret": true}
-	cardinalityClasses = map[string]bool{"enum": true, "bounded": true, "unbounded": true}
-
-	// Minted attribute names: lowercase dotted namespaces, snake_case
-	// within segments, at least two segments. Event and metric names
-	// follow the same shape.
-	attrNamePattern = regexp.MustCompile(`^[a-z][a-z0-9]*(_[a-z0-9]+)*(\.[a-z][a-z0-9]*(_[a-z0-9]+)*)+$`)
-
 	// stabilities are the stability levels the semconv registry schema
 	// accepts, on groups and attributes alike.
 	stabilities = map[string]bool{
@@ -285,7 +279,7 @@ func checkAttribute(g group, a attr, idx *index) []violation {
 	deprecated := a.Deprecated.Kind != 0
 
 	if a.ID != "" {
-		if !attrNamePattern.MatchString(a.ID) {
+		if !specrules.ValidName(a.ID) {
 			fail("libo11y_attr_naming", "naming", a.ID)
 		}
 		// Namespace ownership: minting names inside semconv-owned or
@@ -301,7 +295,7 @@ func checkAttribute(g group, a attr, idx *index) []violation {
 		switch {
 		case !hasSensitivity && !deprecated:
 			fail("libo11y_sensitivity_missing", "sensitivity", a.ID)
-		case hasSensitivity && !sensitivityClasses[sensitivity]:
+		case hasSensitivity && !specrules.IsSensitivity(sensitivity):
 			fail("libo11y_sensitivity_unknown", "sensitivity", a.ID)
 		}
 
@@ -309,16 +303,16 @@ func checkAttribute(g group, a attr, idx *index) []violation {
 		switch {
 		case !hasCardinality && !deprecated:
 			fail("libo11y_cardinality_missing", "cardinality", a.ID)
-		case hasCardinality && !cardinalityClasses[cardinality]:
+		case hasCardinality && !specrules.IsCardinality(cardinality):
 			fail("libo11y_cardinality_unknown", "cardinality", a.ID)
 		}
 	} else {
 		// A reference may restate a class; a restated class must still be
 		// a known one.
-		if class, ok := a.Annotations["o11y.sensitivity"]; ok && !sensitivityClasses[class] {
+		if class, ok := a.Annotations["o11y.sensitivity"]; ok && !specrules.IsSensitivity(class) {
 			fail("libo11y_sensitivity_unknown", "sensitivity", a.Ref)
 		}
-		if class, ok := a.Annotations["o11y.cardinality"]; ok && !cardinalityClasses[class] {
+		if class, ok := a.Annotations["o11y.cardinality"]; ok && !specrules.IsCardinality(class) {
 			fail("libo11y_cardinality_unknown", "cardinality", a.Ref)
 		}
 	}
@@ -457,7 +451,7 @@ func checkGroup(g group) []violation {
 		if !strings.HasPrefix(g.Name, "o11y.") {
 			fail("libo11y_event_namespace", "events", g.Name)
 		}
-		if !attrNamePattern.MatchString(g.Name) {
+		if !specrules.ValidName(g.Name) {
 			fail("libo11y_event_naming", "naming", g.Name)
 		}
 		if g.Stability == "" {
@@ -469,7 +463,7 @@ func checkGroup(g group) []violation {
 	// instrument, and UCUM units in the unit field only (no
 	// Prometheus-style or unit suffixes in the name).
 	if g.Type == "metric" {
-		if !attrNamePattern.MatchString(g.MetricName) {
+		if !specrules.ValidName(g.MetricName) {
 			fail("libo11y_metric_naming", "naming", g.MetricName)
 		}
 		if !instruments[g.Instrument] {
