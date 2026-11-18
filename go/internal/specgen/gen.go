@@ -282,14 +282,7 @@ type EventInfo struct {
 	// Span shape tables.
 	b.WriteString("// SpanRequired maps span kinds registered by the spec to the\n// attributes required on them.\nvar SpanRequired = map[string][]attribute.Key{\n")
 	for _, sp := range m.spans {
-		kind := sp.Annotations["o11y.span.kind"]
-		var required []string
-		for _, a := range sp.Attributes {
-			if a.requirement() == "required" {
-				required = append(required, fmt.Sprintf("%q", a.name()))
-			}
-		}
-		fmt.Fprintf(&b, "\t%q: {%s},\n", kind, strings.Join(required, ", "))
+		fmt.Fprintf(&b, "\t%q: {%s},\n", sp.Annotations["o11y.span.kind"], quoteAll(requiredNames(sp)))
 	}
 	b.WriteString("}\n\n")
 

@@ -464,10 +464,14 @@ func checkGroup(g group) []violation {
 		fail("libo11y_annotation_unknown", "annotations", key)
 	}
 
-	// A RUM span-shape group names the shape it describes, so the
-	// generated table has one entry per shape.
-	if isRUMSpanGroup(g) && !rumSpanShapes[g.Annotations["o11y.rum.span"]] {
-		fail("libo11y_rum_span_kind", "spans", g.ID)
+	// A RUM span-shape group names a known shape, and that shape equals
+	// its group ID suffix. Group IDs are unique, so the generated table
+	// has at most one entry per shape.
+	if isRUMSpanGroup(g) {
+		shape := g.Annotations["o11y.rum.span"]
+		if !rumSpanShapes[shape] || shape != strings.TrimPrefix(g.ID, "libo11y.rum.span.") {
+			fail("libo11y_rum_span_kind", "spans", g.ID)
+		}
 	}
 
 	// Event discipline: names are static, dot-namespaced, owned (o11y.*),

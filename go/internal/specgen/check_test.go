@@ -816,7 +816,7 @@ groups:`+live+`
 }
 
 // TestRUMSpanKind pins that a RUM span-shape group names one of the RUM
-// span shapes.
+// span shapes, and that the shape matches its group ID suffix.
 func TestRUMSpanKind(t *testing.T) {
 	const body = `
     type: attribute_group
@@ -827,4 +827,7 @@ func TestRUMSpanKind(t *testing.T) {
 	assertViolations(t, "groups:\n  - id: libo11y.rum.span.view\n    annotations: {o11y.rum.span: view}"+body)
 	assertViolations(t, "groups:\n  - id: libo11y.rum.span.view\n    annotations: {o11y.rum.span: page}"+body, "libo11y_rum_span_kind")
 	assertViolations(t, "groups:\n  - id: libo11y.rum.span.view"+body, "libo11y_rum_span_kind")
+	assertViolations(t, "groups:\n  - id: libo11y.rum.span.view\n    annotations: {o11y.rum.span: action}"+body, "libo11y_rum_span_kind")
+	assertViolations(t, "groups:\n  - id: libo11y.rum.span.action\n    annotations: {o11y.rum.span: action}"+body)
+	assertViolations(t, "groups:\n  - id: libo11y.rum.span.app_load\n    annotations: {o11y.rum.span: app_load}"+body)
 }
