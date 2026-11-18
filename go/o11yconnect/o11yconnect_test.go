@@ -14,6 +14,7 @@ import (
 	"connectrpc.com/connect"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/baggage"
+	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/types/known/wrapperspb"
@@ -25,9 +26,13 @@ import (
 )
 
 const (
-	echoProcedure   = "/test.v1.EchoService/Echo"
-	echoMethod      = "test.v1.EchoService/Echo"
-	healthProcedure = "/grpc.health.v1.Health/Check"
+	echoProcedure       = "/test.v1.EchoService/Echo"
+	echoMethod          = "test.v1.EchoService/Echo"
+	echoGetProcedure    = "/test.v1.EchoService/EchoGet" // side-effect free, so callable with GET
+	echoGetMethod       = "test.v1.EchoService/EchoGet"
+	echoStreamProcedure = "/test.v1.EchoService/EchoStream" // server streaming
+	echoStreamMethod    = "test.v1.EchoService/EchoStream"
+	healthProcedure     = "/grpc.health.v1.Health/Check"
 )
 
 // fixture is a Connect server over httptest whose handlers are instrumented
@@ -41,8 +46,9 @@ type fixture struct {
 }
 
 // echo answers with its input. The input selects other behaviour: "not-found"
-// and "internal" fail with that code, "record" adds an attribute to the
-// RPC's wide event, and "panic" panics.
+// and "internal" fail with that code, "not-modified" fails with
+// connect.NewNotModifiedError, "record" adds an attribute to the RPC's wide
+// event, and "panic" panics.
 func (fx *fixture) echo(ctx context.Context, req *connect.Request[wrapperspb.StringValue]) (*connect.Response[wrapperspb.StringValue], error) {
 	select {
 	case fx.handled <- ctx:
@@ -54,12 +60,24 @@ func (fx *fixture) echo(ctx context.Context, req *connect.Request[wrapperspb.Str
 		return nil, connect.NewError(connect.CodeNotFound, errors.New("no such thing"))
 	case "internal":
 		return nil, connect.NewError(connect.CodeInternal, errors.New("broken"))
+	case "not-modified":
+		return nil, connect.NewNotModifiedError(nil)
 	case "record":
 		o11y.RecordFromContext(ctx).Set(slog.Int("echo.items", 3))
 	case "panic":
 		panic("echo panicked")
 	}
 	return connect.NewResponse(wrapperspb.String(req.Msg.GetValue())), nil
+}
+
+// echoStream is echo as a server-streaming RPC: it sends echo's answer as
+// its one message, or fails as echo does.
+func (fx *fixture) echoStream(ctx context.Context, req *connect.Request[wrapperspb.StringValue], stream *connect.ServerStream[wrapperspb.StringValue]) error {
+	resp, err := fx.echo(ctx, req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(resp.Msg)
 }
 
 func start(t *testing.T, rec *o11ytest.Recorder, serverOpts ...o11yconnect.Option) *fixture {
@@ -81,6 +99,9 @@ func serve(t *testing.T, rec *o11ytest.Recorder, interceptor connect.Interceptor
 	for _, procedure := range []string{echoProcedure, healthProcedure} {
 		mux.Handle(procedure, connect.NewUnaryHandler(procedure, fx.echo, connect.WithInterceptors(interceptor)))
 	}
+	mux.Handle(echoGetProcedure, connect.NewUnaryHandler(echoGetProcedure, fx.echo,
+		connect.WithInterceptors(interceptor), connect.WithIdempotency(connect.IdempotencyNoSideEffects)))
+	mux.Handle(echoStreamProcedure, connect.NewServerStreamHandler(echoStreamProcedure, fx.echoStream, connect.WithInterceptors(interceptor)))
 	var handler http.Handler = mux
 	if wrap != nil {
 		handler = wrap(mux)
@@ -106,9 +127,28 @@ func (fx *fixture) call(ctx context.Context, t *testing.T, procedure, value stri
 		}
 		options = append(options, connect.WithInterceptors(interceptor))
 	}
+	return fx.unary(ctx, procedure, value, options...)
+}
+
+// unary makes one unary RPC with a client built from options, which pick
+// the protocol (Connect unless they say otherwise) and any interceptors.
+func (fx *fixture) unary(ctx context.Context, procedure, value string, options ...connect.ClientOption) error {
 	client := connect.NewClient[wrapperspb.StringValue, wrapperspb.StringValue](fx.client, fx.url+procedure, options...)
 	_, err := client.CallUnary(ctx, connect.NewRequest(wrapperspb.String(value)))
 	return err
+}
+
+// stream makes one server-streaming RPC in the Connect protocol with an
+// uninstrumented client and reads it to the end.
+func (fx *fixture) stream(ctx context.Context, value string) error {
+	client := connect.NewClient[wrapperspb.StringValue, wrapperspb.StringValue](fx.client, fx.url+echoStreamProcedure)
+	stream, err := client.CallServerStream(ctx, connect.NewRequest(wrapperspb.String(value)))
+	if err != nil {
+		return err
+	}
+	for stream.Receive() {
+	}
+	return errors.Join(stream.Err(), stream.Close())
 }
 
 func spanByKind(t *testing.T, spans []sdktrace.ReadOnlySpan, kind trace.SpanKind) sdktrace.ReadOnlySpan {
@@ -291,6 +331,32 @@ func TestBehindInstrumentedHTTPTheOuterLayerDecidesTrust(t *testing.T) {
 	}
 	if rpc.SpanContext().TraceID() == caller.SpanContext().TraceID() {
 		t.Error("rpc span joined the caller's trace")
+	}
+}
+
+// TestPanicMarksTheServerSpan pins that a panicking handler leaves its
+// server span with status Error, as o11yhttp does, whichever constructor
+// instrumented the handler and with no connect.WithRecover to turn the
+// panic into an error first.
+func TestPanicMarksTheServerSpan(t *testing.T) {
+	for name, build := range map[string]func(...o11yconnect.Option) (connect.Interceptor, error){
+		"server": o11yconnect.ServerInterceptor,
+		"client": o11yconnect.ClientInterceptor,
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := o11ytest.Start(t)
+			interceptor, err := build(o11yconnect.WithSDK(rec.SDK))
+			if err != nil {
+				t.Fatalf("interceptor: %v", err)
+			}
+			fx := serve(t, rec, interceptor, nil)
+			if err := fx.call(context.Background(), t, echoProcedure, "panic"); err == nil {
+				t.Fatal("call to a panicking handler succeeded")
+			}
+			if got := spanByKind(t, rec.Spans(), trace.SpanKindServer).Status(); got.Code != codes.Error {
+				t.Errorf("server span status = %v, want Error", got)
+			}
+		})
 	}
 }
 
