@@ -1,8 +1,8 @@
 # Publishes a Go module release when its tag is pushed: go/vX.Y.Z for
 # github.com/jamesainslie/libo11y/go, and go/<sub>/vX.Y.Z for each
 # submodule (o11ygin, o11yconnect, o11ysql). Push the go/ tag first; every
-# tag of one release goes on the same commit. Rerunning a release is safe: an existing
-# GitHub Release has its notes replaced.
+# tag of one release goes on the same commit. Rerunning a release is safe:
+# an existing GitHub Release has its notes replaced.
 name: release
 
 on:

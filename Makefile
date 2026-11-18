@@ -61,7 +61,8 @@ vuln:
 RELEASE_VERSION ?= v0.2.0
 
 # Validate the release sequence (go/RELEASE_VERSION and
-# go/o11ygin/RELEASE_VERSION on HEAD) against a throwaway local remote.
+# go/<sub>/RELEASE_VERSION for every Go submodule, o11ygin, o11yconnect
+# and o11ysql, on HEAD) against a throwaway local remote.
 # Needs a clean working tree.
 release-check:
 	scripts/release-check.sh $(RELEASE_VERSION)

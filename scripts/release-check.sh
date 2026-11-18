@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # release-check.sh: validate the release sequence (tag go/VERSION and each
 # submodule's go/<name>/VERSION on the same commit) against a throwaway
-# local remote. It never touches the real repository's refs, its remote, or the shared
-# module cache.
+# local remote. It never touches the real repository's refs, its remote,
+# or the shared module cache.
 #
 # Usage: release-check.sh [VERSION]   (default v0.2.0; `make release-check`
 # passes RELEASE_VERSION). The default names the next unreleased version.
@@ -61,11 +61,20 @@ export GOWORK=off
 export GOTOOLCHAIN=local
 
 # 1. Each submodule as published: no replace, parent resolved from its tag.
+# The release is lockstep, so each go.mod must require the parent at the
+# version being released (the release workflow rejects anything else).
 clone="$work/clone"
 git -c advice.detachedHead=false clone --quiet --branch "go/$version" "$remote" "$clone"
 for sub in "${submodules[@]}"; do
 	(
 		cd "$clone/go/$sub"
+		# With the replace still in place, this reads the require line
+		# without resolving anything.
+		required="$(go list -m -f '{{.Version}}' "$module/go")"
+		if [[ "$required" != "$version" ]]; then
+			echo "release-check: go/$sub/go.mod requires the parent at ${required:-nothing}, not $version" >&2
+			exit 1
+		fi
 		go mod edit -dropreplace="$module/go"
 		go mod tidy
 		go build ./...
