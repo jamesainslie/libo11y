@@ -61,6 +61,10 @@ func checkFile(path string, stdout, stderr io.Writer) int {
 	if len(violations) > 0 {
 		return 1
 	}
-	printf(stdout, "%s: ok (%d attributes in namespace %s)\n", path, len(reg.Attributes), reg.Namespace)
+	noun := "attributes"
+	if len(reg.Attributes) == 1 {
+		noun = "attribute"
+	}
+	printf(stdout, "%s: ok (%d %s in namespace %s)\n", path, len(reg.Attributes), noun, reg.Namespace)
 	return 0
 }

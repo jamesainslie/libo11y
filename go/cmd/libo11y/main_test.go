@@ -28,7 +28,7 @@ func TestRegistryCheck(t *testing.T) {
 		wantStdout string
 		wantStderr string
 	}{
-		"valid":      {[]string{"registry", "check", valid}, 0, "ok (1 attributes in namespace lor)", ""},
+		"valid":      {[]string{"registry", "check", valid}, 0, "ok (1 attribute in namespace lor)", ""},
 		"violations": {[]string{"registry", "check", invalid}, 1, "libo11y_app_namespace_reserved", ""},
 		"unparsable": {[]string{"registry", "check", broken}, 2, "", "parsing application registry"},
 		"missing":    {[]string{"registry", "check", filepath.Join(t.TempDir(), "nope.yaml")}, 2, "", "no such file"},
@@ -36,6 +36,8 @@ func TestRegistryCheck(t *testing.T) {
 		"no files":   {[]string{"registry", "check"}, 2, "", "usage:"},
 		"unknown":    {[]string{"lint"}, 2, "", "usage:"},
 		"help":       {[]string{"-h"}, 0, "usage:", ""},
+		"long help":  {[]string{"--help"}, 0, "usage:", ""},
+		"help word":  {[]string{"help"}, 0, "usage:", ""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
@@ -43,12 +45,23 @@ func TestRegistryCheck(t *testing.T) {
 			if code != tc.wantCode {
 				t.Errorf("exit %d, want %d (stdout %q, stderr %q)", code, tc.wantCode, stdout.String(), stderr.String())
 			}
-			if !strings.Contains(stdout.String(), tc.wantStdout) {
-				t.Errorf("stdout %q lacks %q", stdout.String(), tc.wantStdout)
-			}
-			if !strings.Contains(stderr.String(), tc.wantStderr) {
-				t.Errorf("stderr %q lacks %q", stderr.String(), tc.wantStderr)
-			}
+			assertStream(t, "stdout", stdout.String(), tc.wantStdout)
+			assertStream(t, "stderr", stderr.String(), tc.wantStderr)
 		})
+	}
+}
+
+// assertStream checks one output stream: an empty want means the stream
+// must be empty, and any other want must appear in it.
+func assertStream(t *testing.T, name, got, want string) {
+	t.Helper()
+	if want == "" {
+		if got != "" {
+			t.Errorf("%s = %q, want it empty", name, got)
+		}
+		return
+	}
+	if !strings.Contains(got, want) {
+		t.Errorf("%s %q lacks %q", name, got, want)
 	}
 }

@@ -1,6 +1,7 @@
 package appregistry_test
 
 import (
+	"errors"
 	"os"
 	"slices"
 	"strings"
@@ -38,16 +39,31 @@ func TestValidRegistry(t *testing.T) {
 }
 
 func TestParseIsStrict(t *testing.T) {
-	for name, doc := range map[string]string{
-		"unknown top-level key": "schema: libo11y.app-registry/v1\nnamespace: lor\nnamespaces: [x]\n",
-		"unknown attribute key": "schema: libo11y.app-registry/v1\nnamespace: lor\nattributes:\n  lor.a.b: {type: string, sensitivty: public}\n", //nolint:misspell // the misspelt key is the test input
-		"two documents":         "schema: libo11y.app-registry/v1\n---\nschema: x\n",
-		"empty":                 "",
-		"comment only":          "# nothing\n",
+	for name, tc := range map[string]struct {
+		doc          string
+		wantEmpty    bool   // the error is ErrEmpty
+		wantContains string // the error text contains this, when set
+	}{
+		"unknown top-level key": {doc: "schema: libo11y.app-registry/v1\nnamespace: lor\nnamespaces: [x]\n"},
+		"unknown attribute key": {doc: "schema: libo11y.app-registry/v1\nnamespace: lor\nattributes:\n  lor.a.b: {type: string, sensitivty: public}\n"}, //nolint:misspell // the misspelt key is the test input
+		"two documents":         {doc: "schema: libo11y.app-registry/v1\n---\nschema: x\n"},
+		"malformed second document": {
+			doc:          "schema: libo11y.app-registry/v1\n---\nschema: [\n",
+			wantContains: "parsing application registry:",
+		},
+		"empty":        {doc: "", wantEmpty: true},
+		"comment only": {doc: "# nothing\n", wantEmpty: true},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := appregistry.Parse([]byte(doc)); err == nil {
-				t.Error("Parse succeeded, want an error")
+			_, err := appregistry.Parse([]byte(tc.doc))
+			if err == nil {
+				t.Fatal("Parse succeeded, want an error")
+			}
+			if tc.wantEmpty && !errors.Is(err, appregistry.ErrEmpty) {
+				t.Errorf("Parse error = %v, want %v", err, appregistry.ErrEmpty)
+			}
+			if !strings.Contains(err.Error(), tc.wantContains) {
+				t.Errorf("Parse error = %q, want it to contain %q", err, tc.wantContains)
 			}
 		})
 	}

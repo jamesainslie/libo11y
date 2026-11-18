@@ -54,19 +54,20 @@ func (v Violation) String() string {
 	return fmt.Sprintf("%s: attribute %s: %s", v.RuleID, v.Attribute, v.Detail)
 }
 
-// errEmpty reports a registry file with no YAML document.
-var errEmpty = errors.New("application registry is empty")
+// ErrEmpty reports a registry file with no YAML document, such as an empty
+// or comment-only file.
+var ErrEmpty = errors.New("application registry is empty")
 
 // Parse decodes raw strictly: an unknown key, a second YAML document, and
-// an empty file are errors. Parse does not apply the policy rules; call
-// Validate for those.
+// an empty file (ErrEmpty) are errors. Parse does not apply the policy
+// rules; call Validate for those.
 func Parse(raw []byte) (*Registry, error) {
 	dec := yaml.NewDecoder(bytes.NewReader(raw))
 	dec.KnownFields(true)
 	var reg Registry
 	if err := dec.Decode(&reg); err != nil {
 		if errors.Is(err, io.EOF) {
-			return nil, errEmpty
+			return nil, ErrEmpty
 		}
 		return nil, fmt.Errorf("parsing application registry: %w", err)
 	}
