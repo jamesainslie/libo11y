@@ -5,6 +5,7 @@ import (
 	"database/sql/driver"
 	"fmt"
 	"net/url"
+	"strings"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/baggage"
@@ -130,9 +131,12 @@ func (c Carrier) MarshalText() ([]byte, error) { return []byte(c.encode()), nil 
 // UnmarshalText implements [encoding.TextUnmarshaler]. Empty text yields
 // the zero Carrier. Text longer than 32 KiB, text that is not a query
 // string, and text without a valid W3C traceparent fail with an error
-// wrapping [ErrInvalidCarrier], and leave c unchanged. Baggage that does
-// not parse as W3C baggage is dropped and the link kept, so damaged
-// tracing data never makes stored work unreadable.
+// wrapping [ErrInvalidCarrier], and leave c unchanged. Baggage members that
+// do not parse as W3C baggage, and members beyond the W3C limits of 64
+// members and 8192 encoded bytes, are dropped and the rest kept in their
+// original order, so damaged tracing data never makes stored work
+// unreadable. Baggage text over the W3C limit of 8192 bytes is dropped
+// whole, as the W3C baggage propagator does.
 func (c *Carrier) UnmarshalText(text []byte) error {
 	if len(text) == 0 {
 		*c = Carrier{}
@@ -152,11 +156,7 @@ func (c *Carrier) UnmarshalText(text []byte) error {
 	if !sc.IsValid() {
 		return fmt.Errorf("%w: no valid traceparent", ErrInvalidCarrier)
 	}
-	bag := v.Get(carrierBaggage)
-	if _, err := baggage.Parse(bag); err != nil {
-		bag = ""
-	}
-	*c = newCarrier(sc, bag)
+	*c = newCarrier(sc, validBaggage(v.Get(carrierBaggage)))
 	return nil
 }
 
@@ -187,13 +187,17 @@ func (c *Carrier) Scan(src any) error {
 
 // StartLinked starts the span for detached work: a new root span with one
 // link to the operation captured in carrier, so the work has a trace of its
-// own and the two traces stay navigable both ways. The carrier's baggage
-// members are added to the baggage in ctx, replacing members with the same
-// key, so the returned context carries both. A zero carrier starts an unlinked
-// root span. The span comes from the global tracer provider, under
-// libo11y's instrumentation scope; with an SDK built by [New], use
-// [SDK.StartLinked]. opts apply after the root and link options, so a
-// caller can add attributes or a span kind, such as
+// own and its span points back to the operation that handed it off. The
+// carrier's baggage members are added to the baggage in ctx, replacing
+// members with the same key, so the returned context carries both. Baggage
+// is restored with the same limits as the W3C baggage propagator: members
+// past the W3C limits are dropped, and text over 8192 bytes is dropped
+// whole. Capture does not apply the limits, so when captured baggage
+// exceeds them, which members survive can vary between captures. A zero
+// carrier starts an unlinked root span. The span comes from the global
+// tracer provider, under libo11y's instrumentation scope; with an SDK
+// built by [New], use [SDK.StartLinked]. opts apply after the root and
+// link options, so a caller can add attributes or a span kind, such as
 // trace.WithSpanKind(trace.SpanKindConsumer) for a message consumer.
 func StartLinked(ctx context.Context, carrier Carrier, name string, opts ...trace.SpanStartOption) (context.Context, trace.Span) {
 	return startLinked(ctx, otel.GetTracerProvider(), carrier, name, opts)
@@ -216,15 +220,55 @@ func startLinked(ctx context.Context, tp trace.TracerProvider, carrier Carrier, 
 	return tp.Tracer(scopeName).Start(ctx, name, startOpts...)
 }
 
+// validBaggage returns the members of the serialized baggage bag that
+// [baggage.Parse] accepts, in their original order. Parse skips invalid
+// members, stops at 64 members or once the members kept would encode to
+// more than 8192 bytes, and refuses text over 8192 bytes whole, returning
+// what it kept along with an error. The kept members are taken
+// from bag's own list members rather than re-encoded, because
+// [baggage.Baggage.String] walks a map and would change the order from run
+// to run.
+func validBaggage(bag string) string {
+	parsed, err := baggage.Parse(bag)
+	if err == nil {
+		return bag
+	}
+	if parsed.Len() == 0 {
+		return ""
+	}
+	kept := make([]string, 0, parsed.Len())
+	seen := make(map[string]bool, parsed.Len())
+	for raw := range strings.SplitSeq(bag, ",") {
+		// Parse keeps trailing space in a member's properties, so the
+		// segment is parsed untrimmed to compare equal to what it kept.
+		m, err := baggage.Parse(raw)
+		if err != nil || m.Len() != 1 {
+			continue
+		}
+		member := m.Members()[0]
+		// Parse keeps the last of duplicate keys, so a segment survives only
+		// when it is the member Parse kept, and only once.
+		if seen[member.Key()] || parsed.Member(member.Key()).String() != member.String() {
+			continue
+		}
+		seen[member.Key()] = true
+		kept = append(kept, raw)
+	}
+	return strings.Join(kept, ",")
+}
+
 // restoreBaggage adds the members of the serialized baggage bag to the
-// baggage in ctx, replacing members with the same key. A Carrier only holds
-// baggage that parses, so a parse failure leaves ctx unchanged.
+// baggage in ctx, replacing members with the same key. Like
+// [propagation.Baggage] Extract, it keeps the members [baggage.Parse]
+// accepts even when Parse reports an error. That happens when the captured
+// baggage exceeded the W3C limits, since Inject does not enforce them.
 func restoreBaggage(ctx context.Context, bag string) context.Context {
 	if bag == "" {
 		return ctx
 	}
-	restored, err := baggage.Parse(bag)
-	if err != nil {
+	// The error reports skipped members; the partial result is still valid.
+	restored, _ := baggage.Parse(bag)
+	if restored.Len() == 0 {
 		return ctx
 	}
 	merged := baggage.FromContext(ctx)

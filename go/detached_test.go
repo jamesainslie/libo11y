@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -359,5 +360,150 @@ func TestPackageLevelCaptureAppliesGlobalEgressFilter(t *testing.T) {
 	text := o11y.Capture(withBaggage(ctx, t, "tenant", "acme", "session", "s-1")).String()
 	if strings.Contains(text, "session") || !strings.Contains(text, "tenant") {
 		t.Errorf("carrier %q, want tenant kept and session filtered", text)
+	}
+}
+
+func TestCarrierKeepsValidBaggageMembers(t *testing.T) {
+	rec := o11ytest.Start(t)
+	ctx, _ := remoteContext(t, "")
+	// tenant=acme is valid; "===" is not.
+	text := rec.SDK.Capture(ctx).String() + "&baggage=tenant%3Dacme%2C%3D%3D%3D"
+
+	var c o11y.Carrier
+	if err := c.UnmarshalText([]byte(text)); err != nil {
+		t.Fatalf("UnmarshalText(%q): %v", text, err)
+	}
+	if !strings.Contains(c.String(), "tenant%3Dacme") {
+		t.Errorf("carrier %q dropped the valid baggage member", c.String())
+	}
+	jobCtx, job := rec.SDK.StartLinked(context.Background(), c, "job")
+	job.End()
+	if got := baggage.FromContext(jobCtx).Member("tenant").Value(); got != "acme" {
+		t.Errorf("baggage tenant = %q in the job context, want acme", got)
+	}
+}
+
+func TestStartLinkedKeepsBaggageUpToTheMemberLimit(t *testing.T) {
+	rec := o11ytest.Start(t)
+	ctx, _ := remoteContext(t, "")
+	// SetMember does not enforce the W3C limit of 64 members; Parse does.
+	bag := baggage.Baggage{}
+	for i := range 70 {
+		m, err := baggage.NewMember(fmt.Sprintf("k%02d", i), fmt.Sprintf("v%02d", i))
+		if err != nil {
+			t.Fatalf("baggage.NewMember: %v", err)
+		}
+		if bag, err = bag.SetMember(m); err != nil {
+			t.Fatalf("SetMember: %v", err)
+		}
+	}
+	carrier := rec.SDK.Capture(baggage.ContextWithBaggage(ctx, bag))
+
+	jobCtx, job := rec.SDK.StartLinked(context.Background(), carrier, "job")
+	job.End()
+	restored := baggage.FromContext(jobCtx)
+	if restored.Len() != 64 {
+		t.Fatalf("job context holds %d baggage members, want the 64 Parse keeps", restored.Len())
+	}
+	for _, m := range restored.Members() {
+		if want := bag.Member(m.Key()).Value(); m.Value() != want {
+			t.Errorf("baggage %s = %q, want %q", m.Key(), m.Value(), want)
+		}
+	}
+
+	var back o11y.Carrier
+	if err := back.UnmarshalText([]byte(carrier.String())); err != nil {
+		t.Fatalf("UnmarshalText: %v", err)
+	}
+	jobCtx, job = rec.SDK.StartLinked(context.Background(), back, "job")
+	job.End()
+	if n := baggage.FromContext(jobCtx).Len(); n != 64 {
+		t.Errorf("after a text round trip the job context holds %d baggage members, want 64", n)
+	}
+}
+
+func TestCarrierKeepsValidBaggageInOrder(t *testing.T) {
+	rec := o11ytest.Start(t)
+	ctx, _ := remoteContext(t, "")
+	base := rec.SDK.Capture(ctx).String()
+	text := base + "&baggage=c%3D3%2Ca%3D1%2C%3D%3D%3D%2Cb%3D2"
+
+	for range 20 {
+		var c o11y.Carrier
+		if err := c.UnmarshalText([]byte(text)); err != nil {
+			t.Fatalf("UnmarshalText(%q): %v", text, err)
+		}
+		if want := "baggage=c%3D3%2Ca%3D1%2Cb%3D2&" + base; c.String() != want {
+			t.Fatalf("carrier = %q, want %q", c.String(), want)
+		}
+	}
+}
+
+func TestBaggageOverTheByteLimitIsDroppedWhole(t *testing.T) {
+	// W3C caps baggage at 8192 bytes, and Parse refuses longer text whole,
+	// as the W3C baggage propagator does on extract.
+	rec := o11ytest.Start(t)
+	ctx, sc := remoteContext(t, "")
+	// baggage.New refuses text over the limit; SetMember does not.
+	bag := baggage.Baggage{}
+	for i := range 40 {
+		m, err := baggage.NewMember(fmt.Sprintf("k%02d", i), strings.Repeat("v", 250))
+		if err != nil {
+			t.Fatalf("baggage.NewMember: %v", err)
+		}
+		if bag, err = bag.SetMember(m); err != nil {
+			t.Fatalf("SetMember: %v", err)
+		}
+	}
+	carrier := rec.SDK.Capture(baggage.ContextWithBaggage(ctx, bag))
+	if !strings.Contains(carrier.String(), "baggage") {
+		t.Fatalf("captured carrier %q has no baggage to drop", carrier.String())
+	}
+
+	var back o11y.Carrier
+	if err := back.UnmarshalText([]byte(carrier.String())); err != nil {
+		t.Fatalf("UnmarshalText: %v", err)
+	}
+	if strings.Contains(back.String(), "baggage") || back.SpanContext().SpanID() != sc.SpanID() {
+		t.Errorf("carrier = %q, want the link kept and the baggage dropped", back.String())
+	}
+	jobCtx, job := rec.SDK.StartLinked(context.Background(), carrier, "job")
+	job.End()
+	if n := baggage.FromContext(jobCtx).Len(); n != 0 {
+		t.Errorf("job context holds %d baggage members, want none", n)
+	}
+}
+
+func TestCarrierKeepsTheMembersParseKeeps(t *testing.T) {
+	rec := o11ytest.Start(t)
+	ctx, _ := remoteContext(t, "")
+	base := rec.SDK.Capture(ctx).String()
+	for name, tc := range map[string]struct {
+		bag  string
+		want map[string]string
+	}{
+		"property with trailing space": {"a=1;p ,===,b=2", map[string]string{"a": "1", "b": "2"}},
+		"spaces around members":        {" a = 1 ;p=x , === , b=2", map[string]string{"a": "1", "b": "2"}},
+		"last duplicate wins":          {"a=1,a=2,===", map[string]string{"a": "2"}},
+		"empty segment":                {"a=1,,===,b=2", map[string]string{"a": "1", "b": "2"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var c o11y.Carrier
+			text := base + "&" + url.Values{"baggage": {tc.bag}}.Encode()
+			if err := c.UnmarshalText([]byte(text)); err != nil {
+				t.Fatalf("UnmarshalText(%q): %v", text, err)
+			}
+			jobCtx, job := rec.SDK.StartLinked(context.Background(), c, "job")
+			job.End()
+			bag := baggage.FromContext(jobCtx)
+			if bag.Len() != len(tc.want) {
+				t.Errorf("job baggage %q, want %v", bag.String(), tc.want)
+			}
+			for key, want := range tc.want {
+				if got := bag.Member(key).Value(); got != want {
+					t.Errorf("baggage %s = %q, want %q", key, got, want)
+				}
+			}
+		})
 	}
 }
