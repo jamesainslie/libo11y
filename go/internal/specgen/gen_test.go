@@ -461,3 +461,63 @@ groups:
 		t.Errorf("genTables missing %s", want)
 	}
 }
+
+// TestGoNameInitialisms pins that RUM and platform initialisms render in
+// upper case in Go identifiers.
+func TestGoNameInitialisms(t *testing.T) {
+	for in, want := range map[string]string{
+		"o11y.rum.vital.lcp":        "RUMVitalLCP",
+		"o11y.rum.vital.inp":        "RUMVitalINP",
+		"o11y.rum.vital.cls":        "RUMVitalCLS",
+		"o11y.rum.vital.fcp":        "RUMVitalFCP",
+		"o11y.rum.vital.ttfb":       "RUMVitalTTFB",
+		"o11y.rum.platform.ios":     "RUMPlatformIOS",
+		"o11y.rum.device.class.tv":  "RUMDeviceClassTV",
+		"o11y.rum.error.source.csp": "RUMErrorSourceCSP",
+		"o11y.rum.error.source.anr": "RUMErrorSourceANR",
+	} {
+		if got := goName(in); got != want {
+			t.Errorf("goName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestDeprecatedAreaGroupsDoNotMint pins that a registry.o11y.<area>
+// tombstone group, such as registry.o11y.rum.deprecated, mints nothing.
+func TestDeprecatedAreaGroupsDoNotMint(t *testing.T) {
+	root := writeRegistry(t, map[string]string{"a.yaml": `
+groups:
+  - id: registry.o11y.rum
+    type: attribute_group
+    attributes:
+      - id: o11y.rum.view.name
+        type: string
+        annotations: {o11y.sensitivity: public, o11y.cardinality: bounded}
+  - id: registry.o11y.rum.deprecated
+    type: attribute_group
+    attributes:
+      - id: o11y.rum.old.thing
+        type: string
+        deprecated: {reason: obsoleted}
+        annotations: {o11y.sensitivity: public}
+`})
+	m, err := load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mintedNames []string
+	for _, a := range m.minted {
+		mintedNames = append(mintedNames, a.ID)
+	}
+	if want := []string{"o11y.rum.view.name"}; !slices.Equal(mintedNames, want) {
+		t.Errorf("minted = %v, want %v", mintedNames, want)
+	}
+}
+
+// TestSpecPackageDocMentionsMetrics pins that the generated package doc
+// lists metric names among what the package holds.
+func TestSpecPackageDocMentionsMetrics(t *testing.T) {
+	if doc := strings.Join(strings.Fields(specPackageDoc), " "); !strings.Contains(doc, "event and metric names") {
+		t.Errorf("specPackageDoc does not mention metric names:\n%s", specPackageDoc)
+	}
+}

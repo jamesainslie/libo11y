@@ -831,3 +831,53 @@ func TestRUMSpanKind(t *testing.T) {
 	assertViolations(t, "groups:\n  - id: libo11y.rum.span.action\n    annotations: {o11y.rum.span: action}"+body)
 	assertViolations(t, "groups:\n  - id: libo11y.rum.span.app_load\n    annotations: {o11y.rum.span: app_load}"+body)
 }
+
+// TestTombstoneDoesNotCollideWithLiveKey pins that a deprecated definition
+// whose Go name matches a live key raises no collision, because tombstones
+// mint no constants.
+func TestTombstoneDoesNotCollideWithLiveKey(t *testing.T) {
+	assertViolations(t, `
+groups:
+  - id: registry.o11y
+    type: attribute_group
+    attributes:
+      - id: o11y.request.outcome
+        type: string
+        annotations: {o11y.sensitivity: public, o11y.cardinality: enum}
+  - id: registry.o11y.deprecated
+    type: attribute_group
+    attributes:
+      - id: o11y.request_outcome
+        type: string
+        deprecated: {reason: renamed, renamed_to: o11y.request.outcome}
+        annotations: {o11y.sensitivity: public, o11y.legacy_key: request_outcome}
+`)
+}
+
+// TestGroupDuplicate pins that two groups sharing an ID raise
+// libo11y_group_duplicate once per duplicated ID.
+func TestGroupDuplicate(t *testing.T) {
+	groups := parseGroups(t, `
+groups:
+  - id: libo11y.rum.span.view
+    type: attribute_group
+    annotations: {o11y.rum.span: view}
+  - id: libo11y.rum.span.view
+    type: attribute_group
+    annotations: {o11y.rum.span: view}
+  - id: libo11y.rum.span.view
+    type: attribute_group
+    annotations: {o11y.rum.span: view}
+  - id: registry.o11y
+    type: attribute_group
+`)
+	var got []violation
+	for _, v := range checkGroups(groups, buildIndex(groups)) {
+		if v.RuleID == "libo11y_group_duplicate" {
+			got = append(got, v)
+		}
+	}
+	if len(got) != 1 || got[0].Group != "libo11y.rum.span.view" || got[0].Category != "references" {
+		t.Errorf("libo11y_group_duplicate violations = %v, want one for libo11y.rum.span.view", got)
+	}
+}

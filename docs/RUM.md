@@ -129,7 +129,7 @@ The platform-neutral metrics are in
 browser metrics are in
 [`spec/registry/metrics/rum-browser.yaml`](../spec/registry/metrics/rum-browser.yaml).
 Every label is bounded or an enum. Labels in bold are required. Go has a
-name constant for each metric, such as `spec.MetricRUMVitalLcp`, and
+name constant for each metric, such as `spec.MetricRUMVitalLCP`, and
 TypeScript has one such as `METRIC_RUM_VITAL_LCP`.
 
 | Metric | Instrument | Unit | Labels |

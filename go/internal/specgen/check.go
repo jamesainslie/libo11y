@@ -176,7 +176,7 @@ func buildIndex(groups []group) *index {
 			if card, ok := a.Annotations["o11y.cardinality"]; ok {
 				addToSet(idx.cardByRef, a.name(), card)
 			}
-			if generatesKey(a) {
+			if generatesKey(g, a) {
 				addToSet(idx.goNames, goName(a.name()), a.name())
 			}
 		}
@@ -206,9 +206,10 @@ func isRUMSpanGroup(g group) bool {
 // classification, stability and requirement enums, event discipline, and
 // metric naming, instrument, and unit rules. It runs as a second pass over
 // the prebuilt idx, which carries the cross-group facts the per-attribute
-// rules consult. Registry-wide findings are reported once per attribute.
+// rules consult. Registry-wide findings are reported once per attribute,
+// and a duplicated group ID once per ID.
 func checkGroups(groups []group, idx *index) []violation {
-	var violations []violation
+	violations := duplicateGroups(groups)
 	for _, g := range groups {
 		for _, a := range g.Attributes {
 			violations = append(violations, checkAttribute(g, a, idx)...)
@@ -216,6 +217,24 @@ func checkGroups(groups []group, idx *index) []violation {
 		violations = append(violations, checkGroup(g)...)
 	}
 	return dedupeRegistryWide(violations)
+}
+
+// duplicateGroups reports each group ID that more than one group in the
+// registry carries, once per ID, at its first occurrence. Tables keyed by
+// group (the RUM span shapes, say) rely on group IDs being unique.
+func duplicateGroups(groups []group) []violation {
+	counts := map[string]int{}
+	for _, g := range groups {
+		counts[g.ID]++
+	}
+	var violations []violation
+	for _, g := range groups {
+		if counts[g.ID] > 1 {
+			violations = append(violations, violation{RuleID: "libo11y_group_duplicate", Category: "references", Group: g.ID, Attr: g.ID})
+			counts[g.ID] = 0
+		}
+	}
+	return violations
 }
 
 // dedupeRegistryWide keeps the first occurrence of each registry-wide
@@ -237,11 +256,11 @@ func dedupeRegistryWide(violations []violation) []violation {
 }
 
 // generatesKey reports whether the generator emits a Go key constant for
-// a: every minted o11y.* definition and every ref copied from upstream
-// (o11y.gen: copy).
-func generatesKey(a attr) bool {
+// a, found in group g: every definition in a mint group (see isMintGroup)
+// and every ref copied from upstream (o11y.gen: copy).
+func generatesKey(g group, a attr) bool {
 	if a.ID != "" {
-		return strings.HasPrefix(a.ID, "o11y.")
+		return isMintGroup(g)
 	}
 	return a.Annotations["o11y.gen"] == "copy"
 }
@@ -391,7 +410,7 @@ func checkAttribute(g group, a attr, idx *index) []violation {
 
 	// Two keys that map to one Go identifier would make the generated
 	// package fail to compile.
-	if generatesKey(a) && len(idx.goNames[goName(a.name())]) > 1 {
+	if generatesKey(g, a) && len(idx.goNames[goName(a.name())]) > 1 {
 		fail("libo11y_go_name_collision", "naming", a.name())
 	}
 
@@ -465,8 +484,8 @@ func checkGroup(g group) []violation {
 	}
 
 	// A RUM span-shape group names a known shape, and that shape equals
-	// its group ID suffix. Group IDs are unique, so the generated table
-	// has at most one entry per shape.
+	// its group ID suffix. libo11y_group_duplicate keeps group IDs unique,
+	// so the generated table has at most one entry per shape.
 	if isRUMSpanGroup(g) {
 		shape := g.Annotations["o11y.rum.span"]
 		if !rumSpanShapes[shape] || shape != strings.TrimPrefix(g.ID, "libo11y.rum.span.") {

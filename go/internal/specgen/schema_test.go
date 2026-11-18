@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -62,6 +63,8 @@ func TestManifestRejectsSchemaURLWithExtension(t *testing.T) {
 		"https://schemas.o11y.ing/libo11y/",
 		"schemas.o11y.ing/libo11y/1.0.0",
 		"ftp://schemas.o11y.ing/libo11y/1.0.0",
+		"https://schemas.o11y.ing/libo11y/1.0.0?v=2",
+		"https://schemas.o11y.ing/libo11y/1.0.0#top",
 		"",
 	} {
 		t.Run(url, func(t *testing.T) {
@@ -226,5 +229,15 @@ func TestVersionHistoryRejected(t *testing.T) {
 				t.Errorf("render error = %v, want %v", err, errVersionHistory)
 			}
 		})
+	}
+}
+
+// TestCheckValidatesVersionHistory pins that spec-check (run with
+// checkOnly) rejects a manifest whose version history is invalid, so the
+// error does not wait for spec-generate.
+func TestCheckValidatesVersionHistory(t *testing.T) {
+	root := writeManifestWithVersions(t, "https://schemas.o11y.ing/libo11y/1.1.0", []string{"1.1.0"})
+	if err := run(root, true, io.Discard); !errors.Is(err, errVersionHistory) {
+		t.Errorf("run(checkOnly) error = %v, want %v", err, errVersionHistory)
 	}
 }

@@ -22,6 +22,13 @@ func tsConst(name string) string {
 	return strings.ToUpper(strings.ReplaceAll(name, ".", "_"))
 }
 
+// tsMemberConst converts an enum member ID to its constant suffix with the
+// same folding as tsConst: upper case, with each dot an underscore, so a
+// member us.prod becomes US_PROD.
+func tsMemberConst(id string) string {
+	return strings.ToUpper(strings.ReplaceAll(id, ".", "_"))
+}
+
 // tsQuote renders s as a TypeScript string literal. JSON string syntax is a
 // subset of JavaScript's, and encoding a Go string to JSON cannot fail.
 func tsQuote(s string) string {
@@ -122,7 +129,7 @@ func tsEnum(b *strings.Builder, typeName, constPrefix, listName, attrName string
 	fmt.Fprintf(b, "\n/** The closed value set for `%s`. */\n", attrName)
 	fmt.Fprintf(b, "export type %s = %s;\n", typeName, strings.Join(values, " | "))
 	for _, member := range members {
-		fmt.Fprintf(b, "export const %s_VALUE_%s = %s;\n", constPrefix, strings.ToUpper(member[0]), tsQuote(member[1]))
+		fmt.Fprintf(b, "export const %s_VALUE_%s = %s;\n", constPrefix, tsMemberConst(member[0]), tsQuote(member[1]))
 	}
 	fmt.Fprintf(b, "/** Every value of `%s`. */\n", attrName)
 	fmt.Fprintf(b, "export const %s: readonly %s[] = [%s];\n", listName, typeName, strings.Join(values, ", "))

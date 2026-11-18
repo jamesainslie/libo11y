@@ -98,3 +98,25 @@ func TestTSQuote(t *testing.T) {
 		}
 	}
 }
+
+// TestTypeScriptEnumMemberNamesFoldDots pins that an enum member ID with a
+// dot folds to an underscore in its constant name, as tsConst does.
+func TestTypeScriptEnumMemberNamesFoldDots(t *testing.T) {
+	m, err := load(writeRegistry(t, map[string]string{"a.yaml": `
+groups:
+  - id: registry.o11y
+    type: attribute_group
+    attributes:
+      - id: o11y.region
+        type:
+          members:
+            - {id: us.prod, value: "us-prod"}
+        annotations: {o11y.sensitivity: public, o11y.cardinality: enum}
+`}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `export const REGION_VALUE_US_PROD = "us-prod";`; !strings.Contains(genTSSpec(m), want) {
+		t.Errorf("genTSSpec missing %s\n%s", want, genTSSpec(m))
+	}
+}

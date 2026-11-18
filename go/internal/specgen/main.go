@@ -197,6 +197,9 @@ func run(root string, checkOnly bool, stderr io.Writer) error {
 	if len(violations) > 0 {
 		return fmt.Errorf("%d policy violations", len(violations))
 	}
+	if _, err := schemaHistory(m.versions, m.specVersion); err != nil {
+		return err
+	}
 	if checkOnly {
 		return nil
 	}
@@ -213,10 +216,12 @@ var bareSemver = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9]
 var errSchemaURL = errors.New("manifest schema_url must be an absolute http(s) URL ending in a bare semantic version")
 
 // schemaVersion validates the manifest's schema URL and returns the spec
-// version it names: its last path segment, a bare MAJOR.MINOR.PATCH.
+// version it names: its last path segment, a bare MAJOR.MINOR.PATCH. A
+// query or fragment would leave the URL naming something other than the
+// schema file, so either is rejected.
 func schemaVersion(schemaURL string) (string, error) {
 	u, err := url.Parse(schemaURL)
-	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.RawQuery != "" || u.Fragment != "" {
 		return "", fmt.Errorf("%w: %q", errSchemaURL, schemaURL)
 	}
 	version := u.Path[strings.LastIndex(u.Path, "/")+1:]
@@ -417,13 +422,16 @@ func (m *model) classify(g group) {
 }
 
 // isMintGroup reports whether g's definitions get generated key constants:
-// registry.o11y and every registry.o11y.<area> group except the
-// deprecation tombstones, which document keys rather than export them.
+// registry.o11y and every registry.o11y.<area> group except deprecation
+// tombstone groups (IDs ending in .deprecated), which document keys rather
+// than export them, and forbidden groups, which classify keys that must
+// never be emitted. It is the single definition of which definitions mint;
+// generatesKey in the checks consults it too.
 func isMintGroup(g group) bool {
-	if g.ID == "registry.o11y" {
-		return true
+	if strings.HasSuffix(g.ID, ".deprecated") || isForbiddenGroup(g) {
+		return false
 	}
-	return strings.HasPrefix(g.ID, "registry.o11y.") && g.ID != "registry.o11y.deprecated"
+	return g.ID == "registry.o11y" || strings.HasPrefix(g.ID, "registry.o11y.")
 }
 
 // render generates every artifact in memory and returns the repo-relative
@@ -522,6 +530,8 @@ var initialisms = map[string]string{
 	"id": "ID", "sdk": "SDK", "k8s": "K8S", "http": "HTTP", "url": "URL",
 	"vcs": "VCS", "os": "OS", "faas": "FaaS", "uid": "UID", "ip": "IP",
 	"mac": "MAC", "pid": "PID", "pii": "PII", "rum": "RUM",
+	"ios": "IOS", "tv": "TV", "csp": "CSP", "anr": "ANR", "lcp": "LCP",
+	"inp": "INP", "cls": "CLS", "fcp": "FCP", "ttfb": "TTFB",
 }
 
 // goName converts a dotted attribute name to an exported Go identifier,
