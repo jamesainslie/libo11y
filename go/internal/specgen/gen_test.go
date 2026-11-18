@@ -218,7 +218,7 @@ groups:
 	if !strings.Contains(stderr.String(), "libo11y_sensitivity_missing") {
 		t.Errorf("violations not reported; stderr = %q", stderr.String())
 	}
-	for _, rel := range []string{"go/spec/spec.go", "go/internal/spectables/tables.go", "docs/taxonomy/resource.md", "spec/schemas/1.0.0"} {
+	for _, rel := range []string{"go/spec/spec.go", "go/internal/spectables/tables.go", "docs/taxonomy/resource.md", "spec/schemas/1.0.0", tsSpecPath, tsTablesPath} {
 		if _, err := os.Stat(filepath.Join(root, rel)); !os.IsNotExist(err) {
 			t.Errorf("%s written despite violations (stat err %v)", rel, err)
 		}
@@ -365,5 +365,159 @@ groups:
 	}
 	if len(m.forbidden) != 1 || m.forbidden[0].name() != "card.number" {
 		t.Errorf("forbidden = %v, want card.number", m.forbidden)
+	}
+}
+
+// TestMintGroupsGenerateKeys pins that every registry.o11y.<area> group
+// mints key constants, that refs in those groups never do, and that the
+// deprecation tombstones stay out of the public API.
+func TestMintGroupsGenerateKeys(t *testing.T) {
+	root := writeRegistry(t, map[string]string{"a.yaml": `
+groups:
+  - id: registry.o11y
+    type: attribute_group
+    attributes:
+      - id: o11y.outcome
+        type: string
+        annotations: {o11y.sensitivity: public, o11y.cardinality: enum}
+  - id: registry.o11y.rum
+    type: attribute_group
+    attributes:
+      - id: o11y.rum.view.name
+        type: string
+        annotations: {o11y.sensitivity: public, o11y.cardinality: bounded}
+      - ref: session.id
+        annotations: {o11y.sensitivity: internal, o11y.cardinality: unbounded}
+  - id: registry.o11y.deprecated
+    type: attribute_group
+    attributes:
+      - id: o11y.deprecated.thing
+        type: string
+        deprecated: {reason: obsoleted}
+        annotations: {o11y.sensitivity: public}
+`})
+	m, err := load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mintedNames []string
+	for _, a := range m.minted {
+		mintedNames = append(mintedNames, a.ID)
+	}
+	if want := []string{"o11y.outcome", "o11y.rum.view.name"}; !slices.Equal(mintedNames, want) {
+		t.Errorf("minted = %v, want %v", mintedNames, want)
+	}
+	src := genSpec(m)
+	for _, want := range []string{
+		`OutcomeKey attribute.Key = "o11y.outcome"`,
+		`RUMViewNameKey attribute.Key = "o11y.rum.view.name"`,
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("genSpec missing %s", want)
+		}
+	}
+	for _, unwanted := range []string{"DeprecatedThing", "SessionID"} {
+		if strings.Contains(src, unwanted) {
+			t.Errorf("genSpec emitted %s", unwanted)
+		}
+	}
+}
+
+// TestMetricNamesGenerated pins one name constant per registered metric.
+func TestMetricNamesGenerated(t *testing.T) {
+	m, err := load("../../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `MetricSchemaViolations = "o11y.schema.violations"`; !strings.Contains(genSpec(m), want) {
+		t.Errorf("genSpec missing %s", want)
+	}
+}
+
+// TestRUMSpanShapesGenerated pins the RUMSpanRequired table: one entry per
+// RUM span shape, listing its required attributes in file order.
+func TestRUMSpanShapesGenerated(t *testing.T) {
+	root := writeRegistry(t, map[string]string{"a.yaml": `
+groups:
+  - id: libo11y.rum.span.view
+    type: attribute_group
+    annotations: {o11y.rum.span: view}
+    attributes:
+      - ref: o11y.rum.view.name
+        requirement_level: required
+      - ref: session.id
+        requirement_level: required
+      - ref: o11y.rum.view.kind
+`})
+	m, err := load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := genTables(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `"view": {"o11y.rum.view.name", "session.id"}`; !strings.Contains(src, want) {
+		t.Errorf("genTables missing %s", want)
+	}
+}
+
+// TestGoNameInitialisms pins that RUM and platform initialisms render in
+// upper case in Go identifiers.
+func TestGoNameInitialisms(t *testing.T) {
+	for in, want := range map[string]string{
+		"o11y.rum.vital.lcp":        "RUMVitalLCP",
+		"o11y.rum.vital.inp":        "RUMVitalINP",
+		"o11y.rum.vital.cls":        "RUMVitalCLS",
+		"o11y.rum.vital.fcp":        "RUMVitalFCP",
+		"o11y.rum.vital.ttfb":       "RUMVitalTTFB",
+		"o11y.rum.platform.ios":     "RUMPlatformIOS",
+		"o11y.rum.device.class.tv":  "RUMDeviceClassTV",
+		"o11y.rum.error.source.csp": "RUMErrorSourceCSP",
+		"o11y.rum.error.source.anr": "RUMErrorSourceANR",
+	} {
+		if got := goName(in); got != want {
+			t.Errorf("goName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestDeprecatedAreaGroupsDoNotMint pins that a registry.o11y.<area>
+// tombstone group, such as registry.o11y.rum.deprecated, mints nothing.
+func TestDeprecatedAreaGroupsDoNotMint(t *testing.T) {
+	root := writeRegistry(t, map[string]string{"a.yaml": `
+groups:
+  - id: registry.o11y.rum
+    type: attribute_group
+    attributes:
+      - id: o11y.rum.view.name
+        type: string
+        annotations: {o11y.sensitivity: public, o11y.cardinality: bounded}
+  - id: registry.o11y.rum.deprecated
+    type: attribute_group
+    attributes:
+      - id: o11y.rum.old.thing
+        type: string
+        deprecated: {reason: obsoleted}
+        annotations: {o11y.sensitivity: public}
+`})
+	m, err := load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mintedNames []string
+	for _, a := range m.minted {
+		mintedNames = append(mintedNames, a.ID)
+	}
+	if want := []string{"o11y.rum.view.name"}; !slices.Equal(mintedNames, want) {
+		t.Errorf("minted = %v, want %v", mintedNames, want)
+	}
+}
+
+// TestSpecPackageDocMentionsMetrics pins that the generated package doc
+// lists metric names among what the package holds.
+func TestSpecPackageDocMentionsMetrics(t *testing.T) {
+	if doc := strings.Join(strings.Fields(specPackageDoc), " "); !strings.Contains(doc, "event and metric names") {
+		t.Errorf("specPackageDoc does not mention metric names:\n%s", specPackageDoc)
 	}
 }

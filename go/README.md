@@ -221,12 +221,13 @@ Typed errors: `ErrAlreadySetup`, `ErrNoServiceName`, `ErrNoEnvironment`,
 | Package | Purpose |
 |---------|---------|
 | `o11y` (root) | `Setup`, `New`, the `SDK` handle, options, `SDK.Event`, `Record`, `ForceEmit` |
-| `spec` | generated from the specification registry: typed attribute keys, closed enums (`spec.EnvironmentProduction`, ...), event names, and `SchemaURL`, `SpecVersion`, `SemconvVersion` |
+| `spec` | generated from the specification registry: typed attribute keys, closed enums (`spec.EnvironmentProduction`, ...), event names, metric names (`spec.MetricSchemaViolations`, ...), and `SchemaURL`, `SpecVersion`, `SemconvVersion` |
 | `o11yhttp` | net/http server middleware and client transport (otelhttp, stable HTTP semconv, route-aware span names, canonical log line) |
 | `o11ygrpc` | gRPC stats handlers for servers and clients (otelgrpc) |
 | `o11ygin` | Gin middleware (separate module, so non-Gin users skip its dependencies) |
 | `o11ytest` | hermetic in-memory harness for asserting emitted telemetry and conformance |
 | `redact` | capture-time redaction: `Secret`, `Masked`, tag-driven `Struct` |
+| `cmd/libo11y` | `libo11y registry check`, which validates an application attribute registry |
 
 The `SDK` handle exposes `TracerProvider`, `MeterProvider`,
 `LoggerProvider` (for log bridges other than slog, such as otelzap or
@@ -518,6 +519,8 @@ with empty values.
   guard and never mutates globals.
 - Semantic conventions are pinned per release (currently v1.41.0), and
   every resource carries the spec schema URL
-  `https://schemas.o11y.ing/libo11y/1.0.0` (`spec.SchemaURL`).
+  `https://schemas.o11y.ing/libo11y/1.1.0` (`spec.SchemaURL`). The
+  repository holds one schema file per spec version under `spec/schemas`,
+  and `spec/schemas/1.1.0` is the current one.
 
 See the runnable example in [`examples/httpserver`](examples/httpserver).

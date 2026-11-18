@@ -53,3 +53,30 @@ func TestEventNamesRegistered(t *testing.T) {
 		t.Errorf("EventRequestSummary = %q", spec.EventRequestSummary)
 	}
 }
+
+func TestMetricNamesRegistered(t *testing.T) {
+	if spec.MetricSchemaViolations != "o11y.schema.violations" {
+		t.Errorf("MetricSchemaViolations = %q", spec.MetricSchemaViolations)
+	}
+}
+
+func TestRUMConventions(t *testing.T) {
+	for _, tc := range []struct {
+		name, got, want string
+	}{
+		{"RUMPlatformKey", string(spec.RUMPlatformKey), "o11y.rum.platform"},
+		{"RUMViewNameKey", string(spec.RUMViewNameKey), "o11y.rum.view.name"},
+		{"RUMElementTextKey", string(spec.RUMElementTextKey), "o11y.rum.element.text"},
+		{"MetricRUMVitalLCP", spec.MetricRUMVitalLCP, "o11y.rum.vital.lcp"},
+		{"MetricRUMViews", spec.MetricRUMViews, "o11y.rum.views"},
+		{"EventRUMError", spec.EventRUMError, "o11y.rum.error"},
+		{"RUMViewKindScreen", string(spec.RUMViewKindScreen), "screen"},
+		{"RUMConnectionEffectiveSlow2g", string(spec.RUMConnectionEffectiveSlow2g), "slow-2g"},
+		{"RUMConnectionEffectiveType2g", string(spec.RUMConnectionEffectiveType2g), "2g"},
+		{"RUMVitalRatingNeedsImprovement", string(spec.RUMVitalRatingNeedsImprovement), "needs-improvement"},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("spec.%s = %q, want %q", tc.name, tc.got, tc.want)
+		}
+	}
+}

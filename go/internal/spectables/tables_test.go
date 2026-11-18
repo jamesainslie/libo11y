@@ -79,3 +79,20 @@ func TestUnknownKeyIsUnclassified(t *testing.T) {
 		t.Errorf("SensitivityOf[service.name] = %v, want Public", got)
 	}
 }
+
+func TestRUMClassification(t *testing.T) {
+	for key, want := range map[attribute.Key]spectables.Sensitivity{
+		"o11y.rum.element.text": spectables.PII,
+		"o11y.rum.view.id":      spectables.Internal,
+		"session.id":            spectables.Internal,
+		"o11y.rum.view.name":    spectables.Public,
+		"geo.country.iso_code":  spectables.Public,
+	} {
+		if got := spectables.SensitivityOf[key]; got != want {
+			t.Errorf("SensitivityOf[%s] = %v, want %v", key, got, want)
+		}
+	}
+	if got := spectables.RUMSpanRequired["view"]; len(got) == 0 {
+		t.Error(`RUMSpanRequired["view"] is empty`)
+	}
+}

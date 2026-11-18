@@ -9,3 +9,6 @@ coverage.html
 # Editor state
 *.swp
 .DS_Store
+
+# Bun and Node dependencies
+node_modules/

@@ -151,9 +151,10 @@ type model struct {
 	schemaURL      string
 	specVersion    string
 	semconvVersion string
+	versions       []string // manifest version history, oldest first; empty means [specVersion]
 
 	groups       []group           // every group in the registry, for checks
-	minted       []attr            // defined in attributes/o11y.yaml
+	minted       []attr            // definitions in the mint groups (see isMintGroup)
 	tiers        map[string][]attr // tier id -> refs, in file order
 	tierOrder    []string
 	forbidden    []attr            // forbidden groups' keys: classified, never a tier or constant
@@ -161,6 +162,7 @@ type model struct {
 	events       []group
 	metrics      []group
 	spans        []group
+	rumSpans     []group
 	metricLabels []attr
 
 	classByName map[string]string // attribute -> sensitivity class
@@ -195,6 +197,9 @@ func run(root string, checkOnly bool, stderr io.Writer) error {
 	if len(violations) > 0 {
 		return fmt.Errorf("%d policy violations", len(violations))
 	}
+	if _, err := schemaHistory(m.versions, m.specVersion); err != nil {
+		return err
+	}
 	if checkOnly {
 		return nil
 	}
@@ -211,10 +216,12 @@ var bareSemver = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9]
 var errSchemaURL = errors.New("manifest schema_url must be an absolute http(s) URL ending in a bare semantic version")
 
 // schemaVersion validates the manifest's schema URL and returns the spec
-// version it names: its last path segment, a bare MAJOR.MINOR.PATCH.
+// version it names: its last path segment, a bare MAJOR.MINOR.PATCH. A
+// query or fragment would leave the URL naming something other than the
+// schema file, so either is rejected.
 func schemaVersion(schemaURL string) (string, error) {
 	u, err := url.Parse(schemaURL)
-	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.RawQuery != "" || u.Fragment != "" {
 		return "", fmt.Errorf("%w: %q", errSchemaURL, schemaURL)
 	}
 	version := u.Path[strings.LastIndex(u.Path, "/")+1:]
@@ -238,8 +245,9 @@ func load(root string) (*model, error) {
 		return nil, fmt.Errorf("reading manifest: %w", err)
 	}
 	var manifestDoc struct {
-		SchemaURL      string `yaml:"schema_url"`
-		SemconvVersion string `yaml:"semconv_version"`
+		SchemaURL      string   `yaml:"schema_url"`
+		SemconvVersion string   `yaml:"semconv_version"`
+		Versions       []string `yaml:"versions"`
 	}
 	if err := yaml.Unmarshal(manifest, &manifestDoc); err != nil {
 		return nil, fmt.Errorf("parsing manifest: %w", err)
@@ -251,6 +259,7 @@ func load(root string) (*model, error) {
 	}
 	m.specVersion = version
 	m.semconvVersion = manifestDoc.SemconvVersion
+	m.versions = manifestDoc.Versions
 
 	registryDir := filepath.Join(root, "spec", "registry")
 	err = filepath.WalkDir(registryDir, func(path string, entry os.DirEntry, err error) error {
@@ -387,10 +396,14 @@ func (m *model) classify(g group) {
 	}
 
 	switch {
-	case g.ID == "registry.o11y":
-		m.minted = g.Attributes
 	case isForbiddenGroup(g):
 		m.forbidden = append(m.forbidden, g.Attributes...)
+	case isMintGroup(g):
+		for _, a := range g.Attributes {
+			if a.ID != "" {
+				m.minted = append(m.minted, a)
+			}
+		}
 	case strings.HasPrefix(g.ID, "libo11y.resource."):
 		tier := strings.TrimPrefix(g.ID, "libo11y.resource.")
 		m.tiers[tier] = g.Attributes
@@ -399,11 +412,26 @@ func (m *model) classify(g group) {
 		m.events = append(m.events, g)
 	case g.Type == "metric":
 		m.metrics = append(m.metrics, g)
+	case isRUMSpanGroup(g):
+		m.rumSpans = append(m.rumSpans, g)
 	case strings.HasPrefix(g.ID, "libo11y.span."):
 		m.spans = append(m.spans, g)
 	case g.ID == "libo11y.metrics.resource_labels":
 		m.metricLabels = g.Attributes
 	}
+}
+
+// isMintGroup reports whether g's definitions get generated key constants:
+// registry.o11y and every registry.o11y.<area> group except deprecation
+// tombstone groups (IDs ending in .deprecated), which document keys rather
+// than export them, and forbidden groups, which classify keys that must
+// never be emitted. It is the single definition of which definitions mint;
+// generatesKey in the checks consults it too.
+func isMintGroup(g group) bool {
+	if strings.HasSuffix(g.ID, ".deprecated") || isForbiddenGroup(g) {
+		return false
+	}
+	return g.ID == "registry.o11y" || strings.HasPrefix(g.ID, "registry.o11y.")
 }
 
 // render generates every artifact in memory and returns the repo-relative
@@ -415,14 +443,22 @@ func render(m *model) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	schemaFile, err := genSchema(m)
+	schemas, err := genSchemas(m)
 	if err != nil {
 		return nil, err
 	}
 	outputs := map[string]string{
-		"docs/taxonomy/resource.md":     genDocs(m),
-		"spec/schemas/" + m.specVersion: schemaFile,
+		"docs/taxonomy/resource.md": genDocs(m),
 	}
+	for version, file := range schemas {
+		outputs["spec/schemas/"+version] = file
+	}
+	tsTables, err := genTSTables(m)
+	if err != nil {
+		return nil, err
+	}
+	outputs[tsSpecPath] = genTSSpec(m)
+	outputs[tsTablesPath] = tsTables
 	goSources := []struct{ rel, src string }{
 		{"go/spec/spec.go", genSpec(m)},
 		{"go/internal/spectables/tables.go", tables},
@@ -493,7 +529,9 @@ func writeAll(root string, m *model) error {
 var initialisms = map[string]string{
 	"id": "ID", "sdk": "SDK", "k8s": "K8S", "http": "HTTP", "url": "URL",
 	"vcs": "VCS", "os": "OS", "faas": "FaaS", "uid": "UID", "ip": "IP",
-	"mac": "MAC", "pid": "PID", "pii": "PII",
+	"mac": "MAC", "pid": "PID", "pii": "PII", "rum": "RUM",
+	"ios": "IOS", "tv": "TV", "csp": "CSP", "anr": "ANR", "lcp": "LCP",
+	"inp": "INP", "cls": "CLS", "fcp": "FCP", "ttfb": "TTFB",
 }
 
 // goName converts a dotted attribute name to an exported Go identifier,

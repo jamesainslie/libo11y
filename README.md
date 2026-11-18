@@ -13,6 +13,7 @@ native logging facade, and everything is correlated and exported over OTLP.
 | Language | Status | Location |
 |----------|--------|----------|
 | Go | Implemented | [`go/`](go/) |
+| TypeScript | In development: `@libo11y/spec` (generated) | [`ts/`](ts/) |
 | Rust | Planned | [`rust/`](rust/) |
 | Java | Planned | [`java/`](java/) |
 | Zig | Planned | [`zig/`](zig/) |
@@ -60,6 +61,11 @@ code-generated into each language: typed attribute keys, closed enums, and
 validation tables the runtime and test harness share. See [`docs/SPEC.md`](docs/SPEC.md) for the human-readable
 specification and [`docs/taxonomy/`](docs/taxonomy/) for the generated
 attribute tables.
+
+The registry generates TypeScript as well as Go. The TypeScript output is
+the package `@libo11y/spec` in [`ts/packages/spec`](ts/packages/spec).
+Spec 1.1.0 adds the conventions for libo11y RUM, the real-user-monitoring
+product, which [`docs/RUM.md`](docs/RUM.md) describes.
 
 ## Further reading
 

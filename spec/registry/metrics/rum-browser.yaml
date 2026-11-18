@@ -1,0 +1,88 @@
+# Browser RUM instruments: the web vitals and long animation frames.
+# Mobile vitals are added by the mobile steps as further o11y.rum.vital.*
+# histograms.
+groups:
+  - id: metric.o11y.rum.vital.lcp
+    type: metric
+    metric_name: o11y.rum.vital.lcp
+    stability: development
+    brief: Largest Contentful Paint of a view.
+    instrument: histogram
+    unit: s
+    attributes:
+      - {ref: o11y.rum.view.name, requirement_level: required, annotations: {o11y.gen: mint}}
+      - {ref: o11y.rum.vital.rating, annotations: {o11y.gen: mint}}
+      - {ref: o11y.rum.device.class, annotations: {o11y.gen: mint}}
+      - {ref: o11y.rum.browser.family, annotations: {o11y.gen: mint}}
+      - {ref: o11y.rum.connection.effective, annotations: {o11y.gen: mint}}
+      - {ref: geo.country.iso_code, annotations: {o11y.cardinality: bounded, o11y.gen: alias}}
+
+  - id: metric.o11y.rum.vital.inp
+    type: metric
+    metric_name: o11y.rum.vital.inp
+    stability: development
+    brief: Interaction to Next Paint of a view.
+    instrument: histogram
+    unit: s
+    attributes:
+      - {ref: o11y.rum.view.name, requirement_level: required, annotations: {o11y.gen: mint}}
+      - {ref: o11y.rum.vital.rating, annotations: {o11y.gen: mint}}
+      - {ref: o11y.rum.device.class, annotations: {o11y.gen: mint}}
+      - {ref: o11y.rum.browser.family, annotations: {o11y.gen: mint}}
+      - {ref: o11y.rum.connection.effective, annotations: {o11y.gen: mint}}
+      - {ref: geo.country.iso_code, annotations: {o11y.cardinality: bounded, o11y.gen: alias}}
+
+  - id: metric.o11y.rum.vital.cls
+    type: metric
+    metric_name: o11y.rum.vital.cls
+    stability: development
+    brief: Cumulative Layout Shift of a view, a unitless score.
+    instrument: histogram
+    unit: "1"
+    attributes:
+      - {ref: o11y.rum.view.name, requirement_level: required, annotations: {o11y.gen: mint}}
+      - {ref: o11y.rum.vital.rating, annotations: {o11y.gen: mint}}
+      - {ref: o11y.rum.device.class, annotations: {o11y.gen: mint}}
+      - {ref: o11y.rum.browser.family, annotations: {o11y.gen: mint}}
+      - {ref: o11y.rum.connection.effective, annotations: {o11y.gen: mint}}
+      - {ref: geo.country.iso_code, annotations: {o11y.cardinality: bounded, o11y.gen: alias}}
+
+  - id: metric.o11y.rum.vital.fcp
+    type: metric
+    metric_name: o11y.rum.vital.fcp
+    stability: development
+    brief: First Contentful Paint of a view.
+    instrument: histogram
+    unit: s
+    attributes:
+      - {ref: o11y.rum.view.name, requirement_level: required, annotations: {o11y.gen: mint}}
+      - {ref: o11y.rum.vital.rating, annotations: {o11y.gen: mint}}
+      - {ref: o11y.rum.device.class, annotations: {o11y.gen: mint}}
+      - {ref: o11y.rum.browser.family, annotations: {o11y.gen: mint}}
+      - {ref: o11y.rum.connection.effective, annotations: {o11y.gen: mint}}
+      - {ref: geo.country.iso_code, annotations: {o11y.cardinality: bounded, o11y.gen: alias}}
+
+  - id: metric.o11y.rum.vital.ttfb
+    type: metric
+    metric_name: o11y.rum.vital.ttfb
+    stability: development
+    brief: Time to First Byte of a view's document.
+    instrument: histogram
+    unit: s
+    attributes:
+      - {ref: o11y.rum.view.name, requirement_level: required, annotations: {o11y.gen: mint}}
+      - {ref: o11y.rum.vital.rating, annotations: {o11y.gen: mint}}
+      - {ref: o11y.rum.device.class, annotations: {o11y.gen: mint}}
+      - {ref: o11y.rum.browser.family, annotations: {o11y.gen: mint}}
+      - {ref: o11y.rum.connection.effective, annotations: {o11y.gen: mint}}
+      - {ref: geo.country.iso_code, annotations: {o11y.cardinality: bounded, o11y.gen: alias}}
+
+  - id: metric.o11y.rum.browser.long_animation_frames
+    type: metric
+    metric_name: o11y.rum.browser.long_animation_frames
+    stability: development
+    brief: Count of long animation frames on a view.
+    instrument: counter
+    unit: "{frame}"
+    attributes:
+      - {ref: o11y.rum.view.name, requirement_level: required, annotations: {o11y.gen: mint}}

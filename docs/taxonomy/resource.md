@@ -1,4 +1,4 @@
-# libo11y resource taxonomy (spec 1.0.0)
+# libo11y resource taxonomy (spec 1.1.0)
 
 Generated from `spec/registry`; do not edit. Semconv pin: v1.41.0.
 
@@ -89,3 +89,7 @@ are not a tier and have no generated key constants.
 | `o11y.telemetry.configured` | `o11y.config.<key>` |
 | `o11y.request.summary` | `http.request.method`, `http.response.status_code`, `o11y.outcome`, `o11y.duration` |
 | `o11y.telemetry.dropped` | `o11y.signal`, `error.type` |
+| `o11y.rum.error` | `o11y.rum.error.source`, `exception.type`, `session.id`, `o11y.rum.view.id` |
+| `o11y.rum.frustration` | `o11y.rum.frustration.type`, `session.id`, `o11y.rum.view.id` |
+| `o11y.rum.session.start` | `session.id`, `o11y.rum.platform` |
+| `o11y.rum.session.end` | `session.id`, `o11y.rum.session.retained` |

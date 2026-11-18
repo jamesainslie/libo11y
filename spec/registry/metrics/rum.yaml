@@ -1,0 +1,54 @@
+# Platform-neutral RUM instruments. Every label is bounded or an enum.
+groups:
+  - id: metric.o11y.rum.views
+    type: metric
+    metric_name: o11y.rum.views
+    stability: development
+    brief: Count of views RUM recorded.
+    instrument: counter
+    unit: "{view}"
+    attributes:
+      - ref: o11y.rum.platform
+        requirement_level: required
+        annotations: {o11y.gen: mint}
+      - ref: o11y.rum.view.name
+        requirement_level: required
+        annotations: {o11y.gen: mint}
+      - ref: o11y.rum.view.kind
+        annotations: {o11y.gen: mint}
+      - ref: o11y.rum.device.class
+        annotations: {o11y.gen: mint}
+
+  - id: metric.o11y.rum.errors
+    type: metric
+    metric_name: o11y.rum.errors
+    stability: development
+    brief: Count of errors RUM recorded, by source.
+    instrument: counter
+    unit: "{error}"
+    attributes:
+      - ref: o11y.rum.platform
+        requirement_level: required
+        annotations: {o11y.gen: mint}
+      - ref: o11y.rum.view.name
+        annotations: {o11y.gen: mint}
+      - ref: o11y.rum.error.source
+        requirement_level: required
+        annotations: {o11y.gen: mint}
+
+  - id: metric.o11y.rum.frustrations
+    type: metric
+    metric_name: o11y.rum.frustrations
+    stability: development
+    brief: Count of frustration signals RUM recorded, by type.
+    instrument: counter
+    unit: "{signal}"
+    attributes:
+      - ref: o11y.rum.platform
+        requirement_level: required
+        annotations: {o11y.gen: mint}
+      - ref: o11y.rum.view.name
+        annotations: {o11y.gen: mint}
+      - ref: o11y.rum.frustration.type
+        requirement_level: required
+        annotations: {o11y.gen: mint}

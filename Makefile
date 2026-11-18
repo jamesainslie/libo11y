@@ -4,7 +4,7 @@
 # Package parallelism for go test; lower it on a loaded machine.
 GO_TEST_P ?= 4
 
-.PHONY: spec-check spec-generate spec-drift test lint vet tidy-check vuln release-check schema-published schema-published-test release-notes-test ci
+.PHONY: spec-check spec-generate spec-drift test lint vet tidy-check vuln release-check schema-published schema-published-test release-notes-test ts-install ts-check ci
 
 # Validate the spec registry against the libo11y policy suite (naming,
 # ownership, sensitivity, cardinality, events, units).
@@ -12,11 +12,11 @@ spec-check:
 	cd go && go run ./internal/specgen -root .. -check
 
 # Directories holding generated artifacts.
-GENERATED := go/spec go/internal/spectables docs/taxonomy spec/schemas
+GENERATED := go/spec go/internal/spectables docs/taxonomy spec/schemas ts/packages/spec/src/generated
 
 # Validate the registry, then regenerate go/spec, go/internal/spectables,
-# docs/taxonomy, and spec/schemas from it. An invalid registry generates
-# nothing.
+# docs/taxonomy, spec/schemas, and ts/packages/spec/src/generated from it.
+# An invalid registry generates nothing.
 spec-generate:
 	cd go && go run ./internal/specgen -root ..
 
@@ -26,6 +26,14 @@ spec-drift: spec-generate
 	git diff --exit-code -- $(GENERATED)
 	@untracked="$$(git ls-files --others --exclude-standard -- $(GENERATED))"; \
 	if [ -n "$$untracked" ]; then echo "untracked generated files:"; echo "$$untracked"; exit 1; fi
+
+# TypeScript workspace (ts/): install the pinned dependencies, then lint,
+# typecheck, and test every package (needs bun).
+ts-install:
+	cd ts && bun install --frozen-lockfile
+
+ts-check: ts-install
+	cd ts && bun run lint && bun run typecheck && bun test
 
 vet:
 	cd go && go vet ./...
@@ -75,4 +83,4 @@ release-notes-test:
 
 # vuln runs last: it depends on the advisory database and the toolchain's
 # patch level, so local runs exercise every other gate first.
-ci: lint vet test tidy-check spec-check spec-drift schema-published-test release-notes-test release-check vuln
+ci: lint vet test tidy-check spec-check spec-drift ts-check schema-published-test release-notes-test release-check vuln

@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/jamesainslie/libo11y/go/internal/specrules"
 )
 
 // The policy suite below is the normative validation for the libo11y
@@ -26,14 +28,6 @@ func (v violation) String() string {
 }
 
 var (
-	sensitivityClasses = map[string]bool{"public": true, "internal": true, "pii": true, "secret": true}
-	cardinalityClasses = map[string]bool{"enum": true, "bounded": true, "unbounded": true}
-
-	// Minted attribute names: lowercase dotted namespaces, snake_case
-	// within segments, at least two segments. Event and metric names
-	// follow the same shape.
-	attrNamePattern = regexp.MustCompile(`^[a-z][a-z0-9]*(_[a-z0-9]+)*(\.[a-z][a-z0-9]*(_[a-z0-9]+)*)+$`)
-
 	// stabilities are the stability levels the semconv registry schema
 	// accepts, on groups and attributes alike.
 	stabilities = map[string]bool{
@@ -58,6 +52,7 @@ var (
 		"o11y.type": true, "o11y.tier": true, "o11y.enum": true,
 		"o11y.fallback": true, "o11y.derivation": true, "o11y.span.kind": true,
 		"o11y.metric_labels": true, "o11y.legacy_key": true,
+		"o11y.rum.span": true,
 	}
 
 	// cardinalityRank orders cardinality classes from least to most
@@ -181,7 +176,7 @@ func buildIndex(groups []group) *index {
 			if card, ok := a.Annotations["o11y.cardinality"]; ok {
 				addToSet(idx.cardByRef, a.name(), card)
 			}
-			if generatesKey(a) {
+			if generatesKey(g, a) {
 				addToSet(idx.goNames, goName(a.name()), a.name())
 			}
 		}
@@ -197,14 +192,24 @@ func isForbiddenGroup(g group) bool {
 	return strings.HasSuffix(g.ID, ".forbidden")
 }
 
+// rumSpanShapes are the RUM span shapes a libo11y.rum.span.* group may
+// describe, through its o11y.rum.span annotation.
+var rumSpanShapes = map[string]bool{"view": true, "action": true, "app_load": true}
+
+// isRUMSpanGroup reports whether g describes a RUM span shape.
+func isRUMSpanGroup(g group) bool {
+	return strings.HasPrefix(g.ID, "libo11y.rum.span.")
+}
+
 // checkGroups validates registry groups against the libo11y policy suite:
 // naming, namespace ownership, references, sensitivity and cardinality
 // classification, stability and requirement enums, event discipline, and
 // metric naming, instrument, and unit rules. It runs as a second pass over
 // the prebuilt idx, which carries the cross-group facts the per-attribute
-// rules consult. Registry-wide findings are reported once per attribute.
+// rules consult. Registry-wide findings are reported once per attribute,
+// and a duplicated group ID once per ID.
 func checkGroups(groups []group, idx *index) []violation {
-	var violations []violation
+	violations := duplicateGroups(groups)
 	for _, g := range groups {
 		for _, a := range g.Attributes {
 			violations = append(violations, checkAttribute(g, a, idx)...)
@@ -212,6 +217,24 @@ func checkGroups(groups []group, idx *index) []violation {
 		violations = append(violations, checkGroup(g)...)
 	}
 	return dedupeRegistryWide(violations)
+}
+
+// duplicateGroups reports each group ID that more than one group in the
+// registry carries, once per ID, at its first occurrence. Tables keyed by
+// group (the RUM span shapes, say) rely on group IDs being unique.
+func duplicateGroups(groups []group) []violation {
+	counts := map[string]int{}
+	for _, g := range groups {
+		counts[g.ID]++
+	}
+	var violations []violation
+	for _, g := range groups {
+		if counts[g.ID] > 1 {
+			violations = append(violations, violation{RuleID: "libo11y_group_duplicate", Category: "references", Group: g.ID, Attr: g.ID})
+			counts[g.ID] = 0
+		}
+	}
+	return violations
 }
 
 // dedupeRegistryWide keeps the first occurrence of each registry-wide
@@ -233,11 +256,11 @@ func dedupeRegistryWide(violations []violation) []violation {
 }
 
 // generatesKey reports whether the generator emits a Go key constant for
-// a: every minted o11y.* definition and every ref copied from upstream
-// (o11y.gen: copy).
-func generatesKey(a attr) bool {
+// a, found in group g: every definition in a mint group (see isMintGroup)
+// and every ref copied from upstream (o11y.gen: copy).
+func generatesKey(g group, a attr) bool {
 	if a.ID != "" {
-		return strings.HasPrefix(a.ID, "o11y.")
+		return isMintGroup(g)
 	}
 	return a.Annotations["o11y.gen"] == "copy"
 }
@@ -285,7 +308,7 @@ func checkAttribute(g group, a attr, idx *index) []violation {
 	deprecated := a.Deprecated.Kind != 0
 
 	if a.ID != "" {
-		if !attrNamePattern.MatchString(a.ID) {
+		if !specrules.ValidName(a.ID) {
 			fail("libo11y_attr_naming", "naming", a.ID)
 		}
 		// Namespace ownership: minting names inside semconv-owned or
@@ -301,7 +324,7 @@ func checkAttribute(g group, a attr, idx *index) []violation {
 		switch {
 		case !hasSensitivity && !deprecated:
 			fail("libo11y_sensitivity_missing", "sensitivity", a.ID)
-		case hasSensitivity && !sensitivityClasses[sensitivity]:
+		case hasSensitivity && !specrules.IsSensitivity(sensitivity):
 			fail("libo11y_sensitivity_unknown", "sensitivity", a.ID)
 		}
 
@@ -309,16 +332,16 @@ func checkAttribute(g group, a attr, idx *index) []violation {
 		switch {
 		case !hasCardinality && !deprecated:
 			fail("libo11y_cardinality_missing", "cardinality", a.ID)
-		case hasCardinality && !cardinalityClasses[cardinality]:
+		case hasCardinality && !specrules.IsCardinality(cardinality):
 			fail("libo11y_cardinality_unknown", "cardinality", a.ID)
 		}
 	} else {
 		// A reference may restate a class; a restated class must still be
 		// a known one.
-		if class, ok := a.Annotations["o11y.sensitivity"]; ok && !sensitivityClasses[class] {
+		if class, ok := a.Annotations["o11y.sensitivity"]; ok && !specrules.IsSensitivity(class) {
 			fail("libo11y_sensitivity_unknown", "sensitivity", a.Ref)
 		}
-		if class, ok := a.Annotations["o11y.cardinality"]; ok && !cardinalityClasses[class] {
+		if class, ok := a.Annotations["o11y.cardinality"]; ok && !specrules.IsCardinality(class) {
 			fail("libo11y_cardinality_unknown", "cardinality", a.Ref)
 		}
 	}
@@ -376,9 +399,18 @@ func checkAttribute(g group, a attr, idx *index) []violation {
 		fail("libo11y_deprecated_target_undefined", "references", target)
 	}
 
+	// A rename from 1.0.0 on needs a schema-file transform, which the
+	// generator cannot render yet. Only pre-1.0.0 tombstones, which name
+	// the key the old release emitted, may record a rename.
+	if deprecatedTarget(a) != "" {
+		if _, legacy := a.Annotations["o11y.legacy_key"]; !legacy {
+			fail("libo11y_rename_needs_transform", "references", a.name())
+		}
+	}
+
 	// Two keys that map to one Go identifier would make the generated
 	// package fail to compile.
-	if generatesKey(a) && len(idx.goNames[goName(a.name())]) > 1 {
+	if generatesKey(g, a) && len(idx.goNames[goName(a.name())]) > 1 {
 		fail("libo11y_go_name_collision", "naming", a.name())
 	}
 
@@ -451,13 +483,23 @@ func checkGroup(g group) []violation {
 		fail("libo11y_annotation_unknown", "annotations", key)
 	}
 
+	// A RUM span-shape group names a known shape, and that shape equals
+	// its group ID suffix. libo11y_group_duplicate keeps group IDs unique,
+	// so the generated table has at most one entry per shape.
+	if isRUMSpanGroup(g) {
+		shape := g.Annotations["o11y.rum.span"]
+		if !rumSpanShapes[shape] || shape != strings.TrimPrefix(g.ID, "libo11y.rum.span.") {
+			fail("libo11y_rum_span_kind", "spans", g.ID)
+		}
+	}
+
 	// Event discipline: names are static, dot-namespaced, owned (o11y.*),
 	// and every event group declares stability.
 	if g.Type == "event" {
 		if !strings.HasPrefix(g.Name, "o11y.") {
 			fail("libo11y_event_namespace", "events", g.Name)
 		}
-		if !attrNamePattern.MatchString(g.Name) {
+		if !specrules.ValidName(g.Name) {
 			fail("libo11y_event_naming", "naming", g.Name)
 		}
 		if g.Stability == "" {
@@ -469,7 +511,7 @@ func checkGroup(g group) []violation {
 	// instrument, and UCUM units in the unit field only (no
 	// Prometheus-style or unit suffixes in the name).
 	if g.Type == "metric" {
-		if !attrNamePattern.MatchString(g.MetricName) {
+		if !specrules.ValidName(g.MetricName) {
 			fail("libo11y_metric_naming", "naming", g.MetricName)
 		}
 		if !instruments[g.Instrument] {
