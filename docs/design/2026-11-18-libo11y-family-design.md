@@ -29,6 +29,16 @@ The LOR adoption program is specified separately, in the lor-client-portal repos
 - **D9. The gateway is part of RUM.** Browser telemetry needs a receiving service for validation, limits, enrichment, symbolication and remote configuration. libo11y ships it as a Go module, `go/o11yrum`, and as a container image.
 - **D10. Replay is included and fully configurable.** Session replay is a separate package, installed only by apps that want it. Its default masks all text and all inputs.
 - **D11. A Grafana app plugin.** Grafana cannot play rrweb recordings or show a RUM session as one timeline. The ops pack therefore includes a Grafana app plugin with a session explorer and a replay player.
+- **D12. Products and platforms are separate axes.** Core and RUM are products. Each product has one implementation per platform, and every implementation follows the one spec. Core's TypeScript implementation is `@libo11y/core`, which is platform-neutral, plus a platform layer per runtime (`server`, `web`, `webext`, `react-native`). RUM sits on top of a platform layer. Mobile is a set of new platforms under both products, not a third product.
+- **D13. Mobile on three stacks.** The owner needs Expo/React Native, native iOS (Swift) and native Android (Kotlin). React Native reuses `@libo11y/core` and the platform-neutral half of RUM in TypeScript, with a thin native module that delegates to the Swift and Kotlin libraries for crashes, app start, frames and ANRs. Swift and Kotlin get full implementations of core and RUM on opentelemetry-swift and opentelemetry-android, and the spec gains Swift and Kotlin codegen targets. Every RUM platform shares the data model, the gateway and the Grafana session explorer.
+- **D14. Platform-neutral RUM conventions.** Session, view, action, error, resource, frustration and retention conventions are generic, and their enums cover mobile from the start (screens, taps, swipes, crashes, ANRs). Platform-only conventions live in their own groups, such as the browser family, so a new platform adds groups and never renames existing ones.
+
+## Products and platforms
+
+| Product | Go | Bun and Node | Browser | MV3 extension | React Native | iOS (Swift) | Android (Kotlin) |
+|---|---|---|---|---|---|---|---|
+| Core (setup) | `go` | `@libo11y/server` | `@libo11y/web` | `@libo11y/webext` | `@libo11y/react-native` | `Libo11y` Swift package | `libo11y-android` |
+| RUM (experience) | gateway `go/o11yrum` | none | `@libo11y/rum` | `@libo11y/rum` | `@libo11y/rum-react-native` | `Libo11yRUM` | `libo11y-rum-android` |
 
 ## Components
 
@@ -103,11 +113,15 @@ The validator applies the existing spec-check rules for naming, sensitivity, car
 
 The registry gains development-stability RUM groups. The spec's ownership rules let libo11y mint names only under `o11y.*`, so every RUM name is `o11y.rum.*`. The RUM groups reference semconv's `session.id` and `browser.*` attributes and never redefine them. RUM also emits semconv's `browser.web_vital` event as upstream defines it. It defines:
 
-- span shapes: the view span, the action span and the document-load span, each with its required attributes
-- attributes: `o11y.rum.view.name` (the route template), `o11y.rum.view.id`, `o11y.rum.view.kind` (initial, soft, bfcache restore, prerender), `o11y.rum.action.type` and `o11y.rum.action.name`, `o11y.rum.frustration.type` (rage, dead, error), `o11y.rum.error.source` and `o11y.rum.error.fingerprint`, `o11y.rum.element.selector` and `o11y.rum.element.text`, `o11y.rum.device.class`, `o11y.rum.browser.family`, `o11y.rum.connection.type`, `o11y.rum.vital.rating`, `o11y.rum.session.retained`, `o11y.rum.replay.segment` and `o11y.rum.config.version`
-- metrics: one histogram per vital (`o11y.rum.vital.lcp`, `o11y.rum.vital.inp`, `o11y.rum.vital.cls`, `o11y.rum.vital.fcp`, `o11y.rum.vital.ttfb`) plus `o11y.rum.views`, `o11y.rum.errors`, `o11y.rum.frustrations` and `o11y.rum.long_animation_frames`, each with bounded labels only
+The conventions have a platform-neutral centre that every RUM platform uses (D14):
+
+- span shapes: the view span, the action span and the app-load span (the document load on the web, the app start on mobile), each with its required attributes
+- attributes: `o11y.rum.platform` (web, webext, react_native, ios, android), `o11y.rum.view.name` (the route template or screen name), `o11y.rum.view.id`, `o11y.rum.view.kind` (initial, soft, bfcache_restore, prerender, screen), `o11y.rum.action.type` (click, tap, long_press, swipe, scroll, submit, key_press, custom) and `o11y.rum.action.name`, `o11y.rum.frustration.type` (rage, dead, error), `o11y.rum.error.source` (uncaught, unhandled_rejection, console, boundary, resource, csp, network, crash, anr, hang, custom) and `o11y.rum.error.fingerprint`, `o11y.rum.element.selector` and `o11y.rum.element.text`, `o11y.rum.device.class`, `o11y.rum.connection.type` (wifi, cellular, ethernet, offline, unknown) and `o11y.rum.connection.effective` (slow_2g, 2g, 3g, 4g), `o11y.rum.vital.rating`, `o11y.rum.session.retained`, `o11y.rum.replay.segment` and `o11y.rum.config.version`
+- metrics: `o11y.rum.views`, `o11y.rum.errors` and `o11y.rum.frustrations`, each with bounded labels only
 - events: `o11y.rum.error`, `o11y.rum.frustration`, `o11y.rum.session.start` and `o11y.rum.session.end`
 - sensitivity: `session.id`, the view ID and the element selector are `internal`. `o11y.rum.element.text` is `pii`. libo11y RUM never records form values.
+
+Platform groups sit at the edges. L1 adds the browser group: `o11y.rum.browser.family`, one histogram per web vital (`o11y.rum.vital.lcp`, `o11y.rum.vital.inp`, `o11y.rum.vital.cls`, `o11y.rum.vital.fcp`, `o11y.rum.vital.ttfb`) and `o11y.rum.browser.long_animation_frames`. The mobile steps add a mobile group: app start, frozen and slow frames, and hangs as `o11y.rum.vital.*` histograms, plus OS and app-version context.
 
 The spec version becomes `spec/v1.1.0`. The manifest gains a version history, so the generator renders a schema file for every released version, and the 1.0.0 file stays byte for byte as published.
 
@@ -239,17 +253,20 @@ Every collector and every feature can be switched on or off and tuned in code. R
 | L6 | Gateway: `go/o11yrum`, the image, `@libo11y/sourcemaps` | `go/o11yrum/v0.1.0` |
 | L7 | Replay: `rum-replay`, gateway replay storage | `ts/v0.4.0`, `go/o11yrum/v0.2.0` |
 | L8 | Ops pack: dashboards, rules, the Grafana app plugin | `ops/v0.1.0` |
+| L9 | iOS: Swift codegen target, `Libo11y` (core) and `Libo11yRUM`, the mobile convention group, dSYM symbolication in the gateway | `swift/v0.1.0` |
+| L10 | Android: Kotlin codegen target, `libo11y-android` (core) and `libo11y-rum-android`, R8/ProGuard symbolication in the gateway | `android/v0.1.0` |
+| L11 | React Native: `@libo11y/react-native` and `@libo11y/rum-react-native`, an Expo config plugin, and a native module that delegates to L9 and L10 | a `ts/vX.Y.Z` release |
 
-L1 comes first. L2 and L3 can run in parallel after it. L4 follows L3. L5 and L6 can run in parallel after L4. L7 follows L5 and L6. L8 follows L6 and can start its dashboards earlier.
+L1 comes first. L2 and L3 can run in parallel after it. L4 follows L3. L5 and L6 can run in parallel after L4. L7 follows L5 and L6. L8 follows L6 and can start its dashboards earlier. L9 and L10 can start after L6 and run in parallel. L11 follows L9 and L10.
 
 ## Out of scope
 
 - Rust, Java and Zig implementations.
-- Native mobile RUM.
 - A hosted backend. libo11y ships libraries, the gateway and the ops pack, and stores data only in the operator's own OTLP backends and object store.
 
 ## Risks
 
+- Swift Package Manager resolves only plain semantic-version tags at the root of a package's repository, so the path-prefixed `swift/vX.Y.Z` tag cannot serve SwiftPM directly. L9's spec decides between a mirror repository that receives each Swift release and a CocoaPods-only distribution.
 - Bun's `AsyncLocalStorage` has had gaps around some built-ins. L3 tests context propagation through Bun's `fetch`, timers, streams and `Bun.serve` before the API is fixed.
 - Upstream OpenTelemetry JS may lack features libo11y needs, such as trace-based exemplars or a stable browser logs SDK. Each such gap is filled inside libo11y behind the upstream interfaces and offered upstream.
 - rrweb's size and its effect on main-thread time are large. Replay loads lazily, and the overhead benchmark covers it.
