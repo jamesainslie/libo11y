@@ -445,6 +445,12 @@ func render(m *model) (map[string]string, error) {
 	for version, file := range schemas {
 		outputs["spec/schemas/"+version] = file
 	}
+	tsTables, err := genTSTables(m)
+	if err != nil {
+		return nil, err
+	}
+	outputs[tsSpecPath] = genTSSpec(m)
+	outputs[tsTablesPath] = tsTables
 	goSources := []struct{ rel, src string }{
 		{"go/spec/spec.go", genSpec(m)},
 		{"go/internal/spectables/tables.go", tables},

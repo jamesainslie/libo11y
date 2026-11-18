@@ -12,11 +12,11 @@ spec-check:
 	cd go && go run ./internal/specgen -root .. -check
 
 # Directories holding generated artifacts.
-GENERATED := go/spec go/internal/spectables docs/taxonomy spec/schemas
+GENERATED := go/spec go/internal/spectables docs/taxonomy spec/schemas ts/packages/spec/src/generated
 
 # Validate the registry, then regenerate go/spec, go/internal/spectables,
-# docs/taxonomy, and spec/schemas from it. An invalid registry generates
-# nothing.
+# docs/taxonomy, spec/schemas, and ts/packages/spec/src/generated from it.
+# An invalid registry generates nothing.
 spec-generate:
 	cd go && go run ./internal/specgen -root ..
 
