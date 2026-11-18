@@ -2,5 +2,6 @@ go 1.26.0
 
 use (
 	./go
+	./go/o11yconnect
 	./go/o11ygin
 )

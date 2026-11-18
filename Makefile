@@ -4,6 +4,10 @@
 # Package parallelism for go test; lower it on a loaded machine.
 GO_TEST_P ?= 4
 
+# Every Go module in the repository. Each has its own go.mod and every Go
+# gate runs on each module separately.
+GO_MODULES := go go/o11ygin go/o11yconnect
+
 .PHONY: spec-check spec-generate spec-drift test lint vet tidy-check vuln release-check schema-published schema-published-test release-notes-test ts-install ts-check ci
 
 # Validate the spec registry against the libo11y policy suite (naming,
@@ -36,26 +40,21 @@ ts-check: ts-install
 	cd ts && bun run lint && bun run typecheck && bun test
 
 vet:
-	cd go && go vet ./...
-	cd go/o11ygin && go vet ./...
+	@set -e; for m in $(GO_MODULES); do echo "go vet: $$m"; (cd $$m && go vet ./...); done
 
 test:
-	cd go && go test -race -p $(GO_TEST_P) -count=1 ./...
-	cd go/o11ygin && go test -race -p $(GO_TEST_P) -count=1 ./...
+	@set -e; for m in $(GO_MODULES); do echo "go test: $$m"; (cd $$m && go test -race -p $(GO_TEST_P) -count=1 ./...); done
 
 lint:
-	cd go && golangci-lint run ./...
-	cd go/o11ygin && golangci-lint run ./...
+	@set -e; for m in $(GO_MODULES); do echo "golangci-lint: $$m"; (cd $$m && golangci-lint run ./...); done
 
 # Each module's go.mod and go.sum must already be tidy on its own.
 tidy-check:
-	cd go && GOWORK=off go mod tidy -diff
-	cd go/o11ygin && GOWORK=off go mod tidy -diff
+	@set -e; for m in $(GO_MODULES); do echo "tidy: $$m"; (cd $$m && GOWORK=off go mod tidy -diff); done
 
-# Known vulnerabilities reachable from either module (needs govulncheck).
+# Known vulnerabilities reachable from any module (needs govulncheck).
 vuln:
-	cd go && govulncheck ./...
-	cd go/o11ygin && govulncheck ./...
+	@set -e; for m in $(GO_MODULES); do echo "govulncheck: $$m"; (cd $$m && govulncheck ./...); done
 
 # Next unreleased version, validated by release-check. Bump it after each
 # release (see scripts/release-check.sh). CI uses this default.
