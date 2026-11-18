@@ -33,3 +33,8 @@ var ErrInvalidEnvironment = errors.New("o11y: deployment environment not in the 
 // registries declare the same namespace. The message lists every rule
 // violation by rule ID, or names both files that declare the namespace.
 var ErrInvalidAppRegistry = errors.New("o11y: invalid application registry")
+
+// ErrInvalidCarrier reports serialized [Carrier] text that cannot be
+// restored: too long, not a query string, or without a valid W3C
+// traceparent.
+var ErrInvalidCarrier = errors.New("o11y: invalid carrier")
