@@ -105,6 +105,15 @@ const EventNameKey = "event.name"
 	}
 	b.WriteString(")\n")
 
+	// Metric names.
+	if len(m.metrics) > 0 {
+		b.WriteString("\n// Registered metric names.\nconst (\n")
+		for _, mt := range m.metrics {
+			fmt.Fprintf(&b, "\tMetric%s = %q\n", goName(mt.MetricName), mt.MetricName)
+		}
+		b.WriteString(")\n")
+	}
+
 	return b.String()
 }
 

@@ -367,3 +367,62 @@ groups:
 		t.Errorf("forbidden = %v, want card.number", m.forbidden)
 	}
 }
+
+// TestMintGroupsGenerateKeys pins that every registry.o11y.<area> group
+// mints key constants, that refs in those groups never do, and that the
+// deprecation tombstones stay out of the public API.
+func TestMintGroupsGenerateKeys(t *testing.T) {
+	root := writeRegistry(t, map[string]string{"a.yaml": `
+groups:
+  - id: registry.o11y
+    type: attribute_group
+    attributes:
+      - id: o11y.outcome
+        type: string
+        annotations: {o11y.sensitivity: public, o11y.cardinality: enum}
+  - id: registry.o11y.rum
+    type: attribute_group
+    attributes:
+      - id: o11y.rum.view.name
+        type: string
+        annotations: {o11y.sensitivity: public, o11y.cardinality: bounded}
+      - ref: session.id
+        annotations: {o11y.sensitivity: internal, o11y.cardinality: unbounded}
+  - id: registry.o11y.deprecated
+    type: attribute_group
+    attributes:
+      - id: o11y.deprecated.thing
+        type: string
+        deprecated: {reason: obsoleted}
+        annotations: {o11y.sensitivity: public}
+`})
+	m, err := load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := genSpec(m)
+	for _, want := range []string{
+		`OutcomeKey attribute.Key = "o11y.outcome"`,
+		`RUMViewNameKey attribute.Key = "o11y.rum.view.name"`,
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("genSpec missing %s", want)
+		}
+	}
+	for _, unwanted := range []string{"DeprecatedThing", "SessionID"} {
+		if strings.Contains(src, unwanted) {
+			t.Errorf("genSpec emitted %s", unwanted)
+		}
+	}
+}
+
+// TestMetricNamesGenerated pins one name constant per registered metric.
+func TestMetricNamesGenerated(t *testing.T) {
+	m, err := load("../../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `MetricSchemaViolations = "o11y.schema.violations"`; !strings.Contains(genSpec(m), want) {
+		t.Errorf("genSpec missing %s", want)
+	}
+}

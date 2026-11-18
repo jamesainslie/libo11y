@@ -154,7 +154,7 @@ type model struct {
 	versions       []string // manifest version history, oldest first; empty means [specVersion]
 
 	groups       []group           // every group in the registry, for checks
-	minted       []attr            // defined in attributes/o11y.yaml
+	minted       []attr            // definitions in the mint groups (see isMintGroup)
 	tiers        map[string][]attr // tier id -> refs, in file order
 	tierOrder    []string
 	forbidden    []attr            // forbidden groups' keys: classified, never a tier or constant
@@ -390,10 +390,14 @@ func (m *model) classify(g group) {
 	}
 
 	switch {
-	case g.ID == "registry.o11y":
-		m.minted = g.Attributes
 	case isForbiddenGroup(g):
 		m.forbidden = append(m.forbidden, g.Attributes...)
+	case isMintGroup(g):
+		for _, a := range g.Attributes {
+			if a.ID != "" {
+				m.minted = append(m.minted, a)
+			}
+		}
 	case strings.HasPrefix(g.ID, "libo11y.resource."):
 		tier := strings.TrimPrefix(g.ID, "libo11y.resource.")
 		m.tiers[tier] = g.Attributes
@@ -407,6 +411,16 @@ func (m *model) classify(g group) {
 	case g.ID == "libo11y.metrics.resource_labels":
 		m.metricLabels = g.Attributes
 	}
+}
+
+// isMintGroup reports whether g's definitions get generated key constants:
+// registry.o11y and every registry.o11y.<area> group except the
+// deprecation tombstones, which document keys rather than export them.
+func isMintGroup(g group) bool {
+	if g.ID == "registry.o11y" {
+		return true
+	}
+	return strings.HasPrefix(g.ID, "registry.o11y.") && g.ID != "registry.o11y.deprecated"
 }
 
 // render generates every artifact in memory and returns the repo-relative
@@ -498,7 +512,7 @@ func writeAll(root string, m *model) error {
 var initialisms = map[string]string{
 	"id": "ID", "sdk": "SDK", "k8s": "K8S", "http": "HTTP", "url": "URL",
 	"vcs": "VCS", "os": "OS", "faas": "FaaS", "uid": "UID", "ip": "IP",
-	"mac": "MAC", "pid": "PID", "pii": "PII",
+	"mac": "MAC", "pid": "PID", "pii": "PII", "rum": "RUM",
 }
 
 // goName converts a dotted attribute name to an exported Go identifier,

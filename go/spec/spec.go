@@ -172,3 +172,8 @@ const (
 	EventRequestSummary      = "o11y.request.summary"
 	EventTelemetryDropped    = "o11y.telemetry.dropped"
 )
+
+// Registered metric names.
+const (
+	MetricSchemaViolations = "o11y.schema.violations"
+)

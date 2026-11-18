@@ -53,3 +53,9 @@ func TestEventNamesRegistered(t *testing.T) {
 		t.Errorf("EventRequestSummary = %q", spec.EventRequestSummary)
 	}
 }
+
+func TestMetricNamesRegistered(t *testing.T) {
+	if spec.MetricSchemaViolations != "o11y.schema.violations" {
+		t.Errorf("MetricSchemaViolations = %q", spec.MetricSchemaViolations)
+	}
+}
