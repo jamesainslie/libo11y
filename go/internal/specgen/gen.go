@@ -291,6 +291,13 @@ type EventInfo struct {
 		}
 		fmt.Fprintf(&b, "\t%q: {%s},\n", kind, strings.Join(required, ", "))
 	}
+	b.WriteString("}\n\n")
+
+	// RUM span shape table.
+	b.WriteString("// RUMSpanRequired maps each RUM span shape to the attributes required\n// on it.\nvar RUMSpanRequired = map[string][]attribute.Key{\n")
+	for _, sp := range m.rumSpans {
+		fmt.Fprintf(&b, "\t%q: {%s},\n", sp.Annotations["o11y.rum.span"], quoteAll(requiredNames(sp)))
+	}
 	b.WriteString("}\n")
 
 	return b.String(), nil
@@ -311,6 +318,17 @@ func (m *model) eventRequirements(ev group) (required, templates []string) {
 		}
 	}
 	return required, templates
+}
+
+// requiredNames returns the names of g's required attributes, in file order.
+func requiredNames(g group) []string {
+	var names []string
+	for _, a := range g.Attributes {
+		if a.requirement() == "required" {
+			names = append(names, a.name())
+		}
+	}
+	return names
 }
 
 // quoteAll renders names as a comma-separated list of Go string literals.

@@ -162,6 +162,7 @@ type model struct {
 	events       []group
 	metrics      []group
 	spans        []group
+	rumSpans     []group
 	metricLabels []attr
 
 	classByName map[string]string // attribute -> sensitivity class
@@ -406,6 +407,8 @@ func (m *model) classify(g group) {
 		m.events = append(m.events, g)
 	case g.Type == "metric":
 		m.metrics = append(m.metrics, g)
+	case isRUMSpanGroup(g):
+		m.rumSpans = append(m.rumSpans, g)
 	case strings.HasPrefix(g.ID, "libo11y.span."):
 		m.spans = append(m.spans, g)
 	case g.ID == "libo11y.metrics.resource_labels":

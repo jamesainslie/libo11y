@@ -433,3 +433,31 @@ func TestMetricNamesGenerated(t *testing.T) {
 		t.Errorf("genSpec missing %s", want)
 	}
 }
+
+// TestRUMSpanShapesGenerated pins the RUMSpanRequired table: one entry per
+// RUM span shape, listing its required attributes in file order.
+func TestRUMSpanShapesGenerated(t *testing.T) {
+	root := writeRegistry(t, map[string]string{"a.yaml": `
+groups:
+  - id: libo11y.rum.span.view
+    type: attribute_group
+    annotations: {o11y.rum.span: view}
+    attributes:
+      - ref: o11y.rum.view.name
+        requirement_level: required
+      - ref: session.id
+        requirement_level: required
+      - ref: o11y.rum.view.kind
+`})
+	m, err := load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := genTables(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `"view": {"o11y.rum.view.name", "session.id"}`; !strings.Contains(src, want) {
+		t.Errorf("genTables missing %s", want)
+	}
+}

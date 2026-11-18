@@ -814,3 +814,17 @@ groups:`+live+`
         annotations: {o11y.sensitivity: public}
 `)
 }
+
+// TestRUMSpanKind pins that a RUM span-shape group names one of the RUM
+// span shapes.
+func TestRUMSpanKind(t *testing.T) {
+	const body = `
+    type: attribute_group
+    attributes:
+      - ref: session.id
+        requirement_level: required
+`
+	assertViolations(t, "groups:\n  - id: libo11y.rum.span.view\n    annotations: {o11y.rum.span: view}"+body)
+	assertViolations(t, "groups:\n  - id: libo11y.rum.span.view\n    annotations: {o11y.rum.span: page}"+body, "libo11y_rum_span_kind")
+	assertViolations(t, "groups:\n  - id: libo11y.rum.span.view"+body, "libo11y_rum_span_kind")
+}

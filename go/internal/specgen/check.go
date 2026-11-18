@@ -52,6 +52,7 @@ var (
 		"o11y.type": true, "o11y.tier": true, "o11y.enum": true,
 		"o11y.fallback": true, "o11y.derivation": true, "o11y.span.kind": true,
 		"o11y.metric_labels": true, "o11y.legacy_key": true,
+		"o11y.rum.span": true,
 	}
 
 	// cardinalityRank orders cardinality classes from least to most
@@ -189,6 +190,15 @@ func buildIndex(groups []group) *index {
 // group is recognized by its ID ending in .forbidden, never by substring.
 func isForbiddenGroup(g group) bool {
 	return strings.HasSuffix(g.ID, ".forbidden")
+}
+
+// rumSpanShapes are the RUM span shapes a libo11y.rum.span.* group may
+// describe, through its o11y.rum.span annotation.
+var rumSpanShapes = map[string]bool{"view": true, "action": true, "app_load": true}
+
+// isRUMSpanGroup reports whether g describes a RUM span shape.
+func isRUMSpanGroup(g group) bool {
+	return strings.HasPrefix(g.ID, "libo11y.rum.span.")
 }
 
 // checkGroups validates registry groups against the libo11y policy suite:
@@ -452,6 +462,12 @@ func checkGroup(g group) []violation {
 	}
 	for _, key := range unknownAnnotations(g.Annotations) {
 		fail("libo11y_annotation_unknown", "annotations", key)
+	}
+
+	// A RUM span-shape group names the shape it describes, so the
+	// generated table has one entry per shape.
+	if isRUMSpanGroup(g) && !rumSpanShapes[g.Annotations["o11y.rum.span"]] {
+		fail("libo11y_rum_span_kind", "spans", g.ID)
 	}
 
 	// Event discipline: names are static, dot-namespaced, owned (o11y.*),

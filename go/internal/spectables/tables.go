@@ -215,3 +215,7 @@ var SpanRequired = map[string][]attribute.Key{
 	"server": {"http.request.method", "url.path", "url.scheme"},
 	"client": {"http.request.method", "server.address", "server.port", "url.full"},
 }
+
+// RUMSpanRequired maps each RUM span shape to the attributes required
+// on it.
+var RUMSpanRequired = map[string][]attribute.Key{}
