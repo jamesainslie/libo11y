@@ -61,17 +61,22 @@ func TestMetricNamesRegistered(t *testing.T) {
 }
 
 func TestRUMConventions(t *testing.T) {
-	for got, want := range map[string]string{
-		string(spec.RUMPlatformKey):    "o11y.rum.platform",
-		string(spec.RUMViewNameKey):    "o11y.rum.view.name",
-		string(spec.RUMElementTextKey): "o11y.rum.element.text",
-		spec.MetricRUMVitalLCP:         "o11y.rum.vital.lcp",
-		spec.MetricRUMViews:            "o11y.rum.views",
-		spec.EventRUMError:             "o11y.rum.error",
-		string(spec.RUMViewKindScreen): "screen",
+	for _, tc := range []struct {
+		name, got, want string
+	}{
+		{"RUMPlatformKey", string(spec.RUMPlatformKey), "o11y.rum.platform"},
+		{"RUMViewNameKey", string(spec.RUMViewNameKey), "o11y.rum.view.name"},
+		{"RUMElementTextKey", string(spec.RUMElementTextKey), "o11y.rum.element.text"},
+		{"MetricRUMVitalLCP", spec.MetricRUMVitalLCP, "o11y.rum.vital.lcp"},
+		{"MetricRUMViews", spec.MetricRUMViews, "o11y.rum.views"},
+		{"EventRUMError", spec.EventRUMError, "o11y.rum.error"},
+		{"RUMViewKindScreen", string(spec.RUMViewKindScreen), "screen"},
+		{"RUMConnectionEffectiveSlow2g", string(spec.RUMConnectionEffectiveSlow2g), "slow-2g"},
+		{"RUMConnectionEffectiveType2g", string(spec.RUMConnectionEffectiveType2g), "2g"},
+		{"RUMVitalRatingNeedsImprovement", string(spec.RUMVitalRatingNeedsImprovement), "needs-improvement"},
 	} {
-		if got != want {
-			t.Errorf("got %q, want %q", got, want)
+		if tc.got != tc.want {
+			t.Errorf("spec.%s = %q, want %q", tc.name, tc.got, tc.want)
 		}
 	}
 }

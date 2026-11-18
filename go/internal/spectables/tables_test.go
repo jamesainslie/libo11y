@@ -86,6 +86,7 @@ func TestRUMClassification(t *testing.T) {
 		"o11y.rum.view.id":      spectables.Internal,
 		"session.id":            spectables.Internal,
 		"o11y.rum.view.name":    spectables.Public,
+		"geo.country.iso_code":  spectables.Public,
 	} {
 		if got := spectables.SensitivityOf[key]; got != want {
 			t.Errorf("SensitivityOf[%s] = %v, want %v", key, got, want)
