@@ -12,8 +12,11 @@ import {
   type Outcome,
   REQUIRED_TIER0,
   RESOURCE,
+  RUM_CONNECTION_EFFECTIVE_VALUE_SLOW_2G,
+  RUM_CONNECTION_EFFECTIVE_VALUE_TYPE_2G,
   RUM_SPAN_REQUIRED,
   RUM_VIEW_KIND_VALUES,
+  RUM_VITAL_RATING_VALUE_NEEDS_IMPROVEMENT,
   SCHEMA_URL,
   SENSITIVITY_OF,
   SPEC_VERSION,
@@ -27,6 +30,9 @@ test("minted keys and closed enums", () => {
   expect(ATTR_OUTCOME).toBe("o11y.outcome");
   const success: Outcome = "success";
   expect(OUTCOME_VALUES).toContain(success);
+  // @ts-expect-error "nope" is not an Outcome, so the union stays closed.
+  const notAnOutcome: Outcome = "nope";
+  void notAnOutcome;
 });
 
 test("tier 0 requires the service identity", () => {
@@ -72,4 +78,8 @@ test("RUM conventions", () => {
   ]);
   expect(SENSITIVITY_OF.get("o11y.rum.element.text")).toBe("pii");
   expect(SENSITIVITY_OF.get("session.id")).toBe("internal");
+  expect(SENSITIVITY_OF.get("geo.country.iso_code")).toBe("public");
+  expect(RUM_CONNECTION_EFFECTIVE_VALUE_SLOW_2G).toBe("slow-2g");
+  expect(RUM_CONNECTION_EFFECTIVE_VALUE_TYPE_2G).toBe("2g");
+  expect(RUM_VITAL_RATING_VALUE_NEEDS_IMPROVEMENT).toBe("needs-improvement");
 });
