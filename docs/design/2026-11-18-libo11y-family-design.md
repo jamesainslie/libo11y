@@ -101,15 +101,15 @@ The validator applies the existing spec-check rules for naming, sensitivity, car
 
 ### RUM conventions
 
-The registry gains a development-stability `rum` group. It builds on semconv's `session.*` and `browser.*` attributes and on the `browser.web_vital` event, and never redefines them. It defines:
+The registry gains development-stability RUM groups. The spec's ownership rules let libo11y mint names only under `o11y.*`, so every RUM name is `o11y.rum.*`. The RUM groups reference semconv's `session.id` and `browser.*` attributes and never redefine them. RUM also emits semconv's `browser.web_vital` event as upstream defines it. It defines:
 
-- spans: `rum.view` (one per view), `rum.action` (one per interaction) and the document-load span
-- attributes: view name and route template, view kind (initial, soft, bfcache restore, prerender), action type and name, frustration type (rage, dead, error), the error fingerprint, the replay segment, and the remote config version
-- metrics: one histogram per vital (`browser.vital.lcp`, `browser.vital.inp`, `browser.vital.cls`, `browser.vital.fcp`, `browser.vital.ttfb`) plus counters for errors, frustration signals and long animation frames, each with bounded labels only
-- events: `rum.error`, `rum.frustration`, `rum.session.start` and `rum.session.end`
-- sensitivity: `session.id` and the RUM session attributes are `internal`. Element text, URL query values and form values are `pii`.
+- span shapes: the view span, the action span and the document-load span, each with its required attributes
+- attributes: `o11y.rum.view.name` (the route template), `o11y.rum.view.id`, `o11y.rum.view.kind` (initial, soft, bfcache restore, prerender), `o11y.rum.action.type` and `o11y.rum.action.name`, `o11y.rum.frustration.type` (rage, dead, error), `o11y.rum.error.source` and `o11y.rum.error.fingerprint`, `o11y.rum.element.selector` and `o11y.rum.element.text`, `o11y.rum.device.class`, `o11y.rum.browser.family`, `o11y.rum.connection.type`, `o11y.rum.vital.rating`, `o11y.rum.session.retained`, `o11y.rum.replay.segment` and `o11y.rum.config.version`
+- metrics: one histogram per vital (`o11y.rum.vital.lcp`, `o11y.rum.vital.inp`, `o11y.rum.vital.cls`, `o11y.rum.vital.fcp`, `o11y.rum.vital.ttfb`) plus `o11y.rum.views`, `o11y.rum.errors`, `o11y.rum.frustrations` and `o11y.rum.long_animation_frames`, each with bounded labels only
+- events: `o11y.rum.error`, `o11y.rum.frustration`, `o11y.rum.session.start` and `o11y.rum.session.end`
+- sensitivity: `session.id`, the view ID and the element selector are `internal`. `o11y.rum.element.text` is `pii`. libo11y RUM never records form values.
 
-The spec version becomes `spec/v1.1.0`.
+The spec version becomes `spec/v1.1.0`. The manifest gains a version history, so the generator renders a schema file for every released version, and the 1.0.0 file stays byte for byte as published.
 
 ## Go additions (step L2, release `go/v0.2.0`)
 
