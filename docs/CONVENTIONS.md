@@ -65,16 +65,17 @@ and tests every package. `make ci` runs it.
   release together at one version. A release tags `go/vX.Y.Z` first, then
   `go/o11ygin/vX.Y.Z`, `go/o11yconnect/vX.Y.Z` and `go/o11ysql/vX.Y.Z`, all
   on the same commit, and each submodule's `go.mod` requires the parent at
-  that version. `make release-check` validates the sequence for the next
-  unreleased version (`RELEASE_VERSION`, default `v0.2.0`) against a
-  throwaway local remote; it never touches real refs. Bump the default
-  after each release.
+  that version. `make release-check` validates the sequence for
+  `RELEASE_VERSION` (default `v0.2.0`) against a throwaway local remote;
+  it never touches real refs. The default always matches the version the
+  submodules require, so it moves only in a release commit.
 - To release Go version X.Y.Z: move the changelog's entries into a
   `## [X.Y.Z] - date` section, set each submodule's requirement on the
-  parent module to `vX.Y.Z`, and run `make release-check` on the commit
-  to release. Then push the tags, all on that commit, in two pushes:
-  `go/vX.Y.Z` on its own, then the three submodule tags. Never push all
-  four together, because GitHub creates no push events when more than
+  parent module to `vX.Y.Z`, set `RELEASE_VERSION` in the `Makefile` and
+  the default in `scripts/release-check.sh` to `vX.Y.Z`, and run
+  `make release-check` on the commit to release. Then push the tags, all
+  on that commit, in two pushes: `go/vX.Y.Z` on its own, then the three
+  submodule tags. Never push all four together, because GitHub creates no push events when more than
   three tags are pushed at once. Each tag starts the release workflow
   (`.github/workflows/release.yml`). It checks that the version is
   semantic, that a submodule tag's parent tag exists on the same commit
@@ -84,9 +85,7 @@ and tests every package. `make ci` runs it.
   (`scripts/release-notes.sh`, reading `go/CHANGELOG.md`, which covers all
   four modules), marked as a prerelease only for versions with a
   `-prerelease` suffix, and requests the version from `proxy.golang.org`
-  and builds a consumer against it. After every workflow passes, bump
-  `RELEASE_VERSION` in the `Makefile` and the default in
-  `scripts/release-check.sh` to the next unreleased version.
+  and builds a consumer against it.
 - TypeScript releases are lockstep. Every `@libo11y/*` package publishes
   at one shared version from a `ts/vX.Y.Z` tag, starting with
   `ts/v0.1.0`. Until then `@libo11y/spec` is private at version `0.0.0`,
