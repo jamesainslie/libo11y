@@ -25,7 +25,10 @@ func TestSanitize(t *testing.T) {
 		{"hex and leading dot", `SELECT 0xFF, .5, t1.c2 FROM t1`, `SELECT ?, ?, t1.c2 FROM t1`, sqltext.DialectStandard},
 		{"unterminated string", `SELECT 'abc`, `SELECT ?`, sqltext.DialectStandard},
 		{"unterminated comment", `SELECT a /* secret`, `SELECT a  `, sqltext.DialectStandard},
-		{"oracle and named placeholders", `SELECT * FROM t WHERE id = :1 AND name = :name AND p = @p1`, `SELECT * FROM t WHERE id = :1 AND name = :name AND p = @p1`, sqltext.DialectStandard},
+		{"named placeholders kept, colon digits are numbers", `SELECT * FROM t WHERE id = :1 AND name = :name AND p = @p1`, `SELECT * FROM t WHERE id = :? AND name = :name AND p = @p1`, sqltext.DialectStandard},
+		{"array slices and times", `SELECT data[1:5], data[:5] FROM t WHERE a = 12:34`, `SELECT data[?:?], data[:?] FROM t WHERE a = ?:?`, sqltext.DialectStandard},
+		{"mysql colon digits are numbers", `SELECT * FROM t WHERE a = 12:34 AND b = :5`, `SELECT * FROM t WHERE a = ?:? AND b = :?`, sqltext.DialectMySQL},
+		{"sqlite colon digits are parameters", `SELECT * FROM t WHERE b = :5`, `SELECT * FROM t WHERE b = :5`, sqltext.DialectSQLite},
 		{"standard backslash is literal", `SELECT 'C:\' FROM t`, `SELECT ? FROM t`, sqltext.DialectStandard},
 		{"unicode identifier", `SELECT * FROM café WHERE x = 'é'`, `SELECT * FROM café WHERE x = ?`, sqltext.DialectStandard},
 	}
@@ -231,8 +234,13 @@ func quoted(r *rand.Rand, quote string, backslash bool) string {
 	return quote + strings.ReplaceAll(s, quote, escape) + quote
 }
 
-func numberLiteral(r *rand.Rand) string {
+func numberLiteral(r *rand.Rand, d sqltext.Dialect) string {
 	forms := []string{numMarker, "8_675_309", "0x" + numMarker, numMarker + ".5e-3", "." + numMarker, "1." + numMarker, numMarker + "e+2", numMarker + "abc"}
+	if d != sqltext.DialectSQLite {
+		// Outside SQLite a colon never starts a parameter, so the digits
+		// after it are a number: an array slice, or a time written bare.
+		forms = append(forms, "arr["+numMarker+":"+numMarker+"]", "arr[:"+numMarker+"]", "12:"+numMarker)
+	}
 	return forms[r.IntN(len(forms))]
 }
 
@@ -329,7 +337,7 @@ func statement(r *rand.Rand, d sqltext.Dialect) string {
 		case 0:
 			parts = append(parts, words[r.IntN(len(words))])
 		case 1:
-			parts = append(parts, numberLiteral(r))
+			parts = append(parts, numberLiteral(r, d))
 		default:
 			parts = append(parts, literal(r, d))
 		}
@@ -372,12 +380,14 @@ func TestSanitizeLeaksNoLiteral(t *testing.T) {
 
 var dialects = []sqltext.Dialect{sqltext.DialectStandard, sqltext.DialectMySQL, sqltext.DialectSQLite}
 
-// FuzzSanitize checks properties that hold for any input: sanitizing never
-// grows the text, sanitized text has nothing left to sanitize (a literal
-// or comment that survived would be replaced by a second pass), and
-// Summarize keeps the collection bounded. The one exception to the second
-// is MySQL text with --, where the space left by a removed comment can
-// turn a -- the first pass kept into a comment on the second.
+// FuzzSanitize checks properties that hold for any input: Sanitize
+// terminates, never grows the text, and is idempotent, and Summarize keeps
+// the collection bounded. Idempotence cannot catch a leak, because a
+// fragment of a literal that survives as an identifier or operator lexes
+// the same way on the second pass. TestSanitizeLeaksNoLiteral is the leak
+// guard. The one exception to idempotence is MySQL text with --, where the
+// space left by a removed comment can turn a -- the first pass kept into a
+// comment on the second.
 func FuzzSanitize(f *testing.F) {
 	seeds := []string{
 		`SELECT * FROM users WHERE email = 'a@example.com' AND age > 30`,

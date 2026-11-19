@@ -15,8 +15,11 @@ const (
 	// DialectStandard follows ANSI SQL and PostgreSQL: "..." quotes an
 	// identifier, a backslash inside '...' is an ordinary character,
 	// E'...' is a string in which a backslash escapes the next character,
-	// $tag$...$tag$ quotes a string, and block comments nest. Any Dialect
-	// value not defined here gets these rules.
+	// $tag$...$tag$ quotes a string, and block comments nest. A Dialect
+	// value not defined here gets these PostgreSQL rules, which can keep
+	// part of a literal on other servers. o11ysql records query text only
+	// for postgresql, mysql, mariadb, and sqlite, the systems these three
+	// dialects describe.
 	DialectStandard Dialect = iota
 	// DialectMySQL follows MySQL and MariaDB: "..." quotes a string, a
 	// backslash escapes the next character in a string, # and -- followed
@@ -37,8 +40,10 @@ const maxCollection = 128
 
 // Sanitize returns query with every string, number, and dollar-quoted
 // literal replaced by ? and every comment replaced by one space.
-// Identifiers, keywords, operators, and placeholders ($1, ?, ?1, :1,
-// :name, @p1) are kept. A number takes every letter, digit, underscore,
+// Identifiers, keywords, operators, and placeholders ($1, ?, :name, @p1,
+// and SQLite's ?1 and :1) are kept. Outside SQLite a colon never starts a
+// numbered placeholder, so the digits in arr[1:5] and 12:34 are numbers
+// and each becomes ?. A number takes every letter, digit, underscore,
 // and dot that follows it, so 1_000, 0x1F, 0b1010, and 1.5e-3 each become
 // one ?; a MySQL name that starts with a digit is removed the same way.
 // An unterminated literal, comment, or quoted identifier is removed up to
@@ -118,8 +123,8 @@ func Sanitize(query string, dialect Dialect) string {
 				b.WriteByte('?') // a $name(...) suffix may hold anything
 			}
 			i = end
-		case sqlite && c == '?', c == ':' && isDigit(next(query, i)):
-			end := skipDigits(query, i+1) // ?1 or :1 placeholder
+		case sqlite && c == '?':
+			end := skipDigits(query, i+1) // ?1 placeholder
 			b.WriteString(query[i:end])
 			i = end
 		case isIdentStart(c), mysql && c == '$':
