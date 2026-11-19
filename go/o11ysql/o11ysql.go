@@ -6,7 +6,9 @@
 //     commit, and rollback, named "{db.operation.name} {db.collection.name}"
 //     and carrying db.system.name, db.operation.name, db.collection.name
 //     when the statement names exactly one table, and db.query.text with
-//     every literal replaced by ? (turn it off with [WithoutQueryText]). A
+//     every literal replaced by ? and cut to at most 4096 bytes on a UTF-8
+//     character boundary (turn it off with [WithoutQueryText]). Bytes that
+//     are not UTF-8 are replaced by U+FFFD in every attribute. A
 //     span is created only when the context already holds a span, so pool
 //     maintenance and other background statements never create root spans.
 //     Pings never create spans;
@@ -46,11 +48,11 @@
 //	db, err := o11ysql.Open("sqlite", "file:app.db")
 //
 // To instrument a driver.Connector instead, wrap it and register the pool
-// metrics for the *sql.DB it opens. Each call takes its own options, so
-// pass [WithSystem] to both:
+// metrics for the *sql.DB it opens. [RegisterPoolMetrics] starts from the
+// options given to Wrap, so they need not be repeated:
 //
 //	db := sql.OpenDB(o11ysql.Wrap(connector, o11ysql.WithSystem("postgresql")))
-//	reg, err := o11ysql.RegisterPoolMetrics(db, o11ysql.WithSystem("postgresql"))
+//	reg, err := o11ysql.RegisterPoolMetrics(db)
 //	if err != nil {
 //		return err
 //	}
@@ -67,6 +69,10 @@
 // driver.ExecerContext or driver.QueryerContext runs every statement
 // through a prepared statement, even when it implements the deprecated
 // driver.Execer or driver.Queryer.
+//
+// sql.Conn.Raw passes its function the o11ysql connection, not the
+// driver's own, so driver-specific methods such as pgx's CopyFrom or a
+// SQLite backup are not reachable through a wrapped database.
 package o11ysql
 
 import (
@@ -89,7 +95,9 @@ var ErrLegacyDriver = errors.New("o11ysql: driver lacks the Go 1.8 context inter
 // name.
 const otherSQL = "other_sql"
 
-// Option configures [Wrap], [Open], and [RegisterPoolMetrics].
+// Option configures [Wrap], [Open], and [RegisterPoolMetrics]. An option
+// that does not apply to a call, such as [WithoutQueryText] given to
+// RegisterPoolMetrics, is ignored by that call.
 type Option func(*config)
 
 type config struct {
@@ -133,14 +141,19 @@ func WithoutQueryText() Option {
 // newConfig applies opts over the defaults. system is the db.system.name
 // inferred by the caller, or empty.
 func newConfig(system string, opts []Option) *config {
-	cfg := &config{system: system, queryText: true}
+	return config{system: system, queryText: true}.with(opts)
+}
+
+// with returns a copy of c with opts applied, defaulting an empty system to
+// other_sql.
+func (c config) with(opts []Option) *config {
 	for _, opt := range opts {
-		opt(cfg)
+		opt(&c)
 	}
-	if cfg.system == "" {
-		cfg.system = otherSQL
+	if c.system == "" {
+		c.system = otherSQL
 	}
-	return cfg
+	return &c
 }
 
 // providers returns the tracer and meter providers cfg binds to.

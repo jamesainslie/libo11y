@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -172,6 +173,37 @@ func TestWithoutQueryText(t *testing.T) {
 	attrs := attribute.NewSet(spanNamed(t, rec.Spans(), "DELETE sessions").Attributes()...)
 	if _, ok := attrs.Value("db.query.text"); ok {
 		t.Error("span carries db.query.text under WithoutQueryText")
+	}
+}
+
+// TestQueryTextIsBounded pins that db.query.text stops at 4096 bytes, on
+// a UTF-8 rune boundary, so a bulk statement cannot mint a huge attribute.
+func TestQueryTextIsBounded(t *testing.T) {
+	rec := o11ytest.Start(t)
+	db := openFake(t, rec, fakeConnector{})
+	// The 2-byte é spans bytes 4095 and 4096, so a byte cut would split it.
+	head := "SELECT " + strings.Repeat("a", 4088)
+	ctx, parent := inSpan(rec)
+	if _, err := db.ExecContext(ctx, head+"é FROM t WHERE x IN ("+strings.Repeat("1, ", 2000)+"2)"); err != nil {
+		t.Fatalf("ExecContext: %v", err)
+	}
+	parent.End()
+	attrs := attribute.NewSet(spanNamed(t, rec.Spans(), "SELECT t").Attributes()...)
+	got := attrString(attrs, "db.query.text")
+	if got != head {
+		t.Errorf("db.query.text has %d bytes (valid UTF-8 %v), want the %d-byte prefix before the split rune",
+			len(got), utf8.ValidString(got), len(head))
+	}
+
+	// All ASCII, the text is cut at exactly 4096 bytes.
+	ctx, parent = inSpan(rec)
+	if _, err := db.ExecContext(ctx, "UPDATE u SET a = b WHERE c IN ("+strings.Repeat("d, ", 2000)+"e)"); err != nil {
+		t.Fatalf("ExecContext: %v", err)
+	}
+	parent.End()
+	attrs = attribute.NewSet(spanNamed(t, rec.Spans(), "UPDATE u").Attributes()...)
+	if got := attrString(attrs, "db.query.text"); len(got) != 4096 {
+		t.Errorf("db.query.text has %d bytes, want 4096", len(got))
 	}
 }
 

@@ -2,6 +2,7 @@ package o11ysql_test
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -136,6 +137,77 @@ func TestRegisterPoolMetricsForAWrappedConnector(t *testing.T) {
 	if _, ok := poolPoint(t, rec, "db.client.connection.max", "sqlite", ""); ok {
 		t.Error("max reported for an unlimited pool, want it omitted")
 	}
+}
+
+// TestRegisterPoolMetricsInheritsTheWrapperConfig pins that pool metrics
+// for a database opened over Wrap use the SDK, system, and pool name given
+// to Wrap, and that options passed to RegisterPoolMetrics win over them.
+func TestRegisterPoolMetricsInheritsTheWrapperConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		wrapOpts []o11ysql.Option
+		opts     []o11ysql.Option
+		pool     string
+	}{
+		{name: "no options", pool: "postgresql"},
+		{name: "explicit pool name", opts: []o11ysql.Option{o11ysql.WithPoolName("primary")}, pool: "primary"},
+		{name: "explicit system", opts: []o11ysql.Option{o11ysql.WithSystem("mysql")}, pool: "mysql"},
+		{
+			name:     "wrapper pool name survives an explicit system",
+			wrapOpts: []o11ysql.Option{o11ysql.WithPoolName("primary")},
+			opts:     []o11ysql.Option{o11ysql.WithSystem("mysql")},
+			pool:     "primary",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := o11ytest.Start(t)
+			wrapOpts := append([]o11ysql.Option{o11ysql.WithSDK(rec.SDK), o11ysql.WithSystem("postgresql")}, tc.wrapOpts...)
+			db := sql.OpenDB(o11ysql.Wrap(fakeConnector{}, wrapOpts...))
+			t.Cleanup(func() {
+				if err := db.Close(); err != nil {
+					t.Errorf("Close: %v", err)
+				}
+			})
+			registerPool(t, db, tc.opts...)
+			if _, ok := poolPoint(t, rec, "db.client.connection.count", tc.pool, "idle"); !ok {
+				t.Errorf("no idle count for pool %q on the SDK given to Wrap", tc.pool)
+			}
+		})
+	}
+}
+
+// TestRegisterPoolMetricsExplicitSDKWins pins that WithSDK given to
+// RegisterPoolMetrics wins over the SDK given to Wrap.
+func TestRegisterPoolMetricsExplicitSDKWins(t *testing.T) {
+	wrapped, explicit := o11ytest.Start(t), o11ytest.Start(t)
+	db := sql.OpenDB(o11ysql.Wrap(fakeConnector{}, o11ysql.WithSDK(wrapped.SDK), o11ysql.WithSystem("postgresql")))
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	})
+	registerPool(t, db, o11ysql.WithSDK(explicit.SDK))
+	if _, ok := poolPoint(t, explicit, "db.client.connection.count", "postgresql", "idle"); !ok {
+		t.Error("no idle count on the SDK given to RegisterPoolMetrics")
+	}
+	if _, ok := poolPoint(t, wrapped, "db.client.connection.count", "postgresql", "idle"); ok {
+		t.Error("idle count on the SDK given to Wrap, want it on the explicit SDK only")
+	}
+}
+
+// registerPool registers db's pool metrics and unregisters them when the
+// test ends.
+func registerPool(t *testing.T, db *sql.DB, opts ...o11ysql.Option) {
+	t.Helper()
+	reg, err := o11ysql.RegisterPoolMetrics(db, opts...)
+	if err != nil {
+		t.Fatalf("RegisterPoolMetrics: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := reg.Unregister(); err != nil {
+			t.Errorf("Unregister: %v", err)
+		}
+	})
 }
 
 func TestOpenUnregistersPoolMetricsOnClose(t *testing.T) {

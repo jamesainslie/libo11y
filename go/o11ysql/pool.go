@@ -15,8 +15,24 @@ import (
 // (idle, used) and db.client.connection.max (omitted while the pool is
 // unlimited), each with db.client.connection.pool.name (see
 // [WithPoolName]). Call Unregister on the result when db is closed.
+//
+// When db was opened over a connector from [Wrap], the registration starts
+// from the options given to Wrap, so the pool metrics go to the same SDK
+// under the same system and pool name; opts are applied on top of them.
+// Do not call it for a database from [Open], which registers its pool
+// metrics already: a second registration counts the pool twice.
 func RegisterPoolMetrics(db *sql.DB, opts ...Option) (metric.Registration, error) {
-	return registerPoolMetrics(db, newConfig("", opts))
+	return registerPoolMetrics(db, poolConfig(db, opts))
+}
+
+// poolConfig returns the configuration for db's pool metrics: the wrapper's
+// with opts applied on top when db runs on an o11ysql driver, and opts over
+// the defaults otherwise.
+func poolConfig(db *sql.DB, opts []Option) *config {
+	if d, ok := db.Driver().(*wrappedDriver); ok {
+		return d.ins.cfg.with(opts)
+	}
+	return newConfig("", opts)
 }
 
 func registerPoolMetrics(db *sql.DB, cfg *config) (metric.Registration, error) {

@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -26,8 +28,14 @@ const scopeName = "github.com/jamesainslie/libo11y/go/o11ysql"
 // db.client.operation.duration, in seconds.
 var durationBuckets = []float64{0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 10}
 
+// maxQueryText bounds db.query.text in bytes. The SDK sets no attribute
+// length limit by default, and the text of a bulk INSERT or a migration
+// can run to megabytes, enough to break an OTLP export batch.
+const maxQueryText = 4096
+
 // instrumenter turns driver calls into spans and duration measurements.
 type instrumenter struct {
+	cfg       config // the configuration it was built from, for [RegisterPoolMetrics]
 	tracer    trace.Tracer
 	duration  metric.Float64Histogram
 	system    attribute.KeyValue
@@ -50,6 +58,7 @@ func newInstrumenter(cfg *config) *instrumenter {
 	}
 	dialect, known := dialectFor(cfg.system)
 	return &instrumenter{
+		cfg:       *cfg,
 		tracer:    tp.Tracer(scopeName),
 		duration:  duration,
 		system:    semconv.DBSystemNameKey.String(cfg.system),
@@ -85,14 +94,30 @@ type statement struct {
 	attrs []attribute.KeyValue // db.system.name, db.operation.name, db.collection.name
 }
 
-// describe sanitizes and summarizes query.
+// describe sanitizes and summarizes query. Bytes that are not UTF-8,
+// which the lexer keeps as part of a name, become U+FFFD first: OTLP sends
+// attribute values as protobuf strings, which must be valid UTF-8, and one
+// invalid value fails the whole export batch.
 func (in *instrumenter) describe(query string) statement {
-	sanitized := sqltext.Sanitize(query, in.dialect)
+	sanitized := strings.ToValidUTF8(sqltext.Sanitize(query, in.dialect), "\uFFFD")
 	st := in.named(sqltext.Summarize(sanitized))
 	if in.queryText {
-		st.text = sanitized
+		st.text = truncate(sanitized, maxQueryText)
 	}
 	return st
+}
+
+// truncate returns the longest prefix of s that has at most n bytes and
+// ends on a UTF-8 rune boundary. Cutting sanitized text cannot expose a
+// literal, because every literal is already gone.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 // named describes an operation from its parts, such as COMMIT, which has
