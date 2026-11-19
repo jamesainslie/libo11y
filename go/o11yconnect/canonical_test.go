@@ -203,3 +203,15 @@ func TestCanonicalLineSkipsIgnoredHealthChecks(t *testing.T) {
 		t.Errorf("health check produced %d summaries, want none", len(got))
 	}
 }
+
+// TestCanonicalLineRequiresAnSDK pins that WithCanonicalLine without
+// WithSDK is refused rather than silently emitting nothing.
+func TestCanonicalLineRequiresAnSDK(t *testing.T) {
+	interceptor, err := o11yconnect.ServerInterceptor(o11yconnect.WithCanonicalLine())
+	if err == nil {
+		t.Fatalf("ServerInterceptor(WithCanonicalLine()) = %v, nil; want an error", interceptor)
+	}
+	if want := "o11yconnect: WithCanonicalLine requires WithSDK"; err.Error() != want {
+		t.Errorf("error = %q, want %q", err, want)
+	}
+}

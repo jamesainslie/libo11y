@@ -31,6 +31,7 @@ package o11yconnect
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -47,6 +48,10 @@ import (
 // healthProcedurePrefix is the procedure prefix of the gRPC health service,
 // which connectrpc.com/grpchealth also serves.
 const healthProcedurePrefix = "/grpc.health.v1.Health/"
+
+// errCanonicalLineNeedsSDK is the error [ServerInterceptor] returns for
+// [WithCanonicalLine] without [WithSDK], which would otherwise emit nothing.
+var errCanonicalLineNeedsSDK = errors.New("o11yconnect: WithCanonicalLine requires WithSDK")
 
 // Option configures [ServerInterceptor] and [ClientInterceptor].
 type Option func(*config)
@@ -95,13 +100,17 @@ func WithIgnoreHealthChecks() Option {
 // inbound RPCs and adopts inbound trace context as the span parent (or
 // links it, under [WithPublicEndpoint]) together with baggage. A handler
 // that panics leaves its server span with status Error, and the panic keeps
-// propagating to connect.WithRecover or net/http. It fails only when
-// otelconnect cannot create its instruments.
+// propagating to connect.WithRecover or net/http. It fails when
+// [WithCanonicalLine] is given without [WithSDK], and when otelconnect
+// cannot create its instruments.
 func ServerInterceptor(opts ...Option) (connect.Interceptor, error) {
 	cfg := newConfig(opts)
 	var summarize *o11y.SDK
 	if cfg.canonicalLine {
-		summarize = cfg.sdk // nil without WithSDK: the canonical line needs an SDK to emit through
+		if cfg.sdk == nil {
+			return nil, errCanonicalLineNeedsSDK
+		}
+		summarize = cfg.sdk
 	}
 	return cfg.interceptor(summarize)
 }

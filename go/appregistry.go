@@ -27,12 +27,13 @@ type appRegistrySource struct {
 // with no "." or ".." elements.
 //
 // [New] and [Setup] fail with an error wrapping [ErrInvalidAppRegistry]
-// when the registry breaks a rule, and with the read or parse error when
-// the file cannot be read or parsed. The option may be given more than once
-// for registries with different namespaces; two registries that declare
-// the same namespace are an error. Only sensitivity applies at runtime:
-// types, cardinality budgets, and enum values are checked by the validator
-// and by `libo11y registry check`, not on emitted telemetry.
+// when fsys is nil or the registry breaks a rule, and with the read or
+// parse error when the file cannot be read or parsed. The option may be
+// given more than once for registries with different namespaces; two
+// registries that declare the same namespace are an error. Only
+// sensitivity applies at runtime: types, cardinality budgets, and enum
+// values are checked by the validator and by `libo11y registry check`, not
+// on emitted telemetry.
 //
 // Embed the registry so the binary carries it:
 //
@@ -57,7 +58,7 @@ func loadAppRegistries(sources []appRegistrySource) (map[attribute.Key]spectable
 	declaredBy := map[string]string{} // namespace -> path of the registry declaring it
 	for _, src := range sources {
 		if src.fsys == nil {
-			return nil, fmt.Errorf("o11y: application registry %s: nil fs.FS", src.path)
+			return nil, fmt.Errorf("%w: %s: nil fs.FS", ErrInvalidAppRegistry, src.path)
 		}
 		raw, err := fs.ReadFile(src.fsys, src.path)
 		if err != nil {

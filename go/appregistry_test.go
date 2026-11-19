@@ -147,7 +147,7 @@ func TestAppRegistryClassifiesResourceAttributes(t *testing.T) {
 		attribute.String("lor.user.id", "u-1"),
 	))
 	set := sdk.Resource().Set()
-	if v, ok := set.Value("lor.api.token"); ok && v.AsString() != "" {
+	if v, ok := set.Value("lor.api.token"); ok {
 		t.Errorf("resource carries lor.api.token = %q, want it dropped", v.AsString())
 	}
 	if v, ok := set.Value("lor.user.id"); !ok || v.AsString() != "u-1" {
@@ -189,7 +189,7 @@ func TestAppRegistryErrors(t *testing.T) {
 		{"parse error", []o11y.Option{o11y.WithAppRegistry(registryFS(map[string]string{"r.yaml": "schema: [\n"}), "r.yaml")}, nil, "parsing application registry"},
 		{"rule violation", []o11y.Option{o11y.WithAppRegistry(registryFS(map[string]string{"r.yaml": reserved}), "r.yaml")}, o11y.ErrInvalidAppRegistry, "libo11y_app_namespace_reserved"},
 		{"duplicate namespace", []o11y.Option{withLORRegistry(), withLORRegistry()}, o11y.ErrInvalidAppRegistry, `both declare namespace "lor"`},
-		{"nil fs", []o11y.Option{o11y.WithAppRegistry(nil, "r.yaml")}, nil, "nil fs.FS"},
+		{"nil fs", []o11y.Option{o11y.WithAppRegistry(nil, "r.yaml")}, o11y.ErrInvalidAppRegistry, "nil fs.FS"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

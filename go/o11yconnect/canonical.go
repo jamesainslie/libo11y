@@ -20,8 +20,8 @@ import (
 // rpc.response.status_code, and anything the handler accumulates on the
 // RPC's o11y.Record (see o11y.RecordFromContext). The event fires when the
 // handler panics, too. RPCs excluded by [WithIgnoreHealthChecks] emit no
-// summary. It requires an SDK bound with [WithSDK] and affects
-// ServerInterceptor only.
+// summary. It requires an SDK bound with [WithSDK]: without one,
+// ServerInterceptor returns an error. It affects ServerInterceptor only.
 //
 // http.response.status_code is the status the server sends: for a unary
 // RPC in the Connect protocol, the status the protocol maps the error code

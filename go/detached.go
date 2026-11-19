@@ -39,6 +39,10 @@ const (
 // serializes to empty text and to SQL NULL. The serialized form never
 // exceeds 32 KiB: when the captured context would, the Carrier drops the
 // tracestate, and then the baggage, and keeps the link.
+//
+// The text includes the values of the baggage members that passed the
+// egress filter, so storing or logging a Carrier stores or logs those
+// values.
 type Carrier struct {
 	traceparent string
 	tracestate  string
@@ -122,10 +126,12 @@ func (c Carrier) encode() string {
 	return v.Encode()
 }
 
-// String returns the serialized form.
+// String returns the serialized form, including the captured baggage
+// values.
 func (c Carrier) String() string { return c.encode() }
 
-// MarshalText implements [encoding.TextMarshaler]. It never fails.
+// MarshalText implements [encoding.TextMarshaler]. The text includes the
+// captured baggage values. It never fails.
 func (c Carrier) MarshalText() ([]byte, error) { return []byte(c.encode()), nil }
 
 // UnmarshalText implements [encoding.TextUnmarshaler]. Empty text yields

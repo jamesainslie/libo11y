@@ -376,10 +376,16 @@ func TestCarrierKeepsValidBaggageMembers(t *testing.T) {
 	if !strings.Contains(c.String(), "tenant%3Dacme") {
 		t.Errorf("carrier %q dropped the valid baggage member", c.String())
 	}
+	if strings.Contains(c.String(), "%3D%3D%3D") {
+		t.Errorf("carrier %q kept the invalid baggage member", c.String())
+	}
 	jobCtx, job := rec.SDK.StartLinked(context.Background(), c, "job")
 	job.End()
 	if got := baggage.FromContext(jobCtx).Member("tenant").Value(); got != "acme" {
 		t.Errorf("baggage tenant = %q in the job context, want acme", got)
+	}
+	if n := baggage.FromContext(jobCtx).Len(); n != 1 {
+		t.Errorf("job context holds %d baggage members, want only tenant", n)
 	}
 }
 
