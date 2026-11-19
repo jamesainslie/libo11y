@@ -318,18 +318,20 @@ instrumentation that has already started a span, such as
 `o11yhttp.NewHandler`, the RPC span is a child of that span and the outer
 layer decides trust, so declare the endpoint public there too.
 `rpc.system.name` follows the wire protocol of each request. It is
-`connectrpc` for the Connect protocol and `grpc` for gRPC and gRPC-Web. A handler that panics leaves its
-server span with status Error, and the panic keeps propagating.
+`connectrpc` for the Connect protocol and `grpc` for gRPC and gRPC-Web. A
+handler that panics leaves its server span with status Error, and the
+panic keeps propagating.
 `WithIgnoreHealthChecks` excludes `grpc.health.v1` procedures from tracing
 and metrics, and otelconnect then propagates no context for them.
 `ClientInterceptor` instruments clients.
 
 `WithCanonicalLine` makes `ServerInterceptor` emit `o11y.request.summary`
-once per RPC, even when the handler panics. It needs `WithSDK`. The event
-carries `http.request.method`, `http.response.status_code`, the outcome
-and duration, `rpc.system.name`, `rpc.method`, and
-`rpc.response.status_code`, plus what the handler adds to the RPC's
-`Record`. On a unary RPC in the Connect protocol,
+once per RPC, even when the handler panics. It needs `WithSDK`, and
+`ServerInterceptor` returns an error without it. The event carries
+`http.request.method`, `http.response.status_code`, the outcome and
+duration, `rpc.system.name`, `rpc.method`, and `rpc.response.status_code`,
+plus what the handler adds to the RPC's `Record`. On a unary RPC in the
+Connect protocol,
 `http.response.status_code` is the status the protocol maps the error code
 to, such as 404 for `not_found`. Streaming RPCs, and RPCs in gRPC and
 gRPC-Web, which carry errors in the body or trailers, report 200. A panic
@@ -403,8 +405,10 @@ maintenance never starts a trace. The wrapper starts the client span after
 the driver call returns and backdates it to the call's start, so spans the
 driver makes are children of the caller's span.
 
-`db.query.text` carries the statement with every literal replaced by `?`.
-It is recorded only for `postgresql`, `sqlite`, `mysql`, and `mariadb`,
+`db.query.text` carries the statement with every literal replaced by `?`,
+cut to at most 4096 bytes on a UTF-8 character boundary, so a bulk insert
+or a migration cannot produce an attribute too large to export. It is
+recorded only for `postgresql`, `sqlite`, `mysql`, and `mariadb`,
 which have a matching SQL lexer. Every other system, including the default
 `other_sql` and `microsoft.sql_server`, gets spans and durations named by
 operation and collection but no query text. `Open` infers the system from
@@ -415,9 +419,11 @@ the inference, and `WithoutQueryText` turns the text off.
 
 Every statement is measured on `db.client.operation.duration`, with an
 exemplar pointing at its span when it has one. The duration covers the
-driver call, not the iteration of returned rows. Errors set the span status
-and `error.type` without recording the message, because database errors
-often quote statement values.
+driver call, not the iteration of returned rows. Its `db.collection.name`
+label has one value per table, so an application that builds table names
+at run time, such as one table per tenant, gets unbounded metric series.
+Errors set the span status and `error.type` without recording the
+message, because database errors often quote statement values.
 
 `Open` registers `db.client.connection.count` (by state, `idle` or `used`)
 and `db.client.connection.max` from `sql.DB.Stats`, and unregisters them
@@ -425,10 +431,17 @@ when the `*sql.DB` is closed. The pool name defaults to the system name.
 Pools with the same name are summed, so give each pool a distinct
 `WithPoolName`. When you build the connector yourself, open the database
 with `sql.OpenDB(o11ysql.Wrap(connector))` and register the pool metrics
-with `RegisterPoolMetrics(db)`. Each call takes its own options, so pass
-`WithSystem` to both, and call `Unregister` on the registration when the
-database is closed. A driver without the Go 1.8 context interfaces for
-transactions and prepared statements fails with `ErrLegacyDriver`.
+with `RegisterPoolMetrics(db)`. `RegisterPoolMetrics` starts from the
+options given to `Wrap`, such as `WithSDK` and `WithSystem`, and applies
+its own on top. Call `Unregister` on the registration when the database is
+closed. A driver without the Go 1.8 context interfaces for transactions
+and prepared statements fails with `ErrLegacyDriver`. A connection without
+`driver.ExecerContext` or `driver.QueryerContext` runs each statement
+through a prepared statement instead.
+
+`sql.Conn.Raw` passes its function the `o11ysql` connection, not the
+driver's own. Driver-specific methods, such as pgx's `CopyFrom` or a
+SQLite backup, are not reachable through a wrapped database.
 [`o11ysql/README.md`](o11ysql/README.md) explains why `o11ysql` is
 libo11y's own code rather than a wrapper around `XSAM/otelsql`.
 
@@ -447,8 +460,10 @@ defer span.End()
 
 A `Carrier` holds the W3C traceparent, the tracestate, and the baggage the
 propagator would send out of the process. After `Setup` that baggage has
-passed the SDK's egress filter. It stores as text (`MarshalText`) or as a
-SQL text column (`Value`, `Scan`), and the zero `Carrier` stores as `NULL`.
+passed the SDK's egress filter. The text includes those baggage values,
+so storing or logging a `Carrier` stores or logs them. It stores as text
+(`MarshalText`) or as a SQL text column (`Value`, `Scan`), and the zero
+`Carrier` stores as `NULL`.
 The text never exceeds 32 KiB. A captured context that would exceed it
 drops its tracestate, then its baggage, and always keeps the link.
 `UnmarshalText` keeps the valid baggage members and drops the invalid ones.
@@ -474,8 +489,9 @@ inherits this process's environment. In the child,
 `o11yproc.FromEnv(ctx)` adopts the parent's span context. Baggage does not
 travel through the environment, because other tools on the host can read
 it. `o11yproc.Inject` and `o11yproc.Extract` carry trace context and
-baggage in the `map[string]string` of a framed socket message, through the
-global propagator.
+baggage in the `map[string]string` of a framed socket message. They use
+the global propagator and do nothing before `Setup`. SDKs built with `New`
+use `sdk.Propagator()` directly.
 
 ## Sensitivity and redaction
 

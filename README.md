@@ -143,9 +143,10 @@ tags (for example `go/v0.1.0`). There is no lockstep release across languages;
 signal maturity differs per OpenTelemetry implementation. The first Go
 release is `go/v0.1.0`, with `go/o11ygin/v0.1.0` tagged on the same commit.
 From `go/v0.2.0`, each release also tags `go/o11yconnect/vX.Y.Z` and
-`go/o11ysql/vX.Y.Z` on that commit. Each Go release is listed in [`go/CHANGELOG.md`](go/CHANGELOG.md) and on the
-GitHub releases page. `make release-check` validates the tag sequence
-against a throwaway local remote before a release.
+`go/o11ysql/vX.Y.Z` on that commit. Each Go release is listed in
+[`go/CHANGELOG.md`](go/CHANGELOG.md) and on the GitHub releases page.
+`make release-check` validates the tag sequence against a throwaway local
+remote before a release.
 
 ## License
 

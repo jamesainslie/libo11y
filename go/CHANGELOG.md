@@ -32,9 +32,9 @@ and the module adheres to [Semantic Versioning](https://semver.org/).
   it, the carrier drops the tracestate, then the baggage, and always keeps
   the link. `UnmarshalText` keeps the valid baggage members and drops the
   invalid ones. Text over 32 KiB, or without a valid traceparent, fails
-  with `ErrInvalidCarrier`. `StartLinked` starts a new root span linked to the
-  captured context, and merges the carrier's baggage onto the baggage in
-  the context, with the carrier's value winning on a shared key.
+  with `ErrInvalidCarrier`. `StartLinked` starts a new root span linked to
+  the captured context, and merges the carrier's baggage onto the baggage
+  in the context, with the carrier's value winning on a shared key.
   `SDK.Capture` and `SDK.StartLinked` bind them to an SDK built with
   `New`.
 - `o11yproc`: `Env` and `FromEnv` pass `TRACEPARENT` and `TRACESTATE` to a
@@ -48,17 +48,23 @@ and the module adheres to [Semantic Versioning](https://semver.org/).
   Inbound trace context is adopted by default. A handler that panics
   leaves its server span with status Error. `rpc.system.name` reports the
   wire protocol, `connectrpc` or `grpc`. It supports connect-go v1.
+  `ServerInterceptor` fails when `WithCanonicalLine` is given without
+  `WithSDK`.
 - `o11ysql`, a new module: `Wrap`, `Open`, and `RegisterPoolMetrics`
   instrument `database/sql` with semconv client spans (`db.system.name`,
   `db.operation.name`, `db.collection.name`), `db.client.operation.duration`,
   and the `db.client.connection.count` and `db.client.connection.max` pool
   metrics. Spans start only under an existing span. The sanitized
   `db.query.text` is recorded only for `postgresql`, `sqlite`, `mysql`, and
-  `mariadb`, the systems with a matching SQL lexer. `Open` infers
-  `db.system.name` from the driver name and unregisters its pool metrics
-  when the database is closed. Options are `WithSDK`, `WithSystem`,
-  `WithPoolName`, and `WithoutQueryText`. A driver without the Go 1.8
-  context interfaces fails with `ErrLegacyDriver`.
+  `mariadb`, the systems with a matching SQL lexer, and is cut to at most
+  4096 bytes. `Open` infers `db.system.name` from the driver name and
+  unregisters its pool metrics when the database is closed.
+  `RegisterPoolMetrics` starts from the options given to `Wrap`. Options
+  are `WithSDK`, `WithSystem`, `WithPoolName`, and `WithoutQueryText`. A
+  driver without the Go 1.8 context interfaces for transactions and
+  prepared statements fails with `ErrLegacyDriver`. A connection without
+  `ExecerContext` or `QueryerContext` runs each statement through a
+  prepared statement instead.
 
 ### Changed
 
@@ -66,7 +72,6 @@ and the module adheres to [Semantic Versioning](https://semver.org/).
 - The Go modules release in lockstep. `go/o11ygin`, `go/o11yconnect`, and
   `go/o11ysql` are tagged at the same version as the core module, on the
   same commit, and each requires the core module at that version.
-  `go/o11ygin` requires `github.com/jamesainslie/libo11y/go` v0.2.0.
 
 ## [0.1.0] - 2026-10-12
 

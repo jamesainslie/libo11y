@@ -70,12 +70,11 @@ and tests every package. `make ci` runs it.
   after each release.
 - To release Go version X.Y.Z: move the changelog's entries into a
   `## [X.Y.Z] - date` section, set each submodule's requirement on the
-  parent module to `vX.Y.Z`, run `make release-check` on the commit to
-  release, then push `go/vX.Y.Z` and after it the three submodule tags,
-  all on that commit. Push `go/vX.Y.Z` on its own, then the three
-  submodule tags in a second push, never all four together: GitHub
-  creates no push events when more than three tags are pushed at once.
-  Each tag starts the release workflow
+  parent module to `vX.Y.Z`, and run `make release-check` on the commit
+  to release. Then push the tags, all on that commit, in two pushes:
+  `go/vX.Y.Z` on its own, then the three submodule tags. Never push all
+  four together, because GitHub creates no push events when more than
+  three tags are pushed at once. Each tag starts the release workflow
   (`.github/workflows/release.yml`). It checks that the version is
   semantic, that a submodule tag's parent tag exists on the same commit
   and matches its `go.mod` requirement, and that the changelog has the
