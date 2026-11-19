@@ -56,8 +56,9 @@ tidy-check:
 vuln:
 	@set -e; for m in $(GO_MODULES); do echo "govulncheck: $$m"; (cd $$m && govulncheck ./...); done
 
-# Next unreleased version, validated by release-check. Bump it after each
-# release (see scripts/release-check.sh). CI uses this default.
+# The version release-check validates. It matches the version the
+# submodules require, and a release commit moves both (see
+# scripts/release-check.sh). CI uses this default.
 RELEASE_VERSION ?= v0.2.0
 
 # Validate the release sequence (go/RELEASE_VERSION and
