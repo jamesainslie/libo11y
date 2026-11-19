@@ -75,8 +75,8 @@ and tests every package. `make ci` runs it.
   the default in `scripts/release-check.sh` to `vX.Y.Z`, and run
   `make release-check` on the commit to release. Then push the tags, all
   on that commit, in two pushes: `go/vX.Y.Z` on its own, then the three
-  submodule tags. Never push all four together, because GitHub creates no push events when more than
-  three tags are pushed at once. Each tag starts the release workflow
+  submodule tags. Never push all four together, because GitHub creates no
+  push events when more than three tags are pushed at once. Each tag starts the release workflow
   (`.github/workflows/release.yml`). It checks that the version is
   semantic, that a submodule tag's parent tag exists on the same commit
   and matches its `go.mod` requirement, and that the changelog has the
