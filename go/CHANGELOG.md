@@ -8,6 +8,8 @@ adhere to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-18
+
 ### Added
 
 - `spec`: key constants and enums for the spec 1.1.0 RUM conventions
@@ -369,5 +371,6 @@ tracking one of those commits can see what moved.
   GO-2026-6599, GO-2026-6600), `net/url` (GO-2026-6218), and
   `encoding/asn1` (GO-2026-5972).
 
-[Unreleased]: https://github.com/jamesainslie/libo11y/compare/go/v0.1.0...HEAD
+[Unreleased]: https://github.com/jamesainslie/libo11y/compare/go/v0.2.0...HEAD
+[0.2.0]: https://github.com/jamesainslie/libo11y/releases/tag/go/v0.2.0
 [0.1.0]: https://github.com/jamesainslie/libo11y/releases/tag/go/v0.1.0
