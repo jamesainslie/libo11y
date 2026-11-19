@@ -24,10 +24,10 @@
 // "traceparent" when the context holds a valid span, and "tracestate" and
 // "baggage" when the context has them. [Inject] writes them into the map a
 // frame encodes and [Extract] reads them back. Both use the global
-// propagator, so after o11y.Setup the SDK's baggage egress filter
-// applies. Before Setup the global propagator is
-// OpenTelemetry's no-op default: Inject writes nothing and Extract returns
-// ctx unchanged. With an SDK built by o11y.New, call
+// propagator, so after o11y.Setup the SDK's baggage egress filter applies.
+// Before Setup the global propagator is OpenTelemetry's no-op default:
+// Inject writes nothing and Extract returns ctx unchanged. With an SDK
+// built by o11y.New, call
 // sdk.Propagator().Inject(ctx, propagation.MapCarrier(frame)) and
 // sdk.Propagator().Extract(ctx, propagation.MapCarrier(frame)) directly.
 package o11yproc

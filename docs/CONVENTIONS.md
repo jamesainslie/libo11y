@@ -7,7 +7,8 @@ libo11y/
   docs/          cross-language design contract, spec, and conventions
   spec/          telemetry specification registry: the shared,
                  language-neutral source of truth
-  go/            Go module (github.com/jamesainslie/libo11y/go)
+  go/            Go modules (github.com/jamesainslie/libo11y/go and the
+                 o11ygin, o11yconnect, and o11ysql submodules)
   ts/            TypeScript workspace: Bun, the @libo11y/* packages
   rust/          Rust workspace (planned)
   java/          Java/Maven module (planned)

@@ -4,14 +4,16 @@
 //
 //   - a client span for each statement and for each transaction begin,
 //     commit, and rollback, named "{db.operation.name} {db.collection.name}"
-//     and carrying db.system.name, db.operation.name, db.collection.name
-//     when the statement names exactly one table, and db.query.text with
-//     every literal replaced by ? and cut to at most 4096 bytes on a UTF-8
-//     character boundary (turn it off with [WithoutQueryText]). Bytes that
-//     are not UTF-8 are replaced by U+FFFD in every attribute. A
+//     (the one that is known, or db.system.name when neither is) and
+//     carrying db.system.name, db.operation.name, db.collection.name when
+//     the statement names exactly one table, and db.query.text with every
+//     literal replaced by ?, every comment removed, and cut to at most 4096
+//     bytes on a UTF-8 character boundary (turn it off with
+//     [WithoutQueryText]). Bytes that are not UTF-8 are replaced by U+FFFD
+//     in the span name and in every attribute taken from the statement. A
 //     span is created only when the context already holds a span, so pool
-//     maintenance and other background statements never create root spans.
-//     Pings never create spans;
+//     maintenance and other background statements never create root
+//     spans. Pings never create spans;
 //   - db.client.operation.duration, a histogram in seconds, for every
 //     statement whether or not it was traced, with an exemplar pointing at
 //     the statement's span when there is one. The duration covers the

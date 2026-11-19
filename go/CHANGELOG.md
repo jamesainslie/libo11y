@@ -1,8 +1,10 @@
 # Changelog
 
-All notable changes to the libo11y Go module are documented here. The
-format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and the module adheres to [Semantic Versioning](https://semver.org/).
+All notable changes to the libo11y Go modules are documented here: the
+core module and the `o11ygin`, `o11yconnect`, and `o11ysql` submodules,
+which release together at one version. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the modules
+adhere to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 

@@ -4,9 +4,10 @@ Opinionated, elegant observability libraries built purely on OpenTelemetry.
 
 libo11y gives applications one-call telemetry setup with unified configuration,
 W3C context propagation, and log/trace/metric correlation, in the native idiom
-of each target language. It wraps OpenTelemetry *setup*, never instrumentation:
-after initialization your code uses the standard OTEL APIs and your language's
-native logging facade, and everything is correlated and exported over OTLP.
+of each target language. It wraps OpenTelemetry *setup*, not instrumentation,
+with one exception in Go (see principle 3 below). After initialization your
+code uses the standard OTEL APIs and your language's native logging facade,
+and everything is correlated and exported over OTLP.
 
 ## Languages
 
@@ -24,9 +25,12 @@ native logging facade, and everything is correlated and exported over OTLP.
    environment variables are honored, never shadowed by a parallel namespace
    (an explicit, opt-in mode ignores them for hermetic tests). Stable
    semantic conventions by default for the instrumentation libo11y wires
-   (HTTP spans and metrics). Not everything emitted is stable: gRPC and
-   Connect spans and metrics follow the `rpc.*` conventions (release
-   candidate), runtime metrics (`go.*`) are not yet stable, resource
+   (HTTP spans and metrics, database client spans and
+   `db.client.operation.duration`). Not everything emitted is stable: gRPC
+   and Connect spans and metrics follow the `rpc.*` conventions (release
+   candidate), the database pool metrics (`db.client.connection.*`) and
+   the `sqlite` and `other_sql` values of `db.system.name` are
+   development, runtime metrics (`go.*`) are not yet stable, resource
    detectors record upstream attributes that are not yet stable
    (`host.*`, `container.id`, `vcs.ref.head.revision`), and the libo11y
    registry's own groups and overlays are marked development.

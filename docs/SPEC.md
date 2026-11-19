@@ -223,8 +223,9 @@ counted, because the filter runs on the measurement hot path.
 The classification does not cover, and implementations MUST document that
 it does not cover:
 
-- values under keys the specification does not classify (capture-time
-  redaction, the `redact` package in Go, protects those);
+- values under keys that neither the specification nor a loaded
+  application registry (section 5a) classifies (capture-time redaction,
+  the `redact` package in Go, protects those);
 - log record bodies and other free text: span names, span status
   descriptions, and span event names;
 - instrumentation scope attributes;
@@ -252,7 +253,8 @@ attribute a type, a sensitivity class and a cardinality budget. Once an SDK
 loads the registry, the sensitivity policy of section 5 classifies the
 application's keys exactly like spec keys. A key registered `pii` is then
 dropped, hashed or kept according to the PII mode of section 5, which is
-`drop`, `hash` or `allow`. A key registered `internal` passes.
+`drop`, `hash` or `allow`. A key registered `secret` is always dropped.
+Keys registered `public` or `internal` pass.
 
 Go loads a registry at setup with the option `WithAppRegistry(fs.FS,
 path)`, from `go/v0.2.0`. A registry that breaks a rule fails setup with
