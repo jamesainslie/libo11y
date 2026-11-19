@@ -17,7 +17,7 @@ implemented (rationale given).
 | Capability | Go status | Go form |
 |---|---|---|
 | Three OTLP signals (traces, metrics, logs) | full | all three on by default |
-| Explicit init returning an owned handle, typed init errors | full | `Setup`/`New` -> `SDK`; `ErrAlreadySetup`, `ErrNoServiceName`, `ErrNoEnvironment`, `ErrInvalidEnvironment`, `ErrPIIHashKey`, wrapped exporter errors |
+| Explicit init returning an owned handle, typed init errors | full | `Setup`/`New` -> `SDK`; `ErrAlreadySetup`, `ErrNoServiceName`, `ErrNoEnvironment`, `ErrInvalidEnvironment`, `ErrPIIHashKey`, `ErrInvalidAppRegistry`, wrapped exporter errors |
 | Idempotent bounded shutdown, per-signal errors | full | `Shutdown` runs once (atomic election), flushes all signals concurrently under one deadline (5s default), aggregates with `errors.Join`; later and concurrent callers get the same result or their own context error |
 | One trace identity across logs/spans/wire | full | active span context read at emission, W3C on egress, adoption on ingress |
 | Propagation independent of process globals | full | `New`-built SDKs propagate identically; middleware takes `WithSDK` |
@@ -34,7 +34,12 @@ implemented (rationale given).
 | Middleware: HTTP client | full | `o11yhttp.NewTransport` |
 | Middleware: gRPC | full | `o11ygrpc` stats handlers (server + client), `WithPublicEndpoint`, `WithIgnoreHealthChecks` |
 | Middleware: alternative web framework | full | `o11ygin` (nested module, Gin): `WithFilter`, `WithIgnorePaths`, `WithSpanNameFormatter`; no public-endpoint or canonical-line counterpart (otelgin has no mechanism for either) |
-| Ignore lists for noise endpoints | full | `WithIgnorePaths` globs (HTTP, Gin); `WithIgnoreHealthChecks` (gRPC) |
+| Middleware: Connect RPC | full | `o11yconnect` (nested module, otelconnect, connect-go v1): server and client interceptors, adopt by default, `WithPublicEndpoint`, `WithIgnoreHealthChecks`, `WithCanonicalLine` (needs `WithSDK`); a panicking handler marks the server span Error; `rpc.system.name` reports the wire protocol (`connectrpc` or `grpc`) |
+| Database client instrumentation | full | `o11ysql` (nested module, libo11y's own connector wrapper): semconv client spans only under a parent, `db.client.operation.duration` with exemplars, pool metrics from `sql.DB.Stats`; sanitized `db.query.text` only for `postgresql`, `sqlite`, `mysql`, and `mariadb` |
+| Detached work (jobs, queues) | full | `Capture` -> `Carrier` (text and SQL serializable, at most 32 KiB, egress-filtered baggage), `StartLinked` starts a linked root span and merges the carrier's baggage; `SDK.Capture`, `SDK.StartLinked` for `New` |
+| Child-process and framed-socket propagation | full | `o11yproc`: `TRACEPARENT`/`TRACESTATE` environment carriers, `Inject`/`Extract` over `map[string]string` |
+| Application attribute registry at runtime | full | `WithAppRegistry(fs.FS, path)`: validated at init, keys classified like spec keys on every signal; sensitivity only, not cardinality |
+| Ignore lists for noise endpoints | full | `WithIgnorePaths` globs (HTTP, Gin); `WithIgnoreHealthChecks` (gRPC, Connect) |
 | Resource: host/process detectors | full | host, process runtime, telemetry SDK |
 | Resource: container detector | full | `resource.WithContainer` (container.id) |
 | Resource: Kubernetes identity | idiom | via Downward API + OTEL_RESOURCE_ATTRIBUTES; no in-process detector exists in otel-go |
@@ -58,7 +63,7 @@ implemented (rationale given).
 | Sensitivity: span processor wrapping | full | injected processors receive redacted spans in `OnEnd`; `OnStart` sees the live span |
 | Sensitivity: resource classification | full | resource classified at construction; dropped environment keys shadowed with empty values |
 | Sensitivity: metric classification | full | wrapped views and exemplar reservoirs on every stream of the SDK's own instruments; PII dropped even under `PIIHash`; instrument advisory attribute keys no longer honored; metrics from producers (`OTEL_METRICS_PRODUCERS`, readers built with `sdkmetric.WithProducer`) bypass views and are not classified |
-| Event API and wide events | full | `SDK.Event`, `Record` accumulator, `o11yhttp.WithCanonicalLine` |
+| Event API and wide events | full | `SDK.Event`, `Record` accumulator, `o11yhttp.WithCanonicalLine`, `o11yconnect.WithCanonicalLine` |
 | Emit-time span validator | planned | dev-on/prod-observe validating span processor and metric-label allowlist |
 | Cross-language OTLP conformance (golden corpus) | planned | harness is language-agnostic; wired when a second language starts |
 | Log/span event deduplication | excluded | a Rust-ecosystem bridge concern (dual emission through the tracing/OTEL layers); the problem does not exist in Go's slog architecture |

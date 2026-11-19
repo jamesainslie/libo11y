@@ -47,7 +47,7 @@ func (c *captureExporter) captured() []sdktrace.ReadOnlySpan {
 // controls, without mutating the shared generated table.
 func secretPolicy(key attribute.Key) *sensitivityPolicy {
 	s := newSettings([]Option{WithSensitivityForTest(map[attribute.Key]spectables.Sensitivity{key: spectables.Secret})})
-	return newSensitivityPolicy(s, nil)
+	return newSensitivityPolicy(s, nil, nil)
 }
 
 func TestRedactingExporterDropsSecretSpanAttr(t *testing.T) {
@@ -233,7 +233,7 @@ func TestRedactingExporterAppliesPIIMode(t *testing.T) {
 		{name: "hash", mode: PIIHash, present: true, want: wantToken(internalTestKey, "10.0.0.1")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			policy := newSensitivityPolicy(newSettings([]Option{WithPIIMode(tc.mode), WithPIIHashKey(internalTestKey)}), nil)
+			policy := newSensitivityPolicy(newSettings([]Option{WithPIIMode(tc.mode), WithPIIHashKey(internalTestKey)}), nil, nil)
 			for where, attrs := range spanAttrSets(t, exportOnePIISpan(t, policy)) {
 				got, ok := lookupAttr(attrs, "host.ip")
 				if ok != tc.present {
@@ -254,7 +254,7 @@ func TestRedactingExporterCountsOneViolationPerPIIAttribute(t *testing.T) {
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
-	policy := newSensitivityPolicy(newSettings([]Option{WithPIIMode(PIIHash), WithPIIHashKey(internalTestKey)}), newViolationRecorder(mp))
+	policy := newSensitivityPolicy(newSettings([]Option{WithPIIMode(PIIHash), WithPIIHashKey(internalTestKey)}), nil, newViolationRecorder(mp))
 
 	stub := &captureExporter{}
 	tp := sdktrace.NewTracerProvider(

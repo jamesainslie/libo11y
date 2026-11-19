@@ -223,8 +223,9 @@ counted, because the filter runs on the measurement hot path.
 The classification does not cover, and implementations MUST document that
 it does not cover:
 
-- values under keys the specification does not classify (capture-time
-  redaction, the `redact` package in Go, protects those);
+- values under keys that neither the specification nor a loaded
+  application registry (section 5a) classifies (capture-time redaction,
+  the `redact` package in Go, protects those);
 - log record bodies and other free text: span names, span status
   descriptions, and span event names;
 - instrumentation scope attributes;
@@ -252,12 +253,14 @@ attribute a type, a sensitivity class and a cardinality budget. Once an SDK
 loads the registry, the sensitivity policy of section 5 classifies the
 application's keys exactly like spec keys. A key registered `pii` is then
 dropped, hashed or kept according to the PII mode of section 5, which is
-`drop`, `hash` or `allow`. A key registered `internal` passes.
+`drop`, `hash` or `allow`. A key registered `secret` is always dropped.
+Keys registered `public` or `internal` pass.
 
-Runtime loading is not implemented yet. It arrives in Go `go/v0.2.0`,
-through the option `WithAppRegistry`, and in TypeScript `ts/v0.1.0`. The
-file format, its rules and the `libo11y registry check` command exist
-today.
+Go loads a registry at setup with the option `WithAppRegistry(fs.FS,
+path)`, from `go/v0.2.0`. A registry that breaks a rule fails setup with
+`ErrInvalidAppRegistry`. Only sensitivity applies at runtime. The
+validator checks types, cardinality budgets and enum values.
+TypeScript loading arrives in `ts/v0.1.0`.
 
 ### Schema
 
@@ -395,7 +398,9 @@ URL, and the commit is tagged `spec/v1.1.0`. Spec 1.0.0 is tagged
    also validates the manifest version history against the rules of
    section 7. Rule IDs are stable.
 3. **Init-time** (`Setup`/`New`): tier-0 identity is validated and
-   required; `hash` mode without a key fails.
+   required; `hash` mode without a key fails; a registry passed to
+   `WithAppRegistry` is parsed and validated, and an invalid one fails
+   setup.
 4. **Emit-time** (always on): the sensitivity policy of section 5, applied
    at these points in Go:
    - the classifying wrapper on each slog sink (console, extra sinks, and

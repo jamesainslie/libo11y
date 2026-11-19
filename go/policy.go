@@ -67,10 +67,25 @@ type sensitivityPolicy struct {
 	rec    *violationRecorder
 }
 
-func newSensitivityPolicy(s *settings, rec *violationRecorder) *sensitivityPolicy {
+// newSensitivityPolicy builds the policy from s. app holds the classes the
+// application registries declare (nil when there are none); the policy
+// consults it only for keys the specification leaves unclassified.
+func newSensitivityPolicy(s *settings, app map[attribute.Key]spectables.Sensitivity, rec *violationRecorder) *sensitivityPolicy {
 	lookup := s.sensitivity
 	if lookup == nil {
 		lookup = func(k attribute.Key) spectables.Sensitivity { return spectables.SensitivityOf[k] }
+	}
+	if len(app) > 0 {
+		// Registry namespaces are disjoint from the specification's (the
+		// validator refuses o11y, otel, and every semconv namespace), so a
+		// spec answer, when there is one, never contradicts the registry.
+		base := lookup
+		lookup = func(k attribute.Key) spectables.Sensitivity {
+			if class := base(k); class != spectables.Unclassified {
+				return class
+			}
+			return app[k]
+		}
 	}
 	return &sensitivityPolicy{lookup: lookup, pii: s.piiMode, key: s.piiHashKey, rec: rec}
 }

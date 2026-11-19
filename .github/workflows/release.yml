@@ -1,8 +1,8 @@
 # Publishes a Go module release when its tag is pushed: go/vX.Y.Z for
-# github.com/jamesainslie/libo11y/go, go/o11ygin/vX.Y.Z for
-# github.com/jamesainslie/libo11y/go/o11ygin. Push the go/ tag first; both
-# tags go on the same commit. Rerunning a release is safe: an existing
-# GitHub Release has its notes replaced.
+# github.com/jamesainslie/libo11y/go, and go/<sub>/vX.Y.Z for each
+# submodule (o11ygin, o11yconnect, o11ysql). Push the go/ tag first; every
+# tag of one release goes on the same commit. Rerunning a release is safe:
+# an existing GitHub Release has its notes replaced.
 name: release
 
 on:
@@ -10,6 +10,8 @@ on:
     tags:
       - "go/v*"
       - "go/o11ygin/v*"
+      - "go/o11yconnect/v*"
+      - "go/o11ysql/v*"
 
 permissions:
   contents: read
@@ -43,16 +45,18 @@ jobs:
           cache-dependency-path: |
             go/go.sum
             go/o11ygin/go.sum
+            go/o11yconnect/go.sum
+            go/o11ysql/go.sum
       - name: Derive the module and version from the tag
         id: tag
         env:
           TAG: ${{ github.ref_name }}
         run: |
           case "$TAG" in
-          go/o11ygin/v*) dir=go/o11ygin ;;
+          go/o11ygin/v* | go/o11yconnect/v* | go/o11ysql/v*) dir="${TAG%/v*}" ;;
           go/v*) dir=go ;;
           *)
-            echo "::error::$TAG is not a go/ or go/o11ygin/ release tag"
+            echo "::error::$TAG is not a go/ or go/<submodule>/ release tag"
             exit 1
             ;;
           esac
@@ -76,9 +80,10 @@ jobs:
           } >>"$GITHUB_OUTPUT"
           echo "$TAG releases github.com/jamesainslie/libo11y/$dir v$version (prerelease: $prerelease)"
       - name: Require the parent tag on the same commit
-        if: steps.tag.outputs.dir == 'go/o11ygin'
+        if: steps.tag.outputs.dir != 'go'
         env:
           TAG: ${{ github.ref_name }}
+          DIR: ${{ steps.tag.outputs.dir }}
           VERSION: ${{ steps.tag.outputs.version }}
         run: |
           parent="go/v$VERSION"
@@ -92,9 +97,9 @@ jobs:
             echo "::error::$TAG is on $tag_commit but $parent is on $parent_commit; tag one commit"
             exit 1
           fi
-          required="$(cd go/o11ygin && go mod edit -json | jq -r '.Require[] | select(.Path == "github.com/jamesainslie/libo11y/go") | .Version')"
+          required="$(cd "$DIR" && go mod edit -json | jq -r '.Require[] | select(.Path == "github.com/jamesainslie/libo11y/go") | .Version')"
           if [[ "$required" != "v$VERSION" ]]; then
-            echo "::error::go/o11ygin/go.mod requires the parent at ${required:-nothing}, not v$VERSION"
+            echo "::error::$DIR/go.mod requires the parent at ${required:-nothing}, not v$VERSION"
             exit 1
           fi
       - name: Check the changelog has release notes
@@ -127,7 +132,7 @@ jobs:
           scripts/release-notes.sh "$VERSION" >"$notes"
           title="$MODULE v$VERSION"
           # The main module's release is the repository's Latest release; the
-          # Gin module's release, tagged on the same commit, never takes it.
+          # submodules' releases, tagged on the same commit, never take it.
           latest=false
           if [[ "$DIR" == "go" && "$PRERELEASE" == "false" ]]; then
             latest=true

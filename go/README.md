@@ -3,17 +3,23 @@
 One-call OpenTelemetry setup for Go services: traces, metrics, and logs over
 OTLP, with W3C context propagation, log/trace correlation, sensitivity
 classification on every signal, capture-time redaction, and a hermetic test
-harness. Pure OTEL; the library wraps setup, never instrumentation.
+harness. Pure OTEL; the library wraps setup, never instrumentation. The
+one exception is `o11ysql`, libo11y's own `database/sql` instrumentation,
+and [its README](o11ysql/README.md) explains why.
 
 ## Installation
 
 ```sh
-go get github.com/jamesainslie/libo11y/go@v0.1.0
-go get github.com/jamesainslie/libo11y/go/o11ygin@v0.1.0   # only for Gin
+go get github.com/jamesainslie/libo11y/go@v0.2.0
+go get github.com/jamesainslie/libo11y/go/o11ygin@v0.2.0       # only for Gin
+go get github.com/jamesainslie/libo11y/go/o11yconnect@v0.2.0   # only for Connect
+go get github.com/jamesainslie/libo11y/go/o11ysql@v0.2.0       # only for database/sql
 ```
 
-The Gin integration is a separate module released alongside this one at the
-same version. Releases are listed in [CHANGELOG.md](CHANGELOG.md).
+The Gin, Connect, and database/sql integrations are separate modules
+released alongside this one at the same version, so an application
+downloads only the integrations it imports. Releases are listed in
+[CHANGELOG.md](CHANGELOG.md).
 
 The modules require Go 1.26.0 or later (`golang.org/x/net` v0.60.0, the
 first release that fixes its published advisories, declares that floor).
@@ -116,9 +122,9 @@ Downward API attributes, otherwise a random UUIDv4 per process.
   `testing/slogtest`), including `WithGroup`, and correlation attributes
   never nest inside groups.
 - **Sensitivity classification on every signal.** Attributes the
-  specification classifies `secret` are dropped and `pii` attributes are
-  dropped by default, on logs, spans, metrics from the SDK's instruments,
-  and the resource. See
+  specification or an application registry (`WithAppRegistry`) classifies
+  `secret` are dropped and `pii` attributes are dropped by default, on
+  logs, spans, metrics from the SDK's instruments, and the resource. See
   [Sensitivity and redaction](#sensitivity-and-redaction) for the exact
   per-signal guarantees and the gaps.
 - **Service identity, enforced.** See [Required environment](#required-environment).
@@ -192,6 +198,7 @@ Downward API attributes, otherwise a random UUIDv4 per process.
 | `WithoutStartupSummary` | `Setup` emits no startup event |
 | `WithErrorHandler` | asynchronous error handler (installed by `Setup` only; it is process-global) |
 | `WithoutOTELEnv` | no `OTEL_*` variable affects behavior (see below) |
+| `WithAppRegistry` | load an application attribute registry from an `fs.FS`; its keys are classified like spec keys; an invalid registry fails `New` and `Setup` with `ErrInvalidAppRegistry` |
 
 `WithoutOTELEnv` takes configuration only from options and library
 defaults. The resource takes no values from `OTEL_RESOURCE_ATTRIBUTES` or
@@ -213,18 +220,22 @@ resource processor's `insert` action) sees it as present. A key the library
 resource does define keeps the library's value.
 
 Typed errors: `ErrAlreadySetup`, `ErrNoServiceName`, `ErrNoEnvironment`,
-`ErrInvalidEnvironment` (wrapped with the value and the allowed set), and
-`ErrPIIHashKey`. Exporter construction errors are wrapped.
+`ErrInvalidEnvironment` (wrapped with the value and the allowed set),
+`ErrPIIHashKey`, and `ErrInvalidAppRegistry`. Exporter construction errors
+are wrapped.
 
 ## Packages
 
 | Package | Purpose |
 |---------|---------|
-| `o11y` (root) | `Setup`, `New`, the `SDK` handle, options, `SDK.Event`, `Record`, `ForceEmit` |
+| `o11y` (root) | `Setup`, `New`, the `SDK` handle, options, `SDK.Event`, `Record`, `ForceEmit`, `Capture`, `Carrier`, `StartLinked` |
 | `spec` | generated from the specification registry: typed attribute keys, closed enums (`spec.EnvironmentProduction`, ...), event names, metric names (`spec.MetricSchemaViolations`, ...), and `SchemaURL`, `SpecVersion`, `SemconvVersion` |
 | `o11yhttp` | net/http server middleware and client transport (otelhttp, stable HTTP semconv, route-aware span names, canonical log line) |
 | `o11ygrpc` | gRPC stats handlers for servers and clients (otelgrpc) |
 | `o11ygin` | Gin middleware (separate module, so non-Gin users skip its dependencies) |
+| `o11yconnect` | Connect server and client interceptors (otelconnect); separate module |
+| `o11ysql` | database/sql connector wrapper with semconv db spans, durations, and pool metrics; separate module |
+| `o11yproc` | trace context for child processes and framed sockets |
 | `o11ytest` | hermetic in-memory harness for asserting emitted telemetry and conformance |
 | `redact` | capture-time redaction: `Secret`, `Masked`, tag-driven `Struct` |
 | `cmd/libo11y` | `libo11y registry check`, which validates an application attribute registry |
@@ -232,10 +243,10 @@ Typed errors: `ErrAlreadySetup`, `ErrNoServiceName`, `ErrNoEnvironment`,
 The `SDK` handle exposes `TracerProvider`, `MeterProvider`,
 `LoggerProvider` (for log bridges other than slog, such as otelzap or
 otellogr; their records are classified like slog records), `Propagator`,
-`Resource`, `Handler`, `Logger`, `EffectiveConfig`, `ForceFlush`,
-`Shutdown`, and `ShutdownOnSignals`.
+`Resource`, `Handler`, `Logger`, `EffectiveConfig`, `Capture`,
+`StartLinked`, `ForceFlush`, `Shutdown`, and `ShutdownOnSignals`.
 
-## HTTP and gRPC
+## HTTP, gRPC, and Connect
 
 ```go
 mux := http.NewServeMux()
@@ -287,6 +298,46 @@ offers `WithSDK`, `WithFilter`, `WithIgnorePaths`, and
 public-endpoint mechanism and no canonical log line, so `WithPublicEndpoint`
 and `WithCanonicalLine` have no Gin counterpart.
 
+Connect (module `github.com/jamesainslie/libo11y/go/o11yconnect`):
+
+```go
+interceptor, err := o11yconnect.ServerInterceptor(
+    o11yconnect.WithIgnoreHealthChecks(),
+    o11yconnect.WithCanonicalLine(), o11yconnect.WithSDK(sdk),
+)
+if err != nil {
+    return err
+}
+path, handler := greetv1connect.NewGreetServiceHandler(svc, connect.WithInterceptors(interceptor))
+```
+
+`o11yconnect` wraps `connectrpc.com/otelconnect` and supports connect-go v1.
+Server spans adopt the caller's trace context, while otelconnect's own
+default is to link it. `WithPublicEndpoint` links it instead. Behind HTTP
+instrumentation that has already started a span, such as
+`o11yhttp.NewHandler`, the RPC span is a child of that span and the outer
+layer decides trust, so declare the endpoint public there too.
+`rpc.system.name` follows the wire protocol of each request. It is
+`connectrpc` for the Connect protocol and `grpc` for gRPC and gRPC-Web. A
+handler that panics leaves its server span with status Error, and the
+panic keeps propagating. `WithIgnoreHealthChecks` excludes
+`grpc.health.v1` procedures from tracing and metrics, and otelconnect then
+propagates no context for them. `ClientInterceptor` instruments clients.
+
+`WithCanonicalLine` makes `ServerInterceptor` emit `o11y.request.summary`
+once per RPC, even when the handler panics. It needs `WithSDK`, and
+`ServerInterceptor` returns an error without it. The event carries
+`http.request.method`, `http.response.status_code`, the outcome and
+duration, `rpc.system.name`, `rpc.method`, and `rpc.response.status_code`,
+plus what the handler adds to the RPC's `Record`. On a unary RPC in the
+Connect protocol, `http.response.status_code` is the status the protocol
+maps the error code to, such as 404 for `not_found`. Streaming RPCs, and
+RPCs in gRPC and gRPC-Web, which carry errors in the body or trailers,
+report 200. A panic reports 500, and a not-modified error reports 304
+only on a GET. Behind
+`o11yhttp.WithCanonicalLine`, turn the canonical line on in one layer
+only, because each layer emits its own summary.
+
 ## Events, wide events, and audit records
 
 `SDK.Event` emits a contract-bearing event: a log record carrying
@@ -336,6 +387,112 @@ deadline; a second signal terminates immediately:
 go server.Run()
 return sdk.ShutdownOnSignals(ctx)
 ```
+
+## Databases
+
+```go
+db, err := o11ysql.Open("sqlite", "file:app.db")
+```
+
+`o11ysql` (module `github.com/jamesainslie/libo11y/go/o11ysql`) wraps any
+`database/sql` driver. A statement run under an existing span gets a
+client span named like `SELECT users`, with `db.system.name`,
+`db.operation.name`, and `db.collection.name` when the statement names one
+table. Transactions get `BEGIN`, `COMMIT`, and `ROLLBACK` spans. Statements
+outside any span create no span, and pings never create one, so pool
+maintenance never starts a trace. The wrapper starts the client span after
+the driver call returns and backdates it to the call's start, so spans the
+driver makes are children of the caller's span.
+
+`db.query.text` carries the statement with every literal replaced by `?`
+and every comment removed. It is cut to at most 4096 bytes on a UTF-8
+character boundary, so a bulk insert or a migration cannot produce an
+attribute too large to export. It is recorded only for `postgresql`,
+`sqlite`, `mysql`, and `mariadb`, which have a matching SQL lexer. Every
+other system, including the default `other_sql` and
+`microsoft.sql_server`, gets spans and durations named by operation and
+collection but no query text. `Open` infers the system from the driver
+name: `postgres`, `pgx`, and `pgx/v5` give `postgresql`, `sqlite` and
+`sqlite3` give `sqlite`, `mysql` gives `mysql`, and `sqlserver` and
+`mssql` give `microsoft.sql_server`. `WithSystem` overrides the inference,
+and `WithoutQueryText` turns the text off.
+
+Every statement is measured on `db.client.operation.duration`, with an
+exemplar pointing at its span when it has one. The duration covers the
+driver call, not the iteration of returned rows. Its `db.collection.name`
+label has one value per table, so an application that builds table names
+at run time, such as one table per tenant, gets unbounded metric series.
+Errors set the span status and `error.type` without recording the
+message, because database errors often quote statement values.
+
+`Open` registers `db.client.connection.count` (by state, `idle` or `used`)
+and `db.client.connection.max` from `sql.DB.Stats`, and unregisters them
+when the `*sql.DB` is closed. `db.client.connection.max` is left out while
+the pool has no limit (`SetMaxOpenConns` unset or 0). The pool name
+defaults to the system name.
+Pools with the same name are summed, so give each pool a distinct
+`WithPoolName`. When you build the connector yourself, open the database
+with `sql.OpenDB(o11ysql.Wrap(connector))` and register the pool metrics
+with `RegisterPoolMetrics(db)`. `RegisterPoolMetrics` starts from the
+options given to `Wrap`, such as `WithSDK` and `WithSystem`, and applies
+its own on top. Call `Unregister` on the registration when the database is
+closed. A driver without the Go 1.8 context interfaces for transactions
+and prepared statements fails with `ErrLegacyDriver`. A connection without
+`driver.ExecerContext` or `driver.QueryerContext` runs each statement
+through a prepared statement instead.
+
+`sql.Conn.Raw` passes its function the `o11ysql` connection, not the
+driver's own. Driver-specific methods, such as pgx's `CopyFrom` or a
+SQLite backup, are not reachable through a wrapped database.
+[`o11ysql/README.md`](o11ysql/README.md) explains why `o11ysql` is
+libo11y's own code rather than a wrapper around `XSAM/otelsql`.
+
+## Detached work and child processes
+
+Work that outlives the request, such as a job or a queued email, stores a
+`Carrier` with it and starts its own trace linked to the request:
+
+```go
+job.Trace = o11y.Capture(ctx) // a column, a JSON field, or a message header
+
+// later, in the worker:
+ctx, span := o11y.StartLinked(ctx, job.Trace, "send-email")
+defer span.End()
+```
+
+A `Carrier` holds the W3C traceparent, the tracestate, and the baggage the
+propagator would send out of the process. After `Setup` that baggage has
+passed the SDK's egress filter. The text includes those baggage values,
+so storing or logging a `Carrier` stores or logs them. It stores as text
+(`MarshalText`) or as a SQL text column (`Value`, `Scan`), and the zero
+`Carrier` stores as `NULL`. The text never exceeds 32 KiB. A captured
+context that would exceed it drops its tracestate, then its baggage, and
+always keeps the link. `UnmarshalText` keeps the valid baggage members and
+drops the invalid ones. Text over 32 KiB, or without a valid traceparent,
+fails with `ErrInvalidCarrier`.
+
+`StartLinked` starts a new root span with one link to the captured span. It
+merges the carrier's baggage onto the baggage already in the context, and
+the carrier's value wins on a shared key. A zero `Carrier` starts an
+unlinked root span. With an SDK built by `New`, use `sdk.Capture` and
+`sdk.StartLinked`.
+
+```go
+cmd := exec.CommandContext(ctx, "worker")
+cmd.Env = append(os.Environ(), o11yproc.Env(ctx)...)
+```
+
+Inside a valid span, `o11yproc.Env(ctx)` always returns both `TRACEPARENT`
+and `TRACESTATE`, with `TRACESTATE` empty when the context has none.
+Appended after `os.Environ()`, the two entries override the values this
+process inherited. Outside any span `Env` returns nil, and the child
+inherits this process's environment. In the child,
+`o11yproc.FromEnv(ctx)` adopts the parent's span context. Baggage does not
+travel through the environment, because other tools on the host can read
+it. `o11yproc.Inject` and `o11yproc.Extract` carry trace context and
+baggage in the `map[string]string` of a framed socket message. They use
+the global propagator and do nothing before `Setup`. SDKs built with `New`
+use `sdk.Propagator()` directly.
 
 ## Sensitivity and redaction
 
@@ -407,6 +564,32 @@ Not covered, by design or by OpenTelemetry Go's structure:
 - an instrument's experimental advisory attribute keys, which are no longer
   honored because every instrument stream carries the policy's attribute
   filter.
+
+### Application attribute registry
+
+`WithAppRegistry(fsys, path)` loads the application's own attribute
+registry, a YAML file in the format of
+[`docs/SPEC.md`](../docs/SPEC.md) section 5a, when the SDK is built.
+The policy above then classifies its keys like spec keys. A key registered
+`pii` is dropped, hashed, or kept according to `WithPIIMode`, and a key
+registered `secret` is always dropped. A registry that breaks a rule fails
+`New` and `Setup` with `ErrInvalidAppRegistry`, and a file that cannot be
+read or parsed fails them with the read or parse error. Give the option
+once per registry. Two registries that declare the same namespace are an
+error. Only sensitivity applies at runtime, so types, cardinality budgets,
+and enum values are left to `libo11y registry check`, which validates the
+file in CI.
+
+```go
+//go:embed o11y-registry.yaml
+var registryFS embed.FS
+
+sdk, err := o11y.Setup(ctx,
+    o11y.WithServiceName("checkout"),
+    o11y.WithEnvironment(spec.EnvironmentProduction),
+    o11y.WithAppRegistry(registryFS, "o11y-registry.yaml"),
+)
+```
 
 ### Capture-time protection (the `redact` package)
 
@@ -506,8 +689,10 @@ with empty values.
   recorded logs or spans, or when a tier-0 attribute is missing from the
   resource. Grouped log attributes are checked under their dotted keys.
   Secret attributes on metric measurements are dropped uncounted, so they
-  are not reported. Call it from the test body, before cleanup shuts the
-  harness down.
+  are not reported. The in-the-clear check reads only the specification,
+  so a key that only an application registry classifies `secret` is
+  reported through the violation count alone. Call it from the test body,
+  before cleanup shuts the harness down.
 
 ## Design notes
 

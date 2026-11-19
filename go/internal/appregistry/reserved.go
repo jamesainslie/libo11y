@@ -1,13 +1,15 @@
 package appregistry
 
-// reservedSemconvVersion is the semantic conventions release that
-// reservedNamespaces reflects. A test fails when spec/registry/manifest.yaml
-// pins a different release, so a semconv bump forces a review of the list.
-const reservedSemconvVersion = "1.41.0"
+// ReservedSemconvVersion is the semantic conventions release that
+// reservedNamespaces reflects. A specgen test fails when
+// spec/registry/manifest.yaml pins a different release, so a semconv bump
+// forces a review of the list. The test lives in specgen because this
+// package is in the core library's import graph, where spec/ is absent.
+const ReservedSemconvVersion = "1.41.0"
 
 // reservedNamespaces are the namespaces an application may not claim:
 // libo11y's own (o11y), OpenTelemetry's (otel), and the semconv entries of
-// the pinned release (reservedSemconvVersion). The semconv entries are that
+// the pinned release (ReservedSemconvVersion). The semconv entries are that
 // release's model directory names plus its attribute roots, the first
 // segment of every attribute it defines.
 var reservedNamespaces = map[string]bool{

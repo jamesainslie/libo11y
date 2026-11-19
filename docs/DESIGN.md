@@ -148,30 +148,31 @@ Three complementary layers, all language-idiomatic:
    catch-all for third-party attributes.
 3. **Specification classification**: one sensitivity policy per SDK
    decides, by attribute key, what happens to every attribute the
-   specification classifies: secrets are always dropped, and PII is
-   dropped (the default), replaced by a keyed HMAC token, or kept, per the
-   configured mode. Every signal asks the same policy, so the signals
-   cannot drift apart. In Go its enforcement points are the classifying
-   wrapper on each slog sink; a processor on the SDK's OTLP logger
-   provider, covering every other log bridge; wrappers around the span
-   exporter and each injected span processor's end-of-span callback (span,
-   event, and link attributes); the resource, classified once at
-   construction; and the metric views and exemplar reservoirs of every
-   stream of the SDK's own instruments, where PII is dropped even in hash
-   mode because a token per value would multiply series cardinality.
-   Metrics from metric producers bypass views and are not classified. The policy runs after the
-   user replacer, so renaming a key to a classified name cannot bypass it.
+   specification, or an application registry loaded at setup, classifies:
+   secrets are always dropped, and PII is dropped (the default), replaced
+   by a keyed HMAC token, or kept, per the configured mode. Every signal
+   asks the same policy, so the signals cannot drift apart. In Go its
+   enforcement points are the classifying wrapper on each slog sink; a
+   processor on the SDK's OTLP logger provider, covering every other log
+   bridge; wrappers around the span exporter and each injected span
+   processor's end-of-span callback (span, event, and link attributes);
+   the resource, classified once at construction; and the metric views and
+   exemplar reservoirs of every stream of the SDK's own instruments, where
+   PII is dropped even in hash mode because a token per value would
+   multiply series cardinality. Metrics from metric producers bypass views
+   and are not classified. The policy runs after the user replacer, so
+   renaming a key to a classified name cannot bypass it.
 
-Key-based classification is not fail-closed: a value under a key the
-specification does not classify passes through, and that gap is the
-capture-time layer's job. Log bodies and other free text (span names,
-span status descriptions, span event names), instrumentation scope
-attributes, metrics from metric producers, members of map-valued span and
-metric attributes, attributes a span processor reads at span start, and
-baggage are outside the policy; each
+Key-based classification is not fail-closed: a value under a key that
+neither the specification nor an application registry classifies passes
+through, and that gap is the capture-time layer's job. Log bodies and
+other free text (span names, span status descriptions, span event names),
+instrumentation scope attributes, metrics from metric producers, members
+of map-valued span and metric attributes, attributes a span processor
+reads at span start, and baggage are outside the policy; each
 implementation documents these gaps with its per-signal guarantees (see
-[SPEC.md](SPEC.md), section 5). Baggage egress passes through a filter seam
-on every propagator whose default allows every key.
+[SPEC.md](SPEC.md), section 5). Baggage egress passes through a filter
+seam on every propagator whose default allows every key.
 
 ## Testability
 
