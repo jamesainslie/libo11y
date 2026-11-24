@@ -545,23 +545,41 @@ export async function setupWith(options: TelemetryOptions, platform: Platform): 
 
   const handler = rateLimitedErrorHandler(platform);
   const refused: string[] = [];
-  const contextManager = platform.contextManager().enable();
   const installed: Installed = {
-    context: context.setGlobalContextManager(contextManager),
-    tracer: trace.setGlobalTracerProvider(parts.tracerProvider),
-    meter: metrics.setGlobalMeterProvider(parts.meterProvider),
-    logger: parts.loggerProvider === undefined ? false : logs.setGlobalLoggerProvider(parts.loggerProvider),
-    propagator: propagation.setGlobalPropagator(parts.propagator),
+    context: false,
+    tracer: false,
+    meter: false,
+    logger: false,
+    propagator: false,
   };
-  if (!installed.context) {
-    contextManager.disable();
-    refused.push("context manager");
+  try {
+    const contextManager = platform.contextManager().enable();
+    installed.context = context.setGlobalContextManager(contextManager);
+    if (!installed.context) {
+      contextManager.disable();
+      refused.push("context manager");
+    }
+    installed.tracer = trace.setGlobalTracerProvider(parts.tracerProvider);
+    if (!installed.tracer) refused.push("tracer provider");
+    installed.meter = metrics.setGlobalMeterProvider(parts.meterProvider);
+    if (!installed.meter) refused.push("meter provider");
+    if (parts.loggerProvider !== undefined) {
+      installed.logger = logs.setGlobalLoggerProvider(parts.loggerProvider);
+      if (!installed.logger) refused.push("logger provider");
+    }
+    installed.propagator = propagation.setGlobalPropagator(parts.propagator);
+    if (!installed.propagator) refused.push("propagator");
+    setGlobalErrorHandler(handler);
+  } catch (err) {
+    // Leave nothing behind: what was installed is removed, the providers stop, the guard is free.
+    try {
+      uninstall(installed);
+    } finally {
+      await handle.shutdown();
+      releaseGuard();
+    }
+    throw err;
   }
-  if (!installed.tracer) refused.push("tracer provider");
-  if (!installed.meter) refused.push("meter provider");
-  if (parts.loggerProvider !== undefined && !installed.logger) refused.push("logger provider");
-  if (!installed.propagator) refused.push("propagator");
-  setGlobalErrorHandler(handler);
   handle.installed = installed;
   for (const what of refused) {
     handler(new Error(`o11y: another global ${what} is registered; libo11y's was not installed`));

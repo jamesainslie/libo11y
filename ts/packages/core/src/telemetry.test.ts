@@ -503,3 +503,31 @@ test("review W1: two capturing telemetries shut down in creation order leave the
   assert.equal(b.platform.lines.length, 1);
   assert.equal(a.platform.lines.length, 0);
 });
+
+test("review W3: a throw while installing globals uninstalls, shuts down and releases the guard", async () => {
+  let exporterShutdown = false;
+  const spans: SpanExporter = {
+    export: (_b, cb) => cb({ code: 0 }),
+    shutdown: async () => {
+      exporterShutdown = true;
+    },
+  };
+  const broken = {
+    enable: () => {
+      throw new Error("no async context here");
+    },
+  } as unknown as ReturnType<Platform["contextManager"]>;
+  const { platform } = rig({ contextManager: () => broken });
+  await assert.rejects(setupWith({ ...OPTIONS, spanExporter: spans }, platform), /no async context here/);
+  assert.equal(exporterShutdown, true);
+  assert.notEqual((globalThis as Record<symbol, unknown>)[GUARD], true);
+  assert.equal(
+    trace.setGlobalTracerProvider(new TracerProvider()),
+    true,
+    "no tracer provider stayed installed",
+  );
+  trace.disable();
+  assert.deepEqual(propagation.fields(), []);
+  const t = await setupWith(OPTIONS, rig().platform);
+  await t.shutdown();
+});
