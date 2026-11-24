@@ -34,17 +34,17 @@ test("defaults with an empty environment", () => {
   assert.equal(c.console, "json");
   assert.deepEqual(c.batch.spans, {
     scheduledDelayMillis: 5000,
-    exportTimeoutMillis: 30000,
+    exportTimeoutMillis: 5000,
     maxQueueSize: 2048,
     maxExportBatchSize: 512,
   });
   assert.deepEqual(c.batch.logs, {
     scheduledDelayMillis: 1000,
-    exportTimeoutMillis: 30000,
+    exportTimeoutMillis: 5000,
     maxQueueSize: 2048,
     maxExportBatchSize: 512,
   });
-  assert.deepEqual(c.metricExport, { intervalMillis: 60000, timeoutMillis: 30000 });
+  assert.deepEqual(c.metricExport, { intervalMillis: 60000, timeoutMillis: 5000 });
   assert.equal(c.runtimeMetrics, true);
   assert.equal(c.startupSummary, true);
 });
@@ -110,7 +110,7 @@ test("hermetic mode ignores the environment and turns off signals with nothing i
   assert.equal(c.exemplarFilter, "trace_based");
   assert.deepEqual(c.batch.logs, {
     scheduledDelayMillis: 1000,
-    exportTimeoutMillis: 30000,
+    exportTimeoutMillis: 5000,
     maxQueueSize: 2048,
     maxExportBatchSize: 512,
   });
@@ -244,7 +244,7 @@ test("batch and metric export numbers parse as integers; invalid or negative kee
   );
   assert.deepEqual(c.batch.spans, {
     scheduledDelayMillis: 100,
-    exportTimeoutMillis: 30000,
+    exportTimeoutMillis: 5000,
     maxQueueSize: 2048,
     maxExportBatchSize: 64,
   });
@@ -267,4 +267,29 @@ test("options set the level, console, runtime metrics and summary", () => {
   assert.equal(c.runtimeMetrics, false);
   assert.equal(c.startupSummary, false);
   assert.equal(resolveConfig({ console: "text" }, {}).console, "text");
+});
+
+// Review W2: upstream batch processors arm an export timer that is not unref'd, so with a hung
+// exporter the process lives until it fires. The default is the 5000 ms shutdown deadline; an
+// explicit variable still wins.
+test("export timeouts default to the shutdown deadline and the variables still win", () => {
+  const d = resolveConfig({}, {});
+  assert.equal(d.batch.spans.exportTimeoutMillis, 5000);
+  assert.equal(d.batch.logs.exportTimeoutMillis, 5000);
+  assert.equal(d.metricExport.timeoutMillis, 5000);
+  assert.equal(
+    resolveConfig({ hermetic: true }, { OTEL_BLRP_EXPORT_TIMEOUT: "9" }).batch.logs.exportTimeoutMillis,
+    5000,
+  );
+  const e = resolveConfig(
+    {},
+    {
+      OTEL_BSP_EXPORT_TIMEOUT: "30000",
+      OTEL_BLRP_EXPORT_TIMEOUT: "31000",
+      OTEL_METRIC_EXPORT_TIMEOUT: "32000",
+    },
+  );
+  assert.equal(e.batch.spans.exportTimeoutMillis, 30000);
+  assert.equal(e.batch.logs.exportTimeoutMillis, 31000);
+  assert.equal(e.metricExport.timeoutMillis, 32000);
 });

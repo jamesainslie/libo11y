@@ -63,17 +63,27 @@ export const KNOWN_SAMPLERS: ReadonlySet<string> = new Set([
 /** The OTLP protocols libo11y ships. grpc is not one of them. */
 export const SUPPORTED_PROTOCOLS: ReadonlySet<string> = new Set(["http/protobuf", "http/json"]);
 
+/**
+ * The export timeout when no variable sets one: the default shutdown deadline. Upstream's batch
+ * processors and periodic reader arm an export timer that is not unref'd, so with a hung exporter
+ * the process stays alive until it fires, even after shutdown has resolved. sdk-node's 30000 ms
+ * default would hold an exiting process for 30 s; 5000 ms bounds it to the shutdown deadline. An
+ * explicit OTEL_BSP_EXPORT_TIMEOUT, OTEL_BLRP_EXPORT_TIMEOUT or OTEL_METRIC_EXPORT_TIMEOUT still
+ * wins, and then a hung exporter can hold the process for that long.
+ */
+export const DEFAULT_EXPORT_TIMEOUT_MILLIS = 5000;
+
 const SPAN_BATCH_DEFAULTS: BatchOptions = {
   scheduledDelayMillis: 5000,
-  exportTimeoutMillis: 30000,
+  exportTimeoutMillis: DEFAULT_EXPORT_TIMEOUT_MILLIS,
   maxQueueSize: 2048,
   maxExportBatchSize: 512,
 };
 
-// Go's pinned log batch values, which are also sdk-node's BLRP defaults.
+// Go's pinned log batch values, which are also sdk-node's BLRP defaults, except the export timeout.
 const LOG_BATCH_DEFAULTS: BatchOptions = {
   scheduledDelayMillis: 1000,
-  exportTimeoutMillis: 30000,
+  exportTimeoutMillis: DEFAULT_EXPORT_TIMEOUT_MILLIS,
   maxQueueSize: 2048,
   maxExportBatchSize: 512,
 };
@@ -231,7 +241,7 @@ export function resolveConfig(options: TelemetryOptions, ambient: Env): Resolved
     },
     metricExport: {
       intervalMillis: envInt(env, "OTEL_METRIC_EXPORT_INTERVAL", 60000),
-      timeoutMillis: envInt(env, "OTEL_METRIC_EXPORT_TIMEOUT", 30000),
+      timeoutMillis: envInt(env, "OTEL_METRIC_EXPORT_TIMEOUT", DEFAULT_EXPORT_TIMEOUT_MILLIS),
     },
     runtimeMetrics,
     startupSummary: options.startupSummary ?? true,

@@ -30,7 +30,7 @@ function rig(overrides: Partial<Platform> = {}, metricExporter?: PushMetricExpor
   const requests: ExporterRequest[] = [];
   const platform = createTestPlatform({
     contextManager: () => new AsyncLocalStorageContextManager(),
-    env: () => ({ OTEL_BLRP_EXPORT_TIMEOUT: "1000", OTEL_BSP_EXPORT_TIMEOUT: "1000" }),
+    env: () => ({}),
     buildExporters: (req) => {
       requests.push(req);
       return {
@@ -270,7 +270,9 @@ test("a hung log exporter does not starve traces, and shutdown keeps its deadlin
     },
     shutdown: async () => {},
   };
-  const { platform } = rig();
+  // An explicit export timeout keeps this test file quick; the child-process test below covers
+  // the default.
+  const { platform } = rig({ env: () => ({ OTEL_BLRP_EXPORT_TIMEOUT: "500" }) });
   const t = await createTelemetryWith({ ...OPTIONS, spanExporter: spans, logExporter: hung }, platform);
   t.tracerProvider.getTracer("t").startSpan("kept").end();
   t.logger.info("stuck");
