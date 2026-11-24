@@ -21,7 +21,6 @@ import {
   createContextKey,
   isSpanContextValid,
   ROOT_CONTEXT,
-  type SpanContext,
   trace,
 } from "@opentelemetry/api";
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
@@ -33,6 +32,13 @@ import {
   SimpleSpanProcessor,
   type SpanExporter,
 } from "@opentelemetry/sdk-trace";
+import {
+  type CapturedLog,
+  conformanceProblems,
+  correlationProblems,
+  fail,
+  triangleProblems,
+} from "./assertions.ts";
 
 /** The options createRecorder takes: any TelemetryOptions except the signal plumbing it owns. */
 export interface RecorderOptions
@@ -83,6 +89,23 @@ export interface Recorder {
   metricNames(): Promise<readonly string[]>;
   /** The exemplars on the named instrument, across all its data points. */
   exemplars(instrument: string): Promise<readonly RecordedExemplar[]>;
+  /**
+   * Throws AssertionError if the code under test broke the libo11y specification: a tier-0 resource
+   * key missing, a secret-classified attribute counted on o11y.schema.violations or visible in a
+   * log or span attribute, or a registered event lacking an attribute its contract requires. It
+   * flushes first. Call it before shutdown: it collects metrics.
+   */
+  assertConforms(): Promise<void>;
+  /**
+   * Throws AssertionError unless every log recorded inside a span carries that span's trace ID.
+   * Records emitted outside any span are ignored.
+   */
+  assertCorrelated(): void;
+  /**
+   * Throws AssertionError unless the correlation triangle closes: a recorded span, a log carrying
+   * its trace and span IDs, and an exemplar on metric carrying the same trace ID.
+   */
+  assertTriangle(opts: { readonly metric: string }): Promise<void>;
   /** Shuts the telemetry down. Idempotent. What was recorded stays readable. */
   shutdown(): Promise<void>;
 }
@@ -112,13 +135,6 @@ class SpanRecording implements SpanExporter {
   async shutdown(): Promise<void> {}
 
   async forceFlush(): Promise<void> {}
-}
-
-/** A captured log record with the span context of the context it was emitted under. */
-export interface CapturedLog {
-  readonly log: RecordedLog;
-  /** The valid span context active at emission, as Go's logCapture reads it from ctx. */
-  readonly active: SpanContext | undefined;
 }
 
 const LEVELS: readonly LogLevel[] = ["trace", "debug", "info", "warn", "error", "fatal"];
@@ -268,6 +284,44 @@ class RecorderImpl implements Recorder {
       }
     }
     return out;
+  }
+
+  async assertConforms(): Promise<void> {
+    const problems: string[] = [];
+    const flushed = await this.telemetry.forceFlush();
+    for (const { error } of flushed.errors) {
+      problems.push(`o11ytest: flushing before conformance checks: ${String(error)}`);
+    }
+    let metrics: ResourceMetricsWithExemplars | undefined;
+    try {
+      metrics = await this.metrics();
+    } catch (err) {
+      problems.push(err instanceof Error ? err.message : String(err));
+    }
+    problems.push(
+      ...conformanceProblems({
+        resource: this.telemetry.resource.attributes,
+        ...(metrics === undefined ? {} : { metrics }),
+        logs: this.logs(),
+        spans: this.spans(),
+      }),
+    );
+    if (problems.length > 0) fail(problems);
+  }
+
+  assertCorrelated(): void {
+    const problems = correlationProblems(this.logRecording.logs);
+    if (problems.length > 0) fail(problems);
+  }
+
+  async assertTriangle(opts: { readonly metric: string }): Promise<void> {
+    const problems = triangleProblems(
+      opts.metric,
+      this.spans(),
+      this.logs(),
+      await this.exemplars(opts.metric),
+    );
+    if (problems.length > 0) fail(problems);
   }
 
   shutdown(): Promise<void> {

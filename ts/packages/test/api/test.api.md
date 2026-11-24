@@ -41,6 +41,11 @@ export interface RecordedLog {
 
 // @public
 export interface Recorder {
+    assertConforms(): Promise<void>;
+    assertCorrelated(): void;
+    assertTriangle(opts: {
+        readonly metric: string;
+    }): Promise<void>;
     exemplars(instrument: string): Promise<readonly RecordedExemplar[]>;
     logs(): readonly RecordedLog[];
     metricNames(): Promise<readonly string[]>;
