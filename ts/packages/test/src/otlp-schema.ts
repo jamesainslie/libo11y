@@ -243,6 +243,31 @@ export function decodeOtlpProtobuf(signal: OtlpSignal, body: Uint8Array): Record
   return decodeMessage(SCHEMAS, REQUEST[signal], body);
 }
 
+/**
+ * The fields that have explicit presence, so a zero value is data: every oneof member (AnyValue's
+ * values, the data points' and exemplars' asInt and asDouble, a Metric's data kind) and the proto3
+ * optional sum, min and max of the histogram data points. A summary point's plain sum shares the
+ * name and is kept too, which only makes the comparison stricter.
+ */
+const PRESENT: ReadonlySet<string> = new Set([
+  "stringValue",
+  "boolValue",
+  "intValue",
+  "doubleValue",
+  "arrayValue",
+  "kvlistValue",
+  "bytesValue",
+  "asInt",
+  "asDouble",
+  "gauge",
+  "sum",
+  "histogram",
+  "exponentialHistogram",
+  "summary",
+  "min",
+  "max",
+]);
+
 function isEmpty(v: unknown): boolean {
   if (v === undefined || v === null || v === 0 || v === false || v === "") return true;
   if (Array.isArray(v)) return v.length === 0;
@@ -252,9 +277,10 @@ function isEmpty(v: unknown): boolean {
 /**
  * Normalizes an OTLP/JSON-shaped value so a decoded protobuf payload and the equivalent JSON
  * payload compare equal:
- * - a field whose value is a proto3 default (undefined, null, 0, false, ""), an empty list or an
- *   empty object after normalization is removed, because protobuf does not carry it and upstream's
- *   JSON serializers write some of them;
+ * - a plain scalar field whose value is a proto3 default (0, false, ""), an empty list or an empty
+ *   object after normalization is removed, because protobuf does not carry it and upstream's JSON
+ *   serializers write some of them. A oneof member or proto3 optional field keeps its zero value,
+ *   since there zero is data; only undefined and null are removed;
  * - `schemaUrl` inside a `resource` is removed: upstream's JSON writes it there as well as on the
  *   Resource* message, but the OTLP Resource message has no such field.
  * List elements are normalized but never removed, so bucket counts keep their zeros.
@@ -270,7 +296,7 @@ function normalize(value: unknown, key: string): unknown {
   for (const [k, v] of Object.entries(value)) {
     if (key === "resource" && k === "schemaUrl") continue;
     const n = normalize(v, k);
-    if (!isEmpty(n)) out[k] = n;
+    if (PRESENT.has(k) ? n !== undefined && n !== null : !isEmpty(n)) out[k] = n;
   }
   return out;
 }

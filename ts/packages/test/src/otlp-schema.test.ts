@@ -239,3 +239,43 @@ test("normalizeOtlp drops proto3 defaults and empties, and a resource's schemaUr
     { schemaUrl: "https://x", counts: [0, 1], kept: { flag: true, n: 2 } },
   );
 });
+
+test("normalizeOtlp keeps zero values of oneof and optional members", () => {
+  for (const value of [
+    { intValue: 0 },
+    { boolValue: false },
+    { stringValue: "" },
+    { doubleValue: 0 },
+    { bytesValue: "" },
+  ]) {
+    assert.deepEqual(normalizeOtlp({ key: "k", value }), { key: "k", value });
+  }
+  assert.deepEqual(normalizeOtlp({ arrayValue: {} }), { arrayValue: {} });
+  assert.deepEqual(normalizeOtlp({ dataPoints: [{ asInt: 0, timeUnixNano: "1" }] }), {
+    dataPoints: [{ asInt: 0, timeUnixNano: "1" }],
+  });
+  assert.deepEqual(normalizeOtlp({ exemplars: [{ asDouble: 0, spanId: "" }] }), {
+    exemplars: [{ asDouble: 0 }],
+  });
+  // HistogramDataPoint and ExponentialHistogramDataPoint sum, min and max are proto3 optional.
+  assert.deepEqual(normalizeOtlp({ sum: 0, min: 0, max: 0, count: 0 }), { sum: 0, min: 0, max: 0 });
+  assert.deepEqual(normalizeOtlp({ name: "m", gauge: {} }), { name: "m", gauge: {} });
+});
+
+test("a zero int attribute survives the protobuf and JSON round trip distinctly from an absent value", async () => {
+  await withRecorder(async (rec) => {
+    const span = rec.telemetry.tracerProvider.getTracer("app").startSpan("op", {
+      attributes: { "app.zero": 0, "app.no": false, "app.empty": "" },
+    });
+    span.end();
+    const spans = rec.spans() as ReadableSpan[];
+    const decoded = normalizeOtlp(
+      decodeOtlpProtobuf("traces", ProtobufTraceSerializer.serializeRequest(spans) as Uint8Array),
+    );
+    assert.deepEqual(decoded, normalizeOtlp(json(JsonTraceSerializer.serializeRequest(spans))));
+    const text = JSON.stringify(decoded);
+    assert.ok(text.includes('{"key":"app.zero","value":{"intValue":0}}'), text);
+    assert.ok(text.includes('{"key":"app.no","value":{"boolValue":false}}'), text);
+    assert.ok(text.includes('{"key":"app.empty","value":{"stringValue":""}}'), text);
+  });
+});
