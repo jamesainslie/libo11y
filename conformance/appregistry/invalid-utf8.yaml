@@ -1,0 +1,4 @@
+schema: libo11y.app-registry/v1
+namespace: lor
+attributes:
+  lor.user.role: {type: string, sensitivity: public, cardinality: enum, values: [studio, "café"]}

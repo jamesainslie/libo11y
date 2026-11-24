@@ -43,7 +43,9 @@ Three Go behaviours are part of the contract:
   Go's `strings.TrimSpace`, the Unicode White_Space property. It includes
   U+0085 and excludes U+FEFF. JavaScript's `trim()` differs on both.
 - **Enum values.** An enum value can be any YAML scalar. It reads as its
-  source text, so `1.0` stays `1.0`, and null reads as the empty string.
+  source text, so `1.0` stays `1.0`. A null entry is dropped, so
+  `values: [~]` declares no values and fails
+  `libo11y_app_enum_values_missing`.
 
 The cases are hand-written. The Go test is
 `go/internal/appregistry/conformance_test.go`.

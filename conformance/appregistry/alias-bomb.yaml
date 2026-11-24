@@ -1,0 +1,10 @@
+schema: libo11y.app-registry/v1
+namespace: shop
+attributes:
+  shop.a0: &a0 {type: int, sensitivity: public, cardinality: bounded}
+  shop.a1: &a1 {<<: [*a0, *a0, *a0, *a0, *a0, *a0, *a0, *a0, *a0, *a0]}
+  shop.a2: &a2 {<<: [*a1, *a1, *a1, *a1, *a1, *a1, *a1, *a1, *a1, *a1]}
+  shop.a3: &a3 {<<: [*a2, *a2, *a2, *a2, *a2, *a2, *a2, *a2, *a2, *a2]}
+  shop.a4: &a4 {<<: [*a3, *a3, *a3, *a3, *a3, *a3, *a3, *a3, *a3, *a3]}
+  shop.a5: &a5 {<<: [*a4, *a4, *a4, *a4, *a4, *a4, *a4, *a4, *a4, *a4]}
+  shop.a6: &a6 {<<: [*a5, *a5, *a5, *a5, *a5, *a5, *a5, *a5, *a5, *a5]}

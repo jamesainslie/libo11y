@@ -41,6 +41,9 @@ export type AppRegistryParseKind = "empty" | "second-document" | "duplicate-key"
 // @public
 export function parseAppRegistry(text: string): AppRegistry;
 
+// @public
+export function parseAppRegistryBytes(bytes: Uint8Array): AppRegistry;
+
 // (No @packageDocumentation comment for this package)
 
 ```

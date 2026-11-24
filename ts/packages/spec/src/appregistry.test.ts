@@ -9,16 +9,16 @@ import {
   compileAppRegistry,
   validateAppRegistry,
 } from "./appregistry.ts";
-import { AppRegistryParseError, parseAppRegistry } from "./yaml.ts";
+import { AppRegistryParseError, parseAppRegistryBytes } from "./yaml.ts";
 
 // The shared cases every libo11y validator must agree on (conformance/README.md).
 const conformanceDir = resolve(import.meta.dirname, "..", "..", "..", "..", "conformance", "appregistry");
 
 // outcome renders what the validator makes of one registry file, in the .want format.
-function outcome(text: string): string {
+function outcome(bytes: Uint8Array): string {
   let reg: AppRegistry;
   try {
-    reg = parseAppRegistry(text);
+    reg = parseAppRegistryBytes(bytes);
   } catch (err) {
     if (err instanceof AppRegistryParseError) return `parse: ${err.kind}`;
     throw err;
@@ -32,7 +32,7 @@ const files = readdirSync(conformanceDir);
 const cases = files.filter((f) => f.endsWith(".yaml")).sort();
 
 test("the conformance directory holds every case", () => {
-  assert.ok(cases.length >= 28, `found ${cases.length} cases in ${conformanceDir}, want at least 28`);
+  assert.ok(cases.length >= 45, `found ${cases.length} cases in ${conformanceDir}, want at least 45`);
 });
 
 test("every .want file has a .yaml case", () => {
@@ -44,9 +44,10 @@ test("every .want file has a .yaml case", () => {
 for (const file of cases) {
   const name = file.replace(/\.yaml$/, "");
   test(`conformance: ${name}`, () => {
-    const text = readFileSync(join(conformanceDir, file), "utf8");
+    // Bytes, not text: some cases hold invalid UTF-8.
+    const bytes = new Uint8Array(readFileSync(join(conformanceDir, file)));
     const want = readFileSync(join(conformanceDir, `${name}.want`), "utf8").replace(/\n+$/, "");
-    assert.equal(outcome(text), want);
+    assert.equal(outcome(bytes), want);
   });
 }
 
