@@ -12,6 +12,26 @@
         "typescript": "7.0.2",
       },
     },
+    "examples/bun-server": {
+      "name": "libo11y-example-bun-server",
+      "version": "0.0.0",
+      "dependencies": {
+        "@libo11y/server": "workspace:*",
+      },
+      "devDependencies": {
+        "@libo11y/test": "workspace:*",
+      },
+    },
+    "examples/node-server": {
+      "name": "libo11y-example-node-server",
+      "version": "0.0.0",
+      "dependencies": {
+        "@libo11y/server": "workspace:*",
+      },
+      "devDependencies": {
+        "@libo11y/test": "workspace:*",
+      },
+    },
     "packages/core": {
       "name": "@libo11y/core",
       "version": "0.0.0",
@@ -264,6 +284,10 @@
     "json-schema-traverse": ["json-schema-traverse@1.0.0", "", {}, "sha512-NM8/P9n3XjXhIZn1lLhkFaACTOURQXjWhV4BA/RnOv8xvgqtqpAX9IO4mRQxSx1Rlo4tqzeqb0sOlruaOy3dug=="],
 
     "jsonfile": ["jsonfile@6.2.1", "", { "dependencies": { "universalify": "^2.0.0" }, "optionalDependencies": { "graceful-fs": "^4.1.6" } }, "sha512-zwOTdL3rFQ/lRdBnntKVOX6k5cKJwEc1HdilT71BWEu7J41gXIB2MRp+vxduPSwZJPWBxEzv4yH1wYLJGUHX4Q=="],
+
+    "libo11y-example-bun-server": ["libo11y-example-bun-server@workspace:examples/bun-server"],
+
+    "libo11y-example-node-server": ["libo11y-example-node-server@workspace:examples/node-server"],
 
     "minimatch": ["minimatch@10.2.3", "", { "dependencies": { "brace-expansion": "^5.0.2" } }, "sha512-Rwi3pnapEqirPSbWbrZaa6N3nmqq4Xer/2XooiOKyV3q12ML06f7MOuc5DVH8ONZIFhwIYQ3yzPH4nt7iWHaTg=="],
 

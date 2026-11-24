@@ -1,0 +1,17 @@
+{
+  "name": "libo11y-example-node-server",
+  "version": "0.0.0",
+  "private": true,
+  "description": "A node:http server, adapted to Request and Response, instrumented with @libo11y/server: setup with an application registry, instrumentServe, instrumentFetch and shutdownOnSignals.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "start": "node main.ts"
+  },
+  "dependencies": {
+    "@libo11y/server": "workspace:*"
+  },
+  "devDependencies": {
+    "@libo11y/test": "workspace:*"
+  }
+}
