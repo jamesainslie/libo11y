@@ -4,10 +4,12 @@
 # tag of one release goes on the same commit. Rerunning a release is safe:
 # an existing GitHub Release has its notes replaced.
 #
-# A ts/vX.Y.Z tag publishes every @libo11y/* package to npm at X.Y.Z with
-# provenance, then creates the GitHub Release and installs the published
-# packages under Node and Bun. Rerunning it is safe too: a package version
-# already on the registry is skipped.
+# A ts/vX.Y.Z tag stages every @libo11y/* package on npm at X.Y.Z with
+# provenance. npm requires a maintainer to approve staged packages with 2FA,
+# on npmjs.com under Staged Packages, before they go live. The smoke job
+# waits up to an hour for the approved versions, installs them under Node
+# and Bun, and only then is the GitHub Release created. Rerunning is safe
+# for packages already on the registry, which are skipped.
 #
 # scripts/release-tag.sh routes the tag. The verify job's kind output, go
 # or ts, selects the jobs and steps that run.
@@ -254,7 +256,12 @@ jobs:
       - name: Pack the packages
         working-directory: ts
         run: bun scripts/release.ts pack "$RUNNER_TEMP/packs" >"$RUNNER_TEMP/tarballs.txt"
-      - name: Publish to npm with provenance
+      # npm stage publish needs npm 11.15.0 or later. npm no longer lets a
+      # token publish directly without a 2FA challenge, so CI stages each
+      # version and a maintainer approves it with 2FA.
+      - name: Install a pinned npm with staged publishing
+        run: npm install --global npm@11.21.2
+      - name: Stage the packages on npm with provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           VERSION: ${{ needs.verify.outputs.version }}
@@ -286,11 +293,14 @@ jobs:
               echo "$pkg@$VERSION is already on the registry; skipping it"
               continue
             fi
-            npm publish --provenance --access public --tag "$dist_tag" "$tarball"
+            npm stage publish --provenance --access public --tag "$dist_tag" "$tarball"
           done <"$RUNNER_TEMP/tarballs.txt"
+          echo "::notice::Approve the staged @libo11y packages at $VERSION with 2FA: npmjs.com, Staged Packages. npm-smoke waits up to an hour."
 
+  # The GitHub Release waits for the smoke job, so it only exists once the
+  # approved packages install from the registry.
   release-ts:
-    needs: [verify, publish-npm]
+    needs: [verify, npm-smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -321,7 +331,8 @@ jobs:
   npm-smoke:
     needs: [verify, publish-npm]
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Most of this is waiting for a maintainer to approve the staged packages.
+    timeout-minutes: 75
     env:
       VERSION: ${{ needs.verify.outputs.version }}
       # Resolve like an external consumer: the public registry, no workspace.
@@ -334,10 +345,12 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.13"
-      - name: Wait for the registry to serve the version
+      - name: Wait for the approved version on the registry
         working-directory: ${{ runner.temp }}
         run: |
-          for attempt in 1 2 3 4 5 6; do
+          # 60 checks a minute apart: time for a maintainer to approve the
+          # staged packages, then for the registry to serve them.
+          for attempt in $(seq 1 60); do
             missing=""
             for pkg in spec core server test; do
               if [[ "$(npm view "@libo11y/$pkg@$VERSION" version 2>/dev/null || true)" != "$VERSION" ]]; then
@@ -348,7 +361,7 @@ jobs:
               exit 0
             fi
             echo "attempt $attempt: the registry does not serve$missing at $VERSION yet" >&2
-            sleep $((attempt * 15))
+            sleep 60
           done
           echo "::error::the registry did not serve$missing at $VERSION"
           exit 1
