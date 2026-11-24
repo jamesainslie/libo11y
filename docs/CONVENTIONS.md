@@ -154,10 +154,13 @@ builds, checks the API reports, and runs every suite under Bun and Node.
   under Node. Only after it passes is the GitHub Release created. The
   release is titled `@libo11y vX.Y.Z`, takes its notes from
   `ts/CHANGELOG.md`, and is never marked Latest, so the Go main module
-  keeps Latest. Staging authenticates with the `NPM_TOKEN` repository
-  secret. npm trusted publishing (OIDC) from
-  `.github/workflows/release.yml` is to replace the token once the
-  packages exist on npm.
+  keeps Latest. Staging authenticates with npm trusted publishing (OIDC),
+  so the repository stores no npm token. Each package on npmjs.com trusts
+  `release.yml` in `jamesainslie/libo11y`, with no environment, and allows
+  `npm stage publish` only. A direct `npm publish` or `npm dist-tag` from
+  CI is refused. npm sets up trust only on a package that already exists,
+  so a new package's first version is staged by a maintainer's own npm
+  login. Once it is on npm, its trust is set up the same way.
 - The specification versions separately: once released, each version has a
   `spec/vX.Y.Z` tag and a schema file served at its schema URL. Spec
   1.0.0 is tagged `spec/v1.0.0` on the `go/v0.1.0` commit. Before

@@ -5,7 +5,9 @@
 # an existing GitHub Release has its notes replaced.
 #
 # A ts/vX.Y.Z tag stages every @libo11y/* package on npm at X.Y.Z with
-# provenance. npm requires a maintainer to approve staged packages with 2FA,
+# provenance. It authenticates through npm trusted publishing: each package
+# trusts this workflow file in this repository, and no npm token is stored.
+# Each trust allows staging only. npm requires a maintainer to approve staged packages with 2FA,
 # on npmjs.com under Staged Packages, before they go live. The smoke job
 # waits up to an hour for the approved versions, installs them under Node
 # and Bun, and only then is the GitHub Release created. Rerunning is safe
@@ -234,7 +236,8 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
-      # npm provenance signs each package with this workflow's OIDC identity.
+      # The workflow's OIDC identity authenticates to npm through trusted
+      # publishing and signs each package's provenance.
       id-token: write
     steps:
       - uses: actions/checkout@v7
@@ -256,14 +259,15 @@ jobs:
       - name: Pack the packages
         working-directory: ts
         run: bun scripts/release.ts pack "$RUNNER_TEMP/packs" >"$RUNNER_TEMP/tarballs.txt"
-      # npm stage publish needs npm 11.15.0 or later. npm no longer lets a
-      # token publish directly without a 2FA challenge, so CI stages each
-      # version and a maintainer approves it with 2FA.
+      # npm stage publish needs npm 11.15.0 or later, and trusted publishing
+      # needs 11.5.1 or later. CI stages each version and a maintainer
+      # approves it with 2FA.
       - name: Install a pinned npm with staged publishing
         run: npm install --global npm@11.21.2
+      # No NODE_AUTH_TOKEN: npm exchanges the workflow's OIDC token for a
+      # short-lived publish credential.
       - name: Stage the packages on npm with provenance
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           VERSION: ${{ needs.verify.outputs.version }}
           PRERELEASE: ${{ needs.verify.outputs.prerelease }}
         run: |
