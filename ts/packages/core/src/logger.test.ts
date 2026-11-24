@@ -284,3 +284,11 @@ test("an Error from another realm expands like a local one", () => {
   assert.equal(r2?.attributes["exception.type"], "RangeError");
   assert.match(lines[0] ?? "", /"exception.type":"TypeError"/);
 });
+
+test("groups inside arrays are judged on the holder's path", () => {
+  const { logger, lines, exporter } = harness();
+  logger.info("a", { http: [{ request: { header: { authorization: "S3" } } }] } as never);
+  logger.info("b", { host: [[{ ip: "1.1.1.1" }]] } as never);
+  const all = `${lines.join("\n")}\n${JSON.stringify(exporter.getFinishedLogRecords().map((r) => r.attributes))}`;
+  for (const leaked of ["S3", "1.1.1.1"]) assert.ok(!all.includes(leaked), `${leaked} leaked:\n${all}`);
+});
