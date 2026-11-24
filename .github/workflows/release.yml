@@ -4,14 +4,13 @@
 # tag of one release goes on the same commit. Rerunning a release is safe:
 # an existing GitHub Release has its notes replaced.
 #
-# A ts/vX.Y.Z tag stages every @libo11y/* package on npm at X.Y.Z with
+# A ts/vX.Y.Z tag publishes every @libo11y/* package to npm at X.Y.Z with
 # provenance. It authenticates through npm trusted publishing: each package
 # trusts this workflow file in this repository, and no npm token is stored.
-# Each trust allows staging only. npm requires a maintainer to approve staged packages with 2FA,
-# on npmjs.com under Staged Packages, before they go live. The smoke job
-# waits up to an hour for the approved versions, installs them under Node
-# and Bun, and only then is the GitHub Release created. Rerunning is safe
-# for packages already on the registry, which are skipped.
+# The smoke job waits for the registry to serve the new versions, installs
+# them under Node and Bun, and only then is the GitHub Release created.
+# Rerunning is safe for packages already on the registry, which are
+# skipped.
 #
 # scripts/release-tag.sh routes the tag. The verify job's kind output, go
 # or ts, selects the jobs and steps that run.
@@ -259,14 +258,12 @@ jobs:
       - name: Pack the packages
         working-directory: ts
         run: bun scripts/release.ts pack "$RUNNER_TEMP/packs" >"$RUNNER_TEMP/tarballs.txt"
-      # npm stage publish needs npm 11.15.0 or later, and trusted publishing
-      # needs 11.5.1 or later. CI stages each version and a maintainer
-      # approves it with 2FA.
-      - name: Install a pinned npm with staged publishing
+      # Trusted publishing needs npm 11.5.1 or later.
+      - name: Install a pinned npm
         run: npm install --global npm@11.21.2
       # No NODE_AUTH_TOKEN: npm exchanges the workflow's OIDC token for a
       # short-lived publish credential.
-      - name: Stage the packages on npm with provenance
+      - name: Publish the packages to npm with provenance
         env:
           VERSION: ${{ needs.verify.outputs.version }}
           PRERELEASE: ${{ needs.verify.outputs.prerelease }}
@@ -297,12 +294,11 @@ jobs:
               echo "$pkg@$VERSION is already on the registry; skipping it"
               continue
             fi
-            npm stage publish --provenance --access public --tag "$dist_tag" "$tarball"
+            npm publish --provenance --access public --tag "$dist_tag" "$tarball"
           done <"$RUNNER_TEMP/tarballs.txt"
-          echo "::notice::Approve the staged @libo11y packages at $VERSION with 2FA: npmjs.com, Staged Packages. npm-smoke waits up to an hour."
 
   # The GitHub Release waits for the smoke job, so it only exists once the
-  # approved packages install from the registry.
+  # published packages install from the registry.
   release-ts:
     needs: [verify, npm-smoke]
     runs-on: ubuntu-latest
@@ -335,8 +331,7 @@ jobs:
   npm-smoke:
     needs: [verify, publish-npm]
     runs-on: ubuntu-latest
-    # Most of this is waiting for a maintainer to approve the staged packages.
-    timeout-minutes: 75
+    timeout-minutes: 20
     env:
       VERSION: ${{ needs.verify.outputs.version }}
       # Resolve like an external consumer: the public registry, no workspace.
@@ -349,12 +344,12 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.13"
-      - name: Wait for the approved version on the registry
+      - name: Wait for the published version on the registry
         working-directory: ${{ runner.temp }}
         run: |
-          # 60 checks a minute apart: time for a maintainer to approve the
-          # staged packages, then for the registry to serve them.
-          for attempt in $(seq 1 60); do
+          # 20 checks 30 seconds apart: time for the registry to serve the
+          # new versions.
+          for attempt in $(seq 1 20); do
             missing=""
             for pkg in spec core server test; do
               if [[ "$(npm view "@libo11y/$pkg@$VERSION" version 2>/dev/null || true)" != "$VERSION" ]]; then
@@ -365,7 +360,7 @@ jobs:
               exit 0
             fi
             echo "attempt $attempt: the registry does not serve$missing at $VERSION yet" >&2
-            sleep 60
+            sleep 30
           done
           echo "::error::the registry did not serve$missing at $VERSION"
           exit 1
