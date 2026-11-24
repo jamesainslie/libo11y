@@ -14,14 +14,17 @@ import { HrTime } from '@opentelemetry/api';
 import { IExportMetricsServiceResponse } from '@opentelemetry/otlp-transformer';
 import type { IMetricReader } from '@opentelemetry/sdk-metrics';
 import { ISerializer } from '@opentelemetry/otlp-transformer';
+import { LoggerProvider } from '@opentelemetry/api';
 import type { LogRecordExporter } from '@opentelemetry/sdk-logs';
-import type { MeterProvider } from '@opentelemetry/api';
+import { MeterProvider } from '@opentelemetry/api';
 import { PushMetricExporter } from '@opentelemetry/sdk-metrics';
+import type { Resource } from '@opentelemetry/resources';
 import { ResourceMetrics } from '@opentelemetry/sdk-metrics';
 import { Sampler } from '@opentelemetry/sdk-trace';
 import type { SpanExporter } from '@opentelemetry/sdk-trace';
 import type { SpanProcessor } from '@opentelemetry/sdk-trace';
-import type { TextMapPropagator } from '@opentelemetry/api';
+import { TextMapPropagator } from '@opentelemetry/api';
+import { TracerProvider } from '@opentelemetry/api';
 import type { ViewOptions } from '@opentelemetry/sdk-metrics';
 
 // @public
@@ -40,9 +43,21 @@ export interface BatchOptions {
 }
 
 // @public
+export function createTelemetryWith(options: TelemetryOptions, platform: Platform): Promise<Telemetry>;
+
+// @public
+export function currentRecord(ctx?: Context): WideRecord;
+
+// @public
 export type DataPointWithExemplars<T> = DataPoint<T> & {
     readonly exemplars?: readonly Exemplar[];
 };
+
+// @public
+export interface EventEmitter {
+    // (undocumented)
+    event(name: string, attrs?: LogAttributes, ctx?: Context): void;
+}
 
 // @public
 export interface Exemplar {
@@ -118,6 +133,11 @@ export interface ExporterSet {
 
 // @public
 export function forceEmit(ctx?: Context): Context;
+
+// @public
+export interface LifecycleOptions {
+    readonly timeoutMillis?: number;
+}
 
 // @public
 export type LogAttributes = {
@@ -377,7 +397,48 @@ export interface RuntimeMetrics {
 }
 
 // @public
+export function setupWith(options: TelemetryOptions, platform: Platform): Promise<Telemetry>;
+
+// @public
+export type Signal = "traces" | "metrics" | "logs";
+
+// @public
+export interface SignalReport {
+    // (undocumented)
+    readonly errors: readonly {
+        readonly signal: Signal;
+        readonly error: unknown;
+    }[];
+    // (undocumented)
+    readonly ok: boolean;
+}
+
+// @public
 export type SignalRoute = "otlp" | "console" | "none" | "injected";
+
+// @public
+export function startRecord(ctx?: Context): {
+    context: Context;
+    record: WideRecord;
+};
+
+// @public
+export interface Telemetry {
+    effectiveConfig(): string;
+    event(name: string, attrs?: LogAttributes, ctx?: Context): void;
+    forceFlush(opts?: LifecycleOptions): Promise<SignalReport>;
+    // (undocumented)
+    readonly logger: Logger;
+    // (undocumented)
+    readonly loggerProvider: LoggerProvider;
+    readonly meterProvider: MeterProvider;
+    readonly propagator: TextMapPropagator;
+    // (undocumented)
+    readonly resource: Resource;
+    shutdown(opts?: LifecycleOptions): Promise<SignalReport>;
+    // (undocumented)
+    readonly tracerProvider: TracerProvider;
+}
 
 // @public
 export interface TelemetryOptions {
@@ -419,6 +480,15 @@ export interface TelemetryOptions {
 
 // @public
 export function toOtlpMetricsObject(rm: ResourceMetricsWithExemplars): OtlpMetricsRequestJson;
+
+// @public
+export interface WideRecord {
+    add(key: string, delta: number): void;
+    emitEvent(telemetry: EventEmitter, name: string, attrs?: LogAttributes, ctx?: Context): void;
+    max(key: string, value: number): void;
+    set(attrs: LogAttributes): void;
+    snapshot(): LogAttributes;
+}
 
 // (No @packageDocumentation comment for this package)
 

@@ -43,3 +43,12 @@ export type {
   RuntimeMetrics,
 } from "./platform.ts";
 export type { PIIMode } from "./policy.ts";
+export { currentRecord, type EventEmitter, startRecord, type WideRecord } from "./record.ts";
+export {
+  createTelemetryWith,
+  type LifecycleOptions,
+  type Signal,
+  type SignalReport,
+  setupWith,
+  type Telemetry,
+} from "./telemetry.ts";
