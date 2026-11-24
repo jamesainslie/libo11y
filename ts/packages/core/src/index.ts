@@ -19,6 +19,7 @@ export {
   type ResourceMetricsWithExemplars,
 } from "./exemplars.ts";
 export type { LogAttributes, LogLevel, LogValue } from "./log-values.ts";
+export { forceEmit, type Logger } from "./logger.ts";
 export type { AttrReplacer, TelemetryOptions } from "./options.ts";
 export {
   type OtlpAnyValueJson,

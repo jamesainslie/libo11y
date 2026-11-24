@@ -117,9 +117,29 @@ export interface ExporterSet {
 }
 
 // @public
+export function forceEmit(ctx?: Context): Context;
+
+// @public
 export type LogAttributes = {
     readonly [key: string]: LogValue;
 };
+
+// @public
+export interface Logger {
+    child(attrs: LogAttributes): Logger;
+    // (undocumented)
+    debug(msg: string, attrs?: LogAttributes): void;
+    // (undocumented)
+    error(msg: string, attrsOrError?: LogAttributes | Error): void;
+    // (undocumented)
+    fatal(msg: string, attrsOrError?: LogAttributes | Error): void;
+    // (undocumented)
+    info(msg: string, attrs?: LogAttributes): void;
+    // (undocumented)
+    trace(msg: string, attrs?: LogAttributes): void;
+    // (undocumented)
+    warn(msg: string, attrs?: LogAttributes): void;
+}
 
 // @public
 export type LogLevel = "trace" | "debug" | "info" | "warn" | "error" | "fatal";
