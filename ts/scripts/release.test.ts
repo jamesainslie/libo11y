@@ -134,6 +134,7 @@ function fixture(name: string, withDist = true): string {
     writeFileSync(join(pkgDir, "tsconfig.build.json"), "{}\n");
     writeFileSync(join(mkdirAll(join(pkgDir, "src")), "index.ts"), "export const x = 1;\n");
     writeFileSync(join(pkgDir, "src", "index.test.ts"), "\n");
+    writeFileSync(join(pkgDir, "src", "cli.ts"), "#!/usr/bin/env node\n");
     writeFileSync(join(mkdirAll(join(pkgDir, "api")), `${dir}.api.md`), "report\n");
     if (withDist) {
       writeFileSync(join(mkdirAll(join(pkgDir, "dist")), "index.js"), "export const x = 1;\n");
@@ -213,4 +214,14 @@ test("pack refuses version 0.0.0 unless unreleased packages are allowed", () => 
 test("pack refuses a package with no dist", () => {
   const root = fixture("no-dist", false);
   assert.throws(() => pack(root, join(work, "no-dist-out"), { allowUnreleased: true, quiet: true }), /dist/);
+});
+
+test("pack refuses a dist file whose source is gone", () => {
+  const root = fixture("stale-dist");
+  const dist = join(root, "packages", "fx-a", "dist");
+  writeFileSync(join(mkdirAll(join(dist, "old")), "gone.js"), "export {};\n");
+  assert.throws(
+    () => pack(root, join(work, "stale-dist-out"), { allowUnreleased: true, quiet: true }),
+    /@libo11y\/fx-a: dist\/old\/gone\.js has no source src\/old\/gone\.ts; rebuild/,
+  );
 });

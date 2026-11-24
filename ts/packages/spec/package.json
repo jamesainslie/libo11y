@@ -19,7 +19,7 @@
     "directory": "ts/packages/spec"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
     "api": "api-extractor run --local && api-extractor run --local -c api-extractor.yaml.json",
     "api:check": "api-extractor run && api-extractor run -c api-extractor.yaml.json"
   },

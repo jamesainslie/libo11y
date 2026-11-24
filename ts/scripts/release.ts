@@ -172,6 +172,21 @@ function keep(pkgDir: string, path: string): boolean {
   return true;
 }
 
+// staleOutputs finds a dist JavaScript file left by a source that has since been removed or renamed,
+// which a build without a clean would leave in the tarball.
+function staleOutputs(pkgDir: string): { js: string; ts: string } | undefined {
+  const dist = join(pkgDir, "dist");
+  for (const entry of readdirSync(dist, { recursive: true, withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith(".js")) continue;
+    const rel = relative(dist, join(entry.parentPath, entry.name));
+    const source = `${rel.slice(0, -".js".length)}.ts`;
+    if (!existsSync(join(pkgDir, "src", source))) {
+      return { js: ["dist", ...rel.split(sep)].join("/"), ts: ["src", ...source.split(sep)].join("/") };
+    }
+  }
+  return undefined;
+}
+
 /** Packs every package into outDir in dependency order and returns the tarball paths. */
 export function pack(root: string, outDir: string, opts: PackOptions): string[] {
   const license = opts.license ?? resolve(root, "..", "LICENSE");
@@ -181,6 +196,12 @@ export function pack(root: string, outDir: string, opts: PackOptions): string[] 
   for (const { dir, json } of pkgs) {
     if (!existsSync(join(dir, "dist"))) {
       throw new Error(`release: ${json.name} has no dist; run bun run build first`);
+    }
+    const stale = staleOutputs(dir);
+    if (stale !== undefined) {
+      throw new Error(
+        `release: ${json.name}: ${stale.js} has no source ${stale.ts}; rebuild with bun run build`,
+      );
     }
     if ((json.version ?? UNRELEASED) === UNRELEASED && !opts.allowUnreleased) {
       throw new Error(`release: ${json.name} is at version ${UNRELEASED}; run the version command first`);
