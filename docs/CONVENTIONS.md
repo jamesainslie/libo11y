@@ -114,15 +114,42 @@ builds, checks the API reports, and runs every suite under Bun and Node.
   and builds a consumer against it.
 - TypeScript releases are lockstep. Every `@libo11y/*` package publishes
   at one shared version from a `ts/vX.Y.Z` tag, starting with
-  `ts/v0.1.0`. Until then `@libo11y/spec` is private at version `0.0.0`,
-  and nothing publishes it. `make release-check` also runs
+  `ts/v0.1.0`. Until then every package is private at version `0.0.0`,
+  and nothing publishes them. `make release-check` also runs
   `scripts/ts-release-check.sh` for `TS_RELEASE_VERSION` (default
   `v0.0.0`). It checks every package is at that version, builds and packs
   the packages, checks each tarball's `exports` and `bin` targets, and
   installs the tarballs into a throwaway consumer that imports them under
   Node and Bun and runs the `libo11y` bin. Like `RELEASE_VERSION`,
   `TS_RELEASE_VERSION` moves only in a release commit, together with the
-  package versions (`bun scripts/release.ts version X.Y.Z` in `ts/`).
+  package versions.
+- To release TypeScript version X.Y.Z:
+  1. Run `bun ts/scripts/release.ts version X.Y.Z`, which sets the
+     version in every package.
+  2. Move the `ts/CHANGELOG.md` entries into a `## [X.Y.Z] - date`
+     section and update the link references.
+  3. Set `TS_RELEASE_VERSION` in the `Makefile` and the default in
+     `scripts/ts-release-check.sh` to `vX.Y.Z`.
+  4. Run `make release-check` on the release commit, then merge it.
+  5. Tag `ts/vX.Y.Z` on the merge commit and push that tag on its own.
+  6. The release workflow verifies the tag, publishes to npm with
+     provenance and creates the GitHub Release.
+- The release workflow routes each tag with `scripts/release-tag.sh`. For
+  a `ts/` tag it checks that the version is semantic, that every
+  `ts/packages/*/package.json` is at the tag's version, and that
+  `ts/CHANGELOG.md` has the section. Then it runs `make ts-check` on Bun
+  1.3.13 and Node 24 and packs and installs the tarballs with
+  `scripts/ts-release-check.sh`. It publishes each tarball in dependency
+  order with `npm publish --provenance`, skipping a version the registry
+  already has, so a rerun is safe. A prerelease version publishes under
+  the `next` dist-tag. The GitHub Release is titled `@libo11y vX.Y.Z`,
+  takes its notes from `ts/CHANGELOG.md`, and is never marked Latest, so
+  the Go main module keeps Latest. Beside the release, a smoke job installs the published
+  `@libo11y/server` and `@libo11y/test` into fresh projects under Node
+  and Bun, and runs the `libo11y` bin under Node. The publish step
+  authenticates with the `NPM_TOKEN` repository secret. After the first
+  publish, npm trusted publishing (OIDC) from
+  `.github/workflows/release.yml` is to replace the token.
 - The specification versions separately: once released, each version has a
   `spec/vX.Y.Z` tag and a schema file served at its schema URL. Spec
   1.0.0 is tagged `spec/v1.0.0` on the `go/v0.1.0` commit. Before
@@ -176,6 +203,8 @@ adding a gate.
 | `make spec-check`, `make spec-drift` | registry policy checks and generated-artifact drift |
 | `make ts-check` | the TypeScript workspace: Biome, tsc, the build, the API reports, and every suite under Bun and Node |
 | `make release-check` | the Go release sequence, then packing and a consumer smoke test of the TypeScript packages (needs a clean tree) |
+| `make release-notes-test`, `make release-tag-test` | the release workflow's scripts: changelog sections become release notes, and each release tag routes to its kind, module and version |
+| `make schema-published-test` | the schema URL check against a loopback HTTP server |
 | `make vuln` | `govulncheck` on every Go module; runs last because it depends on the advisory database and the toolchain's patch level |
 
 - Go: the gates above. Standard-library advisories are fixed by the
