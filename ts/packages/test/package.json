@@ -1,6 +1,6 @@
 {
   "name": "@libo11y/test",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "The libo11y test harness for TypeScript: a hermetic recorder with conformance and correlation assertions, and an in-process OTLP/HTTP sink. Runs on Bun and Node.",
   "license": "Apache-2.0",
