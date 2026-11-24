@@ -297,6 +297,12 @@ func TestCanonicalLinePreservesFlusher(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
+	// Flush sends the headers early, so Get can return while the handler is
+	// still running. The final chunk is written only after ServeHTTP returns,
+	// so reading to EOF waits for the handler.
+	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+		t.Fatalf("reading body: %v", err)
+	}
 	if err := resp.Body.Close(); err != nil {
 		t.Fatalf("closing body: %v", err)
 	}
