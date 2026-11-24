@@ -140,7 +140,11 @@ const version: string = SPEC_VERSION;
 const options: TelemetryOptions = { serviceName: "svc", registry: reg };
 const recorderOptions: RecorderOptions = { serviceName: "svc" };
 const sinkUrl = (sink: OtlpSink): string => sink.url;
-const signalOptions: ShutdownOnSignalsOptions = { signals: ["SIGTERM"], timeoutMillis: 1000 };
+const signalOptions: ShutdownOnSignalsOptions = {
+  signals: ["SIGTERM"],
+  timeoutMillis: 1000,
+  beforeShutdown: async () => {},
+};
 const serveOptions: ServeOptions = {
   route: () => "/",
   serverTiming: true,

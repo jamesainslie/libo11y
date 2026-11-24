@@ -7,8 +7,9 @@
  *   UPSTREAM_URL=http://localhost:8081 PORT=8080 node main.ts
  *
  * setup reads the rest of its configuration from OTEL_* and installs the providers globally, so
- * instrumentServe and instrumentFetch need no telemetry argument. SIGINT or SIGTERM flushes and
- * shuts the telemetry down, then the server closes.
+ * instrumentServe and instrumentFetch need no telemetry argument. On SIGINT or SIGTERM the server
+ * closes first, letting requests in flight finish, and then the telemetry flushes and shuts down,
+ * so those requests' spans and metrics are exported.
  */
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -32,7 +33,11 @@ const server = createServer(toNodeListener(instrumentServe(app, { route, serverT
 await new Promise<void>((resolve) => server.listen(Number(process.env.PORT ?? "8080"), resolve));
 telemetry.logger.info("listening", { "server.port": (server.address() as AddressInfo).port });
 
-const report = await shutdownOnSignals(telemetry);
-server.closeAllConnections();
-await new Promise((resolve) => server.close(resolve));
+const report = await shutdownOnSignals(telemetry, {
+  beforeShutdown: () =>
+    new Promise<void>((resolve, reject) => {
+      server.close((err) => (err === undefined ? resolve() : reject(err)));
+      server.closeIdleConnections();
+    }),
+});
 if (!report.ok) process.exitCode = 1;

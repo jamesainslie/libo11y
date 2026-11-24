@@ -57,6 +57,61 @@ test("with no deadline given, shutdown uses its own default", async () => {
   assert.deepEqual(calls, [{}]);
 });
 
+test("beforeShutdown runs to completion before the telemetry shuts down", async () => {
+  const source = new EventEmitter();
+  const order: string[] = [];
+  const telemetry = {
+    shutdown: async () => {
+      order.push("shutdown");
+      return { ok: true, errors: [] };
+    },
+  } as unknown as Telemetry;
+  const done = shutdownOnSignalsWith(source, telemetry, {
+    beforeShutdown: async () => {
+      order.push("before:start");
+      await new Promise((r) => setTimeout(r, 20));
+      order.push("before:end");
+    },
+  });
+  source.emit("SIGTERM");
+  assert.deepEqual(await done, { ok: true, errors: [] });
+  assert.deepEqual(order, ["before:start", "before:end", "shutdown"]);
+});
+
+test("a failing beforeShutdown is reported, not thrown, and the telemetry still shuts down", async () => {
+  for (const before of [
+    () => {
+      throw new Error("server would not stop");
+    },
+    () => Promise.reject(new Error("server would not stop")),
+  ]) {
+    const source = new EventEmitter();
+    const { telemetry, calls } = fakeTelemetry();
+    const done = shutdownOnSignalsWith(source, telemetry, { beforeShutdown: before });
+    source.emit("SIGINT");
+    const report = await done;
+    assert.equal(report.ok, false);
+    assert.equal(report.errors.length, 1);
+    assert.equal(report.errors[0]?.signal, "lifecycle");
+    assert.match(String(report.errors[0]?.error), /beforeShutdown: server would not stop/);
+    assert.equal(calls.length, 1);
+  }
+});
+
+test("beforeShutdown is bounded by the shutdown deadline", async () => {
+  const source = new EventEmitter();
+  const { telemetry, calls } = fakeTelemetry();
+  const done = shutdownOnSignalsWith(source, telemetry, {
+    timeoutMillis: 30,
+    beforeShutdown: () => new Promise<void>(() => {}),
+  });
+  source.emit("SIGTERM");
+  const report = await done;
+  assert.equal(report.ok, false);
+  assert.match(String(report.errors[0]?.error), /beforeShutdown: deadline exceeded/);
+  assert.deepEqual(calls, [{ timeoutMillis: 30 }]);
+});
+
 const CHILD = fileURLToPath(new URL("./test-support/signals-child.ts", import.meta.url));
 
 function waitForLine(child: ChildProcess, text: string, out: { stdout: string }): Promise<void> {

@@ -1,6 +1,7 @@
 /**
  * Runs the example as its own process against an in-process OTLP sink and a stub upstream, makes
- * one request, sends SIGTERM, and checks what reached the sink: the server span, the correlated
+ * one request, sends SIGTERM while a second is in flight, and checks that the second finished and
+ * what reached the sink: the server span, the correlated
  * log, the exemplar on http.server.request.duration, the client span to the upstream, and the
  * Server-Timing header on the page. The example runs on the same runtime as the test, so it is
  * checked under Node and under Bun.
@@ -26,12 +27,26 @@ function flat(requests: readonly unknown[], resource: string, scope: string, ite
   );
 }
 
-/** A stub projects API that remembers the headers it was sent. */
-async function startUpstream(): Promise<{ url: string; seen: IncomingHttpHeaders[]; server: Server }> {
+/**
+ * A stub projects API that remembers the headers it was sent. It answers for project "slow" only
+ * after a delay, and calls onSlow when that request arrives.
+ */
+async function startUpstream(
+  onSlow: () => void = () => {},
+): Promise<{ url: string; seen: IncomingHttpHeaders[]; server: Server }> {
   const seen: IncomingHttpHeaders[] = [];
   const server = createServer((req, res) => {
     seen.push(req.headers);
-    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ name: "Project 42" }));
+    const slow = req.url === "/projects/slow";
+    if (slow) onSlow();
+    setTimeout(
+      () => {
+        res
+          .writeHead(200, { "content-type": "application/json" })
+          .end(JSON.stringify({ name: slow ? "Project slow" : "Project 42" }));
+      },
+      slow ? 500 : 0,
+    );
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, seen, server };
@@ -91,7 +106,11 @@ test("the example closes the triangle in the sink and the page carries Server-Ti
   timeout: 60_000,
 }, async () => {
   const sink = await startOtlpSink();
-  const upstream = await startUpstream();
+  let slowArrived: () => void = () => {};
+  const slowInFlight = new Promise<void>((resolve) => {
+    slowArrived = resolve;
+  });
+  const upstream = await startUpstream(() => slowArrived());
   let child: ChildProcess | undefined;
   try {
     const started = await startExample({
@@ -111,10 +130,22 @@ test("the example closes the triangle in the sink and the page carries Server-Ti
     assert.ok(timing !== null, `Server-Timing ${page.headers.get("server-timing")}`);
     const [, traceId, spanId] = timing;
 
+    // SIGTERM while a request is in flight: the server stops first and lets it finish, then the
+    // telemetry shuts down with its span.
+    const slow = fetch(`http://127.0.0.1:${started.port}/projects/slow`).then(async (res) => ({
+      status: res.status,
+      text: await res.text(),
+    }));
+    await slowInFlight;
     assert.equal(await stop(child), 0);
+    const slowPage = await slow;
+    assert.equal(slowPage.status, 200);
+    assert.match(slowPage.text, /<h1>Project slow<\/h1>/);
 
     const spans = flat(sink.traces(), "resourceSpans", "scopeSpans", "spans");
-    const serverSpan = spans.find((s) => s.name === "GET /projects/:id");
+    const serverSpans = spans.filter((s) => s.name === "GET /projects/:id");
+    assert.equal(serverSpans.length, 2, "the request in flight at SIGTERM was exported too");
+    const serverSpan = serverSpans.find((s) => s.traceId === traceId);
     assert.equal(serverSpan?.traceId, traceId);
     assert.equal(serverSpan?.spanId, spanId);
     const client = spans.find((s) => s.name === "GET" && s.parentSpanId === spanId);

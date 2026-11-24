@@ -6,8 +6,9 @@
  *   UPSTREAM_URL=http://localhost:8081 PORT=8080 bun main.ts
  *
  * setup reads the rest of its configuration from OTEL_* and installs the providers globally, so
- * instrumentServe and instrumentFetch need no telemetry argument. SIGINT or SIGTERM flushes and
- * shuts the telemetry down, then the server stops.
+ * instrumentServe and instrumentFetch need no telemetry argument. On SIGINT or SIGTERM the server
+ * stops first, letting requests in flight finish, and then the telemetry flushes and shuts down,
+ * so those requests' spans and metrics are exported.
  */
 import { fileURLToPath } from "node:url";
 import { instrumentFetch, instrumentServe, loadAppRegistry, setup, shutdownOnSignals } from "@libo11y/server";
@@ -30,6 +31,5 @@ const server = Bun.serve({
 });
 telemetry.logger.info("listening", { "server.port": server.port ?? 0 });
 
-const report = await shutdownOnSignals(telemetry);
-await server.stop();
+const report = await shutdownOnSignals(telemetry, { beforeShutdown: () => server.stop() });
 if (!report.ok) process.exitCode = 1;

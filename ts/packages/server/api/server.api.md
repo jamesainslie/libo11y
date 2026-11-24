@@ -77,6 +77,7 @@ export function shutdownOnSignals(telemetry: Telemetry, opts?: ShutdownOnSignals
 
 // @public
 export interface ShutdownOnSignalsOptions {
+    readonly beforeShutdown?: () => Promise<void> | void;
     readonly signals?: readonly string[];
     readonly timeoutMillis?: number;
 }
