@@ -14,7 +14,7 @@ and everything is correlated and exported over OTLP.
 | Language | Status | Location |
 |----------|--------|----------|
 | Go | Implemented | [`go/`](go/) |
-| TypeScript | In development: `@libo11y/spec` (generated) | [`ts/`](ts/) |
+| TypeScript | Implemented for Bun and Node. Browsers are planned for `ts/v0.2.0` | [`ts/`](ts/) |
 | Rust | Planned | [`rust/`](rust/) |
 | Java | Planned | [`java/`](java/) |
 | Zig | Planned | [`zig/`](zig/) |
@@ -140,6 +140,47 @@ See [`go/README.md`](go/README.md) for the full Go documentation and
 [`go/examples/httpserver`](go/examples/httpserver) for a complete,
 tested HTTP service.
 
+## Installation (TypeScript)
+
+```sh
+npm install @libo11y/server          # setup, instrumentServe, instrumentFetch
+npm install @libo11y/core            # only for forceEmit, wide records and the core types
+npm install @libo11y/spec            # only for the spec constants or the libo11y bin on its own
+npm install --save-dev @libo11y/test # the hermetic recorder and the OTLP sink
+```
+
+The four packages release together at one version. They run on Bun
+1.3.13 and Node 24, and they are built on OpenTelemetry JS 3.x.
+
+## Quick start (TypeScript)
+
+```ts
+import { instrumentServe, setup, shutdownOnSignals } from "@libo11y/server";
+
+const telemetry = await setup({ serviceName: "checkout", environment: "production" });
+
+const server = Bun.serve({
+  port: 8080,
+  fetch: instrumentServe(
+    async () => {
+      telemetry.logger.info("checkout started"); // correlated with the request's span
+      return new Response("ok");
+    },
+    { route: () => "/checkout" },
+  ),
+});
+
+// On SIGINT or SIGTERM, stop the server, then flush and shut the telemetry down.
+await shutdownOnSignals(telemetry, { beforeShutdown: () => server.stop() });
+```
+
+`setup` reads the rest of its configuration from `OTEL_*`, as Go's
+`Setup` does, and installs the providers globally, so code that uses the
+vanilla `@opentelemetry/api` is exported too. `telemetry.shutdown()` is
+the same bounded, idempotent shutdown that `shutdownOnSignals` calls. See
+[`ts/README.md`](ts/README.md) for the packages and
+[`ts/packages/server`](ts/packages/server) for the server documentation.
+
 ## Versioning
 
 Each language library versions and releases independently with path-prefixed
@@ -151,6 +192,13 @@ From `go/v0.2.0`, each release also tags `go/o11yconnect/vX.Y.Z` and
 [`go/CHANGELOG.md`](go/CHANGELOG.md) and on the GitHub releases page.
 `make release-check` validates the tag sequence against a throwaway local
 remote before a release.
+
+The TypeScript packages release in lockstep. One `ts/vX.Y.Z` tag publishes
+`@libo11y/spec`, `@libo11y/core`, `@libo11y/server` and `@libo11y/test` to
+npm at version X.Y.Z, with provenance, starting with `ts/v0.1.0`. Each
+TypeScript release is listed in [`ts/CHANGELOG.md`](ts/CHANGELOG.md).
+`make release-check` also packs the packages and installs them into a
+throwaway consumer under Node and Bun.
 
 ## License
 
