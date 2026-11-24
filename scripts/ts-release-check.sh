@@ -98,18 +98,26 @@ printf '{ "name": "libo11y-consumer", "private": true, "type": "module" }\n' >"$
 	[[ "$(bun -e "$core_smoke")" == EXPORTER ]] || fail "bun could not import @libo11y/core"
 	echo "ts-release-check: import @libo11y/core and @libo11y/core/testing ok under node and bun"
 
+	test_smoke='import { createRecorder, startOtlpSink } from "@libo11y/test"; const s = await startOtlpSink(); await fetch(s.url + "/v1/logs", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }); await s.waitFor("logs", 1, 5000); await s.close(); const r = await createRecorder(); r.telemetry.logger.info("recorded"); console.log(r.logs()[0]?.body); await r.shutdown();'
+	[[ "$(node --input-type=module -e "$test_smoke")" == recorded ]] || fail "node could not import @libo11y/test"
+	[[ "$(bun -e "$test_smoke")" == recorded ]] || fail "bun could not import @libo11y/test"
+	echo "ts-release-check: import @libo11y/test ok under node and bun"
+
 	# The published declarations must typecheck for a nodenext consumer.
 	cat >check.ts <<'TS'
 import { type AppRegistry, compileAppRegistry, SPEC_VERSION, validateAppRegistry } from "@libo11y/spec";
 import { AppRegistryParseError, parseAppRegistry, parseAppRegistryBytes } from "@libo11y/spec/yaml";
 import { O11yError, type TelemetryOptions } from "@libo11y/core";
 import { createTestPlatform } from "@libo11y/core/testing";
+import { createRecorder, type OtlpSink, type RecorderOptions, startOtlpSink } from "@libo11y/test";
 
 const reg: AppRegistry = parseAppRegistry("schema: x\nnamespace: lor\n");
 const result = validateAppRegistry(reg);
 const kind: string = new AppRegistryParseError("syntax").kind;
 const version: string = SPEC_VERSION;
 const options: TelemetryOptions = { serviceName: "svc", registry: reg };
+const recorderOptions: RecorderOptions = { serviceName: "svc" };
+const sinkUrl = (sink: OtlpSink): string => sink.url;
 export const checked: readonly unknown[] = [
   result.ok,
   kind,
@@ -119,6 +127,10 @@ export const checked: readonly unknown[] = [
   options,
   O11yError,
   createTestPlatform,
+  createRecorder,
+  recorderOptions,
+  startOtlpSink,
+  sinkUrl,
 ];
 TS
 	cat >tsconfig.json <<'JSON'

@@ -82,11 +82,13 @@ test("injected exporters and readers route as injected, whatever the environment
   assert.equal(c.metrics, "injected");
   assert.equal(c.logs, "injected");
   assert.equal(resolveConfig({ spanProcessor: {} as never }, {}).traces, "injected");
+  assert.equal(resolveConfig({ hermetic: true, logProcessor: {} as never }, {}).logs, "injected");
 });
 
 test("logExport false turns the log route off, even with an exporter", () => {
   assert.equal(resolveConfig({ logExport: false }, {}).logs, "none");
   assert.equal(resolveConfig({ logExport: false, logExporter: {} as never }, {}).logs, "none");
+  assert.equal(resolveConfig({ logExport: false, logProcessor: {} as never }, {}).logs, "none");
 });
 
 test("hermetic mode ignores the environment and turns off signals with nothing injected", () => {

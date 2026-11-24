@@ -39,6 +39,22 @@
         "yaml": "2.9.1",
       },
     },
+    "packages/test": {
+      "name": "@libo11y/test",
+      "version": "0.0.0",
+      "dependencies": {
+        "@libo11y/core": "workspace:*",
+        "@libo11y/spec": "workspace:*",
+        "@opentelemetry/api": "1.10.0",
+        "@opentelemetry/context-async-hooks": "3.1.1",
+        "@opentelemetry/sdk-logs": "3.1.1",
+        "@opentelemetry/sdk-metrics": "3.1.1",
+        "@opentelemetry/sdk-trace": "3.1.1",
+      },
+      "devDependencies": {
+        "@opentelemetry/otlp-transformer": "0.301.1",
+      },
+    },
   },
   "packages": {
     "@biomejs/biome": ["@biomejs/biome@2.6.8", "", { "optionalDependencies": { "@biomejs/cli-android-arm64": "2.6.8", "@biomejs/cli-android-x64": "2.6.8", "@biomejs/cli-darwin-arm64": "2.6.8", "@biomejs/cli-darwin-x64": "2.6.8", "@biomejs/cli-linux-arm64": "2.6.8", "@biomejs/cli-linux-arm64-musl": "2.6.8", "@biomejs/cli-linux-x64": "2.6.8", "@biomejs/cli-linux-x64-musl": "2.6.8", "@biomejs/cli-win32-arm64": "2.6.8", "@biomejs/cli-win32-x64": "2.6.8" }, "bin": { "biome": "bin/biome" } }, "sha512-kqZUFvX6/aYQOmzfRN5ANcfNS9wLH4aHLWWP/dQKyhRZVoA6rdWszA7DGugFcxPbMiznUyVYyukVl+ExZN4PQA=="],
@@ -66,6 +82,8 @@
     "@libo11y/core": ["@libo11y/core@workspace:packages/core"],
 
     "@libo11y/spec": ["@libo11y/spec@workspace:packages/spec"],
+
+    "@libo11y/test": ["@libo11y/test@workspace:packages/test"],
 
     "@microsoft/api-extractor": ["@microsoft/api-extractor@7.60.1", "", { "dependencies": { "@microsoft/api-extractor-model": "7.33.16", "@microsoft/tsdoc": "~0.17.0", "@microsoft/tsdoc-config": "~0.18.2", "@rushstack/node-core-library": "5.25.2", "@rushstack/rig-package": "0.7.4", "@rushstack/terminal": "0.24.8", "@rushstack/ts-command-line": "5.3.18", "diff": "~8.0.2", "minimatch": "10.2.3", "resolve": "~1.22.1", "semver": "~7.7.4", "source-map": "~0.6.1", "typescript": "6.0.3" }, "bin": { "api-extractor": "bin/api-extractor" } }, "sha512-1FJ/Z30xLL3pWn6oYSJCjGsnlEWkWivwmVeCB7YrRPe+47J7H54NVR+m/1PIL1RYsh/mZsxm/FwirreD72G76g=="],
 

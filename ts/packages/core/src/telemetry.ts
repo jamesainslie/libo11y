@@ -26,7 +26,7 @@ import {
 } from "@opentelemetry/api";
 import { loggingErrorHandler, setGlobalErrorHandler } from "@opentelemetry/core";
 import type { Resource } from "@opentelemetry/resources";
-import { BatchLogRecordProcessor, LoggerProvider } from "@opentelemetry/sdk-logs";
+import { BatchLogRecordProcessor, LoggerProvider, type LogRecordProcessor } from "@opentelemetry/sdk-logs";
 import {
   AggregationType,
   type IMetricReader,
@@ -395,6 +395,7 @@ function selectExporters(config: ResolvedConfig, options: TelemetryOptions, buil
       config.logs === "none"
         ? undefined
         : (options.logExporter ?? (wants(config.logs) ? built.logExporter : undefined)),
+    logProcessor: config.logs === "none" ? undefined : options.logProcessor,
   };
 }
 
@@ -482,14 +483,15 @@ async function build(options: TelemetryOptions, platform: Platform): Promise<Par
     }
     tracerProvider = new TracerProvider({ resource, sampler: config.sampler.instance, spanProcessors });
 
-    if (exporters.logExporter !== undefined) {
-      loggerProvider = new LoggerProvider({
-        resource,
-        processors: [
-          new RedactingLogRecordProcessor(policy),
+    if (exporters.logExporter !== undefined || exporters.logProcessor !== undefined) {
+      const processors: LogRecordProcessor[] = [new RedactingLogRecordProcessor(policy)];
+      if (exporters.logProcessor !== undefined) processors.push(exporters.logProcessor);
+      if (exporters.logExporter !== undefined) {
+        processors.push(
           new BatchLogRecordProcessor({ exporter: exporters.logExporter, ...config.batch.logs }),
-        ],
-      });
+        );
+      }
+      loggerProvider = new LoggerProvider({ resource, processors });
     }
     const pipeline = new LogPipeline({
       level: config.logLevel,

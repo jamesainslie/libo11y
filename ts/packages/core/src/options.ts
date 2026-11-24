@@ -1,7 +1,7 @@
 /** The options createTelemetryWith and setupWith take. Each one beats its OTEL_* variable. */
 import type { AppRegistry, CompiledAppRegistry } from "@libo11y/spec";
 import type { Attributes, TextMapPropagator } from "@opentelemetry/api";
-import type { LogRecordExporter } from "@opentelemetry/sdk-logs";
+import type { LogRecordExporter, LogRecordProcessor } from "@opentelemetry/sdk-logs";
 import type { IMetricReader, ViewOptions } from "@opentelemetry/sdk-metrics";
 import type { Sampler, SpanExporter, SpanProcessor } from "@opentelemetry/sdk-trace";
 import type { LogLevel } from "./log-values.ts";
@@ -63,4 +63,9 @@ export interface TelemetryOptions {
   spanProcessor?: SpanProcessor;
   metricReader?: IMetricReader;
   logExporter?: LogRecordExporter;
+  /**
+   * A log record processor, after the redacting processor and before the batch processor of
+   * logExporter, so it sees each classified record synchronously in onEmit (Go WithExtraLogHandler).
+   */
+  logProcessor?: LogRecordProcessor;
 }
