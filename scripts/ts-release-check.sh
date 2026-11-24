@@ -98,7 +98,7 @@ printf '{ "name": "libo11y-consumer", "private": true, "type": "module" }\n' >"$
 	[[ "$(bun -e "$core_smoke")" == EXPORTER ]] || fail "bun could not import @libo11y/core"
 	echo "ts-release-check: import @libo11y/core and @libo11y/core/testing ok under node and bun"
 
-	test_smoke='import { createRecorder, startOtlpSink } from "@libo11y/test"; const s = await startOtlpSink(); await s.close(); const r = await createRecorder(); r.telemetry.logger.info("recorded"); console.log(r.logs()[0]?.body); await r.shutdown();'
+	test_smoke='import { createRecorder, startOtlpSink } from "@libo11y/test"; const s = await startOtlpSink(); await fetch(s.url + "/v1/logs", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }); await s.waitFor("logs", 1, 5000); await s.close(); const r = await createRecorder(); r.telemetry.logger.info("recorded"); console.log(r.logs()[0]?.body); await r.shutdown();'
 	[[ "$(node --input-type=module -e "$test_smoke")" == recorded ]] || fail "node could not import @libo11y/test"
 	[[ "$(bun -e "$test_smoke")" == recorded ]] || fail "bun could not import @libo11y/test"
 	echo "ts-release-check: import @libo11y/test ok under node and bun"
