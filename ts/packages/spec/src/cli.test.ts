@@ -14,10 +14,18 @@ const files: Readonly<Record<string, string>> = {
   "broken.yaml": "schema: [\n",
 };
 
-function readFile(path: string): string {
+// readErrors are the Node file system errors a path can raise, by code.
+const readErrors: Readonly<Record<string, string>> = {
+  "denied.yaml": "EACCES",
+  "dir.yaml": "EISDIR",
+  "busy.yaml": "EBUSY",
+};
+
+function readFile(path: string): Uint8Array {
   const body = files[path];
-  if (body === undefined) throw new Error(`ENOENT: no such file or directory, open '${path}'`);
-  return body;
+  if (body !== undefined) return new Uint8Array(Buffer.from(body, "utf8"));
+  const code = readErrors[path] ?? "ENOENT";
+  throw Object.assign(new Error(`${code}: something went wrong, open '${path}'`), { code });
 }
 
 function check(args: readonly string[]): { code: number; stdout: string; stderr: string } {
@@ -43,6 +51,7 @@ const table: readonly (readonly [string, readonly string[], number, string, stri
   ["violations", ["registry", "check", "invalid.yaml"], 1, "libo11y_app_namespace_reserved", ""],
   ["unparsable", ["registry", "check", "broken.yaml"], 2, "", "parsing application registry"],
   ["missing", ["registry", "check", "nope.yaml"], 2, "", "no such file"],
+  ["read error", ["registry", "check", "denied.yaml"], 2, "", "permission denied"],
   [
     "worst wins",
     ["registry", "check", "invalid.yaml", "broken.yaml"],
@@ -83,7 +92,7 @@ test("registry check prints the same lines as the Go binary", () => {
         "valid.yaml: ok (1 attribute in namespace lor)\n" +
         "two.yaml: ok (2 attributes in namespace lor)\n" +
         'invalid.yaml: libo11y_app_namespace_reserved: namespace "http" belongs to libo11y, OpenTelemetry, or semconv\n',
-      stderr: `nope.yaml: ENOENT: no such file or directory, open 'nope.yaml'\n${check(["registry", "check", "broken.yaml"]).stderr}`,
+      stderr: `open nope.yaml: no such file or directory\n${check(["registry", "check", "broken.yaml"]).stderr}`,
     },
   );
   assert.match(
@@ -91,6 +100,39 @@ test("registry check prints the same lines as the Go binary", () => {
     /^broken\.yaml: parsing application registry: syntax/,
   );
   assert.equal(check(["-h"]).stdout, "usage: libo11y registry check FILE...\n");
+});
+
+// Go's os.ReadFile errors read "<op> <path>: <reason>".
+const readFailures: readonly (readonly [string, string])[] = [
+  ["nope.yaml", "open nope.yaml: no such file or directory\n"],
+  ["denied.yaml", "open denied.yaml: permission denied\n"],
+  ["dir.yaml", "read dir.yaml: is a directory\n"],
+  ["busy.yaml", "open busy.yaml: EBUSY: something went wrong, open 'busy.yaml'\n"],
+];
+
+for (const [path, want] of readFailures) {
+  test(`registry check reports a read error as Go does: ${path}`, () => {
+    assert.deepEqual(check(["registry", "check", path]), { code: 2, stdout: "", stderr: want });
+  });
+}
+
+test("the bin reports a directory, a missing file and invalid UTF-8 under the current runtime", () => {
+  const conformance = resolve(import.meta.dirname, "..", "..", "..", "..", "conformance", "appregistry");
+  const missing = resolve(conformance, "missing.yaml");
+  const invalid = resolve(conformance, "invalid-utf8.yaml");
+  const result = spawnSync(
+    process.execPath,
+    [resolve(import.meta.dirname, "cli.ts"), "registry", "check", conformance, missing, invalid],
+    { encoding: "utf8" },
+  );
+  assert.equal(result.status, 2, result.stderr);
+  assert.equal(result.stdout, "");
+  assert.equal(
+    result.stderr,
+    `read ${conformance}: is a directory\n` +
+      `open ${missing}: no such file or directory\n` +
+      `${invalid}: parsing application registry: syntax: invalid UTF-8 input\n`,
+  );
 });
 
 test("the bin runs under the current runtime", () => {

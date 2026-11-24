@@ -11,7 +11,7 @@
 import { readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { validateAppRegistry } from "./appregistry.ts";
-import { parseAppRegistry } from "./yaml.ts";
+import { parseAppRegistryBytes } from "./yaml.ts";
 
 const USAGE = "usage: libo11y registry check FILE...";
 
@@ -19,23 +19,39 @@ function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+// GO_READ_ERRORS maps a Node file system error code to Go's os.ReadFile error: the operation that
+// failed and the reason Go prints.
+const GO_READ_ERRORS: Readonly<Record<string, readonly [string, string]>> = {
+  ENOENT: ["open", "no such file or directory"],
+  EACCES: ["open", "permission denied"],
+  EPERM: ["open", "operation not permitted"],
+  EISDIR: ["read", "is a directory"],
+};
+
+// readError renders a failed read the way the Go binary prints os.ReadFile's error.
+function readError(path: string, err: unknown): string {
+  const code = typeof err === "object" && err !== null && "code" in err ? String(err.code) : "";
+  const known = GO_READ_ERRORS[code];
+  return known === undefined ? `open ${path}: ${message(err)}` : `${known[0]} ${path}: ${known[1]}`;
+}
+
 // checkFile validates one registry file and returns its exit status.
 function checkFile(
   path: string,
   out: (line: string) => void,
   err: (line: string) => void,
-  readFile: (path: string) => string,
+  readFile: (path: string) => Uint8Array,
 ): number {
-  let text: string;
+  let bytes: Uint8Array;
   try {
-    text = readFile(path);
+    bytes = readFile(path);
   } catch (e) {
-    err(`${path}: ${message(e)}`);
+    err(readError(path, e));
     return 2;
   }
-  let reg: ReturnType<typeof parseAppRegistry>;
+  let reg: ReturnType<typeof parseAppRegistryBytes>;
   try {
-    reg = parseAppRegistry(text);
+    reg = parseAppRegistryBytes(bytes);
   } catch (e) {
     err(`${path}: ${message(e)}`);
     return 2;
@@ -52,13 +68,13 @@ function checkFile(
 
 /**
  * Runs the command line and returns the exit status. out and err each receive one line at a time,
- * without its newline. readFile reads a registry file as UTF-8 text.
+ * without its newline. readFile returns a registry file's bytes and throws a Node file system error.
  */
 export function run(
   args: readonly string[],
   out: (line: string) => void,
   err: (line: string) => void,
-  readFile: (path: string) => string,
+  readFile: (path: string) => Uint8Array,
 ): number {
   if (args.length === 1 && (args[0] === "-h" || args[0] === "--help" || args[0] === "help")) {
     out(USAGE);
@@ -93,7 +109,7 @@ if (isEntry()) {
       process.argv.slice(2),
       (line) => process.stdout.write(`${line}\n`),
       (line) => process.stderr.write(`${line}\n`),
-      (path) => readFileSync(path, "utf8"),
+      (path) => readFileSync(path),
     ),
   );
 }
