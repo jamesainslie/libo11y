@@ -5,9 +5,13 @@
 ```ts
 
 import type { ContextManager } from '@opentelemetry/api';
+import type { Platform } from '@libo11y/core';
 
 // @public
 export function createContextManager(): ContextManager;
+
+// @public
+export function serverPlatform(): Platform;
 
 // (No @packageDocumentation comment for this package)
 

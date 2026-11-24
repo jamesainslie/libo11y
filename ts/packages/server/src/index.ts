@@ -5,3 +5,4 @@
  */
 
 export { createContextManager } from "./context.ts";
+export { serverPlatform } from "./platform.ts";
