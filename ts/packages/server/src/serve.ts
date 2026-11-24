@@ -61,7 +61,8 @@ export interface ServeOptions {
    */
   readonly publicEndpoint?: boolean;
   /**
-   * URL paths to leave uninstrumented, as Go path.Match patterns ("/healthz", "/debug/*"). A
+   * URL paths to leave uninstrumented, as Go path.Match patterns ("/healthz", "/debug/*"). They
+   * match the percent-decoded path, as in Go, so "/café" matches a request for "/caf%C3%A9". A
    * matching request gets no span, metric or summary. A malformed pattern never matches.
    */
   readonly ignorePaths?: readonly string[];
@@ -131,7 +132,7 @@ export function instrumentServe<A extends unknown[]>(
 
   return async (req: Request, ...rest: A): Promise<Response> => {
     const url = new URL(req.url);
-    if (ignore.length > 0 && matchesAny(ignore, url.pathname)) return handler(req, ...rest);
+    if (ignore.length > 0 && matchesAny(ignore, decodedPath(url.pathname))) return handler(req, ...rest);
 
     const start = performance.now();
     const { tracer, histogram, propagator } = instruments();
@@ -322,6 +323,18 @@ function spanName(method: string, route: string | undefined): string {
 function routeOnly(route: string): string {
   const space = route.indexOf(" ");
   return space < 0 ? route : route.slice(space + 1);
+}
+
+/**
+ * The percent-decoded path, as Go's URL.Path, which ignorePaths match against. A malformed escape
+ * leaves the path as it is.
+ */
+function decodedPath(path: string): string {
+  try {
+    return decodeURIComponent(path);
+  } catch {
+    return path;
+  }
 }
 
 function mediaType(contentType: string | null): string {

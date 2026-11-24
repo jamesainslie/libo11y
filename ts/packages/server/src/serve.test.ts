@@ -952,3 +952,16 @@ test("a throw while ending the request never reaches the response, the handler's
     await assert.rejects(erroring.text(), /body broke/);
   });
 });
+
+test("ignorePaths match the decoded path, as Go's URL.Path, and a malformed escape matches as it is", async () => {
+  await withRecorder(async (rec) => {
+    const handler = instrumentServe(ok, { telemetry: rec.telemetry, ignorePaths: ["/café", "/bad%zz"] });
+    for (const path of ["/caf%C3%A9", "/bad%zz", "/caf%C3%A9s"]) {
+      await (await handler(new Request(`http://svc${path}`))).text();
+    }
+    assert.deepEqual(
+      serverSpans(rec).map((s) => s.attributes["url.path"]),
+      ["/caf%C3%A9s"],
+    );
+  });
+});
