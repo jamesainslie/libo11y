@@ -136,7 +136,12 @@ export function instrumentServe<A extends unknown[]>(
     const start = performance.now();
     const { tracer, histogram, propagator } = instruments();
     const { method, original } = normalizeMethod(req.method);
-    const resolved = opts.route?.(req);
+    let resolved: string | undefined;
+    try {
+      resolved = opts.route?.(req);
+    } catch (err) {
+      diag.warn(`libo11y: instrumentServe: route threw, the request is unrouted: ${errorMessage(err)}`);
+    }
     const route = resolved === "" ? undefined : resolved;
     const startRoute = route === undefined ? undefined : routeOnly(route);
     const scheme = schemeOf(url);
@@ -170,11 +175,9 @@ export function instrumentServe<A extends unknown[]>(
     // The context the end is reported in, captured now: the body may finish where none is active.
     const spanContext = handlerContext;
 
-    let finished = false;
-    const finish = (outcome: Outcome): void => {
-      if (finished) return;
-      finished = true;
-      routeSlot.open = false;
+    // end reports the outcome once; finish guards it, so a throw from a span processor or an
+    // instrument never fails the request, replaces the handler's error or stops a body's cancel.
+    const end = (outcome: Outcome): void => {
       let httpRoute = startRoute;
       if (routeSlot.route !== undefined) {
         httpRoute = routeOnly(routeSlot.route);
@@ -219,6 +222,17 @@ export function instrumentServe<A extends unknown[]>(
         });
       }
       span.end();
+    };
+    let finished = false;
+    const finish = (outcome: Outcome): void => {
+      if (finished) return;
+      finished = true;
+      routeSlot.open = false;
+      try {
+        end(outcome);
+      } catch (err) {
+        diag.error(`libo11y: instrumentServe: ending the request threw: ${errorMessage(err)}`);
+      }
     };
 
     let res: Response;
@@ -383,9 +397,11 @@ function watchBody(
         }
         controller.enqueue(chunk.value);
       },
-      async cancel(reason) {
+      cancel(reason) {
+        // The source's cancel starts first, so nothing done does can keep it from running.
+        const cancelled = reader.cancel(reason);
         done();
-        await reader.cancel(reason);
+        return cancelled;
       },
     },
     { highWaterMark: 0 },

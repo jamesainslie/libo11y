@@ -8,7 +8,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { currentRecord } from "@libo11y/core";
+import { currentRecord, type Telemetry } from "@libo11y/core";
 import { createRecorder, type Recorder } from "@libo11y/test";
 import {
   type Context,
@@ -873,5 +873,82 @@ test("setRoute without a route option names an unrouted request, and outside a r
     assert.equal(span.name, "GET /inside");
     assert.equal(span.attributes["http.route"], "/inside");
     assert.equal((await durationPoints(rec))[0]?.attributes["http.route"], "/inside");
+  });
+});
+
+test("a throwing route option is reported and the request goes on unrouted", async () => {
+  await withRecorder(async (rec) => {
+    const handler = instrumentServe(ok, {
+      telemetry: rec.telemetry,
+      route: () => {
+        throw new Error("router broke");
+      },
+    });
+    const res = await handler(new Request("http://svc/x"));
+    assert.equal(await res.text(), "ok");
+    const span = onlySpan(rec);
+    assert.equal(span.name, "GET");
+    assert.equal(span.attributes["http.route"], undefined);
+  });
+});
+
+/** rec's telemetry with spans whose end throws, as a broken span processor would make it. */
+function brokenEndTelemetry(rec: Recorder): Telemetry {
+  const tracer = rec.telemetry.tracerProvider.getTracer("broken");
+  return {
+    tracerProvider: {
+      getTracer: () => ({
+        startSpan: (...args: Parameters<typeof tracer.startSpan>) => {
+          const span = tracer.startSpan(...args);
+          return new Proxy(span, {
+            get(target, key) {
+              if (key === "end") {
+                return () => {
+                  throw new Error("end broke");
+                };
+              }
+              const value = Reflect.get(target, key);
+              return typeof value === "function" ? value.bind(target) : value;
+            },
+          });
+        },
+      }),
+    },
+    meterProvider: rec.telemetry.meterProvider,
+    propagator: rec.telemetry.propagator,
+  } as unknown as Telemetry;
+}
+
+test("a throw while ending the request never reaches the response, the handler's error or the body's source", async () => {
+  await withRecorder(async (rec) => {
+    const boom = new Error("handler broke");
+    let cancelled = false;
+    const handler = instrumentServe(
+      async (req) => {
+        const path = new URL(req.url).pathname;
+        if (path === "/throw") throw boom;
+        if (path === "/plain") return new Response("plain");
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              if (path === "/error") controller.error(new Error("body broke"));
+              else controller.enqueue(new Uint8Array([1]));
+            },
+            cancel() {
+              cancelled = true;
+            },
+          }),
+          { headers: { "content-type": "text/html" } },
+        );
+      },
+      { telemetry: brokenEndTelemetry(rec) },
+    );
+    assert.equal(await (await handler(new Request("http://svc/plain"))).text(), "plain");
+    await assert.rejects(handler(new Request("http://svc/throw")), (err) => err === boom);
+    const page = await handler(new Request("http://svc/page"));
+    await page.body?.cancel();
+    assert.ok(cancelled, "the source was cancelled");
+    const erroring = await handler(new Request("http://svc/error"));
+    await assert.rejects(erroring.text(), /body broke/);
   });
 });
