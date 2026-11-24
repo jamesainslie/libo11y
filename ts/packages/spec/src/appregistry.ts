@@ -52,6 +52,8 @@ export type AppRegistryResult =
 export interface CompiledAppRegistry {
   readonly namespace: string;
   readonly classes: Readonly<Record<string, Sensitivity>>;
+  /** Where the registry came from, such as its file path, for error messages. */
+  readonly source?: string;
 }
 
 /** Thrown by compileAppRegistry for a registry that breaks a rule. */

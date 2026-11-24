@@ -93,16 +93,33 @@ printf '{ "name": "libo11y-consumer", "private": true, "type": "module" }\n' >"$
 	[[ "$(bun -e "$yaml_smoke")" == lor ]] || fail "bun could not parse with @libo11y/spec/yaml"
 	echo "ts-release-check: import @libo11y/spec/yaml ok under node and bun"
 
+	core_smoke='import { O11yError } from "@libo11y/core"; import { createTestPlatform } from "@libo11y/core/testing"; const p = createTestPlatform({ contextManager: () => ({}) }); p.writeConsoleLine(new O11yError("EXPORTER", "x").code); console.log(p.lines[0]);'
+	[[ "$(node --input-type=module -e "$core_smoke")" == EXPORTER ]] || fail "node could not import @libo11y/core"
+	[[ "$(bun -e "$core_smoke")" == EXPORTER ]] || fail "bun could not import @libo11y/core"
+	echo "ts-release-check: import @libo11y/core and @libo11y/core/testing ok under node and bun"
+
 	# The published declarations must typecheck for a nodenext consumer.
 	cat >check.ts <<'TS'
 import { type AppRegistry, compileAppRegistry, SPEC_VERSION, validateAppRegistry } from "@libo11y/spec";
 import { AppRegistryParseError, parseAppRegistry, parseAppRegistryBytes } from "@libo11y/spec/yaml";
+import { O11yError, type TelemetryOptions } from "@libo11y/core";
+import { createTestPlatform } from "@libo11y/core/testing";
 
 const reg: AppRegistry = parseAppRegistry("schema: x\nnamespace: lor\n");
 const result = validateAppRegistry(reg);
 const kind: string = new AppRegistryParseError("syntax").kind;
 const version: string = SPEC_VERSION;
-export const checked: readonly unknown[] = [result.ok, kind, version, compileAppRegistry, parseAppRegistryBytes];
+const options: TelemetryOptions = { serviceName: "svc", registry: reg };
+export const checked: readonly unknown[] = [
+  result.ok,
+  kind,
+  version,
+  compileAppRegistry,
+  parseAppRegistryBytes,
+  options,
+  O11yError,
+  createTestPlatform,
+];
 TS
 	cat >tsconfig.json <<'JSON'
 {

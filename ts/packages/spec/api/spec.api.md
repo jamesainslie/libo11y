@@ -245,6 +245,7 @@ export interface CompiledAppRegistry {
     readonly classes: Readonly<Record<string, Sensitivity>>;
     // (undocumented)
     readonly namespace: string;
+    readonly source?: string;
 }
 
 // @public (undocumented)
@@ -320,6 +321,9 @@ export interface EventInfo {
 
 // @public
 export const EVENTS: ReadonlyMap<string, EventInfo>;
+
+// @public
+export function goQuote(s: string): string;
 
 // @public
 export const LEGACY_KEYS: ReadonlyMap<string, string>;

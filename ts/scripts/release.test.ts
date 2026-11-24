@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -171,6 +171,18 @@ test("setVersion sets every package version and keeps the file format", () => {
     (JSON.parse(readFileSync(join(root, "packages", "fx-a", "package.json"), "utf8")) as PackageJson).version,
     "2.3.4",
   );
+});
+
+test("setVersion rewrites a package's src/version.ts and leaves packages without one alone", () => {
+  const root = fixture("version-file");
+  const versionFile = join(root, "packages", "fx-a", "src", "version.ts");
+  writeFileSync(versionFile, '/** The package version. */\nexport const VERSION = "0.0.0";\n');
+  setVersion(root, "2.3.4");
+  assert.equal(
+    readFileSync(versionFile, "utf8"),
+    '/** The package version. */\nexport const VERSION = "2.3.4";\n',
+  );
+  assert.equal(existsSync(join(root, "packages", "fx-b", "src", "version.ts")), false);
 });
 
 test("setVersion rejects a version that is not semver", () => {

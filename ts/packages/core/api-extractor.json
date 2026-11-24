@@ -1,0 +1,24 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/api-extractor/v7/api-extractor.schema.json",
+  "extends": "../../api-extractor.base.json",
+  "projectFolder": ".",
+  "compiler": {
+    "overrideTsconfig": {
+      "compilerOptions": {
+        "module": "nodenext",
+        "moduleResolution": "nodenext",
+        "target": "es2023",
+        "lib": ["es2023"],
+        "strict": true,
+        "skipLibCheck": true,
+        "types": [],
+        "paths": {
+          "@libo11y/spec": ["./node_modules/@libo11y/spec/dist/index.d.ts"],
+          "@libo11y/spec/yaml": ["./node_modules/@libo11y/spec/dist/yaml.d.ts"]
+        },
+        "preserveSymlinks": true
+      },
+      "include": ["dist"]
+    }
+  }
+}
