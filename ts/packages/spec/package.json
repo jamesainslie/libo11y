@@ -10,6 +10,9 @@
     ".": "./src/index.ts",
     "./yaml": "./src/yaml.ts"
   },
+  "bin": {
+    "libo11y": "./src/cli.ts"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/jamesainslie/libo11y.git",
