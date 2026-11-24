@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { context, ROOT_CONTEXT, trace } from "@opentelemetry/api";
 import { createRecorder, type Recorder } from "./recorder.ts";
 
@@ -161,6 +163,39 @@ test("a context manager is installed, so active spans propagate", async () => {
     );
     span.end();
   });
+});
+
+const CONTEXT_CHILD = fileURLToPath(new URL("./test-support/context-child.ts", import.meta.url));
+
+/** Runs a context-manager scenario in a fresh process of this runtime, which starts with no manager. */
+function contextScenario(scenario: string): Promise<Record<string, boolean>> {
+  return new Promise((resolve, reject) => {
+    execFile(process.execPath, [CONTEXT_CHILD, scenario], { timeout: 30_000 }, (err, stdout, stderr) => {
+      if (err !== null) {
+        reject(new Error(`${scenario} failed: ${err.message}\n${stdout}\n${stderr}`));
+        return;
+      }
+      resolve(JSON.parse(stdout.trim().split("\n").at(-1) ?? "{}") as Record<string, boolean>);
+    });
+  });
+}
+
+test("the manager a recorder installs is removed when the last recorder shuts down, in either order", async () => {
+  const want = { before: false, both: true, afterFirst: true, afterLast: false };
+  assert.deepEqual(await contextScenario("ordered"), want);
+  assert.deepEqual(await contextScenario("reversed"), want);
+});
+
+test("a context manager registered before any recorder is never touched", async () => {
+  assert.deepEqual(await contextScenario("preexisting"), { stillGlobal: true, afterLast: true });
+});
+
+test("a recorder leaves a manager someone else installed after it alone", async () => {
+  assert.deepEqual(await contextScenario("replaced"), { stillGlobal: true, afterLast: true });
+});
+
+test("a recorder after the last one shut down installs a manager again", async () => {
+  assert.deepEqual(await contextScenario("again"), { afterFirst: false, again: true, afterLast: false });
 });
 
 test("shutdown flushes, keeps what was recorded and is idempotent", async () => {
