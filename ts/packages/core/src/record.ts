@@ -32,7 +32,16 @@ export interface WideRecord {
 
 const RECORD_KEY: symbol = createContextKey("libo11y.record");
 
+// The brand every core copy's records carry, so two copies of core in one process find each
+// other's records where instanceof would not.
+const BRAND: unique symbol = Symbol.for("libo11y.wide-record") as never;
+
+function isWideRecord(value: unknown): value is WideRecord {
+  return typeof value === "object" && value !== null && (value as { [BRAND]?: unknown })[BRAND] === true;
+}
+
 class AttachedRecord implements WideRecord {
+  readonly [BRAND] = true;
   private readonly attrs: { [key: string]: LogValue } = {};
 
   set(attrs: LogAttributes): void {
@@ -68,5 +77,5 @@ export function startRecord(ctx?: Context): { context: Context; record: WideReco
 /** The record attached to ctx (default: the active context), or a detached one. Never undefined. */
 export function currentRecord(ctx?: Context): WideRecord {
   const found = (ctx ?? context.active()).getValue(RECORD_KEY);
-  return found instanceof AttachedRecord ? found : new AttachedRecord();
+  return isWideRecord(found) ? found : new AttachedRecord();
 }

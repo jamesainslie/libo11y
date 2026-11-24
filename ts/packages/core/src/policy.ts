@@ -5,7 +5,7 @@
  *
  * Classification is by key. Not covered, as in Go: values under unclassified keys, the members of
  * map-valued span and metric attributes, log bodies, span names, instrumentation scope attributes,
- * what an injected span processor reads in onStart, and baggage.
+ * what an injected span processor reads in onStart or onEnding, and baggage.
  */
 import {
   type AppRegistry,

@@ -405,7 +405,7 @@ export type Signal = "traces" | "metrics" | "logs";
 export interface SignalReport {
     // (undocumented)
     readonly errors: readonly {
-        readonly signal: Signal;
+        readonly signal: Signal | "lifecycle";
         readonly error: unknown;
     }[];
     // (undocumented)

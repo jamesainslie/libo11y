@@ -76,3 +76,24 @@ test("emitEvent sends the snapshot plus extra attributes, which win", () => {
     ["a", 10],
   ]);
 });
+
+test("a record from another copy of core is found through the shared brand", () => {
+  const foreign = {
+    [Symbol.for("libo11y.wide-record")]: true,
+    set() {},
+    add() {},
+    max() {},
+    snapshot: () => ({ from: "elsewhere" }),
+    emitEvent() {},
+  };
+  const ctx = ROOT_CONTEXT.setValue(Symbol.for("libo11y.record"), foreign);
+  assert.equal(currentRecord(ctx), foreign);
+  const unbranded = ROOT_CONTEXT.setValue(Symbol.for("libo11y.record"), { snapshot: () => ({}) });
+  assert.notEqual(currentRecord(unbranded).snapshot, undefined);
+  assert.deepEqual(currentRecord(unbranded).snapshot(), {});
+  const { context: own } = startRecord(ROOT_CONTEXT);
+  assert.equal(
+    (currentRecord(own) as unknown as Record<symbol, unknown>)[Symbol.for("libo11y.wide-record")],
+    true,
+  );
+});

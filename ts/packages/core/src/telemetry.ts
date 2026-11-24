@@ -59,10 +59,13 @@ import { CORE_SCOPE, ViolationRecorder } from "./violations.ts";
 /** A telemetry signal. */
 export type Signal = "traces" | "metrics" | "logs";
 
-/** What a shutdown or flush achieved: ok when no signal failed, else one error per failed signal. */
+/**
+ * What a shutdown or flush achieved: ok when nothing failed, else one error per failed signal.
+ * "lifecycle" carries a failure of the shutdown itself rather than of one signal.
+ */
 export interface SignalReport {
   readonly ok: boolean;
-  readonly errors: readonly { readonly signal: Signal; readonly error: unknown }[];
+  readonly errors: readonly { readonly signal: Signal | "lifecycle"; readonly error: unknown }[];
 }
 
 /** Options for shutdown and forceFlush. */
@@ -92,6 +95,16 @@ export interface Telemetry {
 }
 
 const DEFAULT_TIMEOUT_MILLIS = 5000;
+
+/** The longest delay a timer takes: setTimeout treats anything larger as 1 ms. */
+const MAX_TIMEOUT_MILLIS = 2 ** 31 - 1;
+
+// clampTimeout bounds a caller's deadline to what a timer can wait: negative is 0, Infinity and
+// anything past the timer maximum is the maximum, NaN is the default.
+function clampTimeout(ms: number | undefined): number {
+  if (ms === undefined || Number.isNaN(ms)) return DEFAULT_TIMEOUT_MILLIS;
+  return Math.min(Math.max(ms, 0), MAX_TIMEOUT_MILLIS);
+}
 const GUARD: unique symbol = Symbol.for("libo11y.setup") as never;
 
 type Timers = {
@@ -115,12 +128,14 @@ function wrap(prefix: string, err: unknown): Error {
 
 // deadline resolves after ms. Its timer is unref'd where the runtime allows, so a pending deadline
 // never holds the process open.
+// A timer that cannot be armed throws here, to the caller, rather than rejecting expired.
 function deadline(ms: number): { readonly expired: Promise<void>; cancel(): void } {
-  let handle: unknown;
+  let fire: () => void = () => {};
   const expired = new Promise<void>((resolve) => {
-    handle = timers.setTimeout(resolve, ms);
-    (handle as { unref?: () => void } | undefined)?.unref?.();
+    fire = resolve;
   });
+  const handle = timers.setTimeout(() => fire(), ms);
+  (handle as { unref?: () => void } | undefined)?.unref?.();
   return { expired, cancel: () => timers.clearTimeout(handle) };
 }
 
@@ -135,7 +150,7 @@ async function settle(step: () => Promise<void>, expired: Promise<void>): Promis
   }
 }
 
-function report(errors: { signal: Signal; error: unknown }[]): SignalReport {
+function report(errors: { signal: Signal | "lifecycle"; error: unknown }[]): SignalReport {
   return { ok: errors.length === 0, errors };
 }
 
@@ -254,8 +269,14 @@ class TelemetryHandle implements Telemetry {
     return steps;
   }
 
-  async forceFlush(opts?: LifecycleOptions): Promise<SignalReport> {
-    const timer = deadline(opts?.timeoutMillis ?? DEFAULT_TIMEOUT_MILLIS);
+  forceFlush(opts?: LifecycleOptions): Promise<SignalReport> {
+    return this.runFlush(clampTimeout(opts?.timeoutMillis)).catch((err: unknown) =>
+      report([{ signal: "lifecycle", error: err }]),
+    );
+  }
+
+  private async runFlush(timeoutMillis: number): Promise<SignalReport> {
+    const timer = deadline(timeoutMillis);
     const errors: { signal: Signal; error: unknown }[] = [];
     try {
       for (const step of this.steps()) {
@@ -275,9 +296,18 @@ class TelemetryHandle implements Telemetry {
   }
 
   shutdown(opts?: LifecycleOptions): Promise<SignalReport> {
-    this.shutdownPromise ??= this.runShutdown(opts?.timeoutMillis ?? DEFAULT_TIMEOUT_MILLIS).catch(
-      (err: unknown) => report([{ signal: "logs", error: err }]),
-    );
+    this.shutdownPromise ??= this.runShutdown(clampTimeout(opts?.timeoutMillis)).catch((err: unknown) => {
+      // runShutdown settles every signal itself, so this is a failure of the shutdown machinery.
+      // A global telemetry still gives its globals and the guard back.
+      if (this.installed !== undefined) {
+        try {
+          uninstall(this.installed);
+        } finally {
+          releaseGuard();
+        }
+      }
+      return report([{ signal: "lifecycle", error: err }]);
+    });
     return this.shutdownPromise;
   }
 

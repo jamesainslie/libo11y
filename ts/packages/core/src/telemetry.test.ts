@@ -18,7 +18,7 @@ import { O11yError } from "./errors.ts";
 import { exemplarMetricExporter, exemplarsOf } from "./exemplars.ts";
 import type { TelemetryOptions } from "./options.ts";
 import type { ExporterRequest, Platform, PlatformConsole } from "./platform.ts";
-import { createTelemetryWith, setupWith, type Telemetry } from "./telemetry.ts";
+import { createTelemetryWith, type SignalReport, setupWith, type Telemetry } from "./telemetry.ts";
 import { createTestPlatform, exemplarStoreOf } from "./testing.ts";
 
 const OPTIONS: TelemetryOptions = { serviceName: "svc", serviceVersion: "1.2.3", environment: "test" };
@@ -590,4 +590,63 @@ test("exemplarStoreOf lets a harness attach exemplars to an injected reader's co
     await t.shutdown();
   }
   assert.throws(() => exemplarStoreOf({} as Telemetry), TypeError);
+});
+
+function slowSpanExporter(ms: number): SpanExporter {
+  return {
+    export: (_b, cb) => cb({ code: 0 }),
+    shutdown: () => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+  };
+}
+
+test("timeoutMillis is clamped: Infinity is the timer maximum, a negative value is zero", async () => {
+  const forever = await createTelemetryWith(
+    { ...OPTIONS, hermetic: true, spanExporter: slowSpanExporter(50) },
+    rig().platform,
+  );
+  assert.deepEqual(await forever.shutdown({ timeoutMillis: Number.POSITIVE_INFINITY }), {
+    ok: true,
+    errors: [],
+  });
+  const flushed = await createTelemetryWith({ ...OPTIONS, hermetic: true }, rig().platform);
+  assert.deepEqual(await flushed.forceFlush({ timeoutMillis: 2 ** 40 }), { ok: true, errors: [] });
+  await flushed.shutdown();
+  const none = await createTelemetryWith(
+    { ...OPTIONS, hermetic: true, spanExporter: slowSpanExporter(50) },
+    rig().platform,
+  );
+  const report = await none.shutdown({ timeoutMillis: -5 });
+  assert.deepEqual(
+    report.errors.map((e) => [e.signal, (e.error as Error).message]),
+    [["traces", "o11y: shutdown traces: deadline exceeded"]],
+  );
+});
+
+test("an unexpected shutdown failure is reported on the lifecycle signal and still releases the guard", async () => {
+  const t = await setupWith({ ...OPTIONS, startupSummary: false }, rig().platform);
+  const g = globalThis as unknown as { setTimeout: unknown };
+  const saved = g.setTimeout;
+  g.setTimeout = () => {
+    throw new Error("no timers");
+  };
+  let pending: Promise<SignalReport>;
+  let flushed: Promise<SignalReport>;
+  try {
+    flushed = t.forceFlush();
+    pending = t.shutdown();
+  } finally {
+    g.setTimeout = saved;
+  }
+  assert.deepEqual(
+    (await flushed).errors.map((e) => e.signal),
+    ["lifecycle"],
+  );
+  const report = await pending;
+  assert.equal(report.ok, false);
+  assert.deepEqual(
+    report.errors.map((e) => [e.signal, (e.error as Error).message]),
+    [["lifecycle", "no timers"]],
+  );
+  assert.notEqual((globalThis as Record<symbol, unknown>)[GUARD], true);
+  assert.notEqual(metrics.getMeterProvider(), t.meterProvider);
 });

@@ -2,6 +2,10 @@
  * Span enforcement. An ended span is immutable, so redaction presents a view of it with the policy
  * applied to the span's, its events' and its links' attributes, and every other member delegated.
  * Keys are flat; map-valued attributes are judged on their own key.
+ *
+ * Documented gap: an injected span processor sees the live, unredacted span in onStart and in
+ * onEnding (the span is still mutable there, so no view can stand in for it); only onEnd gets the
+ * redacted view. Go's processor has the same gap in OnStart.
  */
 import type { Attributes, Context, Link } from "@opentelemetry/api";
 import type { ExportResult } from "@opentelemetry/core";
@@ -71,8 +75,8 @@ export function redactingSpanExporter(inner: SpanExporter, policy: SensitivityPo
 }
 
 /**
- * Wraps a caller's span processor: onStart sees the live span, as Go's does, and onEnd the redacted
- * view. Pass policy.silent() when an exporter also redacts, so one attribute counts once.
+ * Wraps a caller's span processor: onStart and onEnding see the live span (onStart as Go's does),
+ * and onEnd the redacted view. Pass policy.silent() when an exporter also redacts, so one attribute counts once.
  */
 export function redactingSpanProcessor(inner: SpanProcessor, policy: SensitivityPolicy): SpanProcessor {
   const processor: SpanProcessor = {
