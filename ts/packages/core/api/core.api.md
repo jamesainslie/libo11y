@@ -11,7 +11,7 @@ import type { ContextManager } from '@opentelemetry/api';
 import type { IMetricReader } from '@opentelemetry/sdk-metrics';
 import type { LogRecordExporter } from '@opentelemetry/sdk-logs';
 import type { MeterProvider } from '@opentelemetry/api';
-import type { Sampler } from '@opentelemetry/sdk-trace';
+import { Sampler } from '@opentelemetry/sdk-trace';
 import type { SpanExporter } from '@opentelemetry/sdk-trace';
 import type { SpanProcessor } from '@opentelemetry/sdk-trace';
 import type { TextMapPropagator } from '@opentelemetry/api';
