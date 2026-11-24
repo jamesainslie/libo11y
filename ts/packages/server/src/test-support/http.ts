@@ -53,9 +53,30 @@ async function serveOne(
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
-    res.write(value);
+    // Backpressure: read on only once the client has taken what was written.
+    if (!res.write(value) && !(await drained(res))) {
+      await reader.cancel().catch(() => {});
+      return;
+    }
   }
   res.end();
+}
+
+/** Waits for res to drain: true when it did, false when the connection closed first. */
+function drained(res: ServerResponse): Promise<boolean> {
+  if (res.destroyed) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const onDrain = (): void => {
+      res.off("close", onClose);
+      resolve(true);
+    };
+    const onClose = (): void => {
+      res.off("drain", onDrain);
+      resolve(false);
+    };
+    res.once("drain", onDrain);
+    res.once("close", onClose);
+  });
 }
 
 /** Starts a node:http server on a free loopback port and returns its base URL, without a trailing slash. */
