@@ -10,65 +10,88 @@ generic mechanism libo11y provides instead.
 
 Legend: full = implemented, idiom = implemented in a deliberately different,
 language-native form, planned = not yet started, excluded = will not be
-implemented (rationale given).
+implemented (rationale given), gap = a known limitation of a runtime or of
+upstream OpenTelemetry, with its issue.
 
-## Go module status
+The TypeScript columns describe the `@libo11y/*` packages on Bun 1.3.13 and
+Node 24. They are built on OpenTelemetry JS 3.x (`@opentelemetry/api`
+1.10.0, the SDK packages at 3.1.1 and the OTLP exporters at 0.301.1).
 
-| Capability | Go status | Go form |
+## Go and TypeScript status
+
+| Capability | Go status | Go form | TS status | TS form |
+|---|---|---|---|---|
+| Three OTLP signals (traces, metrics, logs) | full | all three on by default | full | all three on by default, over `http/protobuf` or `http/json` |
+| Explicit init returning an owned handle, typed init errors | full | `Setup`/`New` -> `SDK`; `ErrAlreadySetup`, `ErrNoServiceName`, `ErrNoEnvironment`, `ErrInvalidEnvironment`, `ErrPIIHashKey`, `ErrInvalidAppRegistry`, wrapped exporter errors | idiom | `setup`/`createTelemetry` -> `Telemetry`. One `O11yError` class whose `code` names the failure (`ALREADY_SETUP`, `NO_SERVICE_NAME`, `NO_ENVIRONMENT`, `INVALID_ENVIRONMENT`, `PII_HASH_KEY`, `INVALID_APP_REGISTRY`, `CANARY_REJECTED`, `UNSUPPORTED_PROTOCOL`, `EXPORTER`), with Go's messages |
+| Idempotent bounded shutdown, per-signal errors | full | `Shutdown` runs once (atomic election), flushes all signals concurrently under one deadline (5s default), aggregates with `errors.Join`; later and concurrent callers get the same result or their own context error | idiom | every `shutdown` call returns the first call's promise, which never rejects. Logs, metrics and traces stop concurrently under one deadline (5000 ms default), and the promise resolves a `SignalReport` with one error per failed signal |
+| One trace identity across logs/spans/wire | full | active span context read at emission, W3C on egress, adoption on ingress | full | the logger reads the active span context at emission, `instrumentFetch` injects W3C headers, `instrumentServe` adopts them |
+| Propagation independent of process globals | full | `New`-built SDKs propagate identically; middleware takes `WithSDK` | full | a `createTelemetry` handle propagates identically. `instrumentServe` and `instrumentFetch` take `telemetry` |
+| W3C TraceContext + Baggage default propagator | full | composite, replaceable via variadic `WithPropagators`; the baggage egress filter still wraps a replacement | full | composite, replaceable through `propagators`. The baggage egress filter still wraps a replacement |
+| Baggage egress filter | full | inject-only filter seam around every configured propagator, including one from `WithPropagators`; default predicate allows every key; extraction is never altered | full | inject-only filter around every configured propagator, including one from `propagators`. The default predicate allows every key, and extraction is never altered |
+| Standard env interop (OTEL_*) | full | delegated to autoexport and resource detection; no proprietary env vars | idiom | upstream exporters read `OTEL_EXPORTER_OTLP_*` and upstream detectors read the resource variables. libo11y reads `OTEL_SDK_DISABLED`, `OTEL_*_EXPORTER`, the `OTEL_EXPORTER_OTLP_*PROTOCOL` variables, `OTEL_TRACES_SAMPLER`, `OTEL_METRICS_EXEMPLAR_FILTER`, `OTEL_BSP_*`, `OTEL_BLRP_*` and the metric export variables itself, because in OpenTelemetry JS 3.x only sdk-node maps them and it exports no helper for it. No proprietary variables |
+| Hermetic mode independent of OTEL_* | full | `WithoutOTELEnv`: options and library defaults only, un-injected signals disabled, environment resource keys the library resource does not define shadowed with empty values; the experimental `OTEL_GO_X_PER_SERIES_START_TIMESTAMPS` and `OTEL_GO_X_DEPRECATED_RUNTIME_METRICS` switches have no overriding option and still apply | full | `hermetic: true`. Options and library defaults only, and a signal with nothing injected is off. No environment shadowing is needed (see the TypeScript-only rows) |
+| Init canary (sink-verified startup) | full | `o11y.telemetry.configured` event forced through the pipeline in `Setup`; a synchronously-rejecting sink fails Setup; `New` runs no canary | full | `setup` forces `o11y.telemetry.configured` through the pipeline before it installs any global. A sink that rejects it synchronously fails setup with `CANARY_REJECTED`. `createTelemetry` runs no canary |
+| Effective-config line | full | startup event with `o11y.config.*` attributes (endpoints without userinfo, query, or fragment) + `SDK.EffectiveConfig()` | full | the canary's `o11y.config.*` attributes, with endpoints sanitized as Go sanitizes them (`conformance/vectors/endpoint-sanitize.json`), and `Telemetry.effectiveConfig()`. The exporter values are the resolved routes, where Go echoes the raw variable |
+| Always-emit mechanism for audit records | full | `o11y.ForceEmit(ctx)` context marker bypassing level gates | full | `forceEmit(ctx?)` from `@libo11y/core` returns a context that bypasses level gates |
+| Attribute replacer across all slog sinks | full | `WithAttrReplacer`, uniform on the console, OTLP slog, and extra sinks; records from other bridges on `SDK.LoggerProvider` do not pass through it | full | `attrReplacer`, applied on the console and OTLP legs before classification. Records from other bridges on `Telemetry.loggerProvider` do not pass through it |
+| Capture-time redaction | full | `slog.LogValuer` + `o11y` struct tags (`mask`, `redact`, `omit`, and the spec vocabulary `confidential` and `secret`) via `redact.Secret`, `redact.Masked`, `redact.Struct`; guards slog, fmt, and JSON surfaces; cycles and depth fail closed | planned | no counterpart of the `redact` package yet. Key-based classification still applies to every signal |
+| Middleware: HTTP server | full | `o11yhttp` over otelhttp, route-aware names, stable HTTP semconv, `WithPublicEndpoint` | idiom | `instrumentServe` wraps fetch-style handlers (`Bun.serve`, Hono, Elysia, `node:http` adapters) with route-aware names, stable HTTP semconv, `publicEndpoint`, `serverTiming` and `canonicalLine` |
+| Middleware: HTTP client | full | `o11yhttp.NewTransport` | idiom | `instrumentFetch` wraps a fetch function and never patches `globalThis.fetch`, so it also works on Bun. `propagate` decides injection per destination, and `peerService` names the callee |
+| Middleware: gRPC | full | `o11ygrpc` stats handlers (server + client), `WithPublicEndpoint`, `WithIgnoreHealthChecks` | planned | no gRPC instrumentation in `ts/v0.1.0` |
+| Middleware: alternative web framework | full | `o11ygin` (nested module, Gin): `WithFilter`, `WithIgnorePaths`, `WithSpanNameFormatter`; no public-endpoint or canonical-line counterpart (otelgin has no mechanism for either) | idiom | no per-framework package. `instrumentServe` covers every fetch-style framework, and `setRoute` sets `http.route` for frameworks that route inside their own handler, such as TanStack Start |
+| Middleware: Connect RPC | full | `o11yconnect` (nested module, otelconnect, connect-go v1): server and client interceptors, adopt by default, `WithPublicEndpoint`, `WithIgnoreHealthChecks`, `WithCanonicalLine` (needs `WithSDK`); a panicking handler marks the server span Error; `rpc.system.name` reports the wire protocol (`connectrpc` or `grpc`) | planned | not in `ts/v0.1.0` |
+| Database client instrumentation | full | `o11ysql` (nested module, libo11y's own connector wrapper): semconv client spans only under a parent, `db.client.operation.duration` with exemplars, pool metrics from `sql.DB.Stats`; sanitized `db.query.text` only for `postgresql`, `sqlite`, `mysql`, and `mariadb` | planned | not in `ts/v0.1.0` |
+| Detached work (jobs, queues) | full | `Capture` -> `Carrier` (text and SQL serializable, at most 32 KiB, egress-filtered baggage), `StartLinked` starts a linked root span and merges the carrier's baggage; `SDK.Capture`, `SDK.StartLinked` for `New` | planned | not in `ts/v0.1.0` |
+| Child-process and framed-socket propagation | full | `o11yproc`: `TRACEPARENT`/`TRACESTATE` environment carriers, `Inject`/`Extract` over `map[string]string` | planned | not in `ts/v0.1.0` |
+| Application attribute registry at runtime | full | `WithAppRegistry(fs.FS, path)`: validated at init, keys classified like spec keys on every signal; sensitivity only, not cardinality | full | the `registry` option (raw or compiled) and `loadAppRegistry(path)`, validated at init with Go's messages. Sensitivity only, not cardinality |
+| Ignore lists for noise endpoints | full | `WithIgnorePaths` globs (HTTP, Gin); `WithIgnoreHealthChecks` (gRPC, Connect) | full | `ignorePaths` globs on `instrumentServe`, matched like Go `path.Match` against the decoded path. No health-check option, as there is no gRPC |
+| Resource: host/process detectors | full | host, process runtime, telemetry SDK | full | telemetry SDK, `process.runtime.*` (`bun` or `nodejs`) and `host.name`. Never the command line, the pid or `host.id` |
+| Resource: container detector | full | `resource.WithContainer` (container.id) | full | upstream `resource-detector-container` (`container.id`) |
+| Resource: Kubernetes identity | idiom | via Downward API + OTEL_RESOURCE_ATTRIBUTES; no in-process detector exists in otel-go | idiom | via Downward API + `OTEL_RESOURCE_ATTRIBUTES`, as in Go. The server README has the manifest snippet |
+| Resource: build info | full | `debug.ReadBuildInfo` detector: service.version (when real), `vcs.ref.head.revision`, `o11y.build.time`, `o11y.build.modified`; `WithoutBuildInfo` opt-out | excluded | a JavaScript runtime embeds no module build info or VCS stamp. Set `serviceVersion`, and pass `vcs.ref.head.revision` through `resourceAttributes` when the build knows it |
+| Runtime metrics | full | contrib runtime, on by default | full | upstream `RuntimeNodeInstrumentation` on the telemetry's meter provider, on by default, `runtimeMetrics: false` to turn off. On Bun there is no `nodejs.eventloop.utilization` (always zero, oven-sh/bun#34068) and there are no `v8js.*` metrics. Its require hook outlives `shutdown()` |
+| Histogram bucket control | full | `WithHistogramBuckets`, `WithViews` | full | `histogramBuckets`, `views` |
+| Exemplars (metric-to-trace reconciliation) | full | on by default (trace-based); `WithExemplarFilter` + OTEL_METRICS_EXEMPLAR_FILTER; verified through otelhttp instruments; `o11ytest.Recorder.Exemplars` for consumer assertions | idiom | on by default (trace-based), sampled by libo11y because upstream records none (see the TypeScript-only rows). `exemplarFilter` + `OTEL_METRICS_EXEMPLAR_FILTER`. `Recorder.exemplars` for consumer assertions |
+| Sampler configuration | full | OTEL_TRACES_SAMPLER + `WithTraceSampler` | full | `OTEL_TRACES_SAMPLER` + `sampler` |
+| TLS for exporters | full | standard OTEL_EXPORTER_OTLP_CERTIFICATE et al. (env-driven, exporter-owned) | full | standard `OTEL_EXPORTER_OTLP_CERTIFICATE`, `OTEL_EXPORTER_OTLP_CLIENT_KEY` and `OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE`, read by upstream's exporters |
+| Signal-driven shutdown helper | full | `SDK.ShutdownOnSignals` (blocks until a signal or the context ends, restores handling on first signal, bounded flush) | full | `shutdownOnSignals` resolves with the shutdown report after the first signal, removes its other listeners, and runs `beforeShutdown` first so the HTTP server stops before telemetry does |
+| Hermetic test harness | full | `o11ytest` (built with `WithoutOTELEnv`) with span/metric/log recorders, correlation and conformance assertions (`AssertConforms`, `AssertCorrelated`) | full | `@libo11y/test`: `createRecorder` (hermetic) records spans, metrics and logs, with `assertConforms`, `assertCorrelated` and `assertTriangle` |
+| OTLP wire-level verification | full | in-process OTLP gRPC and HTTP receivers assert exported payloads, sensitivity, and correlation, through injected exporters and through environment configuration | full | `startOtlpSink`, an in-process OTLP/HTTP receiver that decodes JSON and protobuf, plain or gzip. No gRPC receiver, as the TS exporters speak HTTP only |
+| Centralized telemetry specification | full | semconv-format registry under `spec/`, Go policy checks (`make spec-check`), code generation to `go/spec` + `go/internal/spectables`, `docs/taxonomy` | full | the same registry generates `@libo11y/spec` (`ts/packages/spec/src/generated`). The `libo11y registry check` bin matches the Go binary |
+| Tiered resource identity enforced at init | full | tier-0 required (`service.name`, `deployment.environment.name` enum-validated, `service.version` fallback); `WithEnvironment`, `WithServiceNamespace`, `WithoutStrictIdentity` | full | tier-0 required, `deployment.environment.name` enum-validated, the `0.0.0-unknown` version fallback. `environment`, `serviceNamespace`, `strictIdentity: false` |
+| service.instance.id derivation | full | UUIDv5 from k8s pod identity (Downward API), else UUIDv4 | full | the same derivation, proven by `conformance/vectors/instance-id.json` |
+| Single schema URL per resource | full | `spec.SchemaURL` (`https://schemas.o11y.ing/libo11y/1.2.0`) restamped on the composed resource. One schema file is generated per spec version, and the current one is `spec/schemas/1.2.0`, served at that URL | full | `SCHEMA_URL` from `@libo11y/spec` on the composed resource |
+| Sensitivity classification: one policy | full | one key-based policy per SDK, generated table; secrets dropped; PII dropped by default (`WithPIIMode`), keyed HMAC tokens under `PIIHash` (`WithPIIHashKey`); `o11y.schema.violations` self-metric. Not fail-closed for values under unclassified keys (use `redact`) | full | one key-based policy per telemetry from the generated tables. `piiMode`, `piiHashKey` with Go's token format (`conformance/vectors/pii-hash.json`), the `o11y.schema.violations` self-metric. Not fail-closed for values under unclassified keys |
+| Sensitivity: slog sinks | full | classifying wrapper on the console, extra, and OTLP slog legs; grouped keys and Go maps, slices, and pointers walked with cycle detection and a 2048-node budget, failing closed | idiom | the libo11y logger has no slog. It classifies the console and OTLP legs per sink, walking nested objects and arrays on their dotted keys, and drops what lies past depth 16, on a cycle, or past a 2048-node budget |
+| Sensitivity: OTLP log processor | full | redacting processor on the SDK's LoggerProvider classifies every record from other bridges, including through the global provider after `Setup`; record bodies not classified | full | a redacting processor on the logger provider classifies every record from other bridges, including through the global provider after `setup`. Record bodies not classified |
+| Sensitivity: span redaction | full | exporter wrapper redacts span, event, and link attributes; each violation counted once | full | exporter wrapper redacts span, event and link attributes |
+| Sensitivity: span processor wrapping | full | injected processors receive redacted spans in `OnEnd`; `OnStart` sees the live span | full | an injected `spanProcessor` gets the redacted span in `onEnd`. `onStart` and `onEnding` see the live span |
+| Sensitivity: resource classification | full | resource classified at construction; dropped environment keys shadowed with empty values | full | resource classified at construction. No environment shadowing is needed (see the TypeScript-only rows) |
+| Sensitivity: metric classification | full | wrapped views and exemplar reservoirs on every stream of the SDK's own instruments; PII dropped even under `PIIHash`; instrument advisory attribute keys no longer honored; metrics from producers (`OTEL_METRICS_PRODUCERS`, readers built with `sdkmetric.WithProducer`) bypass views and are not classified | idiom | the meter provider classifies each measurement's attributes at record time, which covers every stream a view derives, and classifies observable callbacks' results. PII dropped even under `"hash"`. Not counted, as in Go |
+| Event API and wide events | full | `SDK.Event`, `Record` accumulator, `o11yhttp.WithCanonicalLine`, `o11yconnect.WithCanonicalLine` | full | `Telemetry.event`, `startRecord`/`currentRecord` wide records, `instrumentServe` `canonicalLine` |
+| Emit-time span validator | planned | dev-on/prod-observe validating span processor and metric-label allowlist | planned | as in Go |
+| Cross-language OTLP conformance (golden corpus) | planned | harness is language-agnostic; wired when a second language starts | planned | the shared vectors under `conformance/` cover the instance ID, the PII token, endpoint sanitizing and the registry check. The OTLP golden corpus is not wired yet |
+| Log/span event deduplication | excluded | a Rust-ecosystem bridge concern (dual emission through the tracing/OTEL layers); the problem does not exist in Go's slog architecture | excluded | as in Go, a Rust-ecosystem concern. The libo11y logger writes each record once per sink |
+| Config file layering (YAML/TOML) | excluded | superseded by OTEL declarative config; adopt contrib otelconf (OTEL_CONFIG_FILE) once its Go implementation stabilizes | excluded | as in Go, superseded by OTEL declarative config |
+| Metrics cardinality cap + gauge | planned | otel-go v1.47.0 now has `sdkmetric.WithCardinalityLimit` (default 2000, which `WithoutOTELEnv` pins; otherwise `OTEL_GO_X_CARDINALITY_LIMIT` applies); libo11y exposes no option for it yet | planned | the platform's reader keeps upstream sdk-metrics' default limit of 2000 series per instrument. An injected `metricReader` can set `cardinalityLimits`. libo11y exposes no option for it yet |
+
+## TypeScript-only rows
+
+These rows have no Go counterpart, or they record why the TypeScript form
+differs.
+
+| Capability | TS status | TS form and reason |
 |---|---|---|
-| Three OTLP signals (traces, metrics, logs) | full | all three on by default |
-| Explicit init returning an owned handle, typed init errors | full | `Setup`/`New` -> `SDK`; `ErrAlreadySetup`, `ErrNoServiceName`, `ErrNoEnvironment`, `ErrInvalidEnvironment`, `ErrPIIHashKey`, `ErrInvalidAppRegistry`, wrapped exporter errors |
-| Idempotent bounded shutdown, per-signal errors | full | `Shutdown` runs once (atomic election), flushes all signals concurrently under one deadline (5s default), aggregates with `errors.Join`; later and concurrent callers get the same result or their own context error |
-| One trace identity across logs/spans/wire | full | active span context read at emission, W3C on egress, adoption on ingress |
-| Propagation independent of process globals | full | `New`-built SDKs propagate identically; middleware takes `WithSDK` |
-| W3C TraceContext + Baggage default propagator | full | composite, replaceable via variadic `WithPropagators`; the baggage egress filter still wraps a replacement |
-| Baggage egress filter | full | inject-only filter seam around every configured propagator, including one from `WithPropagators`; default predicate allows every key; extraction is never altered |
-| Standard env interop (OTEL_*) | full | delegated to autoexport and resource detection; no proprietary env vars |
-| Hermetic mode independent of OTEL_* | full | `WithoutOTELEnv`: options and library defaults only, un-injected signals disabled, environment resource keys the library resource does not define shadowed with empty values; the experimental `OTEL_GO_X_PER_SERIES_START_TIMESTAMPS` and `OTEL_GO_X_DEPRECATED_RUNTIME_METRICS` switches have no overriding option and still apply |
-| Init canary (sink-verified startup) | full | `o11y.telemetry.configured` event forced through the pipeline in `Setup`; a synchronously-rejecting sink fails Setup; `New` runs no canary |
-| Effective-config line | full | startup event with `o11y.config.*` attributes (endpoints without userinfo, query, or fragment) + `SDK.EffectiveConfig()` |
-| Always-emit mechanism for audit records | full | `o11y.ForceEmit(ctx)` context marker bypassing level gates |
-| Attribute replacer across all slog sinks | full | `WithAttrReplacer`, uniform on the console, OTLP slog, and extra sinks; records from other bridges on `SDK.LoggerProvider` do not pass through it |
-| Capture-time redaction | full | `slog.LogValuer` + `o11y` struct tags (`mask`, `redact`, `omit`, and the spec vocabulary `confidential` and `secret`) via `redact.Secret`, `redact.Masked`, `redact.Struct`; guards slog, fmt, and JSON surfaces; cycles and depth fail closed |
-| Middleware: HTTP server | full | `o11yhttp` over otelhttp, route-aware names, stable HTTP semconv, `WithPublicEndpoint` |
-| Middleware: HTTP client | full | `o11yhttp.NewTransport` |
-| Middleware: gRPC | full | `o11ygrpc` stats handlers (server + client), `WithPublicEndpoint`, `WithIgnoreHealthChecks` |
-| Middleware: alternative web framework | full | `o11ygin` (nested module, Gin): `WithFilter`, `WithIgnorePaths`, `WithSpanNameFormatter`; no public-endpoint or canonical-line counterpart (otelgin has no mechanism for either) |
-| Middleware: Connect RPC | full | `o11yconnect` (nested module, otelconnect, connect-go v1): server and client interceptors, adopt by default, `WithPublicEndpoint`, `WithIgnoreHealthChecks`, `WithCanonicalLine` (needs `WithSDK`); a panicking handler marks the server span Error; `rpc.system.name` reports the wire protocol (`connectrpc` or `grpc`) |
-| Database client instrumentation | full | `o11ysql` (nested module, libo11y's own connector wrapper): semconv client spans only under a parent, `db.client.operation.duration` with exemplars, pool metrics from `sql.DB.Stats`; sanitized `db.query.text` only for `postgresql`, `sqlite`, `mysql`, and `mariadb` |
-| Detached work (jobs, queues) | full | `Capture` -> `Carrier` (text and SQL serializable, at most 32 KiB, egress-filtered baggage), `StartLinked` starts a linked root span and merges the carrier's baggage; `SDK.Capture`, `SDK.StartLinked` for `New` |
-| Child-process and framed-socket propagation | full | `o11yproc`: `TRACEPARENT`/`TRACESTATE` environment carriers, `Inject`/`Extract` over `map[string]string` |
-| Application attribute registry at runtime | full | `WithAppRegistry(fs.FS, path)`: validated at init, keys classified like spec keys on every signal; sensitivity only, not cardinality |
-| Ignore lists for noise endpoints | full | `WithIgnorePaths` globs (HTTP, Gin); `WithIgnoreHealthChecks` (gRPC, Connect) |
-| Resource: host/process detectors | full | host, process runtime, telemetry SDK |
-| Resource: container detector | full | `resource.WithContainer` (container.id) |
-| Resource: Kubernetes identity | idiom | via Downward API + OTEL_RESOURCE_ATTRIBUTES; no in-process detector exists in otel-go |
-| Resource: build info | full | `debug.ReadBuildInfo` detector: service.version (when real), `vcs.ref.head.revision`, `o11y.build.time`, `o11y.build.modified`; `WithoutBuildInfo` opt-out |
-| Runtime metrics | full | contrib runtime, on by default |
-| Histogram bucket control | full | `WithHistogramBuckets`, `WithViews` |
-| Exemplars (metric-to-trace reconciliation) | full | on by default (trace-based); `WithExemplarFilter` + OTEL_METRICS_EXEMPLAR_FILTER; verified through otelhttp instruments; `o11ytest.Recorder.Exemplars` for consumer assertions |
-| Sampler configuration | full | OTEL_TRACES_SAMPLER + `WithTraceSampler` |
-| TLS for exporters | full | standard OTEL_EXPORTER_OTLP_CERTIFICATE et al. (env-driven, exporter-owned) |
-| Signal-driven shutdown helper | full | `SDK.ShutdownOnSignals` (blocks until a signal or the context ends, restores handling on first signal, bounded flush) |
-| Hermetic test harness | full | `o11ytest` (built with `WithoutOTELEnv`) with span/metric/log recorders, correlation and conformance assertions (`AssertConforms`, `AssertCorrelated`) |
-| OTLP wire-level verification | full | in-process OTLP gRPC and HTTP receivers assert exported payloads, sensitivity, and correlation, through injected exporters and through environment configuration |
-| Centralized telemetry specification | full | semconv-format registry under `spec/`, Go policy checks (`make spec-check`), code generation to `go/spec` + `go/internal/spectables`, `docs/taxonomy` |
-| Tiered resource identity enforced at init | full | tier-0 required (`service.name`, `deployment.environment.name` enum-validated, `service.version` fallback); `WithEnvironment`, `WithServiceNamespace`, `WithoutStrictIdentity` |
-| service.instance.id derivation | full | UUIDv5 from k8s pod identity (Downward API), else UUIDv4 |
-| Single schema URL per resource | full | `spec.SchemaURL` (`https://schemas.o11y.ing/libo11y/1.2.0`) restamped on the composed resource. One schema file is generated per spec version, and the current one is `spec/schemas/1.2.0`, served at that URL |
-| Sensitivity classification: one policy | full | one key-based policy per SDK, generated table; secrets dropped; PII dropped by default (`WithPIIMode`), keyed HMAC tokens under `PIIHash` (`WithPIIHashKey`); `o11y.schema.violations` self-metric. Not fail-closed for values under unclassified keys (use `redact`) |
-| Sensitivity: slog sinks | full | classifying wrapper on the console, extra, and OTLP slog legs; grouped keys and Go maps, slices, and pointers walked with cycle detection and a 2048-node budget, failing closed |
-| Sensitivity: OTLP log processor | full | redacting processor on the SDK's LoggerProvider classifies every record from other bridges, including through the global provider after `Setup`; record bodies not classified |
-| Sensitivity: span redaction | full | exporter wrapper redacts span, event, and link attributes; each violation counted once |
-| Sensitivity: span processor wrapping | full | injected processors receive redacted spans in `OnEnd`; `OnStart` sees the live span |
-| Sensitivity: resource classification | full | resource classified at construction; dropped environment keys shadowed with empty values |
-| Sensitivity: metric classification | full | wrapped views and exemplar reservoirs on every stream of the SDK's own instruments; PII dropped even under `PIIHash`; instrument advisory attribute keys no longer honored; metrics from producers (`OTEL_METRICS_PRODUCERS`, readers built with `sdkmetric.WithProducer`) bypass views and are not classified |
-| Event API and wide events | full | `SDK.Event`, `Record` accumulator, `o11yhttp.WithCanonicalLine`, `o11yconnect.WithCanonicalLine` |
-| Emit-time span validator | planned | dev-on/prod-observe validating span processor and metric-label allowlist |
-| Cross-language OTLP conformance (golden corpus) | planned | harness is language-agnostic; wired when a second language starts |
-| Log/span event deduplication | excluded | a Rust-ecosystem bridge concern (dual emission through the tracing/OTEL layers); the problem does not exist in Go's slog architecture |
-| Config file layering (YAML/TOML) | excluded | superseded by OTEL declarative config; adopt contrib otelconf (OTEL_CONFIG_FILE) once its Go implementation stabilizes |
-| Metrics cardinality cap + gauge | planned | otel-go v1.47.0 now has `sdkmetric.WithCardinalityLimit` (default 2000, which `WithoutOTELEnv` pins; otherwise `OTEL_GO_X_CARDINALITY_LIMIT` applies); libo11y exposes no option for it yet |
+| Exemplars built by libo11y | idiom | `@opentelemetry/sdk-metrics` 3.1.1 records no exemplars, and `otlp-transformer` serializes none ([open-telemetry/opentelemetry-js#5147](https://github.com/open-telemetry/opentelemetry-js/issues/5147)). The core's meter-provider wrapper samples them, and libo11y's serializers write them over upstream's OTLP transport, which keeps retries, compression and headers. libo11y will switch to upstream exemplars behind the same API once they ship |
+| OTLP over HTTP only | idiom | `http/protobuf` (default) and `http/json`. `grpc` for any signal exported over OTLP fails `setup` and `createTelemetry` with `UNSUPPORTED_PROTOCOL`, because gRPC under Bun is unverified and would add `@grpc/grpc-js`. gRPC can come later in a minor release |
+| The recorder's context manager | idiom | OpenTelemetry JS keeps one context manager per process. When none is registered, `createRecorder` installs an `AsyncLocalStorageContextManager` and removes it when the last recorder shuts down. It is the only global the harness touches. Go passes context explicitly, so `o11ytest` needs none |
+| Bun 1.3.13 context gaps | gap | the `AsyncLocalStorage` context is lost in an async generator used as a `Bun.serve` body ([oven-sh/bun#24199](https://github.com/oven-sh/bun/issues/24199)), in a thenable returned after an `await` ([oven-sh/bun#34266](https://github.com/oven-sh/bun/issues/34266)) and in `unhandledRejection` listeners ([oven-sh/bun#40223](https://github.com/oven-sh/bun/issues/40223)). `instrumentServe` ends its spans correctly regardless. Tests mark each gap and fail when Bun fixes it |
+| Exemplars go to the first reader | gap | the exemplar store hands each sample to the first reader that collects, so with several metric readers the others get no exemplars for it |
+| Export timeout default of 5 s | idiom | `OTEL_BSP_EXPORT_TIMEOUT`, `OTEL_BLRP_EXPORT_TIMEOUT` and `OTEL_METRIC_EXPORT_TIMEOUT` default to 5000 ms, where sdk-node uses 30000 ms. Upstream's batch processors and periodic reader arm an export timer that keeps the process alive, so a hung exporter would hold an exiting process for the full timeout even after shutdown resolved. 5000 ms matches the shutdown deadline. An explicit variable still wins |
+| `logProcessor` | idiom | the counterpart of Go's `WithExtraLogHandler`. It is a log record processor after the redacting processor and before the batch processor, so it sees each classified record synchronously in `onEmit` |
+| Unclassified record body | gap | the policy classifies attributes by key, never a log record's body. Go has the same gap |
+| No environment-resource shadowing | idiom | the JS providers do not merge the environment resource themselves, so a key the policy drops from `OTEL_RESOURCE_ATTRIBUTES` cannot return. Go shadows such keys with empty values because its SDK reads the environment again. A test proves a PII key from the environment is absent from exported spans |
+| Kubernetes identity through `OTEL_RESOURCE_ATTRIBUTES` | idiom | the server platform has no Downward API detector. A detector would need environment variable names of its own, and libo11y reads only `OTEL_*`. Go has no detector either. The server README has the manifest snippet |
 
 ## Policy-layer capabilities (out of scope for a generic library)
 
@@ -80,9 +103,10 @@ implemented (rationale given).
 | Vendor-prefixed metric naming schemes | OTEL stable semantic conventions |
 | Organization-specific source-link rewriting | plain VCS attributes from build info |
 
-## Rust / Java / Zig
+## Rust, Java and Zig
 
-Planned. Each implementation will be tracked here against the same baseline
-when it starts, with its own idiom column (for example: Rust expresses
-capture-time redaction as a derive macro with Display-only output; Java
-expresses the harness over the OTEL Java testing SDK).
+No implementation exists yet. When one starts, it gets its own status and
+form columns in the matrix above, against the same baseline. Rust, for
+example, may express capture-time redaction as a derive macro with
+Display-only output, and Java may build the harness over the OTEL Java
+testing SDK.

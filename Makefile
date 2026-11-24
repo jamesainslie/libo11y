@@ -8,7 +8,7 @@ GO_TEST_P ?= 4
 # gate runs on each module separately.
 GO_MODULES := go go/o11ygin go/o11yconnect go/o11ysql
 
-.PHONY: spec-check spec-generate spec-drift test lint vet tidy-check vuln release-check schema-published schema-published-test release-notes-test ts-install ts-check ci
+.PHONY: spec-check spec-generate spec-drift test lint vet tidy-check vuln release-check schema-published schema-published-test release-notes-test release-tag-test ts-install ts-check ci
 
 # Validate the spec registry against the libo11y policy suite (naming,
 # ownership, sensitivity, cardinality, events, units).
@@ -66,7 +66,7 @@ RELEASE_VERSION ?= v0.2.0
 # validates. Like RELEASE_VERSION, it moves only in a release commit,
 # together with the packages' versions (bun scripts/release.ts version).
 # The packages stay at 0.0.0 until the first TypeScript release.
-TS_RELEASE_VERSION ?= v0.0.0
+TS_RELEASE_VERSION ?= v0.1.0
 
 # Validate the release sequence (go/RELEASE_VERSION and
 # go/<sub>/RELEASE_VERSION for every Go submodule, o11ygin, o11yconnect
@@ -92,6 +92,11 @@ schema-published-test:
 release-notes-test:
 	scripts/release-notes_test.sh
 
+# Test release-tag.sh, which routes a release tag to its family, directory,
+# module and version in the release workflow.
+release-tag-test:
+	scripts/release-tag_test.sh
+
 # vuln runs last: it depends on the advisory database and the toolchain's
 # patch level, so local runs exercise every other gate first.
-ci: lint vet test tidy-check spec-check spec-drift ts-check schema-published-test release-notes-test release-check vuln
+ci: lint vet test tidy-check spec-check spec-drift ts-check schema-published-test release-notes-test release-tag-test release-check vuln

@@ -10,12 +10,20 @@ no dependencies.
 npm install @libo11y/spec
 ```
 
+| Entry point          | What it holds                                                                                                                                                   |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@libo11y/spec`      | the generated constants and tables, `SPEC_VERSION`, `SEMCONV_VERSION`, `SCHEMA_URL`, `validateAppRegistry` and `compileAppRegistry`. It imports no other module |
+| `@libo11y/spec/yaml` | `parseAppRegistry` and `parseAppRegistryBytes`. It is the only entry point that imports the `yaml` package, which the install brings in                         |
+| the `libo11y` bin    | `libo11y registry check FILE...`                                                                                                                                |
+
 ## Spec constants
 
 ```ts
 import { ATTR_OUTCOME, SCHEMA_URL, SENSITIVITY_OF } from "@libo11y/spec";
 
 SENSITIVITY_OF.get("o11y.tenant.id"); // "internal"
+SENSITIVITY_OF.get(ATTR_OUTCOME); // "public", for o11y.outcome
+SCHEMA_URL; // "https://schemas.o11y.ing/libo11y/1.2.0"
 ```
 
 ## Application registries
@@ -73,3 +81,5 @@ npx libo11y registry check o11y-registry.yaml
 
 The specification itself is
 [docs/SPEC.md](https://github.com/jamesainslie/libo11y/blob/main/docs/SPEC.md).
+[docs/PARITY.md](https://github.com/jamesainslie/libo11y/blob/main/docs/PARITY.md)
+lists where the TypeScript packages match Go and where they differ.
