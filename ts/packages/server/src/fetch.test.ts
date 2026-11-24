@@ -333,3 +333,34 @@ test("a URL fetch cannot parse goes straight to fetch, uninstrumented", async ()
     await rec.shutdown();
   }
 });
+
+test("a throwing propagate is treated as false, and the request is sent and its span ended", async () => {
+  await withRig(async (rec, base) => {
+    const traced = instrumentFetch(fetch, {
+      telemetry: rec.telemetry,
+      propagate: () => {
+        throw new Error("policy broke");
+      },
+    });
+    const got = (await inParent(rec, async () => (await traced(`${base}/x`)).json() as Promise<Echo>)).result;
+    assert.equal(got.headers.traceparent, undefined);
+    const span = onlyClient(rec);
+    assert.equal(span.attributes["http.response.status_code"], 200);
+    assert.equal(span.status.code, SpanStatusCode.UNSET);
+  });
+});
+
+test("headers that cannot be copied fail the request through fetch's own error and end the span", async () => {
+  const rec = await createRecorder();
+  try {
+    const traced = instrumentFetch((async () => new Response("unreached")) as unknown as typeof fetch, {
+      telemetry: rec.telemetry,
+    });
+    await assert.rejects(traced("http://svc/", { headers: [["bad name", "v"]] }), TypeError);
+    const span = onlyClient(rec);
+    assert.equal(span.status.code, SpanStatusCode.ERROR);
+    assert.equal(span.attributes["error.type"], "TypeError");
+  } finally {
+    await rec.shutdown();
+  }
+});
