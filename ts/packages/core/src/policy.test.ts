@@ -268,3 +268,15 @@ test("logAttributes keeps each group's own member order", () => {
   const out = p.logAttributes({ host: { z: "1", ip: "x", a: "2" } }) as { host: Record<string, string> };
   assert.deepEqual(Object.keys(out.host), ["z", "a"]);
 });
+
+// Review C1, defence in depth: an empty segment in a group path does not change the dotted key.
+test("logAttributes judges a member of an empty-keyed group on the parent's path", () => {
+  const policy = SensitivityPolicy.create({ pii: "drop", registries: [] });
+  assert.deepEqual(
+    policy.logAttributes({
+      "": { "http.request.header.authorization": "s", ok: 1 },
+      http: { "": { "request.header.authorization": "s" }, ok: 2 },
+    } as never),
+    { "": { ok: 1 }, http: { ok: 2 } },
+  );
+});

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { runInNewContext } from "node:vm";
 import { captureConsole, formatConsoleArgs } from "./console-capture.ts";
 import { ConsoleSink } from "./console-sink.ts";
 import { CoreLogger, LogPipeline } from "./logger.ts";
@@ -115,4 +116,14 @@ test("restore puts every original method back", () => {
   assert.deepEqual(calls, [["log", ["after"]]]);
   restore(); // a second restore is harmless
   assert.ok(METHODS.every((m, i) => target[m] === originals[i]));
+});
+
+test("an Error from another realm expands to exception.*", () => {
+  const { target, lines, logger } = harness();
+  const restore = captureConsole(target, logger);
+  target.error(runInNewContext("new SyntaxError('far')"));
+  restore();
+  const rec = parsed(lines[0]);
+  assert.equal(rec.msg, "SyntaxError: far");
+  assert.equal(rec["exception.type"], "SyntaxError");
 });

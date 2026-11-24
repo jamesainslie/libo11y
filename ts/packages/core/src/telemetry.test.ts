@@ -445,3 +445,31 @@ test("non-strict identity counts resource violations on o11y.schema.violations",
     await t.shutdown();
   }
 });
+
+test("review C1: an empty-keyed group cannot leak through setup's sinks, with console capture on", async () => {
+  const calls: unknown[][] = [];
+  const target: PlatformConsole = {
+    log: (...a) => void calls.push(a),
+    info: (...a) => void calls.push(a),
+    warn: (...a) => void calls.push(a),
+    error: (...a) => void calls.push(a),
+    debug: (...a) => void calls.push(a),
+    trace: (...a) => void calls.push(a),
+  };
+  const { platform, logs } = rig({ console: target });
+  const t = await createTelemetryWith({ ...OPTIONS, captureConsole: true }, platform);
+  try {
+    t.logger.info("m", {
+      "": { "http.request.header.authorization": "Bearer SECRET", "host.ip": "1.2.3.4" },
+    } as never);
+    t.logger.info("m2", { http: { "": { "request.header.authorization": "Bearer SECRET2" } } } as never);
+    target.error("captured", new Error("boom"));
+    await t.forceFlush();
+    const all = `${platform.lines.join("\n")}\n${JSON.stringify(logs.getFinishedLogRecords().map((r) => r.attributes))}`;
+    for (const leaked of ["SECRET", "1.2.3.4"]) assert.ok(!all.includes(leaked), `${leaked} leaked:\n${all}`);
+    assert.equal(logs.getFinishedLogRecords().length, 3);
+    assert.deepEqual(calls, []);
+  } finally {
+    await t.shutdown();
+  }
+});

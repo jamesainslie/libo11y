@@ -25,6 +25,7 @@ import {
 } from "./canonical.ts";
 import { duplicateNamespaceError, invalidAppRegistryError, piiHashKeyError } from "./errors.ts";
 import { hmacSha256 } from "./hmac.ts";
+import { isError } from "./is-error.ts";
 import type { LogAttributes, LogValue } from "./log-values.ts";
 import { hexEncode, utf8Encode } from "./utf8.ts";
 
@@ -86,11 +87,7 @@ export function compileRegistries(
 
 function isGroup(v: unknown): v is { readonly [key: string]: unknown } {
   return (
-    typeof v === "object" &&
-    v !== null &&
-    !Array.isArray(v) &&
-    !(v instanceof Uint8Array) &&
-    !(v instanceof Error)
+    typeof v === "object" && v !== null && !Array.isArray(v) && !(v instanceof Uint8Array) && !isError(v)
   );
 }
 
@@ -305,7 +302,9 @@ export class SensitivityPolicy {
     depth: number,
     walk: CompositeWalk,
   ): { value: unknown; keep: boolean; changed: boolean } {
-    const effective = path.length === 0 ? key : `${path.join(".")}.${key}`;
+    // Empty segments are skipped: an empty-keyed group is inlined into its parent, so its members
+    // are judged on the parent's path.
+    const effective = [...path, key].filter((segment) => segment !== "").join(".");
     switch (this.decide("logs", effective)) {
       case "drop":
         return { value: undefined, keep: false, changed: true };

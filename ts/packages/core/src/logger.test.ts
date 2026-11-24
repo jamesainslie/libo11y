@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { runInNewContext } from "node:vm";
 import { context, ROOT_CONTEXT, TraceFlags, trace } from "@opentelemetry/api";
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
 import { InMemoryLogRecordExporter, LoggerProvider, SimpleLogRecordProcessor } from "@opentelemetry/sdk-logs";
@@ -236,4 +237,50 @@ test("fatal logs at FATAL and returns", () => {
   const { logger, lines } = harness();
   logger.fatal("bye", { code: 1 });
   assert.match(lines[0] ?? "", /"level":"FATAL","msg":"bye","code":1/);
+});
+
+// Review C1: an empty-keyed group is inlined, so its members are judged on the parent's path. Before
+// the fix it was inlined only by the replacer walk, and the policy joined an empty path segment,
+// so a secret under "" reached both sinks.
+for (const withReplacer of [false, true]) {
+  test(`empty-keyed groups cannot hide a secret or PII from either sink (replacer: ${withReplacer})`, () => {
+    const { logger, lines, exporter } = harness(withReplacer ? { replacer: (k, v) => [k, v] } : {});
+    logger.info("top", {
+      "": { "http.request.header.authorization": "Bearer SECRET", "host.ip": "1.2.3.4", ok: 1 },
+    } as never);
+    logger.info("nested", {
+      http: { "": { "request.header.authorization": "Bearer SECRET2" }, ok: 2 },
+    } as never);
+    logger.info("deep", { host: { "": { "": { ip: "5.6.7.8" } } }, b: { "": {} } } as never);
+    const all = `${lines.join("\n")}\n${JSON.stringify(exporter.getFinishedLogRecords().map((r) => r.attributes))}`;
+    for (const leaked of ["SECRET", "1.2.3.4", "5.6.7.8"])
+      assert.ok(!all.includes(leaked), `${leaked} leaked:\n${all}`);
+    assert.equal(lines[0], '{"time":"2026-11-24T01:02:03.4Z","level":"INFO","msg":"top","ok":1}');
+    assert.equal(lines[1], '{"time":"2026-11-24T01:02:03.4Z","level":"INFO","msg":"nested","http":{"ok":2}}');
+    assert.equal(lines[2], '{"time":"2026-11-24T01:02:03.4Z","level":"INFO","msg":"deep"}');
+    const records = exporter.getFinishedLogRecords();
+    assert.deepEqual(records[0]?.attributes, { ok: 1 });
+    assert.deepEqual(records[1]?.attributes, { http: { ok: 2 } });
+    assert.deepEqual(records[2]?.attributes, {});
+  });
+}
+
+test("a replacer that returns a group under a classified path is still classified", () => {
+  const { logger, lines } = harness({
+    replacer: (k, v) => (k === "a" ? ["http", { request: { header: { authorization: v } } }] : [k, v]),
+  });
+  logger.info("m", { a: "SECRET4" });
+  assert.equal(lines[0], '{"time":"2026-11-24T01:02:03.4Z","level":"INFO","msg":"m"}');
+});
+
+test("an Error from another realm expands like a local one", () => {
+  const { logger, exporter, lines } = harness();
+  const foreign = runInNewContext("new TypeError('elsewhere')") as Error;
+  logger.error("failed", foreign);
+  logger.warn("attr", { cause: runInNewContext("new RangeError('r')") as Error });
+  const [r1, r2] = exporter.getFinishedLogRecords();
+  assert.equal(r1?.attributes["exception.type"], "TypeError");
+  assert.equal(r1?.attributes["exception.message"], "elsewhere");
+  assert.equal(r2?.attributes["exception.type"], "RangeError");
+  assert.match(lines[0] ?? "", /"exception.type":"TypeError"/);
 });

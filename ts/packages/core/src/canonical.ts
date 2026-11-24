@@ -4,6 +4,8 @@
  * composites as JSON of their members' canonical forms, with map keys in UTF-8 byte order and strings
  * escaped as Go's encoding/json escapes them. The walk is bounded by depth, a node budget and cycles.
  */
+
+import { isError } from "./is-error.ts";
 import { base64Encode } from "./utf8.ts";
 
 /** The deepest node the walk renders; the root is depth 0. */
@@ -92,7 +94,7 @@ class Walk {
     }
     if (x === null) return "<nil>";
     if (x instanceof Uint8Array) return base64Encode(x);
-    if (x instanceof Error) return String(x);
+    if (isError(x)) return String(x);
     const isArray = Array.isArray(x);
     if (!isArray && !isPlainObject(x)) return String(x);
     if (this.onPath.includes(x)) return TRUNCATED;

@@ -24,6 +24,7 @@ import {
   trace,
 } from "@opentelemetry/api";
 import { type ConsoleSink, LEVEL_TEXT } from "./console-sink.ts";
+import { isError } from "./is-error.ts";
 import type { LogAttributes, LogLevel, LogValue } from "./log-values.ts";
 import { markClassified } from "./logs-processor.ts";
 import type { AttrReplacer } from "./options.ts";
@@ -72,11 +73,7 @@ type MutableAttrs = { [key: string]: LogValue };
 
 function isGroup(v: unknown): v is { readonly [key: string]: LogValue } {
   return (
-    typeof v === "object" &&
-    v !== null &&
-    !Array.isArray(v) &&
-    !(v instanceof Uint8Array) &&
-    !(v instanceof Error)
+    typeof v === "object" && v !== null && !Array.isArray(v) && !(v instanceof Uint8Array) && !isError(v)
   );
 }
 
@@ -86,19 +83,14 @@ function exceptionAttrs(err: Error): MutableAttrs {
   return out;
 }
 
-// buildAttributes merges the bindings and the record's attributes, drops the reserved correlation
-// keys and undefined values, and expands one Error into exception.*.
-function buildAttributes(
-  bound: LogAttributes,
-  attrs: LogAttributes | undefined,
-  err: Error | undefined,
-): MutableAttrs {
-  const merged: LogAttributes = attrs === undefined ? bound : { ...bound, ...attrs };
+// buildAttributes drops the reserved correlation keys and undefined values from normalized
+// attributes, and expands one Error into exception.*.
+function buildAttributes(attrs: LogAttributes, err: Error | undefined): MutableAttrs {
   const out: MutableAttrs = {};
   let expanded = err !== undefined;
-  for (const [k, v] of Object.entries(merged)) {
+  for (const [k, v] of Object.entries(attrs)) {
     if (k === "trace_id" || k === "span_id" || v === undefined) continue;
-    if (v instanceof Error) {
+    if (isError(v)) {
       if (!expanded) {
         expanded = true;
         Object.assign(out, exceptionAttrs(v));
@@ -113,14 +105,16 @@ function buildAttributes(
   return out;
 }
 
-const MAX_REPLACE_DEPTH = 16;
+const MAX_GROUP_DEPTH = 16;
 
-// replaceAll applies the replacer to every leaf. A group is walked with its key on the path; an
-// empty-keyed group is inlined and an empty group elided, as slog does. Cycles and groups past
-// depth 16 are dropped, as the policy would drop them.
-function replaceAll(
-  replacer: AttrReplacer,
+// normalize shapes attributes as slog does: an empty-keyed group is inlined into its parent, an
+// empty group is elided, and a leaf with an empty key or an undefined value is dropped. With a
+// replacer it also applies the replacer to every leaf, with the leaf's group path. Cycles and
+// groups past depth 16 are dropped, as the policy would drop them. It always runs, so a member of
+// an empty-keyed group reaches the policy on its parent's path.
+function normalize(
   group: { readonly [key: string]: LogValue },
+  replacer: AttrReplacer | undefined,
   path: readonly string[],
   onPath: object[],
 ): MutableAttrs {
@@ -128,9 +122,9 @@ function replaceAll(
   for (const [k, v] of Object.entries(group)) {
     if (v === undefined) continue;
     if (isGroup(v)) {
-      if (onPath.includes(v) || path.length >= MAX_REPLACE_DEPTH) continue;
+      if (onPath.includes(v) || onPath.length >= MAX_GROUP_DEPTH) continue;
       onPath.push(v);
-      const inner = replaceAll(replacer, v, k === "" ? path : [...path, k], onPath);
+      const inner = normalize(v, replacer, k === "" ? path : [...path, k], onPath);
       onPath.pop();
       if (Object.keys(inner).length === 0) continue;
       if (k === "") Object.assign(out, inner);
@@ -138,6 +132,10 @@ function replaceAll(
       continue;
     }
     if (k === "") continue;
+    if (replacer === undefined) {
+      out[k] = v;
+      continue;
+    }
     const r = replacer(k, v, [...path]);
     if (r === undefined || r[0] === "" || r[1] === undefined) continue;
     out[r[0]] = r[1] as LogValue;
@@ -149,7 +147,7 @@ function replaceAll(
 // strings, groups become maps, and empty groups are elided.
 function otlpValue(v: LogValue): unknown {
   if (typeof v === "bigint") return v.toString();
-  if (v instanceof Error) return String(v);
+  if (isError(v)) return String(v);
   if (Array.isArray(v)) return v.map((e: LogValue) => otlpValue(e));
   if (isGroup(v)) return otlpMap(v);
   return v;
@@ -220,8 +218,10 @@ export class LogPipeline {
   emit(level: LogLevel, msg: string, attrs: LogAttributes | undefined, opts: EmitOptions = {}): void {
     const ctx = opts.ctx ?? context.active();
     if (!this.enabled(level, ctx)) return;
-    let built: LogAttributes = buildAttributes(opts.bound ?? {}, attrs, opts.error);
-    if (this.replacer !== undefined) built = replaceAll(this.replacer, built, [], []);
+    const bound = opts.bound ?? {};
+    const merged: LogAttributes = attrs === undefined ? bound : { ...bound, ...attrs };
+    let built: LogAttributes = buildAttributes(normalize(merged, undefined, [], []), opts.error);
+    if (this.replacer !== undefined) built = normalize(built, this.replacer, [], []);
     const time = this.now();
     const failures: unknown[] = [];
 
@@ -291,12 +291,12 @@ export class CoreLogger implements Logger {
   }
 
   error(msg: string, attrsOrError?: LogAttributes | Error): void {
-    if (attrsOrError instanceof Error) this.log("error", msg, undefined, attrsOrError);
+    if (isError(attrsOrError)) this.log("error", msg, undefined, attrsOrError);
     else this.log("error", msg, attrsOrError);
   }
 
   fatal(msg: string, attrsOrError?: LogAttributes | Error): void {
-    if (attrsOrError instanceof Error) this.log("fatal", msg, undefined, attrsOrError);
+    if (isError(attrsOrError)) this.log("fatal", msg, undefined, attrsOrError);
     else this.log("fatal", msg, attrsOrError);
   }
 

@@ -9,6 +9,7 @@
  * dotted group keys; their time has slog's fixed milliseconds.
  */
 import { formatNumber } from "./canonical.ts";
+import { isError } from "./is-error.ts";
 import type { LogAttributes, LogLevel, LogValue } from "./log-values.ts";
 import { base64Encode } from "./utf8.ts";
 
@@ -105,11 +106,7 @@ function jsonString(s: string): string {
 
 function isGroup(v: unknown): v is { readonly [key: string]: LogValue } {
   return (
-    typeof v === "object" &&
-    v !== null &&
-    !Array.isArray(v) &&
-    !(v instanceof Uint8Array) &&
-    !(v instanceof Error)
+    typeof v === "object" && v !== null && !Array.isArray(v) && !(v instanceof Uint8Array) && !isError(v)
   );
 }
 
@@ -137,7 +134,7 @@ function jsonValue(v: LogValue): string {
   }
   if (v === null) return "null";
   if (v instanceof Uint8Array) return jsonString(base64Encode(v));
-  if (v instanceof Error) return jsonString(String(v));
+  if (isError(v)) return jsonString(String(v));
   if (Array.isArray(v)) return `[${v.map((e: LogValue) => jsonValue(e)).join(",")}]`;
   return `{${jsonMembers(v as { readonly [key: string]: LogValue })}}`;
 }
@@ -252,7 +249,7 @@ function textScalar(v: LogValue): string {
   }
   if (v === null) return "<nil>";
   if (v instanceof Uint8Array) return base64Encode(v);
-  if (v instanceof Error) return String(v);
+  if (isError(v)) return String(v);
   if (Array.isArray(v)) return `[${v.map((e: LogValue) => textScalar(e)).join(" ")}]`;
   return `map[${Object.entries(v as { readonly [key: string]: LogValue })
     .map(([k, e]) => `${k}:${textScalar(e)}`)

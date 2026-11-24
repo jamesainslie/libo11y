@@ -13,6 +13,7 @@
  * cut to "[Circular]", and errors as String(err).
  */
 import { ATTR_LOG_SOURCE, LOG_SOURCE_VALUE_CONSOLE } from "@libo11y/spec";
+import { isError } from "./is-error.ts";
 import type { LogLevel } from "./log-values.ts";
 import type { CoreLogger } from "./logger.ts";
 import type { PlatformConsole } from "./platform.ts";
@@ -31,7 +32,7 @@ function safeJson(value: unknown): string {
   try {
     const out = JSON.stringify(value, function (this: unknown, _key: string, v: unknown): unknown {
       if (typeof v === "bigint") return `${v}n`;
-      if (v instanceof Error) return String(v);
+      if (isError(v)) return String(v);
       if (typeof v !== "object" || v === null) return v;
       while (ancestors.length > 0 && ancestors[ancestors.length - 1] !== this) ancestors.pop();
       if (ancestors.includes(v)) return "[Circular]";
@@ -47,7 +48,7 @@ function safeJson(value: unknown): string {
 function render(value: unknown): string {
   if (typeof value === "string") return value;
   if (typeof value === "bigint") return `${value}n`;
-  if (value instanceof Error) return String(value);
+  if (isError(value)) return String(value);
   if (typeof value === "object" && value !== null) return safeJson(value);
   return String(value);
 }
@@ -107,7 +108,7 @@ export function captureConsole(target: PlatformConsole, logger: CoreLogger): () 
       }
       capturing = true;
       try {
-        const error = args.find((a): a is Error => a instanceof Error);
+        const error = args.find(isError);
         logger.log(level, formatConsoleArgs(args), { [ATTR_LOG_SOURCE]: LOG_SOURCE_VALUE_CONSOLE }, error);
       } catch {
         // A failing sink must not break the caller's console call.
