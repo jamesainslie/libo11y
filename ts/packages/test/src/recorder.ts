@@ -381,12 +381,15 @@ class RecorderImpl implements Recorder {
   }
 
   shutdown(): Promise<void> {
-    this.closing ??= this.telemetry.shutdown().then((report) => {
-      this.releaseContext();
-      if (report.ok) return;
-      const detail = report.errors.map(({ signal, error }) => `${signal}: ${String(error)}`).join("; ");
-      throw new Error(`o11ytest: shutdown: ${detail}`);
-    });
+    // The hold is released however the shutdown settles, so a rejection cannot leak the manager.
+    this.closing ??= this.telemetry
+      .shutdown()
+      .finally(() => this.releaseContext())
+      .then((report) => {
+        if (report.ok) return;
+        const detail = report.errors.map(({ signal, error }) => `${signal}: ${String(error)}`).join("; ");
+        throw new Error(`o11ytest: shutdown: ${detail}`);
+      });
     return this.closing;
   }
 }

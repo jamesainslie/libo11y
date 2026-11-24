@@ -198,6 +198,10 @@ test("a recorder after the last one shut down installs a manager again", async (
   assert.deepEqual(await contextScenario("again"), { afterFirst: false, again: true, afterLast: false });
 });
 
+test("a recorder whose telemetry shutdown rejects still releases the manager", async () => {
+  assert.deepEqual(await contextScenario("rejected"), { rejected: true, afterLast: false });
+});
+
 test("shutdown flushes, keeps what was recorded and is idempotent", async () => {
   const rec = await createRecorder();
   rec.telemetry.tracerProvider.getTracer("t").startSpan("s").end();

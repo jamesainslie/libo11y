@@ -8,6 +8,7 @@
  *   preexisting  a manager registered before any recorder, which the recorders must leave alone
  *   replaced     the recorder's manager replaced by another before the last recorder shuts down
  *   again        a recorder after the last one shut down installs a manager again
+ *   rejected     the last recorder's telemetry shutdown rejects, which still releases the manager
  */
 
 import { context, createContextKey, ROOT_CONTEXT } from "@opentelemetry/api";
@@ -72,6 +73,19 @@ switch (process.argv[2]) {
     seen.again = works();
     await b.shutdown();
     seen.afterLast = works();
+    break;
+  }
+  case "rejected": {
+    const a = await createRecorder();
+    const telemetry = a.telemetry as { shutdown: typeof a.telemetry.shutdown };
+    const real = telemetry.shutdown.bind(a.telemetry);
+    telemetry.shutdown = () => Promise.reject(new Error("exporter wedged"));
+    seen.rejected = await a.shutdown().then(
+      () => false,
+      () => true,
+    );
+    seen.afterLast = works();
+    await real();
     break;
   }
   default:
