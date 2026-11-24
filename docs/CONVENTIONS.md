@@ -117,7 +117,7 @@ builds, checks the API reports, and runs every suite under Bun and Node.
   is 0.1.1. The `ts/v0.1.0` release never reached npm, because npm asked
   for 2FA on a direct publish from CI. Every package keeps
   `"private": true` in the source tree, and `release.ts pack` drops it
-  from each staged `package.json`, so only packed tarballs publish.
+  from each packed `package.json`, so only packed tarballs publish.
   `make release-check` also runs `scripts/ts-release-check.sh` for
   `TS_RELEASE_VERSION`. It checks every package is at that version, builds and packs
   the packages, checks each tarball's `exports` and `bin` targets, and
@@ -134,33 +134,32 @@ builds, checks the API reports, and runs every suite under Bun and Node.
      `scripts/ts-release-check.sh` to `vX.Y.Z`.
   4. Run `make release-check` on the release commit, then merge it.
   5. Tag `ts/vX.Y.Z` on the merge commit and push that tag on its own.
-  6. The release workflow verifies the tag and stages every package on
-     npm with provenance.
-  7. Approve the staged packages with 2FA on npmjs.com, under Staged
-     Packages, within an hour. One batch approval covers all four. The
-     workflow then installs the published packages and creates the GitHub
-     Release.
+  6. The release workflow verifies the tag, publishes every package to
+     npm with provenance, installs the published packages and creates the
+     GitHub Release. Nobody approves anything on npmjs.com.
 - The release workflow routes each tag with `scripts/release-tag.sh`. For
   a `ts/` tag it checks that the version is semantic, that every
   `ts/packages/*/package.json` is at the tag's version, and that
   `ts/CHANGELOG.md` has the section. Then it runs `make ts-check` on Bun
   1.3.13 and Node 24 and packs and installs the tarballs with
-  `scripts/ts-release-check.sh`. It stages each tarball in dependency
-  order with `npm stage publish --provenance` from a pinned npm 11.21.2,
+  `scripts/ts-release-check.sh`. It publishes each tarball in dependency
+  order with `npm publish --provenance` from a pinned npm 11.21.2,
   skipping a version the registry already has. A prerelease version
-  stages under the `next` dist-tag. A smoke job waits up to an hour for
-  the approved versions, installs `@libo11y/server` and `@libo11y/test`
+  publishes under the `next` dist-tag. A smoke job waits up to ten
+  minutes for the registry to serve the new versions, installs `@libo11y/server` and `@libo11y/test`
   into fresh projects under Node and Bun, and runs the `libo11y` bin
   under Node. Only after it passes is the GitHub Release created. The
   release is titled `@libo11y vX.Y.Z`, takes its notes from
   `ts/CHANGELOG.md`, and is never marked Latest, so the Go main module
-  keeps Latest. Staging authenticates with npm trusted publishing (OIDC),
-  so the repository stores no npm token. Each package on npmjs.com trusts
-  `release.yml` in `jamesainslie/libo11y`, with no environment, and allows
-  `npm stage publish` only. A direct `npm publish` or `npm dist-tag` from
-  CI is refused. npm sets up trust only on a package that already exists,
-  so a new package's first version is staged by a maintainer's own npm
-  login. Once it is on npm, its trust is set up the same way.
+  keeps Latest. Publishing authenticates with npm trusted publishing
+  (OIDC), so the repository stores no npm token. Each package on
+  npmjs.com trusts `release.yml` in `jamesainslie/libo11y`, with no
+  environment, and allows `npm publish`. A tag ruleset lets only
+  repository admins create, move or delete `ts/v*` tags, because pushing
+  one publishes to npm. npm sets up trust only on a package that already
+  exists, so a new package's first version is published by a
+  maintainer's own npm login. Once it is on npm, its trust is set up the
+  same way.
 - The specification versions separately: once released, each version has a
   `spec/vX.Y.Z` tag and a schema file served at its schema URL. Spec
   1.0.0 is tagged `spec/v1.0.0` on the `go/v0.1.0` commit. Before

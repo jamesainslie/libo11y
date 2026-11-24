@@ -195,8 +195,8 @@ remote before a release.
 
 The TypeScript packages release in lockstep. One `ts/vX.Y.Z` tag publishes
 `@libo11y/spec`, `@libo11y/core`, `@libo11y/server` and `@libo11y/test` to
-npm at version X.Y.Z, with provenance, once a maintainer approves the
-staged packages with 2FA. The first version on npm is 0.1.1. Each
+npm at version X.Y.Z, with provenance, through npm trusted publishing.
+The first version on npm is 0.1.1. Each
 TypeScript release is listed in [`ts/CHANGELOG.md`](ts/CHANGELOG.md).
 `make release-check` also packs the packages and installs them into a
 throwaway consumer under Node and Bun.

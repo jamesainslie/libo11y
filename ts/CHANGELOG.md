@@ -9,6 +9,12 @@ adhere to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- The release workflow publishes each package to npm directly through
+  trusted publishing, with provenance. A release no longer waits for a
+  maintainer to approve staged packages.
+
 ## [0.1.2] - 2026-11-24
 
 ### Changed
