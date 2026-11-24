@@ -1,0 +1,46 @@
+{
+  "name": "@libo11y/server",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The libo11y server platform for TypeScript on Bun and Node: AsyncLocalStorage context, resource detection, OTLP exporters from OTEL_* with exemplars, setup, registry loading, signal handling and runtime metrics.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jamesainslie/libo11y.git",
+    "directory": "ts/packages/server"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "api": "api-extractor run --local",
+    "api:check": "api-extractor run"
+  },
+  "dependencies": {
+    "@libo11y/core": "workspace:*",
+    "@libo11y/spec": "workspace:*",
+    "@opentelemetry/api": "1.10.0",
+    "@opentelemetry/context-async-hooks": "3.1.1",
+    "@opentelemetry/core": "3.1.1",
+    "@opentelemetry/exporter-logs-otlp-http": "0.301.1",
+    "@opentelemetry/exporter-logs-otlp-proto": "0.301.1",
+    "@opentelemetry/exporter-metrics-otlp-http": "0.301.1",
+    "@opentelemetry/exporter-trace-otlp-http": "0.301.1",
+    "@opentelemetry/exporter-trace-otlp-proto": "0.301.1",
+    "@opentelemetry/instrumentation": "0.301.1",
+    "@opentelemetry/instrumentation-runtime-node": "0.38.0",
+    "@opentelemetry/otlp-exporter-base": "0.301.1",
+    "@opentelemetry/otlp-transformer": "0.301.1",
+    "@opentelemetry/resource-detector-container": "0.9.1",
+    "@opentelemetry/resources": "3.1.1",
+    "@opentelemetry/sdk-logs": "3.1.1",
+    "@opentelemetry/sdk-metrics": "3.1.1",
+    "@opentelemetry/sdk-trace": "3.1.1"
+  },
+  "devDependencies": {
+    "@libo11y/test": "workspace:*"
+  }
+}
