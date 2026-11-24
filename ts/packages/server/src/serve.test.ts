@@ -4,10 +4,10 @@
  * under Bun.serve on Bun. The recorder installs the global context manager while it runs.
  */
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { currentRecord, type Telemetry } from "@libo11y/core";
 import { createRecorder, type Recorder } from "@libo11y/test";
 import {
@@ -631,8 +631,15 @@ async function withBunServers(
   }
 }
 
+const tempDirs: string[] = [];
+after(async () => {
+  for (const dir of tempDirs) await rm(dir, { recursive: true, force: true });
+});
+
+/** Writes a file into a fresh temporary directory, which is removed after the tests. */
 async function tempFile(name: string, contents: string): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "libo11y-serve-"));
+  tempDirs.push(dir);
   const path = join(dir, name);
   await writeFile(path, contents);
   return path;
