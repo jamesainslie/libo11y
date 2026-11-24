@@ -13,9 +13,10 @@
         "skipLibCheck": true,
         "types": [],
         "paths": {
-          "@libo11y/spec": ["../spec/dist/index.d.ts"],
-          "@libo11y/spec/yaml": ["../spec/dist/yaml.d.ts"]
-        }
+          "@libo11y/spec": ["./node_modules/@libo11y/spec/dist/index.d.ts"],
+          "@libo11y/spec/yaml": ["./node_modules/@libo11y/spec/dist/yaml.d.ts"]
+        },
+        "preserveSymlinks": true
       },
       "include": ["dist"]
     }

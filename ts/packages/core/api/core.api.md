@@ -4,13 +4,21 @@
 
 ```ts
 
+import type { AppRegistry } from '@libo11y/spec';
 import type { Attributes } from '@opentelemetry/api';
+import type { CompiledAppRegistry } from '@libo11y/spec';
 import type { ContextManager } from '@opentelemetry/api';
 import type { IMetricReader } from '@opentelemetry/sdk-metrics';
 import type { LogRecordExporter } from '@opentelemetry/sdk-logs';
 import type { MeterProvider } from '@opentelemetry/api';
 import type { Sampler } from '@opentelemetry/sdk-trace';
 import type { SpanExporter } from '@opentelemetry/sdk-trace';
+import type { SpanProcessor } from '@opentelemetry/sdk-trace';
+import type { TextMapPropagator } from '@opentelemetry/api';
+import type { ViewOptions } from '@opentelemetry/sdk-metrics';
+
+// @public
+export type AttrReplacer = (key: string, value: unknown, groups: readonly string[]) => readonly [string, unknown] | undefined;
 
 // @public
 export interface BatchOptions {
@@ -63,6 +71,9 @@ export class O11yError extends Error {
 
 // @public
 export type O11yErrorCode = "ALREADY_SETUP" | "NO_SERVICE_NAME" | "NO_ENVIRONMENT" | "INVALID_ENVIRONMENT" | "PII_HASH_KEY" | "INVALID_APP_REGISTRY" | "CANARY_REJECTED" | "UNSUPPORTED_PROTOCOL" | "EXPORTER";
+
+// @public
+export type PIIMode = "drop" | "hash" | "allow";
 
 // @public
 export interface Platform {
@@ -153,6 +164,44 @@ export interface RuntimeMetrics {
 
 // @public
 export type SignalRoute = "otlp" | "console" | "none" | "injected";
+
+// @public
+export interface TelemetryOptions {
+    // (undocumented)
+    attrReplacer?: AttrReplacer;
+    captureConsole?: boolean;
+    console?: "json" | "text" | false;
+    environment?: string;
+    environmentValues?: readonly string[];
+    exemplarFilter?: "trace_based" | "always_on" | "always_off";
+    hermetic?: boolean;
+    histogramBuckets?: Readonly<Record<string, readonly number[]>>;
+    logExport?: boolean;
+    // (undocumented)
+    logExporter?: LogRecordExporter;
+    logLevel?: LogLevel;
+    // (undocumented)
+    metricReader?: IMetricReader;
+    piiHashKey?: Uint8Array;
+    piiMode?: PIIMode;
+    propagators?: readonly TextMapPropagator[];
+    registry?: AppRegistry | CompiledAppRegistry | readonly (AppRegistry | CompiledAppRegistry)[];
+    resourceAttributes?: Attributes;
+    runtimeMetrics?: boolean;
+    sampler?: Sampler;
+    serviceName?: string;
+    // (undocumented)
+    serviceNamespace?: string;
+    serviceVersion?: string;
+    // (undocumented)
+    spanExporter?: SpanExporter;
+    // (undocumented)
+    spanProcessor?: SpanProcessor;
+    startupSummary?: boolean;
+    strictIdentity?: boolean;
+    // (undocumented)
+    views?: readonly ViewOptions[];
+}
 
 // (No @packageDocumentation comment for this package)
 
