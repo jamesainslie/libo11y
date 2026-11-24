@@ -149,7 +149,13 @@ function writePackageJson(path: string, pkg: PackageJson): void {
   writeFileSync(path, `${JSON.stringify(pkg, null, 2)}\n`);
 }
 
-/** Sets version in every packages/* package.json under the workspace root. */
+// A package that reports its own version at runtime keeps it in src/version.ts as one constant.
+const VERSION_CONSTANT = /^export const VERSION = ".*";$/m;
+
+/**
+ * Sets version in every packages/* package.json under the workspace root, and in the VERSION constant
+ * of each package's src/version.ts where it has one.
+ */
 export function setVersion(root: string, version: string): void {
   if (!SEMVER.test(version)) {
     throw new Error(`release: version ${JSON.stringify(version)} is not semver X.Y.Z`);
@@ -157,6 +163,12 @@ export function setVersion(root: string, version: string): void {
   for (const { dir, json } of readPackages(root)) {
     json.version = version;
     writePackageJson(join(dir, "package.json"), json);
+    const versionFile = join(dir, "src", "version.ts");
+    if (existsSync(versionFile)) {
+      const text = readFileSync(versionFile, "utf8");
+      if (!VERSION_CONSTANT.test(text)) throw new Error(`release: ${versionFile} has no VERSION constant`);
+      writeFileSync(versionFile, text.replace(VERSION_CONSTANT, `export const VERSION = "${version}";`));
+    }
   }
 }
 
