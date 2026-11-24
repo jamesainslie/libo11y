@@ -16,6 +16,7 @@ import type { IMetricReader } from '@opentelemetry/sdk-metrics';
 import { ISerializer } from '@opentelemetry/otlp-transformer';
 import { LoggerProvider } from '@opentelemetry/api';
 import type { LogRecordExporter } from '@opentelemetry/sdk-logs';
+import type { LogRecordProcessor } from '@opentelemetry/sdk-logs';
 import { MeterProvider } from '@opentelemetry/api';
 import { PushMetricExporter } from '@opentelemetry/sdk-metrics';
 import type { Resource } from '@opentelemetry/resources';
@@ -454,6 +455,7 @@ export interface TelemetryOptions {
     // (undocumented)
     logExporter?: LogRecordExporter;
     logLevel?: LogLevel;
+    logProcessor?: LogRecordProcessor;
     // (undocumented)
     metricReader?: IMetricReader;
     piiHashKey?: Uint8Array;

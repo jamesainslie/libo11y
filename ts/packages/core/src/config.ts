@@ -179,7 +179,7 @@ export function resolveConfig(options: TelemetryOptions, ambient: Env): Resolved
   let logs: SignalRoute =
     options.logExport === false
       ? "none"
-      : options.logExporter !== undefined
+      : options.logExporter !== undefined || options.logProcessor !== undefined
         ? "injected"
         : hermetic
           ? "none"

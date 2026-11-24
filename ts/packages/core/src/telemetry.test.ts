@@ -3,7 +3,11 @@ import { test } from "node:test";
 import { metrics, propagation, ROOT_CONTEXT, TraceFlags, trace } from "@opentelemetry/api";
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
 import { globalErrorHandler } from "@opentelemetry/core";
-import { InMemoryLogRecordExporter, type LogRecordExporter } from "@opentelemetry/sdk-logs";
+import {
+  InMemoryLogRecordExporter,
+  type LogRecordExporter,
+  type LogRecordProcessor,
+} from "@opentelemetry/sdk-logs";
 import {
   AggregationTemporality,
   type DataPoint,
@@ -575,6 +579,47 @@ test("with metrics routed to none the exemplar store samples nothing", async () 
 
 // Review W5b: an injected reader is used as is; a harness attaches exemplars through the testing
 // subpath's exemplarStoreOf.
+test("an injected log processor sees each classified record synchronously, with its context", async () => {
+  const seen: { body: unknown; attributes: Record<string, unknown>; traceId: string | undefined }[] = [];
+  let shutdowns = 0;
+  const logProcessor: LogRecordProcessor = {
+    onEmit: (record, ctx) =>
+      seen.push({
+        body: record.body,
+        attributes: { ...record.attributes },
+        traceId: ctx === undefined ? undefined : trace.getSpanContext(ctx)?.traceId,
+      }),
+    forceFlush: async () => {},
+    shutdown: async () => {
+      shutdowns++;
+    },
+  };
+  const logs = new InMemoryLogRecordExporter();
+  const t = await createTelemetryWith(
+    { ...OPTIONS, hermetic: true, console: false, logProcessor, logExporter: logs },
+    rig().platform,
+  );
+  try {
+    const span = t.tracerProvider.getTracer("app").startSpan("op");
+    t.event(
+      "hello",
+      { "http.request.header.authorization": "Bearer x", "app.ok": 1 },
+      trace.setSpan(ROOT_CONTEXT, span),
+    );
+    span.end();
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0]?.body, "hello");
+    assert.deepEqual(seen[0]?.attributes, { "event.name": "hello", "app.ok": 1 });
+    assert.match(seen[0]?.traceId ?? "", /^[0-9a-f]{32}$/);
+    assert.match(t.effectiveConfig(), /o11y\.config\.logs=injected/);
+    await t.forceFlush();
+    assert.equal(logs.getFinishedLogRecords().length, 1);
+  } finally {
+    await t.shutdown();
+  }
+  assert.equal(shutdowns, 1);
+});
+
 test("exemplarStoreOf lets a harness attach exemplars to an injected reader's collection", async () => {
   const exporter = new InMemoryMetricExporter(AggregationTemporality.CUMULATIVE);
   const reader = new PeriodicExportingMetricReader({ exporter, exportIntervalMillis: 3_600_000 });
