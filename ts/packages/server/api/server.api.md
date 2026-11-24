@@ -60,6 +60,7 @@ export interface ServeOptions {
     readonly route?: (req: Request) => string | undefined;
     readonly serverTiming?: boolean;
     readonly telemetry?: Telemetry;
+    readonly watchBody?: (res: Response) => boolean;
 }
 
 // @public

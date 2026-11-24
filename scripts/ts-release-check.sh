@@ -140,7 +140,12 @@ const options: TelemetryOptions = { serviceName: "svc", registry: reg };
 const recorderOptions: RecorderOptions = { serviceName: "svc" };
 const sinkUrl = (sink: OtlpSink): string => sink.url;
 const signalOptions: ShutdownOnSignalsOptions = { signals: ["SIGTERM"], timeoutMillis: 1000 };
-const serveOptions: ServeOptions = { route: () => "/", serverTiming: true, ignorePaths: ["/healthz"] };
+const serveOptions: ServeOptions = {
+  route: () => "/",
+  serverTiming: true,
+  ignorePaths: ["/healthz"],
+  watchBody: (res) => res.headers.get("content-type") === "text/html",
+};
 const handler: (req: Request) => Promise<Response> = instrumentServe(async () => new Response("ok"), serveOptions);
 const fetchOptions: FetchOptions = { peerService: "upstream", propagate: (url) => url.hostname !== "example.com" };
 const traced: typeof fetch = instrumentFetch(fetch, fetchOptions);

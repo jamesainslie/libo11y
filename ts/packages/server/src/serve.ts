@@ -4,10 +4,11 @@
  * o11yhttp.NewHandler: a SERVER span named "<METHOD> <route>", http.server.request.duration with
  * exemplars, and optionally the o11y.request.summary canonical line.
  *
- * The span, the duration and the summary end when the response body finishes, errors or is
- * cancelled, from a body wrapper that holds the span itself. Nothing at the end reads the active
- * context, because Bun 1.3 loses it inside an async generator body after its first await
- * (oven-sh/bun#24199).
+ * For a watched body (HTML and event streams by default), the span, the duration and the summary
+ * end when the response body finishes, errors or is cancelled, from a body wrapper that holds the
+ * span itself. For any other response they end when the handler returns. Nothing at the end reads
+ * the active context, because Bun 1.3 loses it inside an async generator body after its first
+ * await (oven-sh/bun#24199).
  */
 import { type LogAttributes, startRecord, type Telemetry, type WideRecord } from "@libo11y/core";
 import {
@@ -21,6 +22,7 @@ import {
   type Attributes,
   type Context,
   context,
+  diag,
   isSpanContextValid,
   ROOT_CONTEXT,
   type Span,
@@ -64,7 +66,8 @@ export interface ServeOptions {
   readonly ignorePaths?: readonly string[];
   /**
    * Adds `Server-Timing: traceparent;desc="00-<trace>-<span>-<flags>"` to text/html responses, so
-   * the page can join the server's trace.
+   * the page can join the server's trace. It works whether or not the body is watched (see
+   * watchBody); the headers of an unwatched response are changed in place when they are mutable.
    */
   readonly serverTiming?: boolean;
   /**
@@ -73,6 +76,19 @@ export interface ServeOptions {
    * needs telemetry; without it this option is a silent no-op, as in Go.
    */
   readonly canonicalLine?: boolean;
+  /**
+   * Decides whether a response's body is watched, so that the span, the duration and the summary end
+   * when the body finishes, errors or is cancelled rather than when the handler returns. A watched
+   * body is passed through a stream wrapper, so a body of known length is sent chunked, without
+   * Content-Length, and Bun cannot send a Bun.file body with sendfile. An unwatched response is
+   * returned exactly as the handler made it, and its duration excludes the body's transfer.
+   *
+   * The default watches responses whose content type is text/html or text/event-stream, compared
+   * case-insensitively without parameters: pages that stream as they render, and event streams.
+   * A predicate that throws watches nothing. Responses to HEAD requests and with status 101, 204, 205
+   * or 304 are never watched, since they carry no body.
+   */
+  readonly watchBody?: (res: Response) => boolean;
 }
 
 /** How a request ended, for the span, the metric and the summary. */
@@ -86,8 +102,10 @@ interface Outcome {
  * Wraps a fetch-style handler with server instrumentation. Extra handler arguments, such as
  * Bun.serve's server, pass through. The handler runs inside the server span's context, so spans and
  * logs it makes are children of it. A throw marks the span failed, records the exception and a 500,
- * and is re-thrown. A returned body is passed through a wrapper that ends the span when the body
- * finishes; that wrapper is a stream, so a body of known length is sent chunked.
+ * and is re-thrown. A watched body (see ServeOptions.watchBody: HTML and event streams by default)
+ * is passed through a wrapper that ends the span when the body finishes; that wrapper is a stream,
+ * so a body of known length is sent chunked. Any other response ends the span when the handler
+ * returns and is passed on untouched.
  */
 export function instrumentServe<A extends unknown[]>(
   handler: (req: Request, ...rest: A) => Response | Promise<Response>,
@@ -99,6 +117,15 @@ export function instrumentServe<A extends unknown[]>(
     "Duration of HTTP server requests.",
   );
   const ignore = opts.ignorePaths ?? [];
+  const watch = opts.watchBody ?? watchesByDefault;
+  const shouldWatch = (res: Response): boolean => {
+    try {
+      return watch(res);
+    } catch (err) {
+      diag.warn(`libo11y: instrumentServe: watchBody threw, the body is not watched: ${errorMessage(err)}`);
+      return false;
+    }
+  };
   const summaryTelemetry = opts.canonicalLine === true ? opts.telemetry : undefined;
 
   return async (req: Request, ...rest: A): Promise<Response> => {
@@ -206,10 +233,12 @@ export function instrumentServe<A extends unknown[]>(
     const timing =
       opts.serverTiming === true && isHtml(resHeaders.get("content-type")) ? serverTiming(span) : undefined;
     // A HEAD response or a bodiless status sends no body, and Bun neither reads nor cancels one it was
-    // given, so the request ends now and the response goes out as it is.
+    // given. An unwatched body is sent as it is, keeping its length and Bun's sendfile path. Either
+    // way the request ends now and the response goes out as the handler returned it.
     if (
       req.method.toUpperCase() === "HEAD" ||
       BODILESS_STATUSES.has(status) ||
+      !shouldWatch(res) ||
       res.bodyUsed ||
       res.body === null
     ) {
@@ -244,9 +273,18 @@ function routeOnly(route: string): string {
   return space < 0 ? route : route.slice(space + 1);
 }
 
+function mediaType(contentType: string | null): string {
+  return contentType === null ? "" : (contentType.split(";")[0] ?? "").trim().toLowerCase();
+}
+
 function isHtml(contentType: string | null): boolean {
-  if (contentType === null) return false;
-  return (contentType.split(";")[0] ?? "").trim().toLowerCase() === "text/html";
+  return mediaType(contentType) === "text/html";
+}
+
+/** The default watchBody: HTML pages, which stream as they render, and server-sent event streams. */
+function watchesByDefault(res: Response): boolean {
+  const type = mediaType(res.headers.get("content-type"));
+  return type === "text/html" || type === "text/event-stream";
 }
 
 function serverTiming(span: Span): string {

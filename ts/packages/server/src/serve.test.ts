@@ -245,7 +245,7 @@ test("a throw records the exception and a 500, sets error.type to the error's cl
   });
 });
 
-test("a streamed body ends the span and the duration when it finishes, not when the handler returns", async () => {
+test("a watched event stream ends the span and the duration when it finishes, not when the handler returns", async () => {
   await withRecorder(async (rec) => {
     const encoder = new TextEncoder();
     const handler = instrumentServe(
@@ -259,6 +259,7 @@ test("a streamed body ends the span and the duration when it finishes, not when 
               else controller.close();
             },
           }),
+          { headers: { "content-type": "Text/Event-Stream; charset=utf-8" } },
         );
       },
       { telemetry: rec.telemetry },
@@ -289,7 +290,7 @@ test("a cancelled body ends the span, an erroring body marks it failed, a null b
           }),
         );
       },
-      { telemetry: rec.telemetry, canonicalLine: true },
+      { telemetry: rec.telemetry, canonicalLine: true, watchBody: () => true },
     );
     await handler(new Request("http://svc/empty"));
     assert.equal(serverSpans(rec).length, 1);
@@ -585,7 +586,7 @@ test("under Bun.serve an async generator body still ends the span in its context
         }
         return new Response(body() as unknown as ReadableStream);
       },
-      { telemetry: rec.telemetry, canonicalLine: true },
+      { telemetry: rec.telemetry, canonicalLine: true, watchBody: () => true },
     );
     const server = bun?.serve({ port: 0, hostname: "127.0.0.1", fetch: (req) => app(req) });
     assert.ok(server !== undefined);
@@ -637,7 +638,7 @@ async function tempFile(name: string, contents: string): Promise<string> {
   return path;
 }
 
-test("under Bun.serve the implicit content-type of Blob, file and form bodies survives", {
+test("under Bun.serve the implicit content-type of Blob, file and form bodies survives, watched or not", {
   skip: !IS_BUN,
 }, async () => {
   await withRecorder(async (rec) => {
@@ -648,14 +649,20 @@ test("under Bun.serve the implicit content-type of Blob, file and form bodies su
       if (path === "/file") return new Response(bun?.file(script));
       return new Response(new URLSearchParams({ a: "1" }));
     };
-    await withBunServers(app, { telemetry: rec.telemetry }, async (plain, instrumented) => {
-      for (const path of ["/blob", "/file", "/params"]) {
-        const want = await fetch(`${plain}${path}`);
-        const got = await fetch(`${instrumented}${path}`);
-        assert.equal(got.headers.get("content-type"), want.headers.get("content-type"), path);
-        assert.equal(await got.text(), await want.text(), path);
-      }
-    });
+    for (const watchBody of [undefined, () => true]) {
+      const opts: ServeOptions = {
+        telemetry: rec.telemetry,
+        ...(watchBody === undefined ? {} : { watchBody }),
+      };
+      await withBunServers(app, opts, async (plain, instrumented) => {
+        for (const path of ["/blob", "/file", "/params"]) {
+          const want = await fetch(`${plain}${path}`);
+          const got = await fetch(`${instrumented}${path}`);
+          assert.equal(got.headers.get("content-type"), want.headers.get("content-type"), path);
+          assert.equal(await got.text(), await want.text(), path);
+        }
+      });
+    }
   });
 });
 
@@ -709,5 +716,109 @@ test("under Bun.serve HEAD requests and bodiless statuses end the span when the 
     );
     const points = await durationPoints(rec);
     assert.equal(points.filter((p) => p.attributes["http.request.method"] === "HEAD")[0]?.value.count, 2);
+  });
+});
+
+test("by default only HTML and event streams are watched: other bodies end the request when the handler returns", async () => {
+  await withRecorder(async (rec) => {
+    const handler = instrumentServe(
+      async (req) => {
+        const type = new URL(req.url).searchParams.get("type") ?? "";
+        return new Response("body", { headers: { "content-type": type } });
+      },
+      { telemetry: rec.telemetry },
+    );
+    const types = ["application/json", "TEXT/HTML; charset=utf-8", "text/event-stream", "text/plain"];
+    const responses: Response[] = [];
+    for (const type of types) {
+      responses.push(await handler(new Request(`http://svc/?type=${encodeURIComponent(type)}`)));
+    }
+    assert.deepEqual(
+      serverSpans(rec).map((s) => s.attributes["url.path"]),
+      ["/", "/"],
+      "only the JSON and plain text requests ended before their bodies were read",
+    );
+    for (const res of responses) assert.equal(await res.text(), "body");
+    assert.equal(serverSpans(rec).length, 4);
+  });
+});
+
+test("watchBody decides which responses are watched, and a throwing one watches nothing", async () => {
+  await withRecorder(async (rec) => {
+    const seen: string[] = [];
+    const handler = instrumentServe(
+      async (req) => new Response(new URL(req.url).pathname, { headers: { "content-type": "text/html" } }),
+      {
+        telemetry: rec.telemetry,
+        watchBody: (res) => {
+          seen.push(res.headers.get("content-type") ?? "");
+          if (res.status === 200 && seen.length === 2) throw new Error("predicate broke");
+          return false;
+        },
+      },
+    );
+    const first = await handler(new Request("http://svc/a"));
+    assert.equal(serverSpans(rec).length, 1, "an unwatched response ends the request at once");
+    const second = await handler(new Request("http://svc/b"));
+    assert.equal(serverSpans(rec).length, 2, "a throwing predicate watches nothing");
+    assert.equal(await first.text(), "/a");
+    assert.equal(await second.text(), "/b");
+    assert.deepEqual(seen, ["text/html", "text/html"]);
+  });
+});
+
+test("under Bun.serve unwatched bodies keep their length and HTML streams are still watched", {
+  skip: !IS_BUN,
+}, async () => {
+  await withRecorder(async (rec) => {
+    const big = "y".repeat(1_000_000);
+    const file = await tempFile("data.bin", "z".repeat(100_000));
+    let cancelled = false;
+    const app = async (req: Request): Promise<Response> => {
+      const path = new URL(req.url).pathname;
+      if (path === "/big") return new Response(big);
+      if (path === "/file") return new Response(bun?.file(file));
+      let n = 0;
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          async pull(controller) {
+            await new Promise((r) => setTimeout(r, 20));
+            if (path === "/endless" || n++ < 3) controller.enqueue(new TextEncoder().encode("<p>"));
+            else controller.close();
+          },
+          cancel() {
+            cancelled = true;
+          },
+        }),
+        { headers: { "content-type": "text/html" } },
+      );
+    };
+    await withBunServers(app, { telemetry: rec.telemetry }, async (plain, instrumented) => {
+      for (const path of ["/big", "/file"]) {
+        const want = await fetch(`${plain}${path}`);
+        const got = await fetch(`${instrumented}${path}`);
+        assert.ok(want.headers.get("content-length") !== null, path);
+        assert.equal(got.headers.get("content-length"), want.headers.get("content-length"), path);
+        assert.equal(got.headers.get("transfer-encoding"), null, path);
+        assert.equal((await got.text()).length, (await want.text()).length, path);
+      }
+      const page = await fetch(`${instrumented}/page`);
+      const reader = page.body?.getReader();
+      assert.ok(reader !== undefined);
+      await reader.read();
+      assert.equal(serverSpans(rec).length, 2, "the HTML request ended before its body was read");
+      while (!(await reader.read()).done);
+      const spans = await waitForServerSpans(rec, 3);
+      assert.equal(spans[2]?.attributes["url.path"], "/page");
+
+      const abort = new AbortController();
+      const endless = await fetch(`${instrumented}/endless`, { signal: abort.signal });
+      await endless.body?.getReader().read();
+      abort.abort();
+      await waitForServerSpans(rec, 4);
+      for (let i = 0; i < 100 && !cancelled; i++) await new Promise((r) => setTimeout(r, 10));
+      assert.equal(serverSpans(rec)[3]?.attributes["url.path"], "/endless");
+      assert.ok(cancelled, "the source of a cancelled HTML stream was cancelled");
+    });
   });
 });
