@@ -3,6 +3,8 @@ import { test } from "node:test";
 import {
   type Attributes,
   type Context,
+  type DiagLogger,
+  diag,
   ROOT_CONTEXT,
   TraceFlags,
   trace,
@@ -81,11 +83,7 @@ function pointsOf(rm: ResourceMetrics, metric = 0): DataPoint<unknown>[] {
 }
 
 function store(filter: "trace_based" | "always_on" | "always_off" = "trace_based", maxSeries?: number) {
-  return new ExemplarStore({
-    filter,
-    histogramBuckets: { "req.duration": [10, 100] },
-    ...(maxSeries === undefined ? {} : { maxSeries }),
-  });
+  return new ExemplarStore({ filter, ...(maxSeries === undefined ? {} : { maxSeries }) });
 }
 
 test("trace_based keeps a sampled measurement with its IDs and skips an unsampled one", () => {
@@ -344,4 +342,157 @@ test("past maxSeries new series are dropped", () => {
   }
   const [p] = pointsOf(s.attach(rmOf(sumMetric("c", [{ attrs: {}, end: 5 }]))));
   assert.equal(exemplarsOf(p as DataPoint<unknown>).length, 2);
+});
+
+// Review W4: a histogram series keeps its latest samples, not one per store-side bucket, so a view
+// with other boundaries still gets one exemplar per bucket of its own.
+test("a histogram point with view boundaries gets one exemplar per bucket it has samples for", () => {
+  const s = store("always_on");
+  [0.05, 0.15, 0.25, 0.35, 0.45].forEach((value, i) => {
+    s.offer({
+      scope: KEY,
+      instrument: "h",
+      kind: "histogram",
+      value,
+      attributes: {},
+      context: ROOT_CONTEXT,
+      time: at(i + 1),
+    });
+  });
+  const [p] = pointsOf(s.attach(rmOf(histogramMetric("h", [0.1, 0.2, 0.3, 0.4, 0.5], 50))));
+  assert.deepEqual(
+    exemplarsOf(p as DataPoint<unknown>).map((e) => e.value),
+    [0.05, 0.15, 0.25, 0.35, 0.45],
+  );
+});
+
+test("a histogram series keeps only its latest 16 samples", () => {
+  const s = store("always_on");
+  for (let i = 0; i < 40; i++) {
+    s.offer({
+      scope: KEY,
+      instrument: "h",
+      kind: "histogram",
+      value: i,
+      attributes: {},
+      context: ROOT_CONTEXT,
+      time: at(i + 1),
+    });
+  }
+  const bounds = Array.from({ length: 39 }, (_, i) => i + 0.5);
+  const [p] = pointsOf(s.attach(rmOf(histogramMetric("h", bounds, 100))));
+  assert.deepEqual(
+    exemplarsOf(p as DataPoint<unknown>).map((e) => e.value),
+    Array.from({ length: 16 }, (_, i) => 24 + i),
+  );
+});
+
+function captureDiag(): { warnings: string[]; restore(): void } {
+  const warnings: string[] = [];
+  const logger: DiagLogger = {
+    error: () => {},
+    warn: (m: string) => void warnings.push(m),
+    info: () => {},
+    debug: () => {},
+    verbose: () => {},
+  };
+  diag.setLogger(logger);
+  return { warnings, restore: () => diag.disable() };
+}
+
+// Review W5c: with no reader, samples older than 5 minutes are discarded on offer, so a full store
+// makes room instead of warning about a limit nothing is really hitting.
+test("samples older than 5 minutes are discarded, freeing series without a limit warning", () => {
+  const d = captureDiag();
+  try {
+    const s = store("always_on", 2);
+    for (const user of ["a", "b"]) {
+      s.offer({
+        scope: KEY,
+        instrument: "c",
+        kind: "sum",
+        value: 1,
+        attributes: { user },
+        context: ROOT_CONTEXT,
+        time: at(0),
+      });
+    }
+    const later = 6 * 60 * 1000;
+    s.offer({
+      scope: KEY,
+      instrument: "c",
+      kind: "sum",
+      value: 2,
+      attributes: { user: "c" },
+      context: ROOT_CONTEXT,
+      time: at(later),
+    });
+    s.offer({
+      scope: KEY,
+      instrument: "c",
+      kind: "sum",
+      value: 3,
+      attributes: { user: "d" },
+      context: ROOT_CONTEXT,
+      time: at(later + 1),
+    });
+    assert.deepEqual(d.warnings, []);
+    const [p] = pointsOf(s.attach(rmOf(sumMetric("c", [{ attrs: {}, end: later + 10 }]))));
+    assert.deepEqual(
+      exemplarsOf(p as DataPoint<unknown>).map((e) => e.value),
+      [2, 3],
+    );
+  } finally {
+    d.restore();
+  }
+});
+
+test("an old sample in a live series is discarded on the series' next offer", () => {
+  const s = store("always_on");
+  s.offer({
+    scope: KEY,
+    instrument: "c",
+    kind: "sum",
+    value: 1,
+    attributes: {},
+    context: ROOT_CONTEXT,
+    time: at(0),
+  });
+  const later = 6 * 60 * 1000;
+  s.offer({
+    scope: KEY,
+    instrument: "c",
+    kind: "sum",
+    value: 2,
+    attributes: {},
+    context: ROOT_CONTEXT,
+    time: at(later),
+  });
+  const [p] = pointsOf(s.attach(rmOf(sumMetric("c", [{ attrs: {}, end: later + 1 }]))));
+  assert.deepEqual(
+    exemplarsOf(p as DataPoint<unknown>).map((e) => e.value),
+    [2],
+  );
+});
+
+test("a real series-cap overflow warns once", () => {
+  const d = captureDiag();
+  try {
+    const s = store("always_on", 1);
+    for (const user of ["a", "b", "c"]) {
+      s.offer({
+        scope: KEY,
+        instrument: "c",
+        kind: "sum",
+        value: 1,
+        attributes: { user },
+        context: ROOT_CONTEXT,
+        time: at(1),
+      });
+    }
+    assert.equal(d.warnings.length, 1);
+    assert.match(d.warnings[0] ?? "", /exemplar series limit 1/);
+  } finally {
+    d.restore();
+  }
 });

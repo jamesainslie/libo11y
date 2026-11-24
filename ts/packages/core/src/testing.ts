@@ -4,8 +4,11 @@
  */
 import type { ContextManager } from "@opentelemetry/api";
 import { SDK_INFO } from "@opentelemetry/core";
+import type { ExemplarStore } from "./exemplars.ts";
+import { exemplarStoreFor } from "./internal/stores.ts";
 import type { Platform } from "./platform.ts";
 import { sha1 } from "./sha1.ts";
+import type { Telemetry } from "./telemetry.ts";
 import { hexEncode } from "./utf8.ts";
 
 export type { Platform } from "./platform.ts";
@@ -66,4 +69,16 @@ export function createTestPlatform(overrides: TestPlatformOptions): TestPlatform
     lines,
     diagnostics,
   };
+}
+
+/**
+ * The exemplar store telemetry samples into. An injected metric reader is used as is, so its
+ * collections carry no exemplars; a test harness attaches them with
+ * exemplarStoreOf(telemetry).attach(resourceMetrics) after reader.collect(). Throws TypeError for
+ * an object createTelemetryWith or setupWith did not return.
+ */
+export function exemplarStoreOf(telemetry: Telemetry): ExemplarStore {
+  const store = exemplarStoreFor(telemetry);
+  if (store === undefined) throw new TypeError("exemplarStoreOf: not a Telemetry from @libo11y/core");
+  return store;
 }

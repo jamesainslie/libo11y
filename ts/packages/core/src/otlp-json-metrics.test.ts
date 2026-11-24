@@ -127,7 +127,7 @@ function sampled(): Context {
 }
 
 test("exemplars are added to their points in OTLP/JSON form", async () => {
-  const store = new ExemplarStore({ filter: "trace_based", histogramBuckets: {} });
+  const store = new ExemplarStore({ filter: "trace_based" });
   const reader = new TestReader();
   const sdk = new MeterProvider({
     readers: [reader],
@@ -170,7 +170,7 @@ test("exemplars are added to their points in OTLP/JSON form", async () => {
 });
 
 test("filteredAttributes use upstream's key/value form", async () => {
-  const store = new ExemplarStore({ filter: "always_on", histogramBuckets: {} });
+  const store = new ExemplarStore({ filter: "always_on" });
   const reader = new TestReader();
   const sdk = new MeterProvider({
     readers: [reader],

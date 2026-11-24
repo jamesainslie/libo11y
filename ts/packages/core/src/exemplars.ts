@@ -3,8 +3,9 @@
  * provider offers every synchronous measurement here, and ExemplarStore.attach joins the samples to
  * the data points of a collection before they are exported.
  *
- * A series is one scope, instrument and (classified) attribute set. A histogram series keeps the
- * latest sample per bucket; any other series keeps a uniform sample of 4 per collection cycle
+ * A series is one scope, instrument and (classified) attribute set. A histogram series keeps its
+ * latest 16 samples, and attach keeps the latest per bucket of the point's own boundaries, so a view
+ * with any boundaries is served; any other series keeps a uniform sample of 4 per collection cycle
  * (Algorithm R). attach gives each series to the matching data point with the most attributes,
  * where matching means the point's attributes are a subset of the series' with equal values. The
  * series attributes the point lacks, typically keys a view dropped, become the exemplar's
@@ -13,6 +14,10 @@
  * attach consumes what it attaches, so with several readers the first to collect gets each sample.
  * A series is matched by the instrument's name, so a view that renames an instrument leaves its
  * stream without exemplars.
+ *
+ * Nothing may ever read the store (an injected reader nobody wraps, say), so offer discards samples
+ * more than 5 minutes older than the newest one it has seen, and a full store first sweeps those
+ * before it refuses a new series. The series cap warns only when live series really fill it.
  */
 import {
   type Attributes,
@@ -76,8 +81,6 @@ export interface ExemplarMeasurement {
   /** The measurement's attributes after classification. */
   readonly attributes: Attributes;
   readonly context: Context;
-  /** The histogram boundaries the instrument's advice names. */
-  readonly advisedBuckets?: readonly number[];
   /** When the measurement happened. Defaults to now, at millisecond precision as sdk-metrics records. */
   readonly time?: HrTime;
 }
@@ -85,19 +88,21 @@ export interface ExemplarMeasurement {
 /** Options for ExemplarStore. */
 export interface ExemplarStoreOptions {
   readonly filter: ExemplarFilter;
-  /** Explicit histogram boundaries by instrument name; `*` is a wildcard, as in a view. */
-  readonly histogramBuckets: Readonly<Record<string, readonly number[]>>;
   /** The most series sampled at once. Default 2000. */
   readonly maxSeries?: number;
 }
 
-/** sdk-metrics' default explicit bucket boundaries. */
-export const DEFAULT_HISTOGRAM_BOUNDARIES: readonly number[] = [
-  0, 5, 10, 25, 50, 75, 100, 250, 500, 750, 1000, 2500, 5000, 7500, 10000,
-];
-
 /** The exemplars a non-histogram point carries at most. */
 export const FIXED_RESERVOIR_SIZE = 4;
+
+/** The latest samples a histogram series keeps. */
+export const HISTOGRAM_SAMPLES = 16;
+
+/** How much older than the newest sample a sample may be before offer discards it: 5 minutes. */
+const MAX_SAMPLE_AGE_NANOS = 5n * 60n * 1_000_000_000n;
+
+/** How often, on the store's clock, a full store sweeps for old samples: once a second. */
+const SWEEP_INTERVAL_NANOS = 1_000_000_000n;
 
 const DEFAULT_MAX_SERIES = 2000;
 
@@ -118,11 +123,11 @@ interface Series {
   readonly instrumentKey: string;
   readonly attributes: Attributes;
   readonly kind: ExemplarKind;
-  readonly boundaries: readonly number[];
-  /** Histogram samples by bucket index. */
-  readonly buckets: Map<number, Sample>;
-  /** Other samples, a reservoir of FIXED_RESERVOIR_SIZE. */
-  fixed: Sample[];
+  /**
+   * A histogram's latest HISTOGRAM_SAMPLES samples, oldest first, or any other instrument's
+   * reservoir of FIXED_RESERVOIR_SIZE.
+   */
+  samples: Sample[];
   /** Measurements offered to the reservoir this cycle. */
   seen: number;
 }
@@ -151,12 +156,6 @@ function nowNanos(): bigint {
   return BigInt(Date.now()) * 1_000_000n;
 }
 
-function matchesPattern(pattern: string, name: string): boolean {
-  if (pattern === "*") return true;
-  const escaped = pattern.replace(/[\^$\\.+?()[\]{}|]/g, "\\$&").replace(/\*/g, ".*");
-  return new RegExp(`^${escaped}$`).test(name);
-}
-
 function sameValue(a: AttributeValue | undefined, b: AttributeValue | undefined): boolean {
   if (Array.isArray(a) && Array.isArray(b)) {
     return a.length === b.length && a.every((v, i) => v === b[i]);
@@ -183,20 +182,25 @@ function toExemplar(s: Sample, filtered: Attributes): Exemplar {
 /** Samples exemplars from measurements and attaches them to collected data points. */
 export class ExemplarStore {
   private readonly filter: ExemplarFilter;
-  private readonly histogramBuckets: Readonly<Record<string, readonly number[]>>;
   private readonly maxSeries: number;
   private readonly series = new Map<string, Series>();
   /** Series keys by scope and instrument. */
   private readonly byInstrument = new Map<string, Set<string>>();
   private warned = false;
+  /** The newest sample time seen: the store's clock for discarding old samples. */
+  private newest = 0n;
+  private lastSweep: bigint | undefined;
 
   constructor(opts: ExemplarStoreOptions) {
     this.filter = opts.filter;
-    this.histogramBuckets = opts.histogramBuckets;
     this.maxSeries = opts.maxSeries ?? DEFAULT_MAX_SERIES;
   }
 
-  /** Offers one measurement. The filter decides whether it may become an exemplar. */
+  /**
+   * Offers one measurement. The filter decides whether it may become an exemplar.
+   *
+   * @internal The policy meter provider calls this; applications record through instruments.
+   */
   offer(m: ExemplarMeasurement): void {
     if (this.filter === "always_off") return;
     const sc = trace.getSpanContext(m.context);
@@ -205,7 +209,11 @@ export class ExemplarStore {
 
     const instrumentKey = `${m.scope}\u0000${m.instrument}`;
     const key = `${instrumentKey}\u0000${renderCanonicalAttribute(m.attributes)}`;
+    const time = m.time === undefined ? nowNanos() : toNanos(m.time);
+    if (time > this.newest) this.newest = time;
+    const horizon = this.newest - MAX_SAMPLE_AGE_NANOS;
     let series = this.series.get(key);
+    if (series === undefined && this.series.size >= this.maxSeries) this.sweep(horizon);
     if (series === undefined) {
       if (this.series.size >= this.maxSeries) {
         if (!this.warned) {
@@ -218,9 +226,7 @@ export class ExemplarStore {
         instrumentKey,
         attributes: { ...m.attributes },
         kind: m.kind,
-        boundaries: m.kind === "histogram" ? this.boundariesFor(m.instrument, m.advisedBuckets) : [],
-        buckets: new Map(),
-        fixed: [],
+        samples: [],
         seen: 0,
       };
       this.series.set(key, series);
@@ -230,24 +236,42 @@ export class ExemplarStore {
         this.byInstrument.set(instrumentKey, keys);
       }
       keys.add(key);
+    } else if (series.samples.some((s) => s.time < horizon)) {
+      series.samples = series.samples.filter((s) => s.time >= horizon);
+      series.seen = series.samples.length;
     }
 
     const sample: Sample = {
-      time: m.time === undefined ? nowNanos() : toNanos(m.time),
+      time,
       value: m.value,
       ...(valid ? { traceId: sc.traceId, spanId: sc.spanId } : {}),
     };
     if (series.kind === "histogram") {
-      series.buckets.set(bucketIndex(series.boundaries, m.value), sample);
+      series.samples.push(sample);
+      if (series.samples.length > HISTOGRAM_SAMPLES) series.samples.shift();
       return;
     }
     series.seen++;
-    if (series.fixed.length < FIXED_RESERVOIR_SIZE) {
-      series.fixed.push(sample);
+    if (series.samples.length < FIXED_RESERVOIR_SIZE) {
+      series.samples.push(sample);
     } else {
       const j = Math.floor(Math.random() * series.seen);
-      if (j < FIXED_RESERVOIR_SIZE) series.fixed[j] = sample;
+      if (j < FIXED_RESERVOIR_SIZE) series.samples[j] = sample;
     }
+  }
+
+  // sweep discards every sample older than horizon and the series it empties, at most once a
+  // second on the store's clock.
+  private sweep(horizon: bigint): void {
+    if (this.lastSweep !== undefined && this.newest - this.lastSweep < SWEEP_INTERVAL_NANOS) return;
+    this.lastSweep = this.newest;
+    for (const series of this.series.values()) {
+      if (series.samples.some((s) => s.time < horizon)) {
+        series.samples = series.samples.filter((s) => s.time >= horizon);
+        series.seen = series.samples.length;
+      }
+    }
+    this.prune();
   }
 
   /**
@@ -277,15 +301,6 @@ export class ExemplarStore {
     }
     this.prune();
     return { ...rm, scopeMetrics };
-  }
-
-  private boundariesFor(instrument: string, advised: readonly number[] | undefined): readonly number[] {
-    const exact = this.histogramBuckets[instrument];
-    if (exact !== undefined) return exact;
-    for (const [pattern, boundaries] of Object.entries(this.histogramBuckets)) {
-      if (pattern.includes("*") && matchesPattern(pattern, instrument)) return boundaries;
-    }
-    return advised ?? DEFAULT_HISTOGRAM_BOUNDARIES;
   }
 
   // attachMetric assigns each of the instrument's series to its best point and returns the metric
@@ -332,22 +347,16 @@ export class ExemplarStore {
   // take removes and returns the series' samples no newer than cutoff, oldest first.
   private take(series: Series, cutoff: bigint): Sample[] {
     const out: Sample[] = [];
-    for (const [idx, s] of series.buckets) {
-      if (s.time <= cutoff) {
-        out.push(s);
-        series.buckets.delete(idx);
-      }
-    }
     const rest: Sample[] = [];
-    for (const s of series.fixed) (s.time <= cutoff ? out : rest).push(s);
-    series.fixed = rest;
+    for (const s of series.samples) (s.time <= cutoff ? out : rest).push(s);
+    series.samples = rest;
     series.seen = rest.length;
     return out.sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : 0));
   }
 
   private prune(): void {
     for (const [key, series] of this.series) {
-      if (series.buckets.size > 0 || series.fixed.length > 0) continue;
+      if (series.samples.length > 0) continue;
       this.series.delete(key);
       const keys = this.byInstrument.get(series.instrumentKey);
       if (keys?.delete(key) && keys.size === 0) {

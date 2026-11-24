@@ -79,7 +79,6 @@ export type ExemplarKind = "histogram" | "sum" | "gauge";
 
 // @public
 export interface ExemplarMeasurement {
-    readonly advisedBuckets?: readonly number[];
     readonly attributes: Attributes;
     // (undocumented)
     readonly context: Context;
@@ -103,6 +102,7 @@ export function exemplarsOf(point: DataPoint<unknown>): readonly Exemplar[];
 export class ExemplarStore {
     constructor(opts: ExemplarStoreOptions);
     attach(rm: ResourceMetrics): ResourceMetricsWithExemplars;
+    // @internal
     offer(m: ExemplarMeasurement): void;
 }
 
@@ -110,7 +110,6 @@ export class ExemplarStore {
 export interface ExemplarStoreOptions {
     // (undocumented)
     readonly filter: ExemplarFilter;
-    readonly histogramBuckets: Readonly<Record<string, readonly number[]>>;
     readonly maxSeries?: number;
 }
 

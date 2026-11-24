@@ -9,14 +9,24 @@ import { Context } from '@opentelemetry/api';
 import type { ContextManager } from '@opentelemetry/api';
 import { HrTime } from '@opentelemetry/api';
 import type { IMetricReader } from '@opentelemetry/sdk-metrics';
+import { LoggerProvider } from '@opentelemetry/api';
 import type { LogRecordExporter } from '@opentelemetry/sdk-logs';
-import type { MeterProvider } from '@opentelemetry/api';
+import { MeterProvider } from '@opentelemetry/api';
+import type { Resource } from '@opentelemetry/resources';
 import { ResourceMetrics } from '@opentelemetry/sdk-metrics';
 import { Sampler } from '@opentelemetry/sdk-trace';
 import type { SpanExporter } from '@opentelemetry/sdk-trace';
+import { TextMapPropagator } from '@opentelemetry/api';
+import { TracerProvider } from '@opentelemetry/api';
 
 // @public
 export function createTestPlatform(overrides: TestPlatformOptions): TestPlatform;
+
+// Warning: (ae-forgotten-export) The symbol "Telemetry" needs to be exported by the entry point testing.d.ts
+// Warning: (ae-forgotten-export) The symbol "ExemplarStore" needs to be exported by the entry point testing.d.ts
+//
+// @public
+export function exemplarStoreOf(telemetry: Telemetry): ExemplarStore;
 
 // @public
 export interface Platform {

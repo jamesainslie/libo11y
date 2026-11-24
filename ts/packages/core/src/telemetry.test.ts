@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { metrics, propagation, trace } from "@opentelemetry/api";
+import { metrics, propagation, ROOT_CONTEXT, TraceFlags, trace } from "@opentelemetry/api";
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
 import { globalErrorHandler } from "@opentelemetry/core";
 import { InMemoryLogRecordExporter, type LogRecordExporter } from "@opentelemetry/sdk-logs";
@@ -11,6 +11,7 @@ import {
   type MetricData,
   PeriodicExportingMetricReader,
   type PushMetricExporter,
+  type ResourceMetrics,
 } from "@opentelemetry/sdk-metrics";
 import { InMemorySpanExporter, type SpanExporter, TracerProvider } from "@opentelemetry/sdk-trace";
 import { O11yError } from "./errors.ts";
@@ -18,7 +19,7 @@ import { exemplarMetricExporter, exemplarsOf } from "./exemplars.ts";
 import type { TelemetryOptions } from "./options.ts";
 import type { ExporterRequest, Platform, PlatformConsole } from "./platform.ts";
 import { createTelemetryWith, setupWith, type Telemetry } from "./telemetry.ts";
-import { createTestPlatform } from "./testing.ts";
+import { createTestPlatform, exemplarStoreOf } from "./testing.ts";
 
 const OPTIONS: TelemetryOptions = { serviceName: "svc", serviceVersion: "1.2.3", environment: "test" };
 const GUARD = Symbol.for("libo11y.setup");
@@ -530,4 +531,63 @@ test("review W3: a throw while installing globals uninstalls, shuts down and rel
   assert.deepEqual(propagation.fields(), []);
   const t = await setupWith(OPTIONS, rig().platform);
   await t.shutdown();
+});
+
+function sampledContext() {
+  return trace.setSpanContext(ROOT_CONTEXT, {
+    traceId: "0af7651916cd43dd8448eb211c80319c",
+    spanId: "b7ad6b7169203331",
+    traceFlags: TraceFlags.SAMPLED,
+  });
+}
+
+// Review W5a: with metrics off nothing can read the store, so it samples nothing.
+test("with metrics routed to none the exemplar store samples nothing", async () => {
+  const t = await createTelemetryWith({ ...OPTIONS, hermetic: true }, rig().platform);
+  try {
+    t.meterProvider.getMeter("app").createCounter("c").add(1, {}, sampledContext());
+    const rm = {
+      resource: t.resource,
+      scopeMetrics: [
+        {
+          scope: { name: "app", version: "" },
+          metrics: [
+            {
+              descriptor: { name: "c", description: "", unit: "", valueType: 1 },
+              aggregationTemporality: AggregationTemporality.CUMULATIVE,
+              dataPointType: 3,
+              isMonotonic: true,
+              dataPoints: [
+                { startTime: [0, 0], endTime: [Date.now() / 1000 + 10, 0], attributes: {}, value: 1 },
+              ],
+            },
+          ],
+        },
+      ],
+    } as unknown as ResourceMetrics;
+    const [point] = (exemplarStoreOf(t).attach(rm).scopeMetrics[0]?.metrics[0]?.dataPoints ??
+      []) as DataPoint<unknown>[];
+    assert.deepEqual(exemplarsOf(point as DataPoint<unknown>), []);
+  } finally {
+    await t.shutdown();
+  }
+});
+
+// Review W5b: an injected reader is used as is; a harness attaches exemplars through the testing
+// subpath's exemplarStoreOf.
+test("exemplarStoreOf lets a harness attach exemplars to an injected reader's collection", async () => {
+  const exporter = new InMemoryMetricExporter(AggregationTemporality.CUMULATIVE);
+  const reader = new PeriodicExportingMetricReader({ exporter, exportIntervalMillis: 3_600_000 });
+  const t = await createTelemetryWith({ ...OPTIONS, hermetic: true, metricReader: reader }, rig().platform);
+  try {
+    t.meterProvider.getMeter("app").createHistogram("h").record(2, {}, sampledContext());
+    const { resourceMetrics } = await reader.collect();
+    const attached = exemplarStoreOf(t).attach(resourceMetrics);
+    const metric = attached.scopeMetrics.flatMap((sm) => sm.metrics).find((m) => m.descriptor.name === "h");
+    const [point] = (metric?.dataPoints ?? []) as DataPoint<unknown>[];
+    assert.equal(exemplarsOf(point as DataPoint<unknown>)[0]?.traceId, "0af7651916cd43dd8448eb211c80319c");
+  } finally {
+    await t.shutdown();
+  }
+  assert.throws(() => exemplarStoreOf({} as Telemetry), TypeError);
 });

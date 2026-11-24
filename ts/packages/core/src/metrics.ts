@@ -85,7 +85,6 @@ class PolicyMeter implements Meter {
     options: MetricOptions | undefined,
     nonNegative: boolean,
   ): (value: number, attrs?: Attributes, ctx?: Context) => void {
-    const advised = options?.advice?.explicitBucketBoundaries;
     return (value, attrs, ctx) => {
       const classified = this.classify(attrs);
       const active = ctx ?? context.active();
@@ -99,7 +98,6 @@ class PolicyMeter implements Meter {
         value: v,
         attributes: classified,
         context: active,
-        ...(kind === "histogram" && advised !== undefined ? { advisedBuckets: advised } : {}),
       });
     };
   }

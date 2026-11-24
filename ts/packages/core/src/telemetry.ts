@@ -42,6 +42,7 @@ import { emitEvent } from "./events.ts";
 import { ExemplarStore } from "./exemplars.ts";
 import { buildResource } from "./identity.ts";
 import { seams } from "./internal/seams.ts";
+import { registerExemplarStore } from "./internal/stores.ts";
 import type { LogAttributes } from "./log-values.ts";
 import { CoreLogger, type Logger, LogPipeline } from "./logger.ts";
 import { RedactingLogRecordProcessor } from "./logs-processor.ts";
@@ -196,6 +197,7 @@ interface Parts {
   readonly tracerProvider: TracerProvider;
   readonly loggerProvider: LoggerProvider | undefined;
   readonly propagator: TextMapPropagator;
+  readonly exemplars: ExemplarStore;
   readonly summaryAttributes: LogAttributes;
   readonly effectiveConfig: string;
   readonly runtime: RuntimeMetrics | undefined;
@@ -371,7 +373,13 @@ function selectExporters(config: ResolvedConfig, options: TelemetryOptions, buil
  * O11yError for a bad configuration or identity.
  */
 export async function createTelemetryWith(options: TelemetryOptions, platform: Platform): Promise<Telemetry> {
-  return new TelemetryHandle(await build(options, platform));
+  return handleFor(await build(options, platform));
+}
+
+function handleFor(parts: Parts): TelemetryHandle {
+  const handle = new TelemetryHandle(parts);
+  registerExemplarStore(handle, parts.exemplars);
+  return handle;
 }
 
 async function build(options: TelemetryOptions, platform: Platform): Promise<Parts> {
@@ -394,9 +402,9 @@ async function build(options: TelemetryOptions, platform: Platform): Promise<Par
     seams.baggageEgress ?? (() => true),
   );
 
+  // With metrics off nothing can read the store, so it samples nothing.
   const exemplars = new ExemplarStore({
-    filter: config.exemplarFilter,
-    histogramBuckets: options.histogramBuckets ?? {},
+    filter: config.metrics === "none" || config.sdkDisabled ? "always_off" : config.exemplarFilter,
   });
   const needsPlatform = wants(config.traces) || wants(config.metrics) || wants(config.logs);
   const exporters = selectExporters(
@@ -483,6 +491,7 @@ async function build(options: TelemetryOptions, platform: Platform): Promise<Par
       tracerProvider,
       loggerProvider,
       propagator,
+      exemplars,
       summaryAttributes: summary.attributes,
       effectiveConfig: summary.effectiveConfig,
       runtime,
@@ -525,7 +534,7 @@ export async function setupWith(options: TelemetryOptions, platform: Platform): 
   takeGuard();
   let handle: TelemetryHandle;
   try {
-    handle = new TelemetryHandle(await build(options, platform));
+    handle = handleFor(await build(options, platform));
   } catch (err) {
     releaseGuard();
     throw err;

@@ -29,7 +29,7 @@ function sampled(): Context {
 
 function harness(opts: { views?: ViewOptions[]; pii?: "drop" | "allow" } = {}) {
   const exporter = new InMemoryMetricExporter(AggregationTemporality.CUMULATIVE);
-  const store = new ExemplarStore({ filter: "trace_based", histogramBuckets: {} });
+  const store = new ExemplarStore({ filter: "trace_based" });
   const reader = new PeriodicExportingMetricReader({
     exporter: exemplarMetricExporter(exporter, store),
     exportIntervalMillis: 3_600_000,
@@ -183,5 +183,27 @@ test("user views still apply through the wrapper", async () => {
   mp.getMeter("svc").createHistogram("h").record(5, {}, sampled());
   const [p] = find(await collect(), "h").dataPoints as DataPoint<{ buckets: { boundaries: number[] } }>[];
   assert.deepEqual(p?.value.buckets.boundaries, [100]);
+  await sdk.shutdown();
+});
+
+test("review W4: a view's histogram boundaries get one exemplar per bucket", async () => {
+  const { mp, sdk, collect } = harness({
+    views: [
+      {
+        instrumentName: "h",
+        aggregation: {
+          type: AggregationType.EXPLICIT_BUCKET_HISTOGRAM,
+          options: { boundaries: [0.1, 0.2, 0.3, 0.4, 0.5] },
+        },
+      },
+    ],
+  });
+  const h = mp.getMeter("svc").createHistogram("h");
+  for (const v of [0.05, 0.15, 0.25, 0.35, 0.45]) h.record(v, {}, sampled());
+  const [p] = find(await collect(), "h").dataPoints as DataPoint<unknown>[];
+  assert.deepEqual(
+    exemplarsOf(p as DataPoint<unknown>).map((e) => e.value),
+    [0.05, 0.15, 0.25, 0.35, 0.45],
+  );
   await sdk.shutdown();
 });
