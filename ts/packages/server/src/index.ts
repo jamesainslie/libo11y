@@ -5,4 +5,5 @@
  */
 
 export { createContextManager } from "./context.ts";
+export { OtlpProtobufMetricsSerializer } from "./otlp-proto-metrics.ts";
 export { serverPlatform } from "./platform.ts";

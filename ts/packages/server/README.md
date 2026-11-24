@@ -22,3 +22,21 @@ context manager. On Bun 1.3.x it loses the active context in three places:
   ([oven-sh/bun#34266](https://github.com/oven-sh/bun/issues/34266));
 - `unhandledRejection` listeners
   ([oven-sh/bun#40223](https://github.com/oven-sh/bun/issues/40223)).
+
+## Exporters
+
+`serverPlatform()` builds the exporters core asks for from the `OTEL_*`
+variables. `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER` and
+`OTEL_LOGS_EXPORTER` take `otlp` (the default), `console` or `none`. The
+protocol is `http/protobuf` by default, or `http/json`, from
+`OTEL_EXPORTER_OTLP_PROTOCOL` and its per-signal forms. `grpc` is refused
+with `UNSUPPORTED_PROTOCOL`.
+
+Traces and logs use the upstream OTLP exporters. Metrics use upstream's
+OTLP transport with libo11y's serializers, which write exemplars:
+`OtlpProtobufMetricsSerializer` from this package, and core's
+`OtlpJsonMetricsSerializer`. Every other `OTEL_EXPORTER_OTLP_*` variable,
+such as the endpoints, headers, compression and
+`OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE`, is read by upstream.
+An `OTEL_METRIC_EXPORT_TIMEOUT` above `OTEL_METRIC_EXPORT_INTERVAL` is
+clamped to the interval, as sdk-node does.

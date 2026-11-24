@@ -5,10 +5,17 @@
 ```ts
 
 import type { ContextManager } from '@opentelemetry/api';
+import { IExportMetricsServiceResponse } from '@opentelemetry/otlp-transformer';
+import { ISerializer } from '@opentelemetry/otlp-transformer';
 import type { Platform } from '@libo11y/core';
+import { ResourceMetrics } from '@opentelemetry/sdk-metrics';
+import { ResourceMetricsWithExemplars } from '@libo11y/core';
 
 // @public
 export function createContextManager(): ContextManager;
+
+// @public
+export const OtlpProtobufMetricsSerializer: ISerializer<ResourceMetrics | ResourceMetricsWithExemplars, IExportMetricsServiceResponse>;
 
 // @public
 export function serverPlatform(): Platform;
