@@ -9,6 +9,8 @@ adhere to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-24
+
 ### Added
 
 - `@libo11y/spec`: the spec 1.2.0 attribute keys, enums, event and metric
@@ -74,4 +76,5 @@ adhere to [Semantic Versioning](https://semver.org/).
   protobuf. `decodeOtlpProtobuf` and `normalizeOtlp` decode and compare
   bodies directly.
 
-[Unreleased]: https://github.com/jamesainslie/libo11y/commits/main/ts
+[Unreleased]: https://github.com/jamesainslie/libo11y/compare/ts/v0.1.0...HEAD
+[0.1.0]: https://github.com/jamesainslie/libo11y/releases/tag/ts/v0.1.0

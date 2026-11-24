@@ -3,7 +3,7 @@
 # release would, then install the tarballs into a throwaway consumer
 # outside the repository and import them under Node and under Bun.
 #
-# Usage: ts-release-check.sh [VERSION]   (default v0.0.0; `make
+# Usage: ts-release-check.sh [VERSION]   (default v0.1.0; `make
 # release-check` passes TS_RELEASE_VERSION). Every package must already
 # be at VERSION. The packages stay at 0.0.0 until a release commit moves
 # them, here and TS_RELEASE_VERSION in the Makefile, together.
@@ -11,7 +11,7 @@
 # registry for the packages' third-party dependencies.
 set -euo pipefail
 
-version="${1:-v0.0.0}"
+version="${1:-v0.1.0}"
 plain="${version#v}"
 
 repo_root="$(git rev-parse --show-toplevel)"
