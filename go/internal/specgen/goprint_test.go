@@ -33,6 +33,10 @@ func TestGoPrintRangesMatchIsPrint(t *testing.T) {
 		if got, want := inRanges(ranges, r), unicode.IsPrint(r); got != want {
 			t.Fatalf("U+%04X: in ranges %v, unicode.IsPrint %v", r, got, want)
 		}
+		// strconv.Quote consults strconv.IsPrint, which has its own tables.
+		if got, want := inRanges(ranges, r), strconv.IsPrint(r); got != want {
+			t.Fatalf("U+%04X: in ranges %v, strconv.IsPrint %v", r, got, want)
+		}
 	}
 }
 
