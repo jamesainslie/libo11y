@@ -15,6 +15,15 @@ import { TelemetryOptions } from '@libo11y/core';
 export function createRecorder(options?: RecorderOptions): Promise<Recorder>;
 
 // @public
+export function decodeOtlpProtobuf(signal: OtlpSignal, body: Uint8Array): Record<string, unknown>;
+
+// @public
+export function normalizeOtlp(value: unknown): unknown;
+
+// @public
+export type OtlpSignal = "traces" | "metrics" | "logs";
+
+// @public
 export interface RecordedExemplar {
     readonly filteredAttributes: Attributes;
     // (undocumented)

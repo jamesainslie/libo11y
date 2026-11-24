@@ -3,6 +3,7 @@
  * correlation assertions, and an in-process OTLP/HTTP sink. Runs on Bun and Node, never in browsers.
  */
 
+export { decodeOtlpProtobuf, normalizeOtlp, type OtlpSignal } from "./otlp-schema.ts";
 export {
   createRecorder,
   type RecordedExemplar,
