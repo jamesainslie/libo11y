@@ -8,6 +8,11 @@ at its schema URL.
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-24
+
+Tagged `spec/v1.2.0`. Its schema file is served at
+`https://schemas.o11y.ing/libo11y/1.2.0`.
+
 ### Added
 
 - `o11y.log.source` (`logger`, `console`), which marks log records an
