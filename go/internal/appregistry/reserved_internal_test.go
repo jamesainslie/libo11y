@@ -1,6 +1,7 @@
 package appregistry
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -16,6 +17,23 @@ func TestReservedNamespacesCoverSpecTable(t *testing.T) {
 		root, _, _ := strings.Cut(string(key), ".")
 		if !reservedNamespaces[root] {
 			t.Errorf("spec key %s is under namespace %q, which an application registry may claim", key, root)
+		}
+	}
+}
+
+// TestReservedNamespacesSorted pins the exported list: every reserved
+// namespace, once, in sorted order, so generated code is stable.
+func TestReservedNamespacesSorted(t *testing.T) {
+	got := ReservedNamespaces()
+	if len(got) != len(reservedNamespaces) {
+		t.Fatalf("ReservedNamespaces() has %d entries, want %d", len(got), len(reservedNamespaces))
+	}
+	if !slices.IsSorted(got) {
+		t.Errorf("ReservedNamespaces() is not sorted: %v", got)
+	}
+	for _, ns := range []string{"o11y", "otel", "http"} {
+		if !slices.Contains(got, ns) {
+			t.Errorf("ReservedNamespaces() lacks %q", ns)
 		}
 	}
 }

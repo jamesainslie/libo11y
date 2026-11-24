@@ -1,11 +1,15 @@
 import { expect, test } from "bun:test";
 import {
+  APP_REGISTRY_SCHEMA,
+  APP_RESERVED_NAMESPACES,
+  ATTR_LOG_SOURCE,
   ATTR_OUTCOME,
   ATTR_RUM_VIEW_NAME,
   ENVIRONMENT_VALUES,
   EVENT_RUM_ERROR,
   EVENT_TELEMETRY_CONFIGURED,
   EVENTS,
+  LOG_SOURCE_VALUES,
   METRIC_RUM_VITAL_LCP,
   METRIC_SCHEMA_VIOLATIONS,
   OUTCOME_VALUES,
@@ -82,4 +86,19 @@ test("RUM conventions", () => {
   expect(RUM_CONNECTION_EFFECTIVE_VALUE_SLOW_2G).toBe("slow-2g");
   expect(RUM_CONNECTION_EFFECTIVE_VALUE_TYPE_2G).toBe("2g");
   expect(RUM_VITAL_RATING_VALUE_NEEDS_IMPROVEMENT).toBe("needs-improvement");
+});
+
+test("spec 1.2.0 marks captured console records", () => {
+  expect(SPEC_VERSION).toBe("1.2.0");
+  expect(ATTR_LOG_SOURCE).toBe("o11y.log.source");
+  expect([...LOG_SOURCE_VALUES]).toEqual(["logger", "console"]);
+  expect(SENSITIVITY_OF.get("o11y.log.source")).toBe("public");
+});
+
+test("the application registry reserved namespaces", () => {
+  expect(APP_REGISTRY_SCHEMA).toBe("libo11y.app-registry/v1");
+  for (const ns of ["o11y", "otel", "http", "session"]) {
+    expect(APP_RESERVED_NAMESPACES.has(ns)).toBe(true);
+  }
+  expect(APP_RESERVED_NAMESPACES.has("lor")).toBe(false);
 });

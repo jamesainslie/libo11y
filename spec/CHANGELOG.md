@@ -8,6 +8,12 @@ at its schema URL.
 
 ## [Unreleased]
 
+### Added
+
+- `o11y.log.source` (`logger`, `console`), which marks log records an
+  implementation captured from console output. It is referenced from the
+  log record group as conditionally required on captured records.
+
 ## [1.1.0] - 2026-11-18
 
 Tagged `spec/v1.1.0`. Its schema file is served at

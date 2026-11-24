@@ -190,3 +190,23 @@ groups:
         annotations:
           o11y.sensitivity: public
           o11y.cardinality: unbounded
+
+      - id: o11y.log.source
+        type:
+          members:
+            - id: logger
+              value: "logger"
+              stability: development
+              brief: The record came through the libo11y logger or a log bridge.
+            - id: console
+              value: "console"
+              stability: development
+              brief: The record came from a captured console call.
+        stability: development
+        brief: >
+          Where a log record entered the pipeline. Implementations that
+          capture console output mark those records console.
+        examples: ["console"]
+        annotations:
+          o11y.sensitivity: public
+          o11y.cardinality: enum
