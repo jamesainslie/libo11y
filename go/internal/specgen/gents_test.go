@@ -138,12 +138,9 @@ func TestTypeScriptTablesCarryTheAppRegistryRules(t *testing.T) {
 	if want := `export const APP_REGISTRY_SCHEMA = "libo11y.app-registry/v1";`; !strings.Contains(src, want) {
 		t.Errorf("genTSTables missing %s", want)
 	}
-	if !strings.Contains(src, "export const APP_RESERVED_NAMESPACES: ReadonlySet<string> = new Set<string>([") {
-		t.Fatalf("genTSTables has no APP_RESERVED_NAMESPACES set\n%s", src)
-	}
-	for _, ns := range appregistry.ReservedNamespaces() {
-		if !strings.Contains(src, tsQuote(ns)+",") && !strings.Contains(src, tsQuote(ns)+"]") {
-			t.Errorf("APP_RESERVED_NAMESPACES lacks %q", ns)
-		}
+	want := "export const APP_RESERVED_NAMESPACES: ReadonlySet<string> = new Set<string>(" +
+		tsList(appregistry.ReservedNamespaces()) + ");"
+	if !strings.Contains(src, want) {
+		t.Errorf("genTSTables missing the full reserved namespace set:\n%s", want)
 	}
 }

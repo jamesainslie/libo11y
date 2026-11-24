@@ -1,0 +1,30 @@
+[
+  {
+    "name": "pod uid",
+    "k8s_pod_uid": "0f0c5e8e-3b8a-4c1e-9d3a-2f6b7a1c9e42",
+    "k8s_pod_name": "",
+    "k8s_namespace_name": "",
+    "want": "fceeac15-05b1-5132-b02a-910f70fb6aac"
+  },
+  {
+    "name": "pod uid wins over the name",
+    "k8s_pod_uid": "0f0c5e8e-3b8a-4c1e-9d3a-2f6b7a1c9e42",
+    "k8s_pod_name": "lor-portal-0",
+    "k8s_namespace_name": "lor-portal",
+    "want": "fceeac15-05b1-5132-b02a-910f70fb6aac"
+  },
+  {
+    "name": "namespace and pod name",
+    "k8s_pod_uid": "",
+    "k8s_pod_name": "lor-site-7d9f8-abcde",
+    "k8s_namespace_name": "lor-site",
+    "want": "620f09d7-0486-5b08-8412-83628da94a0f"
+  },
+  {
+    "name": "pod name without a namespace",
+    "k8s_pod_uid": "",
+    "k8s_pod_name": "lor-site-7d9f8-abcde",
+    "k8s_namespace_name": "",
+    "want": "64d2bcdf-3549-5e2e-b0ff-ab2d444fb136"
+  }
+]

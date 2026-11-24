@@ -42,11 +42,12 @@ func TestParseIsStrict(t *testing.T) {
 	for name, tc := range map[string]struct {
 		doc          string
 		wantEmpty    bool   // the error is ErrEmpty
+		wantSecond   bool   // the error is ErrSecondDocument
 		wantContains string // the error text contains this, when set
 	}{
 		"unknown top-level key": {doc: "schema: libo11y.app-registry/v1\nnamespace: lor\nnamespaces: [x]\n"},
 		"unknown attribute key": {doc: "schema: libo11y.app-registry/v1\nnamespace: lor\nattributes:\n  lor.a.b: {type: string, sensitivty: public}\n"}, //nolint:misspell // the misspelt key is the test input
-		"two documents":         {doc: "schema: libo11y.app-registry/v1\n---\nschema: x\n"},
+		"two documents":         {doc: "schema: libo11y.app-registry/v1\n---\nschema: x\n", wantSecond: true},
 		"malformed second document": {
 			doc:          "schema: libo11y.app-registry/v1\n---\nschema: [\n",
 			wantContains: "parsing application registry:",
@@ -58,6 +59,9 @@ func TestParseIsStrict(t *testing.T) {
 			_, err := appregistry.Parse([]byte(tc.doc))
 			if err == nil {
 				t.Fatal("Parse succeeded, want an error")
+			}
+			if tc.wantSecond != errors.Is(err, appregistry.ErrSecondDocument) {
+				t.Errorf("Parse error = %v, errors.Is ErrSecondDocument = %t, want %t", err, !tc.wantSecond, tc.wantSecond)
 			}
 			if tc.wantEmpty && !errors.Is(err, appregistry.ErrEmpty) {
 				t.Errorf("Parse error = %v, want %v", err, appregistry.ErrEmpty)

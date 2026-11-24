@@ -1,0 +1,4 @@
+schema: libo11y.app-registry/v1
+namespace: lor
+attributes:
+  lor.Bad: {type: string, sensitivity: internal, cardinality: unbounded}

@@ -229,6 +229,25 @@ func TestInstanceIDDerivedFromPodStable(t *testing.T) {
 	}
 }
 
+// TestInstanceIDDerivedFromPodName pins the derivation from the namespace
+// and pod name end to end, against the value every libo11y implementation
+// must produce (conformance/vectors/instance-id.json).
+func TestInstanceIDDerivedFromPodName(t *testing.T) {
+	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "k8s.pod.name=lor-site-7d9f8-abcde,k8s.namespace.name=lor-site")
+	opts := append(bareOpts(),
+		o11y.WithServiceName("svc"),
+		o11y.WithEnvironment(spec.EnvironmentTest),
+	)
+	sdk, err := o11y.New(context.Background(), opts...)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = sdk.Shutdown(context.Background()) })
+	if got, want := resourceAttr(t, sdk, "service.instance.id"), "620f09d7-0486-5b08-8412-83628da94a0f"; got != want {
+		t.Errorf("service.instance.id = %q, want %q", got, want)
+	}
+}
+
 func TestServiceVersionFallback(t *testing.T) {
 	// No version option, and the test binary has no module version.
 	opts := append(bareOpts(),

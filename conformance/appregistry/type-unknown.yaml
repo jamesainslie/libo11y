@@ -1,0 +1,4 @@
+schema: libo11y.app-registry/v1
+namespace: lor
+attributes:
+  lor.user.age: {type: integer, sensitivity: public, cardinality: bounded}

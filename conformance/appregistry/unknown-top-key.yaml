@@ -1,0 +1,3 @@
+schema: libo11y.app-registry/v1
+namespace: lor
+namespaces: [x]

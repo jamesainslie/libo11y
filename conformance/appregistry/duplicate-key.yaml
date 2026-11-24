@@ -1,0 +1,5 @@
+schema: libo11y.app-registry/v1
+namespace: lor
+namespace: shop
+attributes:
+  lor.user.id: {type: string, sensitivity: internal, cardinality: unbounded}

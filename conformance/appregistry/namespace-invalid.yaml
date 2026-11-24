@@ -1,0 +1,4 @@
+schema: libo11y.app-registry/v1
+namespace: Lor.Portal
+attributes:
+  Lor.Portal.id: {type: string, sensitivity: internal, cardinality: unbounded}

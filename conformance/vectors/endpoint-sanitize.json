@@ -1,0 +1,90 @@
+[
+  {
+    "in": "https://user:tok3n@collector.example:4318/v1?api_key=k3y#frag",
+    "want": "https://collector.example:4318/v1"
+  },
+  {
+    "in": "http://collector.example:4318",
+    "want": "http://collector.example:4318"
+  },
+  {
+    "in": "collector.example:4317",
+    "want": "collector.example:4317"
+  },
+  {
+    "in": "user:pw@collector.example:4317",
+    "want": "collector.example:4317"
+  },
+  {
+    "in": "https://collector.example/?",
+    "want": "https://collector.example/"
+  },
+  {
+    "in": "https://[::1]:4318/v1",
+    "want": "https://[::1]:4318/v1"
+  },
+  {
+    "in": "://bad",
+    "want": "unparseable"
+  },
+  {
+    "in": "http://%zz",
+    "want": "unparseable"
+  },
+  {
+    "in": "https://AbC/x+y@collector.example:4318",
+    "want": "unparseable"
+  },
+  {
+    "in": "AbC/x+y@collector.example:4317",
+    "want": "unparseable"
+  },
+  {
+    "in": "https://user:/s3cr3t@collector.example",
+    "want": "unparseable"
+  },
+  {
+    "in": "https://user:12?ab@collector.example:4318",
+    "want": "unparseable"
+  },
+  {
+    "in": "https://u:p@x/y@collector.example",
+    "want": "unparseable"
+  },
+  {
+    "in": "https://u:p@ss?word@collector.example:4318",
+    "want": "unparseable"
+  },
+  {
+    "in": "https://u:S3cr3t@abc?x@collector.example:4318/v1",
+    "want": "unparseable"
+  },
+  {
+    "in": "u:p@ss?word@collector.example:4317",
+    "want": "unparseable"
+  },
+  {
+    "in": "https://Collector.Example:443/a/../b",
+    "want": "https://Collector.Example:443/a/../b"
+  },
+  {
+    "in": "https://bücher.example/v1",
+    "want": "https://b%C3%BCcher.example/v1"
+  },
+  {
+    "in": "https://collector.example/a b",
+    "want": "https://collector.example/a%20b"
+  },
+  {
+    "in": "HTTPS://collector.example",
+    "want": "https://collector.example"
+  },
+  {
+    "in": "https://tok@collector.example",
+    "want": "https://collector.example"
+  },
+  {
+    "in": "",
+    "want": "unparseable"
+  }
+]

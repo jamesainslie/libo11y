@@ -1,0 +1,3 @@
+libo11y_enum_value_whitespace: attribute lor.user.role: value " studio"
+libo11y_enum_duplicate_value: attribute lor.user.role: value " studio"
+libo11y_enum_duplicate_value: attribute lor.user.role: value "client"

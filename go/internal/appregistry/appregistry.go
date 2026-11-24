@@ -58,8 +58,12 @@ func (v Violation) String() string {
 // or comment-only file.
 var ErrEmpty = errors.New("application registry is empty")
 
-// Parse decodes raw strictly: an unknown key, a second YAML document, and
-// an empty file (ErrEmpty) are errors. Parse does not apply the policy
+// ErrSecondDocument reports a registry file holding more than one YAML
+// document. A registry is exactly one document.
+var ErrSecondDocument = errors.New("an application registry holds one YAML document, found a second")
+
+// Parse decodes raw strictly: an unknown key, a second YAML document
+// (ErrSecondDocument), and an empty file (ErrEmpty) are errors. Parse does not apply the policy
 // rules; call Validate for those.
 func Parse(raw []byte) (*Registry, error) {
 	dec := yaml.NewDecoder(bytes.NewReader(raw))
@@ -74,7 +78,7 @@ func Parse(raw []byte) (*Registry, error) {
 	var extra yaml.Node
 	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
 		if err == nil {
-			err = errors.New("an application registry holds one YAML document, found a second")
+			err = ErrSecondDocument
 		}
 		return nil, fmt.Errorf("parsing application registry: %w", err)
 	}
