@@ -25,8 +25,11 @@ A `.want` file holds one of three things:
   - `syntax`: anything else.
 
   A kind is named rather than quoted, so no case depends on one YAML
-  library's error text. When a file has several decode problems, the
-  first one the decoder meets wins.
+  library's error text. A syntax error in the first document wins over
+  everything else, and an error in the first document wins over a second
+  document. Within the first document, yaml.v3 collects every decode
+  problem, and the kinds rank `duplicate-key`, then `unknown-key`, then
+  `type`.
 
 Three Go behaviours are part of the contract:
 - **Quoting.** A quoted value in a detail uses Go's `%q` quoting: `\a`
