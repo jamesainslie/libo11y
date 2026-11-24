@@ -1,5 +1,6 @@
 import assert, { AssertionError } from "node:assert/strict";
 import { test } from "node:test";
+import { context, ROOT_CONTEXT, trace } from "@opentelemetry/api";
 import type { ReadableSpan } from "@opentelemetry/sdk-trace";
 import { checkEvent, conformanceProblems, correlationProblems, fail, leafKeys } from "./assertions.ts";
 import { createRecorder, type Recorder, type RecorderOptions } from "./recorder.ts";
@@ -167,8 +168,8 @@ test("assertCorrelated reports a record without its span's trace ID, or with ano
       { log: { ...log, body: "ok", traceId: active.traceId, spanId: active.spanId }, active },
     ]),
     [
-      'o11ytest: correlated record "x" has no trace ID',
-      'o11ytest: record "y" trace ID "11111111111111111111111111111111" does not match its span ' +
+      'o11ytest: correlated record "x" has no trace_id attribute',
+      'o11ytest: record "y" trace_id "11111111111111111111111111111111" does not match its span ' +
         '"0af7651916cd43dd8448eb211c80319c"',
     ],
   );
@@ -225,4 +226,51 @@ test("assertTriangle reports a metric with no exemplar, or none on the correlate
       ),
     );
   });
+});
+
+test("assertCorrelated fails for a record emitted with another context while a span is active", async () => {
+  await withRecorder((rec) => {
+    const bridge = rec.telemetry.loggerProvider.getLogger("bridge");
+    rec.telemetry.tracerProvider.getTracer("app").startActiveSpan("op", (span) => {
+      rec.telemetry.logger.info("correlated");
+      bridge.emit({ body: "lost", context: ROOT_CONTEXT });
+      span.end();
+    });
+    assert.throws(
+      () => rec.assertCorrelated(),
+      failsWith('o11ytest: correlated record "lost" has no trace_id attribute'),
+    );
+  });
+});
+
+test("assertCorrelated fails for a record that carries a span other than the active one", async () => {
+  await withRecorder((rec) => {
+    const tracer = rec.telemetry.tracerProvider.getTracer("app");
+    const stale = tracer.startSpan("stale");
+    stale.end();
+    tracer.startActiveSpan("op", (span) => {
+      rec.telemetry.loggerProvider
+        .getLogger("bridge")
+        .emit({ body: "stale", context: trace.setSpan(context.active(), stale) });
+      span.end();
+      assert.throws(
+        () => rec.assertCorrelated(),
+        failsWith(
+          `o11ytest: record "stale" trace_id "${stale.spanContext().traceId}" does not match its span ` +
+            `"${span.spanContext().traceId}"`,
+        ),
+      );
+    });
+  });
+});
+
+test("assertConforms reports tier-0 problems before the flush and collection problems", () => {
+  const problems = conformanceProblems({
+    resource: {},
+    preflight: ["o11ytest: flushing before conformance checks: boom"],
+    logs: [],
+    spans: [],
+  });
+  assert.equal(problems[0], 'o11ytest: resource missing required tier-0 attribute "service.name"');
+  assert.equal(problems.at(-1), "o11ytest: flushing before conformance checks: boom");
 });

@@ -101,6 +101,8 @@ export interface ConformanceInput {
   readonly metrics?: ResourceMetricsWithExemplars;
   readonly logs: readonly RecordedLog[];
   readonly spans: readonly ReadableSpan[];
+  /** Problems found before the checks, such as a failed flush, reported after the tier-0 keys. */
+  readonly preflight?: readonly string[];
 }
 
 /**
@@ -114,6 +116,7 @@ export function conformanceProblems(input: ConformanceInput): string[] {
       problems.push(`o11ytest: resource missing required tier-0 attribute ${goQuote(key)}`);
     }
   }
+  problems.push(...(input.preflight ?? []));
 
   if (input.metrics !== undefined) {
     const bySignal = violationsBySignal(input.metrics, SECRET_ATTRIBUTE_RULE);
@@ -161,18 +164,21 @@ export function conformanceProblems(input: ConformanceInput): string[] {
   return problems;
 }
 
-/** Go AssertCorrelated: a record emitted inside a span must carry that span's trace ID. */
+/**
+ * Go AssertCorrelated: a record emitted while a span was active must carry that span's trace ID.
+ * "active" is the caller's active span at emission, not the context the emitter passed.
+ */
 export function correlationProblems(logs: readonly CapturedLog[]): string[] {
   const problems: string[] = [];
   for (const { log, active } of logs) {
     if (active === undefined) continue;
     if (log.traceId === undefined) {
-      problems.push(`o11ytest: correlated record ${goQuote(log.body)} has no trace ID`);
+      problems.push(`o11ytest: correlated record ${goQuote(log.body)} has no trace_id attribute`);
       continue;
     }
     if (log.traceId !== active.traceId) {
       problems.push(
-        `o11ytest: record ${goQuote(log.body)} trace ID ${goQuote(log.traceId)} does not match its span ` +
+        `o11ytest: record ${goQuote(log.body)} trace_id ${goQuote(log.traceId)} does not match its span ` +
           goQuote(active.traceId),
       );
     }

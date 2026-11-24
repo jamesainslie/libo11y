@@ -91,7 +91,7 @@ export interface Recorder {
 }
 
 // @public
-export interface RecorderOptions extends Omit<TelemetryOptions, "spanExporter" | "spanProcessor" | "metricReader" | "logExporter" | "logProcessor" | "hermetic"> {
+export interface RecorderOptions extends Omit<TelemetryOptions, "spanExporter" | "spanProcessor" | "metricReader" | "logExporter" | "logProcessor" | "logExport" | "hermetic"> {
 }
 
 // @public

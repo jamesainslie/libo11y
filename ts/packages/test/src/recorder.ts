@@ -16,7 +16,6 @@ import {
 import { createTestPlatform, exemplarStoreOf } from "@libo11y/core/testing";
 import {
   type Attributes,
-  type Context,
   context,
   createContextKey,
   isSpanContextValid,
@@ -44,7 +43,13 @@ import {
 export interface RecorderOptions
   extends Omit<
     TelemetryOptions,
-    "spanExporter" | "spanProcessor" | "metricReader" | "logExporter" | "logProcessor" | "hermetic"
+    | "spanExporter"
+    | "spanProcessor"
+    | "metricReader"
+    | "logExporter"
+    | "logProcessor"
+    | "logExport"
+    | "hermetic"
   > {}
 
 /** One log record as the OTLP leg emitted it, after classification. */
@@ -149,7 +154,13 @@ export function levelOf(severityNumber: number): LogLevel {
 class LogRecording implements LogRecordProcessor {
   readonly logs: CapturedLog[] = [];
 
-  onEmit(record: ReadWriteLogRecord, ctx?: Context): void {
+  /**
+   * onEmit runs synchronously in the emitter's stack, so context.active() is the caller's real
+   * active context, whatever context the emitter passed. That span is the reference
+   * assertCorrelated checks the record's trace ID against: a record emitted with ROOT_CONTEXT or a
+   * stale context while a span is active is caught.
+   */
+  onEmit(record: ReadWriteLogRecord): void {
     const severityNumber = record.severityNumber ?? 0;
     const attributes = { ...record.attributes } as Record<string, unknown>;
     const eventName = record.eventName ?? attributes["event.name"];
@@ -162,7 +173,7 @@ class LogRecording implements LogRecordProcessor {
       ...(sc === undefined ? {} : { traceId: sc.traceId, spanId: sc.spanId }),
       ...(typeof eventName === "string" ? { eventName } : {}),
     };
-    const active = ctx === undefined ? undefined : trace.getSpanContext(ctx);
+    const active = trace.getSpanContext(context.active());
     this.logs.push({ log, active: active !== undefined && isSpanContextValid(active) ? active : undefined });
   }
 
@@ -184,6 +195,7 @@ const INJECTED: readonly string[] = [
   "metricReader",
   "logExporter",
   "logProcessor",
+  "logExport",
   "hermetic",
 ];
 
@@ -287,25 +299,24 @@ class RecorderImpl implements Recorder {
   }
 
   async assertConforms(): Promise<void> {
-    const problems: string[] = [];
+    const preflight: string[] = [];
     const flushed = await this.telemetry.forceFlush();
     for (const { error } of flushed.errors) {
-      problems.push(`o11ytest: flushing before conformance checks: ${String(error)}`);
+      preflight.push(`o11ytest: flushing before conformance checks: ${String(error)}`);
     }
     let metrics: ResourceMetricsWithExemplars | undefined;
     try {
       metrics = await this.metrics();
     } catch (err) {
-      problems.push(err instanceof Error ? err.message : String(err));
+      preflight.push(err instanceof Error ? err.message : String(err));
     }
-    problems.push(
-      ...conformanceProblems({
-        resource: this.telemetry.resource.attributes,
-        ...(metrics === undefined ? {} : { metrics }),
-        logs: this.logs(),
-        spans: this.spans(),
-      }),
-    );
+    const problems = conformanceProblems({
+      resource: this.telemetry.resource.attributes,
+      preflight,
+      ...(metrics === undefined ? {} : { metrics }),
+      logs: this.logs(),
+      spans: this.spans(),
+    });
     if (problems.length > 0) fail(problems);
   }
 

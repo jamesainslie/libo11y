@@ -173,3 +173,14 @@ test("shutdown flushes, keeps what was recorded and is idempotent", async () => 
   assert.equal(rec.logs().length, 1);
   await assert.rejects(rec.metrics(), /o11ytest: collecting metrics/);
 });
+
+test("logExport false cannot turn off the recorder's log capture", async () => {
+  await withRecorder(
+    async (rec) => {
+      rec.telemetry.logger.info("leak", { "http.request.header.authorization": "Bearer x" });
+      assert.equal(rec.logs().length, 1);
+      await assert.rejects(rec.assertConforms(), /secret-classified attributes on logs/);
+    },
+    { ...({ logExport: false } as object) },
+  );
+});
