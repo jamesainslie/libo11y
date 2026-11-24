@@ -7,7 +7,8 @@
   "type": "module",
   "sideEffects": false,
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./yaml": "./src/yaml.ts"
   },
   "repository": {
     "type": "git",
@@ -16,7 +17,10 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "api": "api-extractor run --local",
-    "api:check": "api-extractor run"
+    "api": "api-extractor run --local && api-extractor run --local -c api-extractor.yaml.json",
+    "api:check": "api-extractor run && api-extractor run -c api-extractor.yaml.json"
+  },
+  "dependencies": {
+    "yaml": "2.9.1"
   }
 }

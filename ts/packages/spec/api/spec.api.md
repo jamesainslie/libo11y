@@ -10,6 +10,58 @@ export const APP_REGISTRY_SCHEMA = "libo11y.app-registry/v1";
 // @public
 export const APP_RESERVED_NAMESPACES: ReadonlySet<string>;
 
+// @public
+export interface AppRegistry {
+    // (undocumented)
+    readonly attributes: Readonly<Record<string, AppRegistryAttribute>>;
+    // (undocumented)
+    readonly namespace: string;
+    // (undocumented)
+    readonly schema: string;
+}
+
+// @public
+export interface AppRegistryAttribute {
+    // (undocumented)
+    readonly brief?: string;
+    // (undocumented)
+    readonly cardinality: string;
+    // (undocumented)
+    readonly sensitivity: string;
+    // (undocumented)
+    readonly type: string;
+    // (undocumented)
+    readonly values?: readonly string[];
+}
+
+// @public
+export class AppRegistryError extends Error {
+    constructor(violations: readonly AppRegistryViolation[]);
+    // (undocumented)
+    readonly violations: readonly AppRegistryViolation[];
+}
+
+// @public
+export type AppRegistryResult = {
+    readonly ok: true;
+    readonly registry: AppRegistry;
+} | {
+    readonly ok: false;
+    readonly violations: readonly AppRegistryViolation[];
+};
+
+// @public
+export class AppRegistryViolation {
+    constructor(ruleId: string, attribute: string | undefined, detail: string);
+    // (undocumented)
+    readonly attribute: string | undefined;
+    // (undocumented)
+    readonly detail: string;
+    // (undocumented)
+    readonly ruleId: string;
+    toString(): string;
+}
+
 // @public (undocumented)
 export const ATTR_BUILD_MODIFIED = "o11y.build.modified";
 
@@ -183,6 +235,17 @@ export const ATTR_VCS_REF_HEAD_NAME = "vcs.ref.head.name";
 
 // @public (undocumented)
 export const ATTR_VCS_REF_HEAD_REVISION = "vcs.ref.head.revision";
+
+// @public
+export function compileAppRegistry(reg: AppRegistry): CompiledAppRegistry;
+
+// @public
+export interface CompiledAppRegistry {
+    // (undocumented)
+    readonly classes: Readonly<Record<string, Sensitivity>>;
+    // (undocumented)
+    readonly namespace: string;
+}
 
 // @public (undocumented)
 export const DATA_CLASSIFICATION_VALUE_CONFIDENTIAL = "confidential";
@@ -608,6 +671,9 @@ export const SPAN_REQUIRED: ReadonlyMap<string, readonly string[]>;
 
 // @public
 export const SPEC_VERSION = "1.2.0";
+
+// @public
+export function validateAppRegistry(reg: AppRegistry): AppRegistryResult;
 
 // (No @packageDocumentation comment for this package)
 
