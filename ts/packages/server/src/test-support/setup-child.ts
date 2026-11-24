@@ -7,7 +7,6 @@
  *   twice     setup, a second setup, shutdown, setup again, shutdown
  */
 
-import { setTimeout as sleep } from "node:timers/promises";
 import { O11yError } from "@libo11y/core";
 import { metrics, trace } from "@opentelemetry/api";
 import { setup } from "../setup.ts";
@@ -24,8 +23,6 @@ switch (process.argv[2]) {
       metrics.getMeterProvider().getMeter("app").createHistogram("app.latency", { unit: "s" }).record(0.125);
       span.end();
     });
-    // Core stops runtime metrics before the final collection, so let a periodic export observe them.
-    await sleep(Number(process.env.SETUP_CHILD_WAIT_MILLIS ?? "0"));
     result.report = await telemetry.shutdown();
     break;
   }

@@ -437,6 +437,37 @@ test("runtime metrics start on the policy meter provider and stop at shutdown", 
   assert.equal(stopped, true);
 });
 
+test("runtime metrics stop after the final collection, so a process that exits before any export keeps them", async () => {
+  const order: string[] = [];
+  const { platform, points, lastMetrics } = rig({
+    startRuntimeMetrics: (mp) => {
+      const gauge = mp.getMeter("runtime").createObservableGauge("runtime.probe");
+      const observe = (result: { observe(v: number): void }): void => {
+        order.push("collect");
+        result.observe(1);
+      };
+      gauge.addCallback(observe);
+      return {
+        stop: () => {
+          order.push("stop");
+          gauge.removeCallback(observe);
+        },
+      };
+    },
+  });
+  const t = await createTelemetryWith({ ...OPTIONS, runtimeMetrics: true }, platform);
+  // The reader's interval is an hour, so the only export is shutdown's final collection.
+  await t.shutdown();
+  assert.ok(points.getMetrics().length > 0, "shutdown exported nothing");
+  assert.ok(
+    lastMetrics().some((m) => m.descriptor.name === "runtime.probe" && m.dataPoints.length > 0),
+    `no runtime.probe in the final export: ${lastMetrics()
+      .map((m) => m.descriptor.name)
+      .join(", ")}`,
+  );
+  assert.deepEqual(order, ["collect", "stop"]);
+});
+
 test("non-strict identity counts resource violations on o11y.schema.violations", async () => {
   const { platform, lastMetrics } = rig();
   const t = await createTelemetryWith({ serviceName: "svc", strictIdentity: false }, platform);

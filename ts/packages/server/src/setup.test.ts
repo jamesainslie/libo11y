@@ -81,11 +81,9 @@ function metricList(sink: OtlpSink): Json[] {
 
 test("setup into the sink gives the full triangle, the canary on stdout and runtime metrics", async () => {
   await withSink(async (sink) => {
-    const run = await runChild("triangle", {
-      OTEL_EXPORTER_OTLP_ENDPOINT: sink.url,
-      OTEL_METRIC_EXPORT_INTERVAL: "100",
-      SETUP_CHILD_WAIT_MILLIS: "400",
-    });
+    // The export interval is the default minute, so only shutdown's final collection exports:
+    // runtime metrics must still be running when it happens.
+    const run = await runChild("triangle", { OTEL_EXPORTER_OTLP_ENDPOINT: sink.url });
     const traceId = run.result.traceId as string;
     assert.deepEqual(run.result.report, { ok: true, errors: [] });
 
