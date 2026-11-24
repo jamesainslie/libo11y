@@ -58,8 +58,8 @@ every suite on Bun 1.3.13 and Node 24.
   runs `bun test`, and `bun run test:node` runs `node --test`. Imports use
   `.ts` specifiers. Node runs the sources through type stripping, so
   source files use only erasable syntax (`erasableSyntaxOnly`).
-- **Build.** `bun run build` runs `tsc` on each package and writes ESM
-  JavaScript and declarations to `dist/`. tsc rewrites the `.ts`
+- **Build.** `bun run build` removes each package's `dist/`, then runs
+  `tsc` and writes ESM JavaScript and declarations there. tsc rewrites the `.ts`
   specifiers to `.js` in the JavaScript. Exported functions declare their
   return types (`isolatedDeclarations`).
 - **API reports.** Each package commits its public API as
@@ -70,7 +70,8 @@ every suite on Bun 1.3.13 and Node 24.
 - **Packing.** `ts/scripts/release.ts` sets the lockstep version
   (`version X.Y.Z`) and packs each package (`pack OUTDIR`). The packed
   `package.json` has exact versions in place of `workspace:` ranges, and
-  its `exports` and `bin` point at `dist/`.
+  its `exports` and `bin` point at `dist/`. `pack` refuses a `dist/` file
+  with no matching source in `src/`.
 
 `make ts-check` installs the locked dependencies, then lints, typechecks,
 builds, checks the API reports, and runs every suite under Bun and Node.

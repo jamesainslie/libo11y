@@ -19,8 +19,9 @@ ts/
   and sensitivity tables, generated from `spec/registry` by
   `make spec-generate`. It also exports `validateAppRegistry` and
   `compileAppRegistry`. It has no dependencies, so it runs in a browser.
-- `@libo11y/spec/yaml` exports `parseAppRegistry`, which reads a registry
-  file. It is the only module that depends on a YAML parser.
+- `@libo11y/spec/yaml` exports `parseAppRegistry` and
+  `parseAppRegistryBytes`, which read a registry file the way Go's yaml.v3
+  does. It is the only module that depends on a YAML parser.
 - The `libo11y` bin runs `libo11y registry check FILE...`, with the same
   output and exit statuses as the Go binary.
 
