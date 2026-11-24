@@ -18,6 +18,8 @@ import type { LogLevel } from "./log-values.ts";
 import type { CoreLogger } from "./logger.ts";
 import type { PlatformConsole } from "./platform.ts";
 
+type Method = (...args: unknown[]) => void;
+
 const LEVELS: Readonly<Record<keyof PlatformConsole, LogLevel>> = {
   log: "info",
   info: "info",
@@ -92,17 +94,19 @@ export function formatConsoleArgs(args: readonly unknown[]): string {
 
 /**
  * Patches target's six methods to log through logger, and returns the function that restores them.
- * Restoring twice is harmless.
+ * Restoring twice is harmless. A method another capture has wrapped since is left in place; this
+ * capture's wrapper then passes straight through to the method it saved, so captures can be
+ * restored in any order.
  */
 export function captureConsole(target: PlatformConsole, logger: CoreLogger): () => void {
-  const originals = new Map<keyof PlatformConsole, PlatformConsole[keyof PlatformConsole]>();
+  const saved = new Map<keyof PlatformConsole, { original: Method; wrapper: Method }>();
   let capturing = false;
+  let active = true;
   for (const method of Object.keys(LEVELS) as (keyof PlatformConsole)[]) {
     const original = target[method];
-    originals.set(method, original);
     const level = LEVELS[method];
-    target[method] = (...args: unknown[]): void => {
-      if (capturing) {
+    const wrapper = (...args: unknown[]): void => {
+      if (!active || capturing) {
         original.apply(target, args);
         return;
       }
@@ -116,11 +120,14 @@ export function captureConsole(target: PlatformConsole, logger: CoreLogger): () 
         capturing = false;
       }
     };
+    saved.set(method, { original, wrapper });
+    target[method] = wrapper;
   }
-  let restored = false;
   return () => {
-    if (restored) return;
-    restored = true;
-    for (const [method, original] of originals) target[method] = original;
+    if (!active) return;
+    active = false;
+    for (const [method, { original, wrapper }] of saved) {
+      if (target[method] === wrapper) target[method] = original;
+    }
   };
 }

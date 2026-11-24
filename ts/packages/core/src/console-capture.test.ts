@@ -127,3 +127,39 @@ test("an Error from another realm expands to exception.*", () => {
   assert.equal(rec.msg, "SyntaxError: far");
   assert.equal(rec["exception.type"], "SyntaxError");
 });
+
+// Review W1: two captures on one console, restored in either order, leave no live wrapper behind.
+for (const order of ["AB", "BA"] as const) {
+  test(`two captures restored ${order === "AB" ? "in creation order" : "in reverse order"} leave the console native`, () => {
+    const { target, calls } = fakeConsole();
+    const originals = METHODS.map((m) => target[m]);
+    const linesA: string[] = [];
+    const linesB: string[] = [];
+    const loggerFor = (lines: string[]) =>
+      new CoreLogger(
+        new LogPipeline({
+          level: "trace",
+          policy: SensitivityPolicy.create({ pii: "drop", registries: [] }),
+          console: new ConsoleSink("json", (l) => lines.push(l)),
+        }),
+      );
+    const restoreA = captureConsole(target, loggerFor(linesA));
+    const restoreB = captureConsole(target, loggerFor(linesB));
+    target.log("both active");
+    if (order === "AB") {
+      restoreA();
+      target.log("only B");
+      restoreB();
+    } else {
+      restoreB();
+      target.log("only A");
+      restoreA();
+    }
+    target.log("none");
+    assert.deepEqual(calls, [["log", ["none"]]]);
+    assert.equal(linesA.length + linesB.length, 2);
+    if (order === "AB") assert.equal(linesB.length, 2);
+    else assert.deepEqual([linesA.length, linesB.length], [1, 1]);
+    if (order === "BA") assert.ok(METHODS.every((m, i) => target[m] === originals[i]));
+  });
+}

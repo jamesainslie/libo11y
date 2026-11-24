@@ -473,3 +473,31 @@ test("review C1: an empty-keyed group cannot leak through setup's sinks, with co
     await t.shutdown();
   }
 });
+
+test("review W1: two capturing telemetries shut down in creation order leave the console native", async () => {
+  const calls: unknown[][] = [];
+  const mk =
+    () =>
+    (...a: unknown[]) =>
+      void calls.push(a);
+  const target: PlatformConsole = {
+    log: mk(),
+    info: mk(),
+    warn: mk(),
+    error: mk(),
+    debug: mk(),
+    trace: mk(),
+  };
+  const a = rig({ console: target });
+  const b = rig({ console: target });
+  const opts = { ...OPTIONS, hermetic: true, captureConsole: true };
+  const ta = await createTelemetryWith(opts, a.platform);
+  const tb = await createTelemetryWith(opts, b.platform);
+  await ta.shutdown();
+  target.log("while B runs");
+  await tb.shutdown();
+  target.log("after both shutdowns");
+  assert.deepEqual(calls, [["after both shutdowns"]]);
+  assert.equal(b.platform.lines.length, 1);
+  assert.equal(a.platform.lines.length, 0);
+});
