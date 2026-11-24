@@ -1,6 +1,6 @@
 {
   "name": "@libo11y/spec",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "The libo11y telemetry specification for TypeScript: attribute keys, enums, event and metric names, and the sensitivity tables, generated from spec/registry.",
   "license": "Apache-2.0",
