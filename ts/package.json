@@ -9,12 +9,16 @@
   "scripts": {
     "lint": "biome check .",
     "typecheck": "tsc -p tsconfig.json",
+    "build": "bun run --filter './packages/*' build",
+    "api": "bun run --filter './packages/*' api",
+    "api:check": "bun run --filter './packages/*' api:check",
     "test": "bun run test:bun && bun run test:node",
     "test:bun": "bun test",
     "test:node": "node --test --test-concurrency=8 \"packages/*/src/**/*.test.ts\" \"scripts/**/*.test.ts\""
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.8",
+    "@microsoft/api-extractor": "7.60.1",
     "@types/bun": "1.4.4",
     "typescript": "7.0.2"
   }

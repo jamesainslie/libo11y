@@ -13,5 +13,10 @@
     "type": "git",
     "url": "git+https://github.com/jamesainslie/libo11y.git",
     "directory": "ts/packages/spec"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "api": "api-extractor run --local",
+    "api:check": "api-extractor run"
   }
 }

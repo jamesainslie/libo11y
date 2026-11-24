@@ -32,12 +32,13 @@ spec-drift: spec-generate
 	if [ -n "$$untracked" ]; then echo "untracked generated files:"; echo "$$untracked"; exit 1; fi
 
 # TypeScript workspace (ts/): install the pinned dependencies, then lint,
-# typecheck, and test every package (needs bun).
+# typecheck, build, check the committed API reports, and run every suite
+# under Bun and under Node (needs bun and node).
 ts-install:
 	cd ts && bun install --frozen-lockfile
 
 ts-check: ts-install
-	cd ts && bun run lint && bun run typecheck && bun test
+	cd ts && bun run lint && bun run typecheck && bun run build && bun run api:check && bun run test:bun && bun run test:node
 
 vet:
 	@set -e; for m in $(GO_MODULES); do echo "go vet: $$m"; (cd $$m && go vet ./...); done
