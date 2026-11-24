@@ -198,15 +198,7 @@ func ensureInstanceID(res *resource.Resource) *resource.Resource {
 	if resourceString(res, semconv.ServiceInstanceIDKey) != "" {
 		return res
 	}
-	var id string
-	if podUID := resourceString(res, "k8s.pod.uid"); podUID != "" {
-		id = uuid.NewSHA1(instanceIDNamespace, []byte(podUID)).String()
-	} else if podName := resourceString(res, "k8s.pod.name"); podName != "" {
-		ns := resourceString(res, "k8s.namespace.name")
-		id = uuid.NewSHA1(instanceIDNamespace, []byte(ns+"/"+podName)).String()
-	} else {
-		id = uuid.NewString()
-	}
+	id := instanceIDFor(resourceString(res, "k8s.pod.uid"), resourceString(res, "k8s.pod.name"), resourceString(res, "k8s.namespace.name"))
 	// As in ensureServiceVersion, a schemaless merge cannot conflict on the
 	// schema URL, so the error path is unreachable in practice.
 	merged, err := resource.Merge(res, resource.NewSchemaless(semconv.ServiceInstanceID(id)))
@@ -214,6 +206,21 @@ func ensureInstanceID(res *resource.Resource) *resource.Resource {
 		return res
 	}
 	return merged
+}
+
+// instanceIDFor derives service.instance.id from Kubernetes pod identity:
+// a UUIDv5 of the pod UID, else of "<namespace>/<pod name>", else a random
+// UUIDv4. Every libo11y implementation derives the same ID from the same
+// identity (conformance/vectors/instance-id.json).
+func instanceIDFor(podUID, podName, namespace string) string {
+	switch {
+	case podUID != "":
+		return uuid.NewSHA1(instanceIDNamespace, []byte(podUID)).String()
+	case podName != "":
+		return uuid.NewSHA1(instanceIDNamespace, []byte(namespace+"/"+podName)).String()
+	default:
+		return uuid.NewString()
+	}
 }
 
 // buildInfoDetector records the compiled binary's identity from the Go

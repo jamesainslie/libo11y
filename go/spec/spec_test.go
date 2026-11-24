@@ -80,3 +80,15 @@ func TestRUMConventions(t *testing.T) {
 		}
 	}
 }
+
+func TestLogSourceMinted(t *testing.T) {
+	if spec.LogSourceKey != "o11y.log.source" {
+		t.Errorf("LogSourceKey = %q, want o11y.log.source", spec.LogSourceKey)
+	}
+	if kv := spec.LogSourceValue(spec.LogSourceConsole); kv.Key != spec.LogSourceKey || kv.Value.AsString() != "console" {
+		t.Errorf("LogSourceValue(LogSourceConsole) = %v, want o11y.log.source=console", kv)
+	}
+	if spec.LogSourceLogger != "logger" {
+		t.Errorf("LogSourceLogger = %q, want logger", spec.LogSourceLogger)
+	}
+}

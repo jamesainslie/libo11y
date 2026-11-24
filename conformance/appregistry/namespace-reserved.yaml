@@ -1,0 +1,4 @@
+schema: libo11y.app-registry/v1
+namespace: http
+attributes:
+  http.thing: {type: string, sensitivity: public, cardinality: bounded}

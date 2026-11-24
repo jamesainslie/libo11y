@@ -1,0 +1,2 @@
+libo11y_app_namespace_invalid: namespace "Lor.Portal" is not one snake_case segment
+libo11y_attr_naming: attribute Lor.Portal.id: not a dotted snake_case name with at least two segments

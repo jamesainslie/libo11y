@@ -6,6 +6,8 @@ import (
 	"maps"
 	"slices"
 	"strings"
+
+	"github.com/jamesainslie/libo11y/go/internal/appregistry"
 )
 
 // Where the TypeScript artifacts land, inside the @libo11y/spec package.
@@ -229,6 +231,12 @@ func genTSTables(m *model) (string, error) {
 		fmt.Fprintf(&b, "  [%s, %s],\n", tsQuote(sp.Annotations["o11y.span.kind"]), tsList(requiredNames(sp)))
 	}
 	b.WriteString("]);\n")
+
+	b.WriteString("\n/** The schema an application registry file declares. */\n")
+	fmt.Fprintf(&b, "export const APP_REGISTRY_SCHEMA = %s;\n", tsQuote(appregistry.SchemaV1))
+
+	b.WriteString("\n/** Namespaces an application registry may not claim: libo11y's, OpenTelemetry's and the pinned semconv release's. */\n")
+	fmt.Fprintf(&b, "export const APP_RESERVED_NAMESPACES: ReadonlySet<string> = new Set<string>(%s);\n", tsList(appregistry.ReservedNamespaces()))
 
 	b.WriteString("\n/** RUM span shapes mapped to their required attributes. */\n")
 	b.WriteString("export const RUM_SPAN_REQUIRED: ReadonlyMap<string, readonly string[]> = new Map<string, readonly string[]>([\n")

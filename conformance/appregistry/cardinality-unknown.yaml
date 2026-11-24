@@ -1,0 +1,4 @@
+schema: libo11y.app-registry/v1
+namespace: lor
+attributes:
+  lor.user.id: {type: string, sensitivity: internal, cardinality: huge}

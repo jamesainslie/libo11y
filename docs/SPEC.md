@@ -1,6 +1,6 @@
 # The libo11y telemetry specification
 
-Version 1.1.0. Normative keywords (MUST, SHOULD, MAY)
+Version 1.2.0. Normative keywords (MUST, SHOULD, MAY)
 follow RFC 2119.
 
 This document is the human-readable form of the machine registry under
@@ -119,6 +119,11 @@ Every record MUST carry `Timestamp`, `ObservedTimestamp`, `SeverityNumber`
 and `SeverityText`, `Body`, and the resource. `TraceId`/`SpanId` MUST be
 injected from context when a span is active and MUST NOT be caller-settable;
 `trace_id` and `span_id` are reserved top-level console keys.
+
+A record that an implementation captured from console output, such as a
+TypeScript `console.log` call, MUST carry `o11y.log.source=console`. The
+other value, `logger`, marks a record from the libo11y logger or a log
+bridge. It is the default, so a record MAY omit it (spec 1.2.0).
 
 ### Severity
 
@@ -355,12 +360,13 @@ release stamps one schema URL and pins one semconv version. A stable spec
 item is never renamed or removed without a major version bump.
 
 - **Schema URL.** The URL ends in the bare spec version:
-  `https://schemas.o11y.ing/libo11y/1.1.0` (`spec.SchemaURL` in
-  Go), stamped on every resource.
+  `https://schemas.o11y.ing/libo11y/1.2.0` (`spec.SchemaURL` in
+  Go, `SCHEMA_URL` in TypeScript), stamped on every resource.
 - **Version history.** The manifest lists every spec version in
-  `versions`, currently `[1.0.0, 1.1.0]`. The list starts at 1.0.0, ends
-  at the version in `schema_url`, and ascends. `make spec-check` and
-  `make spec-generate` both fail on a history that breaks these rules.
+  `versions`, currently `[1.0.0, 1.1.0, 1.2.0]`. The list starts at
+  1.0.0, ends at the version in `schema_url`, and ascends.
+  `make spec-check` and `make spec-generate` both fail on a history that
+  breaks these rules.
 - **Schema file.** The generator writes one OpenTelemetry schema file
   (file format 1.1.0) per listed version to `spec/schemas/<version>`, so
   1.0.0 is `spec/schemas/1.0.0` and 1.1.0 is `spec/schemas/1.1.0`. Each
@@ -380,9 +386,9 @@ item is never renamed or removed without a major version bump.
   `make schema-published` fails unless the schema URL serves the generated
   file byte for byte, and it must pass before the tag is created.
 
-Status: spec 1.1.0 is released. Its schema file is served at its schema
-URL, and the commit is tagged `spec/v1.1.0`. Spec 1.0.0 is tagged
-`spec/v1.0.0` together with `go/v0.1.0`.
+Status: spec 1.2.0 is in development. Spec 1.1.0 is released: its schema
+file is served at its schema URL, and the commit is tagged `spec/v1.1.0`.
+Spec 1.0.0 is tagged `spec/v1.0.0` together with `go/v0.1.0`.
 
 ## 8. Enforcement layers
 

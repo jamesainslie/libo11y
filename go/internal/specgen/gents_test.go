@@ -3,6 +3,8 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/jamesainslie/libo11y/go/internal/appregistry"
 )
 
 const tsFixture = `
@@ -118,5 +120,27 @@ groups:
 	}
 	if want := `export const REGION_VALUE_US_PROD = "us-prod";`; !strings.Contains(genTSSpec(m), want) {
 		t.Errorf("genTSSpec missing %s\n%s", want, genTSSpec(m))
+	}
+}
+
+// TestTypeScriptTablesCarryTheAppRegistryRules pins that the TypeScript
+// validator gets the registry schema and every reserved namespace from the
+// Go source of truth, so the two validators cannot drift.
+func TestTypeScriptTablesCarryTheAppRegistryRules(t *testing.T) {
+	m, err := load(writeRegistry(t, map[string]string{"a.yaml": tsFixture}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := genTSTables(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `export const APP_REGISTRY_SCHEMA = "libo11y.app-registry/v1";`; !strings.Contains(src, want) {
+		t.Errorf("genTSTables missing %s", want)
+	}
+	want := "export const APP_RESERVED_NAMESPACES: ReadonlySet<string> = new Set<string>(" +
+		tsList(appregistry.ReservedNamespaces()) + ");"
+	if !strings.Contains(src, want) {
+		t.Errorf("genTSTables missing the full reserved namespace set:\n%s", want)
 	}
 }

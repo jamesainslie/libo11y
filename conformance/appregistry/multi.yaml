@@ -1,0 +1,6 @@
+schema: x
+namespace: lor
+attributes:
+  lor.z.last: {type: str, sensitivity: secret, cardinality: enum}
+  lor.a.first: {type: string}
+  other.key: {type: double, sensitivity: public, cardinality: bounded}

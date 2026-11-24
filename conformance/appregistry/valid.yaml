@@ -1,0 +1,8 @@
+schema: libo11y.app-registry/v1
+namespace: lor
+attributes:
+  lor.user.id:      {type: string, sensitivity: internal, cardinality: unbounded, brief: The portal's opaque user ID.}
+  lor.user.role:    {type: string, sensitivity: public, cardinality: enum, values: [studio, client]}
+  lor.project.id:   {type: string, sensitivity: internal, cardinality: unbounded}
+  lor.client.email: {type: string, sensitivity: pii, cardinality: unbounded}
+  lor.retry.count:  {type: int, sensitivity: public, cardinality: bounded}

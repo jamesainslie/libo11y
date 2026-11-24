@@ -1,0 +1,4 @@
+schema: libo11y.app-registry/v1
+namespace: lor
+attributes:
+  lor.user.tier: {type: string, sensitivity: public, cardinality: enum, values: [1, true, 1.0, ~]}

@@ -1,0 +1,6 @@
+libo11y_app_schema_unknown: schema "x", want "libo11y.app-registry/v1"
+libo11y_sensitivity_missing: attribute lor.a.first: no sensitivity class
+libo11y_cardinality_missing: attribute lor.a.first: no cardinality budget
+libo11y_app_type_unknown: attribute lor.z.last: type "str"
+libo11y_app_enum_values_missing: attribute lor.z.last: an enum declares its values
+libo11y_app_attr_outside_namespace: attribute other.key: not under the lor namespace

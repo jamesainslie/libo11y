@@ -1,5 +1,10 @@
 package appregistry
 
+import (
+	"maps"
+	"slices"
+)
+
 // ReservedSemconvVersion is the semantic conventions release that
 // reservedNamespaces reflects. A specgen test fails when
 // spec/registry/manifest.yaml pins a different release, so a semconv bump
@@ -30,4 +35,11 @@ var reservedNamespaces = map[string]bool{
 	"session": true, "signalr": true, "source": true, "system": true, "telemetry": true, "test": true,
 	"thread": true, "tls": true, "url": true, "user": true, "user_agent": true, "v8js": true,
 	"vcs": true, "webengine": true, "zos": true,
+}
+
+// ReservedNamespaces returns every namespace an application registry may
+// not claim, sorted. The spec generator writes it into the TypeScript
+// package, so both validators enforce one list.
+func ReservedNamespaces() []string {
+	return slices.Sorted(maps.Keys(reservedNamespaces))
 }
