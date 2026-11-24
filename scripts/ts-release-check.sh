@@ -46,7 +46,8 @@ fi
 	cd "$ts"
 	bun install --frozen-lockfile
 	bun run build
-	bun scripts/release.ts pack "$tmp/packs" "${pack_flags[@]}"
+	# The guarded expansion keeps set -u happy on bash 3.2 when the array is empty.
+	bun scripts/release.ts pack "$tmp/packs" ${pack_flags[@]+"${pack_flags[@]}"}
 )
 
 shopt -s nullglob
@@ -87,9 +88,44 @@ printf '{ "name": "libo11y-consumer", "private": true, "type": "module" }\n' >"$
 	[[ "$node_version" == "$bun_version" ]] || fail "node printed $node_version, bun printed $bun_version"
 	echo "ts-release-check: import @libo11y/spec ok under node and bun (spec $node_version)"
 
+	yaml_smoke='import { parseAppRegistry } from "@libo11y/spec/yaml"; console.log(parseAppRegistry("schema: x\nnamespace: lor\n").namespace);'
+	[[ "$(node --input-type=module -e "$yaml_smoke")" == lor ]] || fail "node could not parse with @libo11y/spec/yaml"
+	[[ "$(bun -e "$yaml_smoke")" == lor ]] || fail "bun could not parse with @libo11y/spec/yaml"
+	echo "ts-release-check: import @libo11y/spec/yaml ok under node and bun"
+
+	# The published declarations must typecheck for a nodenext consumer.
+	cat >check.ts <<'TS'
+import { type AppRegistry, compileAppRegistry, SPEC_VERSION, validateAppRegistry } from "@libo11y/spec";
+import { AppRegistryParseError, parseAppRegistry, parseAppRegistryBytes } from "@libo11y/spec/yaml";
+
+const reg: AppRegistry = parseAppRegistry("schema: x\nnamespace: lor\n");
+const result = validateAppRegistry(reg);
+const kind: string = new AppRegistryParseError("syntax").kind;
+const version: string = SPEC_VERSION;
+export const checked: readonly unknown[] = [result.ok, kind, version, compileAppRegistry, parseAppRegistryBytes];
+TS
+	cat >tsconfig.json <<'JSON'
+{
+  "compilerOptions": {
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "target": "es2023",
+    "lib": ["es2023"],
+    "strict": true,
+    "noEmit": true,
+    "types": []
+  },
+  "files": ["check.ts"]
+}
+JSON
+	"$ts/node_modules/.bin/tsc" -p tsconfig.json
+	echo "ts-release-check: the declarations typecheck for a nodenext consumer"
+
 	if [[ "$has_bin" == true ]]; then
-		npx --no-install libo11y registry check "$repo_root/conformance/appregistry/valid.yaml"
-		echo "ts-release-check: libo11y registry check ok"
+		valid="$repo_root/conformance/appregistry/valid.yaml"
+		npx --no-install libo11y registry check "$valid"
+		bun node_modules/.bin/libo11y registry check "$valid"
+		echo "ts-release-check: libo11y registry check ok under node and bun"
 	fi
 )
 
