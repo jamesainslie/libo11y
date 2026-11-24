@@ -18,6 +18,6 @@ export { type FetchOptions, instrumentFetch } from "./fetch.ts";
 export { OtlpProtobufMetricsSerializer } from "./otlp-proto-metrics.ts";
 export { serverPlatform } from "./platform.ts";
 export { loadAppRegistry } from "./registry.ts";
-export { instrumentServe, type ServeOptions } from "./serve.ts";
+export { instrumentServe, type ServeOptions, setRoute } from "./serve.ts";
 export { createTelemetry, setup } from "./setup.ts";
 export { type ShutdownOnSignalsOptions, shutdownOnSignals } from "./signals.ts";

@@ -23,7 +23,7 @@ import {
 import type { DataPoint, Histogram } from "@opentelemetry/sdk-metrics";
 import type { ReadableSpan } from "@opentelemetry/sdk-trace";
 import { DURATION_BUCKETS, normalizeMethod } from "./http-common.ts";
-import { instrumentServe, type ServeOptions } from "./serve.ts";
+import { instrumentServe, type ServeOptions, setRoute } from "./serve.ts";
 import { bun, close, IS_BUN, listen, nodeListener } from "./test-support/http.ts";
 
 const DURATION = "http.server.request.duration";
@@ -820,5 +820,58 @@ test("under Bun.serve unwatched bodies keep their length and HTML streams are st
       assert.equal(serverSpans(rec)[3]?.attributes["url.path"], "/endless");
       assert.ok(cancelled, "the source of a cancelled HTML stream was cancelled");
     });
+  });
+});
+
+test("setRoute names the request from inside the handler, over the route option, for the span, metric and summary", async () => {
+  await withRecorder(async (rec) => {
+    const handler = instrumentServe(
+      async (req) => {
+        await new Promise((r) => setTimeout(r, 1));
+        const path = new URL(req.url).pathname;
+        if (path.startsWith("/projects/")) setRoute("/projects/:id");
+        if (path === "/verbatim") setRoute("POST /verbatim");
+        return new Response("ok");
+      },
+      { telemetry: rec.telemetry, canonicalLine: true, route: () => "/fallback" },
+    );
+    await (await handler(new Request("http://svc/projects/7"))).text();
+    await (await handler(new Request("http://svc/verbatim", { method: "POST", body: "x" }))).text();
+    await (await handler(new Request("http://svc/other"))).text();
+    const [routed, verbatim, other] = serverSpans(rec);
+    assert.equal(routed?.name, "GET /projects/:id");
+    assert.equal(routed?.attributes["http.route"], "/projects/:id");
+    assert.equal(verbatim?.name, "POST /verbatim");
+    assert.equal(verbatim?.attributes["http.route"], "/verbatim");
+    assert.equal(other?.name, "GET /fallback");
+    assert.equal(other?.attributes["http.route"], "/fallback");
+    assert.deepEqual((await durationPoints(rec)).map((p) => p.attributes["http.route"]).sort(), [
+      "/fallback",
+      "/projects/:id",
+      "/verbatim",
+    ]);
+    assert.deepEqual(
+      summaries(rec).map((s) => s.attributes["http.route"]),
+      ["/projects/:id", "/verbatim", "/fallback"],
+    );
+  });
+});
+
+test("setRoute without a route option names an unrouted request, and outside a request it does nothing", async () => {
+  await withRecorder(async (rec) => {
+    setRoute("/outside");
+    const handler = instrumentServe(
+      async () => {
+        setRoute("/inside");
+        return new Response("ok");
+      },
+      { telemetry: rec.telemetry },
+    );
+    await (await handler(new Request("http://svc/x"))).text();
+    setRoute("/after");
+    const span = onlySpan(rec);
+    assert.equal(span.name, "GET /inside");
+    assert.equal(span.attributes["http.route"], "/inside");
+    assert.equal((await durationPoints(rec))[0]?.attributes["http.route"], "/inside");
   });
 });

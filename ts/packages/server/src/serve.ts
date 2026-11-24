@@ -22,6 +22,7 @@ import {
   type Attributes,
   type Context,
   context,
+  createContextKey,
   diag,
   isSpanContextValid,
   ROOT_CONTEXT,
@@ -137,7 +138,7 @@ export function instrumentServe<A extends unknown[]>(
     const { method, original } = normalizeMethod(req.method);
     const resolved = opts.route?.(req);
     const route = resolved === "" ? undefined : resolved;
-    const httpRoute = route === undefined ? undefined : routeOnly(route);
+    const startRoute = route === undefined ? undefined : routeOnly(route);
     const scheme = schemeOf(url);
 
     const extracted = propagator.extract(context.active(), req.headers, HEADERS_GETTER);
@@ -150,7 +151,7 @@ export function instrumentServe<A extends unknown[]>(
     };
     const userAgent = req.headers.get("user-agent");
     if (userAgent !== null) attributes["user_agent.original"] = userAgent;
-    if (httpRoute !== undefined) attributes["http.route"] = httpRoute;
+    if (startRoute !== undefined) attributes["http.route"] = startRoute;
     const spanOptions: SpanOptions = { kind: SpanKind.SERVER, attributes };
     if (opts.publicEndpoint === true) {
       spanOptions.root = true;
@@ -160,7 +161,8 @@ export function instrumentServe<A extends unknown[]>(
       }
     }
     const span = tracer.startSpan(spanName(method, route), spanOptions, extracted);
-    let handlerContext = trace.setSpan(extracted, span);
+    const routeSlot: RouteSlot = { open: true };
+    let handlerContext = trace.setSpan(extracted, span).setValue(ROUTE_KEY, routeSlot);
     let record: WideRecord | undefined;
     if (summaryTelemetry !== undefined) {
       ({ context: handlerContext, record } = startRecord(handlerContext));
@@ -172,6 +174,13 @@ export function instrumentServe<A extends unknown[]>(
     const finish = (outcome: Outcome): void => {
       if (finished) return;
       finished = true;
+      routeSlot.open = false;
+      let httpRoute = startRoute;
+      if (routeSlot.route !== undefined) {
+        httpRoute = routeOnly(routeSlot.route);
+        span.updateName(spanName(method, routeSlot.route));
+        span.setAttribute("http.route", httpRoute);
+      }
       const failure = outcome.failure;
       const failed = failure !== undefined;
       const errorType = failed
@@ -260,6 +269,34 @@ export function instrumentServe<A extends unknown[]>(
 // The statuses whose responses never carry a body: 101 has none, and the Fetch standard calls
 // 204, 205 and 304 null body statuses.
 const BODILESS_STATUSES: ReadonlySet<number> = new Set([101, 204, 205, 304]);
+
+/** Where setRoute leaves the route of the request whose handler is running. */
+interface RouteSlot {
+  /** False once the request has ended, so a late setRoute changes nothing. */
+  open: boolean;
+  route?: string;
+}
+
+const ROUTE_KEY = createContextKey("libo11y.server.route");
+
+/**
+ * Sets the route template of the server request being handled, such as "/projects/:id", for
+ * frameworks that route inside the handler, as TanStack Start does. It is the counterpart of Go
+ * reading r.Pattern after the ServeMux has run. When the request ends, the route set last names
+ * the span ("<METHOD> <route>", or the route verbatim when it starts with a method and a space)
+ * and is the http.route of the span, the duration metric and the summary, in place of the one
+ * ServeOptions.route resolved. The span starts under the name ServeOptions.route gives, so a
+ * sampler sees that one.
+ *
+ * It finds the request through the active context, which instrumentServe sets for the handler, so
+ * it needs a context manager (setup installs one). Outside a request, after it has ended, or with
+ * an empty route, it does nothing.
+ */
+export function setRoute(route: string): void {
+  if (route === "") return;
+  const slot = context.active().getValue(ROUTE_KEY) as RouteSlot | undefined;
+  if (slot?.open === true) slot.route = route;
+}
 
 function spanName(method: string, route: string | undefined): string {
   if (route === undefined || route === "") return methodName(method);

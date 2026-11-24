@@ -67,6 +67,9 @@ export interface ServeOptions {
 export function serverPlatform(): Platform;
 
 // @public
+export function setRoute(route: string): void;
+
+// @public
 export function setup(options?: TelemetryOptions): Promise<Telemetry>;
 
 // @public

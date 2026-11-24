@@ -127,6 +127,7 @@ import {
   instrumentServe,
   loadAppRegistry,
   type ServeOptions,
+  setRoute,
   setup,
   type ShutdownOnSignalsOptions,
   shutdownOnSignals,
@@ -146,7 +147,10 @@ const serveOptions: ServeOptions = {
   ignorePaths: ["/healthz"],
   watchBody: (res) => res.headers.get("content-type") === "text/html",
 };
-const handler: (req: Request) => Promise<Response> = instrumentServe(async () => new Response("ok"), serveOptions);
+const handler: (req: Request) => Promise<Response> = instrumentServe(async () => {
+  setRoute("/projects/:id");
+  return new Response("ok");
+}, serveOptions);
 const fetchOptions: FetchOptions = { peerService: "upstream", propagate: (url) => url.hostname !== "example.com" };
 const traced: typeof fetch = instrumentFetch(fetch, fetchOptions);
 export const checked: readonly unknown[] = [
