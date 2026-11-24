@@ -8,7 +8,7 @@ GO_TEST_P ?= 4
 # gate runs on each module separately.
 GO_MODULES := go go/o11ygin go/o11yconnect go/o11ysql
 
-.PHONY: spec-check spec-generate spec-drift test lint vet tidy-check vuln release-check schema-published schema-published-test release-notes-test ts-install ts-check ci
+.PHONY: spec-check spec-generate spec-drift test lint vet tidy-check vuln release-check schema-published schema-published-test release-notes-test release-tag-test ts-install ts-check ci
 
 # Validate the spec registry against the libo11y policy suite (naming,
 # ownership, sensitivity, cardinality, events, units).
@@ -92,6 +92,11 @@ schema-published-test:
 release-notes-test:
 	scripts/release-notes_test.sh
 
+# Test release-tag.sh, which routes a release tag to its family, directory,
+# module and version in the release workflow.
+release-tag-test:
+	scripts/release-tag_test.sh
+
 # vuln runs last: it depends on the advisory database and the toolchain's
 # patch level, so local runs exercise every other gate first.
-ci: lint vet test tidy-check spec-check spec-drift ts-check schema-published-test release-notes-test release-check vuln
+ci: lint vet test tidy-check spec-check spec-drift ts-check schema-published-test release-notes-test release-tag-test release-check vuln
