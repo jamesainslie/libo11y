@@ -21,7 +21,33 @@ export function decodeOtlpProtobuf(signal: OtlpSignal, body: Uint8Array): Record
 export function normalizeOtlp(value: unknown): unknown;
 
 // @public
+export interface OtlpRequestInfo {
+    readonly bytes: number;
+    readonly contentType: string;
+    readonly encoding: string | undefined;
+    // (undocumented)
+    readonly path: string;
+}
+
+// @public
 export type OtlpSignal = "traces" | "metrics" | "logs";
+
+// @public
+export interface OtlpSink {
+    close(): Promise<void>;
+    logs(): readonly unknown[];
+    metrics(): readonly unknown[];
+    requests(): readonly OtlpRequestInfo[];
+    traces(): readonly unknown[];
+    readonly url: string;
+    waitFor(signal: OtlpSignal, count?: number, timeoutMillis?: number): Promise<void>;
+}
+
+// @public
+export interface OtlpSinkOptions {
+    readonly retryAfter?: string;
+    readonly status?: number;
+}
 
 // @public
 export interface RecordedExemplar {
@@ -67,6 +93,9 @@ export interface Recorder {
 // @public
 export interface RecorderOptions extends Omit<TelemetryOptions, "spanExporter" | "spanProcessor" | "metricReader" | "logExporter" | "logProcessor" | "hermetic"> {
 }
+
+// @public
+export function startOtlpSink(opts?: OtlpSinkOptions): Promise<OtlpSink>;
 
 // (No @packageDocumentation comment for this package)
 

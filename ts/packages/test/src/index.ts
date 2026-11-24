@@ -11,3 +11,4 @@ export {
   type Recorder,
   type RecorderOptions,
 } from "./recorder.ts";
+export { type OtlpRequestInfo, type OtlpSink, type OtlpSinkOptions, startOtlpSink } from "./sink.ts";
