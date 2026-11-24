@@ -20,7 +20,7 @@ import { AggregationType } from "@opentelemetry/sdk-metrics";
 import type { ReadableSpan } from "@opentelemetry/sdk-trace";
 import { decodeOtlpProtobuf, normalizeOtlp } from "./otlp-schema.ts";
 import { createRecorder, type Recorder } from "./recorder.ts";
-import { ProtoWriter } from "./wire-writer.test.ts";
+import { ProtoWriter } from "./test-support/proto-writer.ts";
 
 const PARENT = {
   traceId: "0af7651916cd43dd8448eb211c80319c",

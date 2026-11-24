@@ -1,10 +1,8 @@
 /**
  * A minimal protobuf writer for the tests: it builds payloads the upstream serializers never emit,
- * such as exemplars and wire-type edge cases. Test-only; the package decodes, it never encodes.
+ * such as exemplars and wire-type edge cases. Test-only: the build excludes src/test-support, and the
+ * package decodes, it never encodes.
  */
-import assert from "node:assert/strict";
-import { test } from "node:test";
-
 /** Writes protobuf wire format into a growing byte array. */
 export class ProtoWriter {
   private readonly out: number[] = [];
@@ -71,10 +69,3 @@ export class ProtoWriter {
     return Uint8Array.from(this.out);
   }
 }
-
-test("the test writer encodes varints and fixed widths little-endian", () => {
-  assert.deepEqual([...new ProtoWriter().varint(300n).finish()], [0xac, 0x02]);
-  assert.equal(new ProtoWriter().varint(-1n).finish().length, 10);
-  assert.deepEqual([...new ProtoWriter().fixed32(1).finish()], [1, 0, 0, 0]);
-  assert.deepEqual([...new ProtoWriter().tag(2, 2).string("a").finish()], [0x12, 1, 0x61]);
-});

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { decodeMessage, type MessageSchema, ProtoReader, WIRE_FIXED32, WIRE_LEN } from "./protowire.ts";
-import { ProtoWriter } from "./wire-writer.test.ts";
+import { ProtoWriter } from "./test-support/proto-writer.ts";
 
 test("the reader decodes varints, fixed widths and length-delimited fields", () => {
   const w = new ProtoWriter();
@@ -109,4 +109,11 @@ test("a field with the wrong wire type is refused", () => {
   const w = new ProtoWriter();
   w.tag(1, 0).varint(1n);
   assert.throws(() => decodeMessage(SCHEMAS, "point", w.finish()), /protowire: point\.name: wire type 0/);
+});
+
+test("the test writer encodes varints and fixed widths little-endian", () => {
+  assert.deepEqual([...new ProtoWriter().varint(300n).finish()], [0xac, 0x02]);
+  assert.equal(new ProtoWriter().varint(-1n).finish().length, 10);
+  assert.deepEqual([...new ProtoWriter().fixed32(1).finish()], [1, 0, 0, 0]);
+  assert.deepEqual([...new ProtoWriter().tag(2, 2).string("a").finish()], [0x12, 1, 0x61]);
 });
