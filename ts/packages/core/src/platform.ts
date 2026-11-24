@@ -8,6 +8,7 @@ import type { LogRecordExporter } from "@opentelemetry/sdk-logs";
 import type { IMetricReader } from "@opentelemetry/sdk-metrics";
 import type { SpanExporter } from "@opentelemetry/sdk-trace";
 import type { ResolvedConfig } from "./config.ts";
+import type { ExemplarStore } from "./exemplars.ts";
 
 /** The resource attributes a platform detects, in two layers merged lowest first. */
 export interface ResourceLayers {
@@ -20,6 +21,11 @@ export interface ResourceLayers {
 /** What core asks a platform to build exporters for. */
 export interface ExporterRequest {
   readonly config: ResolvedConfig;
+  /**
+   * The exemplar store. A platform that builds a periodic metric reader wraps its exporter with
+   * exemplarMetricExporter(exporter, exemplars), so exported points carry exemplars.
+   */
+  readonly exemplars: ExemplarStore;
 }
 
 /** The exporters a platform built, one per signal the configuration routes to otlp or console. */

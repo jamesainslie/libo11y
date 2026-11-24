@@ -59,3 +59,67 @@ export function hexEncode(data: Uint8Array): string {
   for (const b of data) out += b.toString(16).padStart(2, "0");
   return out;
 }
+
+/**
+ * Decodes UTF-8 as TextDecoder does (the WHATWG decoder): each maximal invalid subpart becomes
+ * U+FFFD.
+ */
+export function utf8Decode(data: Uint8Array): string {
+  const out: string[] = [];
+  let chunk: number[] = [];
+  const emit = (cp: number): void => {
+    chunk.push(cp);
+    if (chunk.length >= 4096) {
+      out.push(String.fromCodePoint(...chunk));
+      chunk = [];
+    }
+  };
+  let needed = 0;
+  let seen = 0;
+  let cp = 0;
+  let lower = 0x80;
+  let upper = 0xbf;
+  for (let i = 0; i < data.length; i++) {
+    const b = data[i] as number;
+    if (needed === 0) {
+      if (b <= 0x7f) emit(b);
+      else if (b >= 0xc2 && b <= 0xdf) {
+        needed = 1;
+        cp = b & 0x1f;
+      } else if (b >= 0xe0 && b <= 0xef) {
+        if (b === 0xe0) lower = 0xa0;
+        if (b === 0xed) upper = 0x9f;
+        needed = 2;
+        cp = b & 0x0f;
+      } else if (b >= 0xf0 && b <= 0xf4) {
+        if (b === 0xf0) lower = 0x90;
+        if (b === 0xf4) upper = 0x8f;
+        needed = 3;
+        cp = b & 0x07;
+      } else emit(0xfffd);
+      continue;
+    }
+    if (b < lower || b > upper) {
+      needed = 0;
+      seen = 0;
+      cp = 0;
+      lower = 0x80;
+      upper = 0xbf;
+      emit(0xfffd);
+      i--; // the byte starts the next sequence
+      continue;
+    }
+    lower = 0x80;
+    upper = 0xbf;
+    cp = (cp << 6) | (b & 0x3f);
+    if (++seen === needed) {
+      emit(cp);
+      needed = 0;
+      seen = 0;
+      cp = 0;
+    }
+  }
+  if (needed !== 0) emit(0xfffd);
+  out.push(String.fromCodePoint(...chunk));
+  return out.join("");
+}

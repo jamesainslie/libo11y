@@ -5,12 +5,19 @@
 ```ts
 
 import type { AppRegistry } from '@libo11y/spec';
-import type { Attributes } from '@opentelemetry/api';
+import { Attributes } from '@opentelemetry/api';
 import type { CompiledAppRegistry } from '@libo11y/spec';
+import { Context } from '@opentelemetry/api';
 import type { ContextManager } from '@opentelemetry/api';
+import { DataPoint } from '@opentelemetry/sdk-metrics';
+import { HrTime } from '@opentelemetry/api';
+import { IExportMetricsServiceResponse } from '@opentelemetry/otlp-transformer';
 import type { IMetricReader } from '@opentelemetry/sdk-metrics';
+import { ISerializer } from '@opentelemetry/otlp-transformer';
 import type { LogRecordExporter } from '@opentelemetry/sdk-logs';
 import type { MeterProvider } from '@opentelemetry/api';
+import { PushMetricExporter } from '@opentelemetry/sdk-metrics';
+import { ResourceMetrics } from '@opentelemetry/sdk-metrics';
 import { Sampler } from '@opentelemetry/sdk-trace';
 import type { SpanExporter } from '@opentelemetry/sdk-trace';
 import type { SpanProcessor } from '@opentelemetry/sdk-trace';
@@ -33,9 +40,70 @@ export interface BatchOptions {
 }
 
 // @public
+export type DataPointWithExemplars<T> = DataPoint<T> & {
+    readonly exemplars?: readonly Exemplar[];
+};
+
+// @public
+export interface Exemplar {
+    readonly filteredAttributes: Attributes;
+    // (undocumented)
+    readonly spanId?: string;
+    // (undocumented)
+    readonly timeUnixNano: bigint;
+    readonly traceId?: string;
+    // (undocumented)
+    readonly value: number;
+}
+
+// @public
+export type ExemplarFilter = "trace_based" | "always_on" | "always_off";
+
+// @public
+export type ExemplarKind = "histogram" | "sum" | "gauge";
+
+// @public
+export interface ExemplarMeasurement {
+    readonly advisedBuckets?: readonly number[];
+    readonly attributes: Attributes;
+    // (undocumented)
+    readonly context: Context;
+    // (undocumented)
+    readonly instrument: string;
+    // (undocumented)
+    readonly kind: ExemplarKind;
+    readonly scope: string;
+    readonly time?: HrTime;
+    // (undocumented)
+    readonly value: number;
+}
+
+// @public
+export function exemplarMetricExporter(inner: PushMetricExporter, store: ExemplarStore): PushMetricExporter;
+
+// @public
+export function exemplarsOf(point: DataPoint<unknown>): readonly Exemplar[];
+
+// @public
+export class ExemplarStore {
+    constructor(opts: ExemplarStoreOptions);
+    attach(rm: ResourceMetrics): ResourceMetricsWithExemplars;
+    offer(m: ExemplarMeasurement): void;
+}
+
+// @public
+export interface ExemplarStoreOptions {
+    // (undocumented)
+    readonly filter: ExemplarFilter;
+    readonly histogramBuckets: Readonly<Record<string, readonly number[]>>;
+    readonly maxSeries?: number;
+}
+
+// @public
 export interface ExporterRequest {
     // (undocumented)
     readonly config: ResolvedConfig;
+    readonly exemplars: ExemplarStore;
 }
 
 // @public
@@ -71,6 +139,129 @@ export class O11yError extends Error {
 
 // @public
 export type O11yErrorCode = "ALREADY_SETUP" | "NO_SERVICE_NAME" | "NO_ENVIRONMENT" | "INVALID_ENVIRONMENT" | "PII_HASH_KEY" | "INVALID_APP_REGISTRY" | "CANARY_REJECTED" | "UNSUPPORTED_PROTOCOL" | "EXPORTER";
+
+// @public
+export interface OtlpAnyValueJson {
+    // (undocumented)
+    readonly arrayValue?: {
+        readonly values: readonly OtlpAnyValueJson[];
+    };
+    // (undocumented)
+    readonly boolValue?: boolean;
+    // (undocumented)
+    readonly bytesValue?: string;
+    // (undocumented)
+    readonly doubleValue?: number;
+    // (undocumented)
+    readonly intValue?: number;
+    // (undocumented)
+    readonly kvlistValue?: {
+        readonly values: readonly OtlpKeyValueJson[];
+    };
+    // (undocumented)
+    readonly stringValue?: string;
+}
+
+// @public
+export interface OtlpDataPointJson {
+    // (undocumented)
+    readonly [field: string]: unknown;
+    // (undocumented)
+    readonly attributes: readonly OtlpKeyValueJson[];
+    // (undocumented)
+    readonly exemplars?: readonly OtlpExemplarJson[];
+    // (undocumented)
+    readonly startTimeUnixNano: string;
+    // (undocumented)
+    readonly timeUnixNano: string;
+}
+
+// @public
+export interface OtlpDataPointsJson {
+    // (undocumented)
+    readonly aggregationTemporality?: number;
+    // (undocumented)
+    readonly dataPoints: readonly OtlpDataPointJson[];
+    // (undocumented)
+    readonly isMonotonic?: boolean;
+}
+
+// @public
+export interface OtlpExemplarJson {
+    // (undocumented)
+    readonly asDouble?: number;
+    // (undocumented)
+    readonly asInt?: number;
+    // (undocumented)
+    readonly filteredAttributes: readonly OtlpKeyValueJson[];
+    readonly spanId?: string;
+    readonly timeUnixNano: string;
+    // (undocumented)
+    readonly traceId?: string;
+}
+
+// @public
+export const OtlpJsonMetricsSerializer: ISerializer<ResourceMetrics | ResourceMetricsWithExemplars, IExportMetricsServiceResponse>;
+
+// @public
+export interface OtlpKeyValueJson {
+    // (undocumented)
+    readonly key: string;
+    // (undocumented)
+    readonly value: OtlpAnyValueJson;
+}
+
+// @public
+export interface OtlpMetricJson {
+    // (undocumented)
+    readonly description?: string;
+    // (undocumented)
+    readonly exponentialHistogram?: OtlpDataPointsJson;
+    // (undocumented)
+    readonly gauge?: OtlpDataPointsJson;
+    // (undocumented)
+    readonly histogram?: OtlpDataPointsJson;
+    // (undocumented)
+    readonly name: string;
+    // (undocumented)
+    readonly sum?: OtlpDataPointsJson;
+    // (undocumented)
+    readonly unit?: string;
+}
+
+// @public
+export interface OtlpMetricsRequestJson {
+    // (undocumented)
+    readonly resourceMetrics: readonly OtlpResourceMetricsJson[];
+}
+
+// @public
+export interface OtlpResourceMetricsJson {
+    // (undocumented)
+    readonly resource: {
+        readonly attributes: readonly OtlpKeyValueJson[];
+        readonly droppedAttributesCount: number;
+    };
+    // (undocumented)
+    readonly schemaUrl?: string;
+    // (undocumented)
+    readonly scopeMetrics: readonly OtlpScopeMetricsJson[];
+}
+
+// @public
+export interface OtlpScopeMetricsJson {
+    // (undocumented)
+    readonly metrics: readonly OtlpMetricJson[];
+    // (undocumented)
+    readonly schemaUrl?: string;
+    // (undocumented)
+    readonly scope: {
+        readonly name: string;
+        readonly version?: string;
+        readonly attributes?: readonly OtlpKeyValueJson[];
+        readonly droppedAttributesCount?: number;
+    };
+}
 
 // @public
 export type PIIMode = "drop" | "hash" | "allow";
@@ -157,6 +348,9 @@ export interface ResourceLayers {
 }
 
 // @public
+export type ResourceMetricsWithExemplars = ResourceMetrics;
+
+// @public
 export interface RuntimeMetrics {
     // (undocumented)
     stop(): void;
@@ -202,6 +396,9 @@ export interface TelemetryOptions {
     // (undocumented)
     views?: readonly ViewOptions[];
 }
+
+// @public
+export function toOtlpMetricsObject(rm: ResourceMetricsWithExemplars): OtlpMetricsRequestJson;
 
 // (No @packageDocumentation comment for this package)
 

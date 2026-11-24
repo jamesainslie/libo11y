@@ -4,11 +4,14 @@
 
 ```ts
 
-import type { Attributes } from '@opentelemetry/api';
+import { Attributes } from '@opentelemetry/api';
+import { Context } from '@opentelemetry/api';
 import type { ContextManager } from '@opentelemetry/api';
+import { HrTime } from '@opentelemetry/api';
 import type { IMetricReader } from '@opentelemetry/sdk-metrics';
 import type { LogRecordExporter } from '@opentelemetry/sdk-logs';
 import type { MeterProvider } from '@opentelemetry/api';
+import { ResourceMetrics } from '@opentelemetry/sdk-metrics';
 import { Sampler } from '@opentelemetry/sdk-trace';
 import type { SpanExporter } from '@opentelemetry/sdk-trace';
 
