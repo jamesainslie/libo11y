@@ -2,7 +2,7 @@
   "name": "@libo11y/server",
   "version": "0.0.0",
   "private": true,
-  "description": "The libo11y server platform for TypeScript on Bun and Node: AsyncLocalStorage context, resource detection, OTLP exporters from OTEL_* with exemplars, setup, registry loading, signal handling and runtime metrics.",
+  "description": "The libo11y server platform for TypeScript on Bun and Node: AsyncLocalStorage context, resource detection, OTLP exporters from OTEL_* with exemplars, setup, registry loading, signal handling, runtime metrics, and instrumentServe and instrumentFetch for HTTP.",
   "license": "Apache-2.0",
   "type": "module",
   "sideEffects": false,

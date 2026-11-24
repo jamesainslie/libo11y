@@ -1,7 +1,7 @@
 /**
  * The libo11y server platform for Bun and Node: AsyncLocalStorage context, resource detection, OTLP
  * exporters built from OTEL_* with exemplars, setup, application registry loading, signal handling,
- * runtime metrics, and HTTP server instrumentation.
+ * runtime metrics, and HTTP server and client instrumentation.
  */
 
 export {
@@ -14,6 +14,7 @@ export {
   type TelemetryOptions,
 } from "@libo11y/core";
 export { createContextManager } from "./context.ts";
+export { type FetchOptions, instrumentFetch } from "./fetch.ts";
 export { OtlpProtobufMetricsSerializer } from "./otlp-proto-metrics.ts";
 export { serverPlatform } from "./platform.ts";
 export { loadAppRegistry } from "./registry.ts";

@@ -26,6 +26,16 @@ export function createContextManager(): ContextManager;
 export function createTelemetry(options?: TelemetryOptions): Promise<Telemetry>;
 
 // @public
+export interface FetchOptions {
+    readonly peerService?: string;
+    readonly propagate?: (url: URL) => boolean;
+    readonly telemetry?: Telemetry;
+}
+
+// @public
+export function instrumentFetch(fetchImpl?: typeof fetch, opts?: FetchOptions): typeof fetch;
+
+// @public
 export function instrumentServe<A extends unknown[]>(handler: (req: Request, ...rest: A) => Response | Promise<Response>, opts?: ServeOptions): (req: Request, ...rest: A) => Promise<Response>;
 
 export { LifecycleOptions }
