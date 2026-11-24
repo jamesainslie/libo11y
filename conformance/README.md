@@ -25,17 +25,27 @@ A `.want` file holds one of three things:
   - `syntax`: anything else.
 
   A kind is named rather than quoted, so no case depends on one YAML
-  library's error text. When a file has several decode problems, the
-  first one the decoder meets wins.
+  library's error text. A syntax error in the first document wins over
+  everything else, and an error in the first document wins over a second
+  document. Within the first document, yaml.v3 collects every decode
+  problem, and the kinds rank `duplicate-key`, then `unknown-key`, then
+  `type`.
 
 Three Go behaviours are part of the contract:
 - **Quoting.** A quoted value in a detail uses Go's `%q` quoting: `\a`
   for U+0007, `\u0085` for U+0085, and printable non-ASCII as is.
+  "Printable" is Go's `unicode.IsPrint` in the Unicode version of the Go
+  toolchain that generated the specification artifacts (Unicode 15.0.0
+  for Go 1.26), not the Unicode version of another runtime. specgen
+  writes the printable ranges for TypeScript to
+  `ts/packages/spec/src/generated/goprint.ts`.
 - **Whitespace.** "Whitespace" in `libo11y_enum_value_whitespace` is
   Go's `strings.TrimSpace`, the Unicode White_Space property. It includes
   U+0085 and excludes U+FEFF. JavaScript's `trim()` differs on both.
 - **Enum values.** An enum value can be any YAML scalar. It reads as its
-  source text, so `1.0` stays `1.0`, and null reads as the empty string.
+  source text, so `1.0` stays `1.0`. A null entry is dropped, so
+  `values: [~]` declares no values and fails
+  `libo11y_app_enum_values_missing`.
 
 The cases are hand-written. The Go test is
 `go/internal/appregistry/conformance_test.go`.

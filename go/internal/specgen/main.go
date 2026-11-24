@@ -459,6 +459,7 @@ func render(m *model) (map[string]string, error) {
 	}
 	outputs[tsSpecPath] = genTSSpec(m)
 	outputs[tsTablesPath] = tsTables
+	outputs[tsGoPrintPath] = genTSGoPrint()
 	goSources := []struct{ rel, src string }{
 		{"go/spec/spec.go", genSpec(m)},
 		{"go/internal/spectables/tables.go", tables},

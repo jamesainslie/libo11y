@@ -7,11 +7,23 @@
   "type": "module",
   "sideEffects": false,
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./yaml": "./src/yaml.ts"
+  },
+  "bin": {
+    "libo11y": "./src/cli.ts"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/jamesainslie/libo11y.git",
     "directory": "ts/packages/spec"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "api": "api-extractor run --local && api-extractor run --local -c api-extractor.yaml.json",
+    "api:check": "api-extractor run && api-extractor run -c api-extractor.yaml.json"
+  },
+  "dependencies": {
+    "yaml": "2.9.1"
   }
 }

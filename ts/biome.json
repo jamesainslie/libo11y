@@ -1,7 +1,7 @@
 {
   "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
   "vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true, "root": ".." },
-  "files": { "includes": ["**", "!packages/*/src/generated"] },
+  "files": { "includes": ["**", "!packages/*/src/generated", "!packages/*/api"] },
   "formatter": { "indentStyle": "space", "lineWidth": 110 },
   "linter": { "rules": { "preset": "recommended" } }
 }

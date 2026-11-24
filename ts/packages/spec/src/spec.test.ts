@@ -1,4 +1,5 @@
-import { expect, test } from "bun:test";
+import assert from "node:assert/strict";
+import { test } from "node:test";
 import {
   APP_REGISTRY_SCHEMA,
   APP_RESERVED_NAMESPACES,
@@ -24,24 +25,24 @@ import {
   SCHEMA_URL,
   SENSITIVITY_OF,
   SPEC_VERSION,
-} from "./index";
+} from "./index.ts";
 
 test("the schema URL names the spec version", () => {
-  expect(SCHEMA_URL.endsWith(`/${SPEC_VERSION}`)).toBe(true);
+  assert.equal(SCHEMA_URL.endsWith(`/${SPEC_VERSION}`), true);
 });
 
 test("minted keys and closed enums", () => {
-  expect(ATTR_OUTCOME).toBe("o11y.outcome");
+  assert.equal(ATTR_OUTCOME, "o11y.outcome");
   const success: Outcome = "success";
-  expect(OUTCOME_VALUES).toContain(success);
+  assert.ok(OUTCOME_VALUES.includes(success));
   // @ts-expect-error "nope" is not an Outcome, so the union stays closed.
   const notAnOutcome: Outcome = "nope";
   void notAnOutcome;
 });
 
 test("tier 0 requires the service identity", () => {
-  expect(REQUIRED_TIER0).toContain("service.name");
-  expect(RESOURCE.get("o11y.tenant.id")).toEqual({
+  assert.ok(REQUIRED_TIER0.includes("service.name"));
+  assert.deepEqual(RESOURCE.get("o11y.tenant.id"), {
     tier: "tier3",
     requirement: "opt_in",
     source: "option",
@@ -50,55 +51,55 @@ test("tier 0 requires the service identity", () => {
 });
 
 test("the environment set", () => {
-  expect([...ENVIRONMENT_VALUES]).toEqual(["production", "staging", "development", "test"]);
+  assert.deepEqual([...ENVIRONMENT_VALUES], ["production", "staging", "development", "test"]);
 });
 
 test("sensitivity lookups never reach the prototype", () => {
-  expect(SENSITIVITY_OF.get("o11y.tenant.id")).toBe("internal");
-  expect(SENSITIVITY_OF.get("http.request.header.authorization")).toBe("secret");
-  expect(SENSITIVITY_OF.get("constructor")).toBeUndefined();
-  expect(SENSITIVITY_OF.get("__proto__")).toBeUndefined();
+  assert.equal(SENSITIVITY_OF.get("o11y.tenant.id"), "internal");
+  assert.equal(SENSITIVITY_OF.get("http.request.header.authorization"), "secret");
+  assert.equal(SENSITIVITY_OF.get("constructor"), undefined);
+  assert.equal(SENSITIVITY_OF.get("__proto__"), undefined);
 });
 
 test("event contracts and metric names", () => {
-  expect(EVENTS.get(EVENT_TELEMETRY_CONFIGURED)).toEqual({
+  assert.deepEqual(EVENTS.get(EVENT_TELEMETRY_CONFIGURED), {
     required: [],
     requiredTemplates: ["o11y.config"],
   });
-  expect(METRIC_SCHEMA_VIOLATIONS).toBe("o11y.schema.violations");
+  assert.equal(METRIC_SCHEMA_VIOLATIONS, "o11y.schema.violations");
 });
 
 test("RUM conventions", () => {
-  expect(ATTR_RUM_VIEW_NAME).toBe("o11y.rum.view.name");
-  expect(METRIC_RUM_VITAL_LCP).toBe("o11y.rum.vital.lcp");
-  expect(EVENT_RUM_ERROR).toBe("o11y.rum.error");
-  expect(RUM_VIEW_KIND_VALUES).toContain("screen");
-  expect(RUM_SPAN_REQUIRED.get("view")).toEqual([
+  assert.equal(ATTR_RUM_VIEW_NAME, "o11y.rum.view.name");
+  assert.equal(METRIC_RUM_VITAL_LCP, "o11y.rum.vital.lcp");
+  assert.equal(EVENT_RUM_ERROR, "o11y.rum.error");
+  assert.ok(RUM_VIEW_KIND_VALUES.includes("screen"));
+  assert.deepEqual(RUM_SPAN_REQUIRED.get("view"), [
     "o11y.rum.platform",
     "o11y.rum.view.name",
     "o11y.rum.view.id",
     "o11y.rum.view.kind",
     "session.id",
   ]);
-  expect(SENSITIVITY_OF.get("o11y.rum.element.text")).toBe("pii");
-  expect(SENSITIVITY_OF.get("session.id")).toBe("internal");
-  expect(SENSITIVITY_OF.get("geo.country.iso_code")).toBe("public");
-  expect(RUM_CONNECTION_EFFECTIVE_VALUE_SLOW_2G).toBe("slow-2g");
-  expect(RUM_CONNECTION_EFFECTIVE_VALUE_TYPE_2G).toBe("2g");
-  expect(RUM_VITAL_RATING_VALUE_NEEDS_IMPROVEMENT).toBe("needs-improvement");
+  assert.equal(SENSITIVITY_OF.get("o11y.rum.element.text"), "pii");
+  assert.equal(SENSITIVITY_OF.get("session.id"), "internal");
+  assert.equal(SENSITIVITY_OF.get("geo.country.iso_code"), "public");
+  assert.equal(RUM_CONNECTION_EFFECTIVE_VALUE_SLOW_2G, "slow-2g");
+  assert.equal(RUM_CONNECTION_EFFECTIVE_VALUE_TYPE_2G, "2g");
+  assert.equal(RUM_VITAL_RATING_VALUE_NEEDS_IMPROVEMENT, "needs-improvement");
 });
 
 test("spec 1.2.0 marks captured console records", () => {
-  expect(SPEC_VERSION).toBe("1.2.0");
-  expect(ATTR_LOG_SOURCE).toBe("o11y.log.source");
-  expect([...LOG_SOURCE_VALUES]).toEqual(["logger", "console"]);
-  expect(SENSITIVITY_OF.get("o11y.log.source")).toBe("public");
+  assert.equal(SPEC_VERSION, "1.2.0");
+  assert.equal(ATTR_LOG_SOURCE, "o11y.log.source");
+  assert.deepEqual([...LOG_SOURCE_VALUES], ["logger", "console"]);
+  assert.equal(SENSITIVITY_OF.get("o11y.log.source"), "public");
 });
 
 test("the application registry reserved namespaces", () => {
-  expect(APP_REGISTRY_SCHEMA).toBe("libo11y.app-registry/v1");
+  assert.equal(APP_REGISTRY_SCHEMA, "libo11y.app-registry/v1");
   for (const ns of ["o11y", "otel", "http", "session"]) {
-    expect(APP_RESERVED_NAMESPACES.has(ns)).toBe(true);
+    assert.equal(APP_RESERVED_NAMESPACES.has(ns), true);
   }
-  expect(APP_RESERVED_NAMESPACES.has("lor")).toBe(false);
+  assert.equal(APP_RESERVED_NAMESPACES.has("lor"), false);
 });

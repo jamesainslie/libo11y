@@ -1,0 +1,10 @@
+schema: libo11y.app-registry/v1
+namespace: shop
+attributes:
+  shop.x:
+    &k type: string
+    sensitivity: public
+    cardinality: bounded
+  shop.y:
+    *k : string
+    <<: {type: int, sensitivity: public, cardinality: bounded}

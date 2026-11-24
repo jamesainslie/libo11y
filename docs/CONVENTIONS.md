@@ -47,10 +47,35 @@ attributes are defined by that release and never redefined here.
 ## TypeScript toolchain
 
 The TypeScript workspace in `ts/` pins its toolchain exactly. It uses
-`bun@1.3.13` as the package manager and runtime, `typescript@7.0.2`,
-`@biomejs/biome@2.6.8` for linting and formatting, and `@types/bun@1.4.4`.
-`make ts-check` installs the locked dependencies, then lints, typechecks
-and tests every package. `make ci` runs it.
+`bun@1.3.13` as the package manager, `typescript@7.0.2`,
+`@biomejs/biome@2.6.8` for linting and formatting,
+`@microsoft/api-extractor@7.60.1` for the API reports, and
+`@types/bun@1.4.4` and `@types/node@24.19.2` for runtime types. CI runs
+every suite on Bun 1.3.13 and Node 24.
+
+- **Tests.** Tests use `node:test` and `node:assert/strict`, never
+  `bun:test`, so one suite runs under both runtimes: `bun run test:bun`
+  runs `bun test`, and `bun run test:node` runs `node --test`. Imports use
+  `.ts` specifiers. Node runs the sources through type stripping, so
+  source files use only erasable syntax (`erasableSyntaxOnly`).
+- **Build.** `bun run build` removes each package's `dist/`, then runs
+  `tsc` and writes ESM JavaScript and declarations there. tsc rewrites the `.ts`
+  specifiers to `.js` in the JavaScript. Exported functions declare their
+  return types (`isolatedDeclarations`).
+- **API reports.** Each package commits its public API as
+  `api/<name>.api.md`, one report per entry point. `bun run api:check`
+  fails when a build's API differs from the committed report. After a
+  deliberate API change, run `bun run build && bun run api` and commit the
+  updated report.
+- **Packing.** `ts/scripts/release.ts` sets the lockstep version
+  (`version X.Y.Z`) and packs each package (`pack OUTDIR`). The packed
+  `package.json` has exact versions in place of `workspace:` ranges, and
+  its `exports` and `bin` point at `dist/`. `pack` refuses a `dist/` file
+  with no matching source in `src/`.
+
+`make ts-check` installs the locked dependencies, then lints, typechecks,
+builds, checks the API reports, and runs every suite under Bun and Node.
+`make ci` runs it.
 
 ## Versioning and releases
 
@@ -90,7 +115,14 @@ and tests every package. `make ci` runs it.
 - TypeScript releases are lockstep. Every `@libo11y/*` package publishes
   at one shared version from a `ts/vX.Y.Z` tag, starting with
   `ts/v0.1.0`. Until then `@libo11y/spec` is private at version `0.0.0`,
-  and nothing publishes it.
+  and nothing publishes it. `make release-check` also runs
+  `scripts/ts-release-check.sh` for `TS_RELEASE_VERSION` (default
+  `v0.0.0`). It checks every package is at that version, builds and packs
+  the packages, checks each tarball's `exports` and `bin` targets, and
+  installs the tarballs into a throwaway consumer that imports them under
+  Node and Bun and runs the `libo11y` bin. Like `RELEASE_VERSION`,
+  `TS_RELEASE_VERSION` moves only in a release commit, together with the
+  package versions (`bun scripts/release.ts version X.Y.Z` in `ts/`).
 - The specification versions separately: once released, each version has a
   `spec/vX.Y.Z` tag and a schema file served at its schema URL. Spec
   1.0.0 is tagged `spec/v1.0.0` on the `go/v0.1.0` commit. Before
@@ -142,7 +174,8 @@ adding a gate.
 | `make test` | `go test -race` on every Go module (`GO_TEST_P` sets package parallelism), including the `testing/slogtest` handler contract, the OTLP wire tests, and the generator's golden test |
 | `make tidy-check` | each module's `go.mod` and `go.sum` tidy on its own (`GOWORK=off`) |
 | `make spec-check`, `make spec-drift` | registry policy checks and generated-artifact drift |
-| `make release-check` | the Go release sequence (needs a clean tree) |
+| `make ts-check` | the TypeScript workspace: Biome, tsc, the build, the API reports, and every suite under Bun and Node |
+| `make release-check` | the Go release sequence, then packing and a consumer smoke test of the TypeScript packages (needs a clean tree) |
 | `make vuln` | `govulncheck` on every Go module; runs last because it depends on the advisory database and the toolchain's patch level |
 
 - Go: the gates above. Standard-library advisories are fixed by the

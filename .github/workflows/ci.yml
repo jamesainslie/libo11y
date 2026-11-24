@@ -84,6 +84,16 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.13"
+      # Bun's global install cache, keyed on the lockfile.
+      - uses: actions/cache@v6
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('ts/bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+      # Every suite runs under Bun and under Node.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24.x"
       - run: make ts-check
 
   vuln:
@@ -122,4 +132,17 @@ jobs:
             go/o11ygin/go.sum
             go/o11yconnect/go.sum
             go/o11ysql/go.sum
+      # The TypeScript half packs the packages and imports them under Bun and Node.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.13"
+      # Bun's global install cache, keyed on the lockfile.
+      - uses: actions/cache@v6
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('ts/bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24.x"
       - run: make release-check

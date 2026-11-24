@@ -32,12 +32,13 @@ spec-drift: spec-generate
 	if [ -n "$$untracked" ]; then echo "untracked generated files:"; echo "$$untracked"; exit 1; fi
 
 # TypeScript workspace (ts/): install the pinned dependencies, then lint,
-# typecheck, and test every package (needs bun).
+# typecheck, build, check the committed API reports, and run every suite
+# under Bun and under Node (needs bun and node).
 ts-install:
 	cd ts && bun install --frozen-lockfile
 
 ts-check: ts-install
-	cd ts && bun run lint && bun run typecheck && bun test
+	cd ts && bun run lint && bun run typecheck && bun run build && bun run api:check && bun run test:bun && bun run test:node
 
 vet:
 	@set -e; for m in $(GO_MODULES); do echo "go vet: $$m"; (cd $$m && go vet ./...); done
@@ -61,12 +62,21 @@ vuln:
 # scripts/release-check.sh). CI uses this default.
 RELEASE_VERSION ?= v0.2.0
 
+# The version every @libo11y/* package carries, which ts-release-check.sh
+# validates. Like RELEASE_VERSION, it moves only in a release commit,
+# together with the packages' versions (bun scripts/release.ts version).
+# The packages stay at 0.0.0 until the first TypeScript release.
+TS_RELEASE_VERSION ?= v0.0.0
+
 # Validate the release sequence (go/RELEASE_VERSION and
 # go/<sub>/RELEASE_VERSION for every Go submodule, o11ygin, o11yconnect
-# and o11ysql, on HEAD) against a throwaway local remote.
+# and o11ysql, on HEAD) against a throwaway local remote. Then build and
+# pack the TypeScript packages at TS_RELEASE_VERSION and install the
+# tarballs into a throwaway consumer under Node and Bun.
 # Needs a clean working tree.
 release-check:
 	scripts/release-check.sh $(RELEASE_VERSION)
+	scripts/ts-release-check.sh $(TS_RELEASE_VERSION)
 
 # Release step, not a ci gate (it needs the network): confirm the schema URL
 # serves spec/schemas/<version> byte for byte before tagging spec/vX.Y.Z.
