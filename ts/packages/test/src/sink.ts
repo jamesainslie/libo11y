@@ -41,7 +41,7 @@ export interface OtlpSink {
   requests(): readonly OtlpRequestInfo[];
   /** Resolves once signal has count accepted requests (default 1); rejects after timeoutMillis (default 5000). */
   waitFor(signal: OtlpSignal, count?: number, timeoutMillis?: number): Promise<void>;
-  /** Stops the server and drops open connections. Idempotent. */
+  /** Stops the server, drops open connections and rejects pending waitFor calls. Idempotent. */
   close(): Promise<void>;
 }
 
@@ -63,39 +63,94 @@ class HttpError extends Error {
   }
 }
 
-function readBody(req: IncomingMessage): Promise<Buffer> {
+/** The default cap on a request body as received: 32 MiB. */
+export const MAX_BODY_BYTES: number = 32 * 1024 * 1024;
+
+/** The default cap on a gzip body once inflated: 32 MiB. */
+export const MAX_INFLATED_BYTES: number = 32 * 1024 * 1024;
+
+/** Size limits for a sink. Internal: startOtlpSink uses the 32 MiB defaults. */
+export interface SinkLimits {
+  readonly maxBodyBytes: number;
+  readonly maxInflatedBytes: number;
+}
+
+// readBody collects the body, counting into seen. Past limit it stops collecting and rejects with
+// 413; the rest of the body is discarded unread.
+function readBody(req: IncomingMessage, limit: number, seen: { bytes: number }): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    const onData = (chunk: Buffer): void => {
+      seen.bytes += chunk.length;
+      if (seen.bytes > limit) {
+        req.off("data", onData);
+        req.resume();
+        reject(new HttpError(413, `o11ytest: sink: body exceeds ${limit} bytes`));
+        return;
+      }
+      chunks.push(chunk);
+    };
+    req.on("data", onData);
     req.on("end", () => resolve(Buffer.concat(chunks)));
     req.on("error", reject);
   });
 }
 
-function decode(signal: OtlpSignal, contentType: string, body: Uint8Array): unknown {
+function inflate(raw: Buffer, limit: number): Buffer {
   try {
-    if (contentType === JSON_TYPE) return JSON.parse(new TextDecoder().decode(body)) as unknown;
-    return decodeOtlpProtobuf(signal, body);
+    return gunzipSync(raw, { maxOutputLength: limit });
+  } catch (err) {
+    if (err instanceof RangeError || (err as { code?: unknown }).code === "ERR_BUFFER_TOO_LARGE") {
+      throw new HttpError(413, `o11ytest: sink: inflated body exceeds ${limit} bytes`);
+    }
+    throw new HttpError(
+      400,
+      `o11ytest: sink: inflating: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+function decode(signal: OtlpSignal, contentType: string, body: Uint8Array): unknown {
+  let value: unknown;
+  try {
+    value =
+      contentType === JSON_TYPE
+        ? JSON.parse(new TextDecoder().decode(body))
+        : decodeOtlpProtobuf(signal, body);
   } catch (err) {
     throw new HttpError(
       400,
       `o11ytest: sink: decoding ${signal}: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new HttpError(400, `o11ytest: sink: decoding ${signal}: the JSON body is not an object`);
+  }
+  return value;
 }
 
 interface Waiter {
   readonly signal: OtlpSignal;
   readonly count: number;
   readonly resolve: () => void;
+  readonly reject: (err: Error) => void;
 }
 
-/** Starts an OTLP/HTTP sink on 127.0.0.1 at a free port. */
-export async function startOtlpSink(opts: OtlpSinkOptions = {}): Promise<OtlpSink> {
+/** Starts an OTLP/HTTP sink on 127.0.0.1 at a free port. Bodies are capped at 32 MiB, inflated or not. */
+export function startOtlpSink(opts: OtlpSinkOptions = {}): Promise<OtlpSink> {
+  return startOtlpSinkWithLimits(opts, {
+    maxBodyBytes: MAX_BODY_BYTES,
+    maxInflatedBytes: MAX_INFLATED_BYTES,
+  });
+}
+
+/** startOtlpSink with explicit size limits. Internal: not exported from the package. */
+export async function startOtlpSinkWithLimits(opts: OtlpSinkOptions, limits: SinkLimits): Promise<OtlpSink> {
   const status = opts.status ?? 200;
   const received: Record<OtlpSignal, unknown[]> = { traces: [], metrics: [], logs: [] };
   const requests: OtlpRequestInfo[] = [];
   let waiters: Waiter[] = [];
+  let closed = false;
 
   const settle = (): void => {
     waiters = waiters.filter((w) => {
@@ -105,6 +160,11 @@ export async function startOtlpSink(opts: OtlpSinkOptions = {}): Promise<OtlpSin
     });
   };
 
+  const closedError = (signal: OtlpSignal, count: number): Error =>
+    new Error(
+      `o11ytest: sink: closed while waiting for ${count} ${signal} request(s); received ${received[signal].length}`,
+    );
+
   const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const path = (req.url ?? "").split("?")[0] ?? "";
     const signal = PATHS[path];
@@ -112,8 +172,13 @@ export async function startOtlpSink(opts: OtlpSinkOptions = {}): Promise<OtlpSin
     if (req.method !== "POST") throw new HttpError(405, `o11ytest: sink: ${req.method ?? ""} not allowed`);
     const contentType = (req.headers["content-type"] ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
     const encoding = req.headers["content-encoding"]?.trim().toLowerCase();
-    const raw = await readBody(req);
-    requests.push({ path, contentType, encoding, bytes: raw.length });
+    const seen = { bytes: 0 };
+    let raw: Buffer;
+    try {
+      raw = await readBody(req, limits.maxBodyBytes, seen);
+    } finally {
+      requests.push({ path, contentType, encoding, bytes: seen.bytes });
+    }
     if (contentType !== JSON_TYPE && !PROTOBUF_TYPES.has(contentType)) {
       throw new HttpError(415, `o11ytest: sink: unsupported content type ${contentType}`);
     }
@@ -125,15 +190,7 @@ export async function startOtlpSink(opts: OtlpSinkOptions = {}): Promise<OtlpSin
       res.writeHead(status, { "content-type": contentType, "content-length": "0" }).end();
       return;
     }
-    let body: Uint8Array;
-    try {
-      body = encoding === "gzip" ? gunzipSync(raw) : raw;
-    } catch (err) {
-      throw new HttpError(
-        400,
-        `o11ytest: sink: inflating: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
+    const body = encoding === "gzip" ? inflate(raw, limits.maxInflatedBytes) : raw;
     received[signal].push(decode(signal, contentType, body));
     res.writeHead(200, { "content-type": contentType, "content-length": "0" }).end();
     settle();
@@ -143,7 +200,13 @@ export async function startOtlpSink(opts: OtlpSinkOptions = {}): Promise<OtlpSin
     handle(req, res).catch((err: unknown) => {
       const code = err instanceof HttpError ? err.status : 500;
       const text = err instanceof Error ? err.message : String(err);
-      if (!res.headersSent) res.writeHead(code, { "content-type": "text/plain; charset=utf-8" });
+      if (!res.headersSent) {
+        res.writeHead(code, {
+          "content-type": "text/plain; charset=utf-8",
+          // A body cut off at the limit leaves unread bytes on the connection.
+          ...(code === 413 ? { connection: "close" } : {}),
+        });
+      }
       res.end(text);
     });
   });
@@ -165,6 +228,7 @@ export async function startOtlpSink(opts: OtlpSinkOptions = {}): Promise<OtlpSin
     requests: () => [...requests],
     waitFor(signal: OtlpSignal, count = 1, timeoutMillis = 5000): Promise<void> {
       if (received[signal].length >= count) return Promise.resolve();
+      if (closed) return Promise.reject(closedError(signal, count));
       return new Promise<void>((resolve, reject) => {
         const timer = setTimeout(() => {
           waiters = waiters.filter((w) => w !== waiter);
@@ -183,11 +247,18 @@ export async function startOtlpSink(opts: OtlpSinkOptions = {}): Promise<OtlpSin
             clearTimeout(timer);
             resolve();
           },
+          reject: (err) => {
+            clearTimeout(timer);
+            reject(err);
+          },
         };
         waiters.push(waiter);
       });
     },
     close(): Promise<void> {
+      closed = true;
+      for (const w of waiters) w.reject(closedError(w.signal, w.count));
+      waiters = [];
       closing ??= new Promise<void>((resolve) => {
         server.close(() => resolve());
         server.closeAllConnections();
