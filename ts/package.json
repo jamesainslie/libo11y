@@ -8,8 +8,10 @@
   ],
   "scripts": {
     "lint": "biome check .",
-    "typecheck": "tsc --noEmit -p packages/spec/tsconfig.json",
-    "test": "bun test"
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "bun run test:bun && bun run test:node",
+    "test:bun": "bun test",
+    "test:node": "node --test --test-concurrency=8 \"packages/*/src/**/*.test.ts\" \"scripts/**/*.test.ts\""
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.8",
