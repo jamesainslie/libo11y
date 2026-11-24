@@ -353,6 +353,10 @@ test("serverTiming rebuilds a response whose headers are immutable", async () =>
         res.headers.get("server-timing") ?? "",
         /^traceparent;desc="00-[0-9a-f]{32}-[0-9a-f]{16}-01"$/,
       );
+      const head = await handler(new Request("http://svc/proxy", { method: "HEAD" }));
+      assert.match(head.headers.get("server-timing") ?? "", /^traceparent;desc="00-[0-9a-f]{32}-/);
+      await head.body?.cancel();
+      assert.equal(serverSpans(rec).length, 2);
     } finally {
       await close(server);
     }
@@ -652,5 +656,58 @@ test("under Bun.serve the implicit content-type of Blob, file and form bodies su
         assert.equal(await got.text(), await want.text(), path);
       }
     });
+  });
+});
+
+async function waitForServerSpans(rec: Recorder, n: number): Promise<ReadableSpan[]> {
+  for (let i = 0; i < 100 && serverSpans(rec).length < n; i++) await new Promise((r) => setTimeout(r, 10));
+  return serverSpans(rec);
+}
+
+test("under Bun.serve HEAD requests and bodiless statuses end the span when the handler returns", {
+  skip: !IS_BUN,
+}, async () => {
+  await withRecorder(async (rec) => {
+    const app = async (req: Request): Promise<Response> => {
+      const path = new URL(req.url).pathname;
+      if (path === "/304") return new Response(null, { status: 304, headers: { etag: '"a"' } });
+      if (path === "/204") return new Response(null, { status: 204 });
+      if (path === "/stream") {
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              controller.enqueue(new TextEncoder().encode("<p>"));
+            },
+          }),
+          { headers: { "content-type": "text/html" } },
+        );
+      }
+      return new Response("hello", { headers: { "content-type": "text/html" } });
+    };
+    await withBunServers(
+      app,
+      { telemetry: rec.telemetry, serverTiming: true },
+      async (plain, instrumented) => {
+        const want = await fetch(`${plain}/text`, { method: "HEAD" });
+        const got = await fetch(`${instrumented}/text`, { method: "HEAD" });
+        assert.equal(got.headers.get("content-length"), want.headers.get("content-length"));
+        assert.match(got.headers.get("server-timing") ?? "", /^traceparent;desc="00-[0-9a-f]{32}-/);
+        await fetch(`${instrumented}/stream`, { method: "HEAD" });
+        assert.equal((await fetch(`${instrumented}/304`)).status, 304);
+        assert.equal((await fetch(`${instrumented}/204`)).status, 204);
+      },
+    );
+    const spans = await waitForServerSpans(rec, 4);
+    assert.deepEqual(
+      spans.map((s) => [s.attributes["http.request.method"], s.attributes["http.response.status_code"]]),
+      [
+        ["HEAD", 200],
+        ["HEAD", 200],
+        ["GET", 304],
+        ["GET", 204],
+      ],
+    );
+    const points = await durationPoints(rec);
+    assert.equal(points.filter((p) => p.attributes["http.request.method"] === "HEAD")[0]?.value.count, 2);
   });
 });

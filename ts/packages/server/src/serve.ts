@@ -203,25 +203,34 @@ export function instrumentServe<A extends unknown[]>(
     // URLSearchParams body only when headers is read before body or bodyUsed.
     const resHeaders = res.headers;
     const status = res.status;
-    if (res.bodyUsed) {
+    const timing =
+      opts.serverTiming === true && isHtml(resHeaders.get("content-type")) ? serverTiming(span) : undefined;
+    // A HEAD response or a bodiless status sends no body, and Bun neither reads nor cancels one it was
+    // given, so the request ends now and the response goes out as it is.
+    if (
+      req.method.toUpperCase() === "HEAD" ||
+      BODILESS_STATUSES.has(status) ||
+      res.bodyUsed ||
+      res.body === null
+    ) {
       finish({ status });
-      return res;
+      return timing === undefined ? res : withServerTiming(res, resHeaders, timing);
     }
-    let headers: Headers | undefined;
-    if (opts.serverTiming === true && isHtml(resHeaders.get("content-type"))) {
+    let headers = resHeaders;
+    if (timing !== undefined) {
       headers = new Headers(resHeaders);
-      headers.append("server-timing", serverTiming(span));
-    }
-    if (res.body === null) {
-      finish({ status });
-      return headers === undefined ? res : rebuild(res, null, headers);
+      headers.append("server-timing", timing);
     }
     const body = watchBody(res.body, (failure) =>
       finish(failure === undefined ? { status } : { status, failure }),
     );
-    return rebuild(res, body, headers ?? resHeaders);
+    return rebuild(res, body, headers);
   };
 }
+
+// The statuses whose responses never carry a body: 101 has none, and the Fetch standard calls
+// 204, 205 and 304 null body statuses.
+const BODILESS_STATUSES: ReadonlySet<number> = new Set([101, 204, 205, 304]);
 
 function spanName(method: string, route: string | undefined): string {
   if (route === undefined || route === "") return methodName(method);
@@ -253,6 +262,22 @@ function errorMessage(err: unknown): string {
 // rebuild makes a new Response: upstream responses, such as fetch's, have immutable headers.
 function rebuild(res: Response, body: ReadableStream<Uint8Array> | null, headers: Headers): Response {
   return new Response(body, { status: res.status, statusText: res.statusText, headers });
+}
+
+/**
+ * Adds the Server-Timing entry to a response whose body is passed on untouched. The headers are
+ * changed in place, so Bun keeps the body's length and its sendfile path; a response with immutable
+ * headers, such as fetch's, is rebuilt around the same body instead.
+ */
+function withServerTiming(res: Response, headers: Headers, timing: string): Response {
+  try {
+    headers.append("server-timing", timing);
+    return res;
+  } catch {
+    const copy = new Headers(headers);
+    copy.append("server-timing", timing);
+    return rebuild(res, BODILESS_STATUSES.has(res.status) ? null : res.body, copy);
+  }
 }
 
 /**
