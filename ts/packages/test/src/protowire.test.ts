@@ -117,3 +117,66 @@ test("the test writer encodes varints and fixed widths little-endian", () => {
   assert.deepEqual([...new ProtoWriter().fixed32(1).finish()], [1, 0, 0, 0]);
   assert.deepEqual([...new ProtoWriter().tag(2, 2).string("a").finish()], [0x12, 1, 0x61]);
 });
+
+const MERGING: Readonly<Record<string, MessageSchema>> = {
+  node: {
+    1: { name: "a", type: "uint32" },
+    2: { name: "list", type: "uint32", repeated: true },
+    3: { name: "child", type: "message", message: "node" },
+    4: { name: "s", type: "string", oneof: "v" },
+    5: { name: "n", type: "uint32", oneof: "v" },
+    6: { name: "m", type: "message", message: "node", oneof: "v" },
+  },
+};
+
+test("the last member of a oneof wins", () => {
+  const w = new ProtoWriter();
+  w.tag(4, 2).string("first");
+  w.tag(5, 0).varint(5n);
+  assert.deepEqual(decodeMessage(MERGING, "node", w.finish()), { n: 5 });
+  w.tag(6, 2).message((m) => m.tag(1, 0).varint(1n));
+  w.tag(6, 2).message((m) => m.tag(2, 0).varint(2n));
+  assert.deepEqual(decodeMessage(MERGING, "node", w.finish()), { m: { a: 1, list: [2] } });
+  w.tag(4, 2).string("last");
+  assert.deepEqual(decodeMessage(MERGING, "node", w.finish()), { s: "last" });
+});
+
+test("a repeated occurrence of a singular message merges: lists append, scalars last-wins, recursively", () => {
+  const w = new ProtoWriter();
+  w.tag(3, 2).message((m) => {
+    m.tag(1, 0).varint(1n);
+    m.tag(2, 0).varint(1n);
+    m.tag(3, 2).message((c) => c.tag(1, 0).varint(5n));
+    m.tag(4, 2).string("x");
+  });
+  w.tag(3, 2).message((m) => {
+    m.tag(1, 0).varint(3n);
+    m.tag(2, 0).varint(2n);
+    m.tag(3, 2).message((c) => c.tag(2, 0).varint(9n));
+    m.tag(5, 0).varint(7n);
+  });
+  assert.deepEqual(decodeMessage(MERGING, "node", w.finish()), {
+    child: { a: 3, list: [1, 2], child: { a: 5, list: [9] }, n: 7 },
+  });
+});
+
+function nested(depth: number): Uint8Array {
+  let inner = new ProtoWriter().tag(1, 0).varint(1n).finish();
+  for (let i = 1; i < depth; i++) inner = new ProtoWriter().tag(3, 2).bytes(inner).finish();
+  return inner;
+}
+
+test("messages may nest 100 deep, and deeper is refused", () => {
+  assert.doesNotThrow(() => decodeMessage(MERGING, "node", nested(100)));
+  assert.throws(
+    () => decodeMessage(MERGING, "node", nested(101)),
+    /protowire: messages nested deeper than 100/,
+  );
+});
+
+test("field number 0 is refused", () => {
+  assert.throws(
+    () => decodeMessage(MERGING, "node", new Uint8Array([0x02, 0])),
+    /protowire: invalid field number 0/,
+  );
+});

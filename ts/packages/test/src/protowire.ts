@@ -7,7 +7,9 @@
  * - other 64-bit integers are numbers when they are safe integers, else decimal strings;
  * - enums are their numbers, and absent fields are absent (proto3 has no presence for scalars).
  * Unknown fields are skipped. A repeated scalar accepts packed and unpacked encodings, and a
- * singular embedded message seen twice is merged, as protobuf requires.
+ * singular embedded message seen twice is merged as protobuf requires (lists append, embedded
+ * messages merge, scalars last-win), and the last member of a oneof wins. Messages nest at most
+ * MAX_DEPTH deep, and field number 0 is refused.
  */
 
 export const WIRE_VARINT = 0;
@@ -41,6 +43,8 @@ export interface FieldSchema {
   /** The schema name of an embedded message. */
   readonly message?: string;
   readonly repeated?: boolean;
+  /** The oneof the field belongs to: setting it clears the oneof's other members. */
+  readonly oneof?: string;
 }
 
 /** A message schema: its fields by field number. */
@@ -229,6 +233,56 @@ function scalar(r: ProtoReader, type: FieldType): unknown {
   }
 }
 
+/** How deep messages may nest, counting the outermost: deeper input is refused. */
+export const MAX_DEPTH = 100;
+
+type Schemas = Readonly<Record<string, MessageSchema>>;
+
+function schemaOf(schemas: Schemas, type: string): MessageSchema {
+  const schema = schemas[type];
+  if (schema === undefined) throw new Error(`protowire: no schema for ${type}`);
+  return schema;
+}
+
+// clearOneof removes the other members of spec's oneof from out, so the last member wins.
+function clearOneof(schema: MessageSchema, out: Record<string, unknown>, spec: FieldSchema): void {
+  if (spec.oneof === undefined) return;
+  for (const other of Object.values(schema)) {
+    if (other.oneof === spec.oneof && other.name !== spec.name) delete out[other.name];
+  }
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+// merge folds a later occurrence of a message of type into target, as protobuf merges: repeated
+// fields append, embedded messages merge recursively, scalars and oneof members last-win.
+function merge(
+  schemas: Schemas,
+  type: string,
+  target: Record<string, unknown>,
+  later: Record<string, unknown>,
+): void {
+  const schema = schemaOf(schemas, type);
+  const byName = new Map(Object.values(schema).map((f) => [f.name, f]));
+  for (const [name, value] of Object.entries(later)) {
+    const spec = byName.get(name);
+    if (spec === undefined) continue;
+    const current = target[name];
+    if (spec.repeated === true && Array.isArray(current) && Array.isArray(value)) {
+      current.push(...value);
+      continue;
+    }
+    if (spec.type === "message" && spec.message !== undefined && isRecord(current) && isRecord(value)) {
+      merge(schemas, spec.message, current, value);
+      continue;
+    }
+    clearOneof(schema, target, spec);
+    target[name] = value;
+  }
+}
+
 // listOf returns the list out[name] holds, creating it first.
 function listOf(out: Record<string, unknown>, name: string): unknown[] {
   const list = out[name];
@@ -238,18 +292,23 @@ function listOf(out: Record<string, unknown>, name: string): unknown[] {
   return created;
 }
 
-/** Decodes bytes as the message schemas[type] describes. */
-export function decodeMessage(
-  schemas: Readonly<Record<string, MessageSchema>>,
-  type: string,
-  bytes: Uint8Array,
-): Record<string, unknown> {
-  const schema = schemas[type];
-  if (schema === undefined) throw new Error(`protowire: no schema for ${type}`);
+/**
+ * Decodes bytes as the message schemas[type] describes. Throws a protowire: error for malformed
+ * input, field number 0, a wire type that does not match the schema, or messages nested deeper
+ * than MAX_DEPTH.
+ */
+export function decodeMessage(schemas: Schemas, type: string, bytes: Uint8Array): Record<string, unknown> {
+  return decodeAt(schemas, type, bytes, 1);
+}
+
+function decodeAt(schemas: Schemas, type: string, bytes: Uint8Array, depth: number): Record<string, unknown> {
+  if (depth > MAX_DEPTH) throw new Error(`protowire: messages nested deeper than ${MAX_DEPTH}`);
+  const schema = schemaOf(schemas, type);
   const out: Record<string, unknown> = {};
   const r = new ProtoReader(bytes);
   while (!r.done()) {
     const { field, wireType } = r.tag();
+    if (field === 0) throw new Error("protowire: invalid field number 0");
     const spec = schema[field];
     if (spec === undefined) {
       r.skip(wireType);
@@ -266,20 +325,29 @@ export function decodeMessage(
     if (wireType !== expected) {
       throw new Error(`protowire: ${type}.${spec.name}: wire type ${wireType}, want ${expected}`);
     }
-    let value: unknown;
-    if (spec.type === "message") {
-      if (spec.message === undefined) throw new Error(`protowire: ${type}.${spec.name}: no message type`);
-      value = decodeMessage(schemas, spec.message, r.bytes());
-    } else {
-      value = scalar(r, spec.type);
+    if (spec.type !== "message") {
+      const value = scalar(r, spec.type);
+      if (spec.repeated === true) {
+        listOf(out, spec.name).push(value);
+        continue;
+      }
+      clearOneof(schema, out, spec);
+      out[spec.name] = value;
+      continue;
     }
+    if (spec.message === undefined) throw new Error(`protowire: ${type}.${spec.name}: no message type`);
+    const value = decodeAt(schemas, spec.message, r.bytes(), depth + 1);
     if (spec.repeated === true) {
       listOf(out, spec.name).push(value);
-    } else if (spec.type === "message" && typeof out[spec.name] === "object") {
-      Object.assign(out[spec.name] as object, value);
-    } else {
-      out[spec.name] = value;
+      continue;
     }
+    const current = out[spec.name];
+    if (isRecord(current)) {
+      merge(schemas, spec.message, current, value);
+      continue;
+    }
+    clearOneof(schema, out, spec);
+    out[spec.name] = value;
   }
   return out;
 }

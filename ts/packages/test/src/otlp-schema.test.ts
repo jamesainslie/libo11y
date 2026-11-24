@@ -279,3 +279,41 @@ test("a zero int attribute survives the protobuf and JSON round trip distinctly 
     assert.ok(text.includes('{"key":"app.empty","value":{"stringValue":""}}'), text);
   });
 });
+
+test("a 101-deep AnyValue is refused with a protowire error", () => {
+  let value = new ProtoWriter().tag(1, 2).string("leaf").finish();
+  for (let i = 0; i < 101; i++) {
+    const array = new ProtoWriter().tag(1, 2).bytes(value).finish();
+    value = new ProtoWriter().tag(5, 2).bytes(array).finish();
+  }
+  const w = new ProtoWriter();
+  w.tag(1, 2).message((rs) =>
+    rs.tag(1, 2).message((r) =>
+      r.tag(1, 2).message((kv) => {
+        kv.tag(1, 2).string("k");
+        kv.tag(2, 2).bytes(value);
+      }),
+    ),
+  );
+  assert.throws(
+    () => decodeOtlpProtobuf("traces", w.finish()),
+    /^Error: protowire: messages nested deeper than 100/,
+  );
+});
+
+test("the last AnyValue member wins", () => {
+  const w = new ProtoWriter();
+  w.tag(1, 2).message((rl) =>
+    rl.tag(2, 2).message((sl) =>
+      sl.tag(2, 2).message((lr) =>
+        lr.tag(5, 2).message((v) => {
+          v.tag(1, 2).string("a");
+          v.tag(3, 0).varint(5n);
+        }),
+      ),
+    ),
+  );
+  assert.deepEqual(decodeOtlpProtobuf("logs", w.finish()), {
+    resourceLogs: [{ scopeLogs: [{ logRecords: [{ body: { intValue: 5 } }] }] }],
+  });
+});
