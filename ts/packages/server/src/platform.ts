@@ -1,12 +1,14 @@
 /**
  * The server Platform: process.env, AsyncLocalStorage context, resource detection, exporters from
- * OTEL_*, stdout and stderr lines, node:crypto hashing and UUIDs, and the global console for console capture.
+ * OTEL_*, stdout and stderr lines, node:crypto hashing and UUIDs, runtime metrics, and the global
+ * console for console capture.
  */
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import type { Platform } from "@libo11y/core";
 import { createContextManager } from "./context.ts";
 import { buildExporters } from "./exporters.ts";
 import { detectResource } from "./resource.ts";
+import { startRuntimeMetrics } from "./runtime-metrics.ts";
 
 /** A new server Platform for createTelemetryWith and setupWith. */
 export function serverPlatform(): Platform {
@@ -25,6 +27,7 @@ export function serverPlatform(): Platform {
     sha1: async (data) => new Uint8Array(createHash("sha1").update(data).digest()),
     hmacSha256: (key, data) => new Uint8Array(createHmac("sha256", key).update(data).digest()),
     randomUUID: () => randomUUID(),
+    startRuntimeMetrics: (meterProvider) => startRuntimeMetrics(meterProvider),
     console: globalThis.console,
   };
 }

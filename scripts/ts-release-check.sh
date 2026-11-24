@@ -103,6 +103,11 @@ printf '{ "name": "libo11y-consumer", "private": true, "type": "module" }\n' >"$
 	[[ "$(bun -e "$test_smoke")" == recorded ]] || fail "bun could not import @libo11y/test"
 	echo "ts-release-check: import @libo11y/test ok under node and bun"
 
+	server_smoke='import { createTelemetry } from "@libo11y/server"; const t = await createTelemetry({ serviceName: "smoke", environment: "test", hermetic: true, console: false, runtimeMetrics: false }); console.log(t.resource.attributes["process.runtime.name"]); await t.shutdown();'
+	[[ "$(node --input-type=module -e "$server_smoke")" == nodejs ]] || fail "node could not import @libo11y/server"
+	[[ "$(bun -e "$server_smoke")" == bun ]] || fail "bun could not import @libo11y/server"
+	echo "ts-release-check: import @libo11y/server ok under node and bun"
+
 	# The published declarations must typecheck for a nodenext consumer.
 	cat >check.ts <<'TS'
 import { type AppRegistry, compileAppRegistry, SPEC_VERSION, validateAppRegistry } from "@libo11y/spec";
@@ -110,6 +115,7 @@ import { AppRegistryParseError, parseAppRegistry, parseAppRegistryBytes } from "
 import { O11yError, type TelemetryOptions } from "@libo11y/core";
 import { createTestPlatform } from "@libo11y/core/testing";
 import { createRecorder, type OtlpSink, type RecorderOptions, startOtlpSink } from "@libo11y/test";
+import { createTelemetry, loadAppRegistry, setup, type ShutdownOnSignalsOptions, shutdownOnSignals } from "@libo11y/server";
 
 const reg: AppRegistry = parseAppRegistry("schema: x\nnamespace: lor\n");
 const result = validateAppRegistry(reg);
@@ -118,6 +124,7 @@ const version: string = SPEC_VERSION;
 const options: TelemetryOptions = { serviceName: "svc", registry: reg };
 const recorderOptions: RecorderOptions = { serviceName: "svc" };
 const sinkUrl = (sink: OtlpSink): string => sink.url;
+const signalOptions: ShutdownOnSignalsOptions = { signals: ["SIGTERM"], timeoutMillis: 1000 };
 export const checked: readonly unknown[] = [
   result.ok,
   kind,
@@ -131,6 +138,11 @@ export const checked: readonly unknown[] = [
   recorderOptions,
   startOtlpSink,
   sinkUrl,
+  createTelemetry,
+  loadAppRegistry,
+  setup,
+  shutdownOnSignals,
+  signalOptions,
 ];
 TS
 	cat >tsconfig.json <<'JSON'

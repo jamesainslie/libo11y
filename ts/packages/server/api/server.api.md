@@ -4,21 +4,61 @@
 
 ```ts
 
+import { CompiledAppRegistry } from '@libo11y/spec';
 import type { ContextManager } from '@opentelemetry/api';
 import { IExportMetricsServiceResponse } from '@opentelemetry/otlp-transformer';
 import { ISerializer } from '@opentelemetry/otlp-transformer';
+import { LifecycleOptions } from '@libo11y/core';
+import { Logger } from '@libo11y/core';
+import { O11yError } from '@libo11y/core';
+import { O11yErrorCode } from '@libo11y/core';
 import type { Platform } from '@libo11y/core';
 import { ResourceMetrics } from '@opentelemetry/sdk-metrics';
 import { ResourceMetricsWithExemplars } from '@libo11y/core';
+import { SignalReport } from '@libo11y/core';
+import { Telemetry } from '@libo11y/core';
+import { TelemetryOptions } from '@libo11y/core';
 
 // @public
 export function createContextManager(): ContextManager;
+
+// @public
+export function createTelemetry(options?: TelemetryOptions): Promise<Telemetry>;
+
+export { LifecycleOptions }
+
+// @public
+export function loadAppRegistry(path: string): Promise<CompiledAppRegistry>;
+
+export { Logger }
+
+export { O11yError }
+
+export { O11yErrorCode }
 
 // @public
 export const OtlpProtobufMetricsSerializer: ISerializer<ResourceMetrics | ResourceMetricsWithExemplars, IExportMetricsServiceResponse>;
 
 // @public
 export function serverPlatform(): Platform;
+
+// @public
+export function setup(options?: TelemetryOptions): Promise<Telemetry>;
+
+// @public
+export function shutdownOnSignals(telemetry: Telemetry, opts?: ShutdownOnSignalsOptions): Promise<SignalReport>;
+
+// @public
+export interface ShutdownOnSignalsOptions {
+    readonly signals?: readonly string[];
+    readonly timeoutMillis?: number;
+}
+
+export { SignalReport }
+
+export { Telemetry }
+
+export { TelemetryOptions }
 
 // (No @packageDocumentation comment for this package)
 
