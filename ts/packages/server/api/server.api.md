@@ -25,6 +25,9 @@ export function createContextManager(): ContextManager;
 // @public
 export function createTelemetry(options?: TelemetryOptions): Promise<Telemetry>;
 
+// @public
+export function instrumentServe<A extends unknown[]>(handler: (req: Request, ...rest: A) => Response | Promise<Response>, opts?: ServeOptions): (req: Request, ...rest: A) => Promise<Response>;
+
 export { LifecycleOptions }
 
 // @public
@@ -38,6 +41,16 @@ export { O11yErrorCode }
 
 // @public
 export const OtlpProtobufMetricsSerializer: ISerializer<ResourceMetrics | ResourceMetricsWithExemplars, IExportMetricsServiceResponse>;
+
+// @public
+export interface ServeOptions {
+    readonly canonicalLine?: boolean;
+    readonly ignorePaths?: readonly string[];
+    readonly publicEndpoint?: boolean;
+    readonly route?: (req: Request) => string | undefined;
+    readonly serverTiming?: boolean;
+    readonly telemetry?: Telemetry;
+}
 
 // @public
 export function serverPlatform(): Platform;
