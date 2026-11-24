@@ -18,6 +18,10 @@ const cases: readonly (readonly [string, string, string])[] = [
   ["astral printable stays as is", "\u{1f600}", `"\u{1f600}"`],
   ["astral format character", "\u{e0001}", `"\\U000e0001"`],
   ["line separator", " ", `"\\u2028"`],
+  // Assigned after Unicode 15.0.0, so Go 1.26 escapes them while a newer JavaScript runtime prints them.
+  ["Unicode 16 emoji", "\u{1fae9}", `"\\U0001fae9"`],
+  ["Unicode 16 Cyrillic", "\u1c89", `"\\u1c89"`],
+  ["Unicode 16 Arabic", "\u088f", `"\\u088f"`],
   ["fixture: unicode-quote", "café\t", `"café\\t"`],
   ["fixture: unicode-whitespace", " \u0007", `" \\a"`],
 ];
