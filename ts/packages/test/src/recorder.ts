@@ -2,7 +2,8 @@
  * The recorder: a hermetic libo11y telemetry over in-memory signals, as Go's o11ytest.Start builds.
  * It never installs a provider globally. The one global it may touch is the OpenTelemetry context
  * manager, which OTel JS keeps process-wide: without one no span is ever active, so the recorder
- * installs an AsyncLocalStorageContextManager when none is registered and leaves any existing one.
+ * installs an AsyncLocalStorageContextManager when none is registered, leaves any existing one, and
+ * removes its own when the last recorder holding it shuts down.
  */
 import {
   createTelemetryWith,
@@ -117,15 +118,51 @@ export interface Recorder {
 
 const PROBE: symbol = createContextKey("libo11y.test.context-probe");
 
+/** The manager recorders installed and how many live recorders hold it. */
+let owned: { manager: AsyncLocalStorageContextManager; holders: number } | undefined;
+
+/** Whether manager is the global one: only then does its own with change context.active(). */
+function isGlobalManager(manager: AsyncLocalStorageContextManager): boolean {
+  const ctx = ROOT_CONTEXT.setValue(PROBE, manager);
+  return manager.with(ctx, () => context.active() === ctx);
+}
+
 /**
  * Installs an AsyncLocalStorageContextManager as the global context manager unless a working one is
  * already registered. The probe asks the active manager to carry a context through context.with.
+ * The installs are reference counted: the first recorder to install the manager owns it, every
+ * recorder created while it is the global holds it, and the returned release drops the hold. When
+ * the last hold goes and the manager is still the global one, context.disable() removes it, so
+ * recorders leak no global across test files that share a process. A manager registered by
+ * anyone else is never touched, and the release is a no-op.
  */
-export function ensureContextManager(): void {
+export function ensureContextManager(): () => void {
   const ctx = ROOT_CONTEXT.setValue(PROBE, true);
-  if (context.with(ctx, () => context.active() === ctx)) return;
+  if (owned !== undefined && isGlobalManager(owned.manager)) {
+    owned.holders++;
+    return releaser(owned);
+  }
+  if (context.with(ctx, () => context.active() === ctx)) return () => {};
   const manager = new AsyncLocalStorageContextManager().enable();
-  if (!context.setGlobalContextManager(manager)) manager.disable();
+  if (!context.setGlobalContextManager(manager)) {
+    manager.disable();
+    return () => {};
+  }
+  owned = { manager, holders: 1 };
+  return releaser(owned);
+}
+
+function releaser(hold: { manager: AsyncLocalStorageContextManager; holders: number }): () => void {
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    hold.holders--;
+    if (hold.holders > 0) return;
+    if (owned === hold) owned = undefined;
+    if (isGlobalManager(hold.manager)) context.disable();
+    else hold.manager.disable();
+  };
 }
 
 /** A span exporter that keeps every span it is given, even after shutdown. */
@@ -217,10 +254,18 @@ class RecorderImpl implements Recorder {
   private readonly reader: ManualReader;
   /** The exemplars each series has carried, so a collection does not lose what an earlier one attached. */
   private readonly seen = new Map<string, Exemplar[]>();
+  private readonly releaseContext: () => void;
   private closing: Promise<void> | undefined;
 
-  constructor(telemetry: Telemetry, spans: SpanRecording, logs: LogRecording, reader: ManualReader) {
+  constructor(
+    telemetry: Telemetry,
+    spans: SpanRecording,
+    logs: LogRecording,
+    reader: ManualReader,
+    releaseContext: () => void,
+  ) {
     this.telemetry = telemetry;
+    this.releaseContext = releaseContext;
     this.spanRecording = spans;
     this.logRecording = logs;
     this.reader = reader;
@@ -336,11 +381,15 @@ class RecorderImpl implements Recorder {
   }
 
   shutdown(): Promise<void> {
-    this.closing ??= this.telemetry.shutdown().then((report) => {
-      if (report.ok) return;
-      const detail = report.errors.map(({ signal, error }) => `${signal}: ${String(error)}`).join("; ");
-      throw new Error(`o11ytest: shutdown: ${detail}`);
-    });
+    // The hold is released however the shutdown settles, so a rejection cannot leak the manager.
+    this.closing ??= this.telemetry
+      .shutdown()
+      .finally(() => this.releaseContext())
+      .then((report) => {
+        if (report.ok) return;
+        const detail = report.errors.map(({ signal, error }) => `${signal}: ${String(error)}`).join("; ");
+        throw new Error(`o11ytest: shutdown: ${detail}`);
+      });
     return this.closing;
   }
 }
@@ -352,29 +401,35 @@ class RecorderImpl implements Recorder {
  * options win over the defaults, except the injected span, metric and log plumbing.
  */
 export async function createRecorder(options: RecorderOptions = {}): Promise<Recorder> {
-  ensureContextManager();
+  const releaseContext = ensureContextManager();
   const spans = new SpanRecording();
   const logs = new LogRecording();
   const reader = new ManualReader();
   const caller: Record<string, unknown> = { ...options };
   for (const key of INJECTED) delete caller[key];
-  const telemetry = await createTelemetryWith(
-    {
-      serviceName: "test",
-      environment: "test",
-      logLevel: "debug",
-      console: false,
-      runtimeMetrics: false,
-      startupSummary: false,
-      sampler: new AlwaysOnSampler(),
-      exemplarFilter: "trace_based",
-      ...(caller as TelemetryOptions),
-      hermetic: true,
-      spanProcessor: new SimpleSpanProcessor({ exporter: spans }),
-      metricReader: reader,
-      logProcessor: logs,
-    },
-    createTestPlatform({ contextManager: () => new AsyncLocalStorageContextManager() }),
-  );
-  return new RecorderImpl(telemetry, spans, logs, reader);
+  let telemetry: Telemetry;
+  try {
+    telemetry = await createTelemetryWith(
+      {
+        serviceName: "test",
+        environment: "test",
+        logLevel: "debug",
+        console: false,
+        runtimeMetrics: false,
+        startupSummary: false,
+        sampler: new AlwaysOnSampler(),
+        exemplarFilter: "trace_based",
+        ...(caller as TelemetryOptions),
+        hermetic: true,
+        spanProcessor: new SimpleSpanProcessor({ exporter: spans }),
+        metricReader: reader,
+        logProcessor: logs,
+      },
+      createTestPlatform({ contextManager: () => new AsyncLocalStorageContextManager() }),
+    );
+  } catch (err) {
+    releaseContext();
+    throw err;
+  }
+  return new RecorderImpl(telemetry, spans, logs, reader, releaseContext);
 }

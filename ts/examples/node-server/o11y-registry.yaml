@@ -1,0 +1,5 @@
+schema: libo11y.app-registry/v1
+namespace: example
+attributes:
+  example.project.id:
+    { type: string, sensitivity: internal, cardinality: unbounded, brief: The project a page shows. }

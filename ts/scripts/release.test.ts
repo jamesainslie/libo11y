@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -214,6 +222,38 @@ test("pack writes publishable tarballs in dependency order", () => {
     "package/package.json",
   ]);
   assert.equal(tarFile(b, "package/LICENSE"), "fixture license\n");
+});
+
+test("pack and setVersion skip the private example workspaces", () => {
+  const root = fixture("examples");
+  const example = mkdirAll(join(root, "examples", "fx-app"));
+  const examplePkg = {
+    name: "libo11y-example-fx-app",
+    version: "0.0.0",
+    private: true,
+    dependencies: { "@libo11y/fx-a": "workspace:*" },
+  };
+  writeJson(join(example, "package.json"), examplePkg);
+  writeFileSync(join(example, "main.ts"), "export {};\n");
+  setVersion(root, "1.0.0");
+  assert.deepEqual(JSON.parse(readFileSync(join(example, "package.json"), "utf8")), examplePkg);
+  const out = join(work, "examples-out");
+  const tarballs = pack(root, out, { allowUnreleased: false, quiet: true });
+  assert.deepEqual(
+    tarballs.map((t) => t.slice(out.length + 1)),
+    ["libo11y-fx-a-1.0.0.tgz", "libo11y-fx-b-1.0.0.tgz"],
+  );
+});
+
+test("the repository's examples are private, so no publish can include them", () => {
+  const examples = join(import.meta.dirname, "..", "examples");
+  const names = readdirSync(examples, { withFileTypes: true }).filter((e) => e.isDirectory());
+  assert.ok(names.length >= 2, "expected the bun-server and node-server examples");
+  for (const entry of names) {
+    const pkg = JSON.parse(readFileSync(join(examples, entry.name, "package.json"), "utf8")) as PackageJson;
+    assert.equal(pkg.private, true, `${entry.name} is not private`);
+    assert.equal(pkg.name.startsWith("@libo11y/"), false, `${entry.name} takes a published scope name`);
+  }
 });
 
 test("pack refuses version 0.0.0 unless unreleased packages are allowed", () => {

@@ -317,11 +317,6 @@ class TelemetryHandle implements Telemetry {
     } catch {
       // Restoring the console is best effort.
     }
-    try {
-      this.parts.runtime?.stop();
-    } catch {
-      // Stopping runtime metrics is best effort.
-    }
     const timer = deadline(timeoutMillis);
     const steps = this.steps();
     let outcomes: unknown[];
@@ -329,6 +324,13 @@ class TelemetryHandle implements Telemetry {
       outcomes = await Promise.all(steps.map((s) => settle(s.shutdown, timer.expired)));
     } finally {
       timer.cancel();
+      // Runtime metrics stop only after the meter provider's final collection, so a process that
+      // exits before its first periodic export still reports them.
+      try {
+        this.parts.runtime?.stop();
+      } catch {
+        // Stopping runtime metrics is best effort.
+      }
     }
     const errors: { signal: Signal; error: unknown }[] = [];
     steps.forEach((step, i) => {

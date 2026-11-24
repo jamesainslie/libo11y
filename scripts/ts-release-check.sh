@@ -103,6 +103,16 @@ printf '{ "name": "libo11y-consumer", "private": true, "type": "module" }\n' >"$
 	[[ "$(bun -e "$test_smoke")" == recorded ]] || fail "bun could not import @libo11y/test"
 	echo "ts-release-check: import @libo11y/test ok under node and bun"
 
+	server_smoke='import { createTelemetry } from "@libo11y/server"; const t = await createTelemetry({ serviceName: "smoke", environment: "test", hermetic: true, console: false, runtimeMetrics: false }); console.log(t.resource.attributes["process.runtime.name"]); await t.shutdown();'
+	[[ "$(node --input-type=module -e "$server_smoke")" == nodejs ]] || fail "node could not import @libo11y/server"
+	[[ "$(bun -e "$server_smoke")" == bun ]] || fail "bun could not import @libo11y/server"
+	echo "ts-release-check: import @libo11y/server ok under node and bun"
+
+	serve_smoke='import { instrumentFetch, instrumentServe } from "@libo11y/server"; const f = instrumentFetch(async () => new Response("up")); const h = instrumentServe(async () => f("http://upstream.test/")); console.log(await (await h(new Request("http://svc.test/"))).text());'
+	[[ "$(node --input-type=module -e "$serve_smoke")" == up ]] || fail "node could not run instrumentServe and instrumentFetch"
+	[[ "$(bun -e "$serve_smoke")" == up ]] || fail "bun could not run instrumentServe and instrumentFetch"
+	echo "ts-release-check: instrumentServe and instrumentFetch ok under node and bun"
+
 	# The published declarations must typecheck for a nodenext consumer.
 	cat >check.ts <<'TS'
 import { type AppRegistry, compileAppRegistry, SPEC_VERSION, validateAppRegistry } from "@libo11y/spec";
@@ -110,6 +120,18 @@ import { AppRegistryParseError, parseAppRegistry, parseAppRegistryBytes } from "
 import { O11yError, type TelemetryOptions } from "@libo11y/core";
 import { createTestPlatform } from "@libo11y/core/testing";
 import { createRecorder, type OtlpSink, type RecorderOptions, startOtlpSink } from "@libo11y/test";
+import {
+  createTelemetry,
+  type FetchOptions,
+  instrumentFetch,
+  instrumentServe,
+  loadAppRegistry,
+  type ServeOptions,
+  setRoute,
+  setup,
+  type ShutdownOnSignalsOptions,
+  shutdownOnSignals,
+} from "@libo11y/server";
 
 const reg: AppRegistry = parseAppRegistry("schema: x\nnamespace: lor\n");
 const result = validateAppRegistry(reg);
@@ -118,6 +140,23 @@ const version: string = SPEC_VERSION;
 const options: TelemetryOptions = { serviceName: "svc", registry: reg };
 const recorderOptions: RecorderOptions = { serviceName: "svc" };
 const sinkUrl = (sink: OtlpSink): string => sink.url;
+const signalOptions: ShutdownOnSignalsOptions = {
+  signals: ["SIGTERM"],
+  timeoutMillis: 1000,
+  beforeShutdown: async () => {},
+};
+const serveOptions: ServeOptions = {
+  route: () => "/",
+  serverTiming: true,
+  ignorePaths: ["/healthz"],
+  watchBody: (res) => res.headers.get("content-type") === "text/html",
+};
+const handler: (req: Request) => Promise<Response> = instrumentServe(async () => {
+  setRoute("/projects/:id");
+  return new Response("ok");
+}, serveOptions);
+const fetchOptions: FetchOptions = { peerService: "upstream", propagate: (url) => url.hostname !== "example.com" };
+const traced: typeof fetch = instrumentFetch(fetch, fetchOptions);
 export const checked: readonly unknown[] = [
   result.ok,
   kind,
@@ -131,9 +170,18 @@ export const checked: readonly unknown[] = [
   recorderOptions,
   startOtlpSink,
   sinkUrl,
+  createTelemetry,
+  loadAppRegistry,
+  setup,
+  shutdownOnSignals,
+  signalOptions,
+  handler,
+  traced,
 ];
 TS
-	cat >tsconfig.json <<'JSON'
+	# A server consumer has its runtime's types, which declare fetch, Request, Response and URL.
+	# The workspace's pinned @types/node stands in for them.
+	cat >tsconfig.json <<JSON
 {
   "compilerOptions": {
     "module": "nodenext",
@@ -142,7 +190,8 @@ TS
     "lib": ["es2023"],
     "strict": true,
     "noEmit": true,
-    "types": []
+    "typeRoots": ["$ts/node_modules/@types"],
+    "types": ["node"]
   },
   "files": ["check.ts"]
 }
