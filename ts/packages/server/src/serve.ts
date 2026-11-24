@@ -199,14 +199,17 @@ export function instrumentServe<A extends unknown[]>(
       return res;
     }
 
+    // Headers first: Bun fills in the implicit content-type of a Blob, Bun.file, FormData or
+    // URLSearchParams body only when headers is read before body or bodyUsed.
+    const resHeaders = res.headers;
     const status = res.status;
     if (res.bodyUsed) {
       finish({ status });
       return res;
     }
     let headers: Headers | undefined;
-    if (opts.serverTiming === true && isHtml(res.headers.get("content-type"))) {
-      headers = new Headers(res.headers);
+    if (opts.serverTiming === true && isHtml(resHeaders.get("content-type"))) {
+      headers = new Headers(resHeaders);
       headers.append("server-timing", serverTiming(span));
     }
     if (res.body === null) {
@@ -216,7 +219,7 @@ export function instrumentServe<A extends unknown[]>(
     const body = watchBody(res.body, (failure) =>
       finish(failure === undefined ? { status } : { status, failure }),
     );
-    return rebuild(res, body, headers ?? res.headers);
+    return rebuild(res, body, headers ?? resHeaders);
   };
 }
 

@@ -90,6 +90,8 @@ export interface BunServer {
 }
 
 export interface BunServeGlobal {
+  /** Bun.file: a lazily read file, which Bun.serve can send with sendfile. */
+  file(path: string): Blob;
   serve(opts: {
     port: number;
     hostname: string;

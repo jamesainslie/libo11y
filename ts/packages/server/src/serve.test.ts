@@ -4,6 +4,9 @@
  * under Bun.serve on Bun. The recorder installs the global context manager while it runs.
  */
 import assert from "node:assert/strict";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { currentRecord } from "@libo11y/core";
 import { createRecorder, type Recorder } from "@libo11y/test";
@@ -20,7 +23,7 @@ import {
 import type { DataPoint, Histogram } from "@opentelemetry/sdk-metrics";
 import type { ReadableSpan } from "@opentelemetry/sdk-trace";
 import { DURATION_BUCKETS, normalizeMethod } from "./http-common.ts";
-import { instrumentServe } from "./serve.ts";
+import { instrumentServe, type ServeOptions } from "./serve.ts";
 import { bun, close, IS_BUN, listen, nodeListener } from "./test-support/http.ts";
 
 const DURATION = "http.server.request.duration";
@@ -599,5 +602,55 @@ test("under Bun.serve an async generator body still ends the span in its context
     } finally {
       await server.stop(true);
     }
+  });
+});
+
+/**
+ * Serves app under Bun.serve twice, as is and wrapped by instrumentServe with opts, and runs fn with
+ * both base URLs, so a test can compare what the wrapper changes on the wire.
+ */
+async function withBunServers(
+  app: (req: Request) => Promise<Response>,
+  opts: ServeOptions,
+  fn: (plain: string, instrumented: string) => Promise<void>,
+): Promise<void> {
+  assert.ok(bun !== undefined);
+  const wrapped = instrumentServe(app, opts);
+  const plain = bun.serve({ port: 0, hostname: "127.0.0.1", fetch: (req) => app(req) });
+  const instrumented = bun.serve({ port: 0, hostname: "127.0.0.1", fetch: (req) => wrapped(req) });
+  try {
+    await fn(`http://127.0.0.1:${plain.port}`, `http://127.0.0.1:${instrumented.port}`);
+  } finally {
+    await plain.stop(true);
+    await instrumented.stop(true);
+  }
+}
+
+async function tempFile(name: string, contents: string): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "libo11y-serve-"));
+  const path = join(dir, name);
+  await writeFile(path, contents);
+  return path;
+}
+
+test("under Bun.serve the implicit content-type of Blob, file and form bodies survives", {
+  skip: !IS_BUN,
+}, async () => {
+  await withRecorder(async (rec) => {
+    const script = await tempFile("app.js", "export const answer = 42;\n");
+    const app = async (req: Request): Promise<Response> => {
+      const path = new URL(req.url).pathname;
+      if (path === "/blob") return new Response(new Blob(["a{}"], { type: "text/css" }));
+      if (path === "/file") return new Response(bun?.file(script));
+      return new Response(new URLSearchParams({ a: "1" }));
+    };
+    await withBunServers(app, { telemetry: rec.telemetry }, async (plain, instrumented) => {
+      for (const path of ["/blob", "/file", "/params"]) {
+        const want = await fetch(`${plain}${path}`);
+        const got = await fetch(`${instrumented}${path}`);
+        assert.equal(got.headers.get("content-type"), want.headers.get("content-type"), path);
+        assert.equal(await got.text(), await want.text(), path);
+      }
+    });
   });
 });
