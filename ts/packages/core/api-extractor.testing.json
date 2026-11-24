@@ -8,5 +8,23 @@
     "reportFileName": "core-testing",
     "reportFolder": "<projectFolder>/api/",
     "reportTempFolder": "<projectFolder>/dist/api-tmp/"
+  },
+  "compiler": {
+    "overrideTsconfig": {
+      "compilerOptions": {
+        "module": "nodenext",
+        "moduleResolution": "nodenext",
+        "target": "es2023",
+        "lib": ["es2023"],
+        "strict": true,
+        "skipLibCheck": true,
+        "types": [],
+        "paths": {
+          "@libo11y/spec": ["../spec/dist/index.d.ts"],
+          "@libo11y/spec/yaml": ["../spec/dist/yaml.d.ts"]
+        }
+      },
+      "include": ["dist"]
+    }
   }
 }

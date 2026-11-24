@@ -245,6 +245,7 @@ export interface CompiledAppRegistry {
     readonly classes: Readonly<Record<string, Sensitivity>>;
     // (undocumented)
     readonly namespace: string;
+    readonly source?: string;
 }
 
 // @public (undocumented)
