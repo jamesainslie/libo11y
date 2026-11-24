@@ -34,6 +34,11 @@ A `.want` file holds one of three things:
 Three Go behaviours are part of the contract:
 - **Quoting.** A quoted value in a detail uses Go's `%q` quoting: `\a`
   for U+0007, `\u0085` for U+0085, and printable non-ASCII as is.
+  "Printable" is Go's `unicode.IsPrint` in the Unicode version of the Go
+  toolchain that generated the specification artifacts (Unicode 15.0.0
+  for Go 1.26), not the Unicode version of another runtime. specgen
+  writes the printable ranges for TypeScript to
+  `ts/packages/spec/src/generated/goprint.ts`.
 - **Whitespace.** "Whitespace" in `libo11y_enum_value_whitespace` is
   Go's `strings.TrimSpace`, the Unicode White_Space property. It includes
   U+0085 and excludes U+FEFF. JavaScript's `trim()` differs on both.
