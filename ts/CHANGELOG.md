@@ -9,6 +9,14 @@ adhere to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-24
+
+### Changed
+
+- The packages are unchanged from 0.1.0. The 0.1.0 release never reached
+  npm, so 0.1.1 is the first version published there. The release
+  workflow now stages each package for a maintainer to approve with 2FA.
+
 ## [0.1.0] - 2026-11-24
 
 ### Added
@@ -76,5 +84,6 @@ adhere to [Semantic Versioning](https://semver.org/).
   protobuf. `decodeOtlpProtobuf` and `normalizeOtlp` decode and compare
   bodies directly.
 
-[Unreleased]: https://github.com/jamesainslie/libo11y/compare/ts/v0.1.0...HEAD
+[Unreleased]: https://github.com/jamesainslie/libo11y/compare/ts/v0.1.1...HEAD
+[0.1.1]: https://github.com/jamesainslie/libo11y/compare/ts/v0.1.0...ts/v0.1.1
 [0.1.0]: https://github.com/jamesainslie/libo11y/releases/tag/ts/v0.1.0
