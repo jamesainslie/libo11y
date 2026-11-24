@@ -1,0 +1,36 @@
+{
+  "name": "@libo11y/core",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The platform-neutral libo11y core for TypeScript: configuration, identity, the sensitivity policy and the signal pipelines over the OpenTelemetry JS SDK.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing": "./src/testing.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jamesainslie/libo11y.git",
+    "directory": "ts/packages/core"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "api": "api-extractor run --local && api-extractor run --local -c api-extractor.testing.json",
+    "api:check": "api-extractor run && api-extractor run -c api-extractor.testing.json"
+  },
+  "dependencies": {
+    "@libo11y/spec": "workspace:*",
+    "@opentelemetry/api": "1.10.0",
+    "@opentelemetry/core": "3.1.1",
+    "@opentelemetry/otlp-transformer": "0.301.1",
+    "@opentelemetry/resources": "3.1.1",
+    "@opentelemetry/sdk-logs": "3.1.1",
+    "@opentelemetry/sdk-metrics": "3.1.1",
+    "@opentelemetry/sdk-trace": "3.1.1"
+  },
+  "devDependencies": {
+    "@opentelemetry/context-async-hooks": "3.1.1"
+  }
+}

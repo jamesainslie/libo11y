@@ -322,6 +322,9 @@ export interface EventInfo {
 export const EVENTS: ReadonlyMap<string, EventInfo>;
 
 // @public
+export function goQuote(s: string): string;
+
+// @public
 export const LEGACY_KEYS: ReadonlyMap<string, string>;
 
 // @public (undocumented)

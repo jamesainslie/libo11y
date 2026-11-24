@@ -6,3 +6,4 @@
 export * from "./appregistry.ts";
 export * from "./generated/spec.ts";
 export * from "./generated/tables.ts";
+export { goQuote } from "./goquote.ts";
