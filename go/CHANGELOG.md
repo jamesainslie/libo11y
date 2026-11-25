@@ -8,6 +8,161 @@ adhere to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `o11yproc`: `Inject` and `Extract` take options, and `WithSDK(sdk)`
+  binds them to the propagator of an SDK built with `New`, so that SDK's
+  baggage egress filter applies and no process global is read. Without
+  the option they use the global propagator as before.
+- `OTEL_PROPAGATORS` selects the propagators when `WithPropagators` is not
+  given, through OpenTelemetry contrib's `autoprop` package:
+  `tracecontext`, `baggage`, `b3`, `b3multi`, `jaeger`, `xray`, `ottrace`,
+  and `none`. Entries are trimmed and empty entries dropped, so a value
+  with no names counts as unset. Unset keeps W3C Trace Context and
+  Baggage. Names are case-sensitive, and a name `autoprop` does not know,
+  even next to `none`, fails `New` and `Setup` with an error that quotes
+  it. `WithoutOTELEnv` ignores the variable, and the baggage egress filter
+  wraps whatever is built. The core module now depends on
+  `go.opentelemetry.io/contrib/propagators/autoprop` v0.72.0, which brings
+  in the contrib `aws`, `b3`, `jaeger`, and `ot` propagators v1.47.0.
+- `OTEL_SDK_DISABLED=true`, in any case, switches telemetry off. Nothing
+  is exported on any signal, even through exporters, readers, and
+  processors injected with options, and runtime metrics do not start. The
+  tracer provider is the OpenTelemetry no-op provider, so no span is
+  recorded, while context propagation, the console and extra log sinks,
+  log correlation with an inbound trace, and identity validation work as
+  usual. `MeterProvider()` stays a real provider with no readers, so
+  instruments can be created and nothing is collected. The SDK still owns
+  what options injected and shuts each part down exactly once: an
+  injected metric reader while `New` builds the SDK, so a periodic reader
+  never runs unregistered, and the span processor, span exporter, and log
+  exporter in `Shutdown`. The effective configuration reports `traces`,
+  `metrics`, and `logs` as `none`. A value that is neither `true` nor
+  `false` is reported once through the SDK's error handler and counts as
+  `false`. `WithoutOTELEnv` ignores the variable.
+
+### Changed
+
+- `OTEL_PROPAGATORS` is now honoured. A process that already sets it, for
+  example for another OpenTelemetry SDK in the same environment, changes
+  the trace header format it sends on upgrade. Pass
+  `o11y.WithPropagators(propagation.TraceContext{}, propagation.Baggage{})`
+  to keep W3C Trace Context and Baggage whatever the variable says.
+- `OTEL_SDK_DISABLED` is now honoured, and it beats code options. A
+  process that already sets it to `true` stops exporting all telemetry on
+  upgrade.
+- `state` is now a reserved application namespace: it is the root of a
+  deprecated attribute in semantic conventions 1.41.0. An application
+  registry that claims it now fails `New`, `Setup`, and
+  `libo11y registry check` with `libo11y_app_namespace_reserved`. Rename
+  the namespace.
+- `o11yproc.Inject` and `o11yproc.Extract` gained variadic options.
+  Existing calls compile unchanged, but a function value of the old type
+  (for example a variable declared as
+  `func(context.Context, map[string]string)`) no longer accepts them.
+- `redact.Struct` now returns a pointer to its unexported value type. The
+  declared return type, `slog.LogValuer`, is unchanged, but `%T` reports a
+  pointer type and two results for the same input no longer compare
+  equal with `==`.
+- The `o11y.config.propagators` value lists the propagators' fields in
+  their configured order, each once, so it is now deterministic: before,
+  a composite's fields came in map iteration order and changed from run
+  to run. The default reads `traceparent,tracestate,baggage`. It is `none`
+  for the `none` propagator and `custom` for configured propagators that
+  name no fields, such as an empty composite.
+- `Shutdown` and `ForceFlush` can now return an error where they returned
+  nil before: a span or log export that fails while the call runs is
+  reported in it, including a batch exported by a processor's own
+  goroutine. A host that exits non-zero or alerts on a `Shutdown` error
+  starts doing so on upgrade when its collector rejects exports. To treat
+  only some failures as fatal, test the error with `errors.Is` against the
+  exporter's error.
+
+- A failed `New` or `Setup` now shuts down every exporter, reader, and
+  processor its options injected, each exactly once and without waiting
+  on the network, whatever stage construction reached: an input check
+  that fails before any provider exists (`ErrPIIHashKey`, an invalid
+  environment, an unknown propagator, an invalid application registry),
+  a `Setup` that returns `ErrAlreadySetup`, an exporter or reader that
+  cannot be built from the environment, and a startup canary rejection.
+  `Shutdown` also shuts down an injected part no provider uses, such as a
+  log exporter left unused by `WithoutLogExport`, and an SDK disabled by
+  `OTEL_SDK_DISABLED` shuts an injected metric reader down during a
+  successful `New`. Migration: build fresh exporters, readers, and
+  processors for each `New` or `Setup` call, and do not reuse them after
+  a failed call.
+- `WithErrorHandler` now takes effect under `New` for the SDK's own
+  configuration warnings. Today the only one is an `OTEL_SDK_DISABLED`
+  value that is neither `true` nor `false`. Without the option, the
+  default handler prints one line to standard error per construction for
+  such a value. Migration: set the variable to `true` or `false`, or pass
+  `WithErrorHandler` to route the warning elsewhere.
+- One canonical rendering now serves every signal when a PII value is
+  tokenized under `PIIHash`, as the specification says. Scalar slices on
+  span, resource, and bridge-record attributes are bounded like the log
+  path: one node per element, within the 16-level depth bound and the
+  2048-node budget, past which the rendering is truncated. Migration: the
+  token changes for an attribute array of more than 2047 elements and for
+  an attribute value past the depth bound or the node budget, so such
+  tokens do not join with tokens from v0.2.0. Ordinary values, such as
+  strings, numbers, booleans, short slices, and nested maps, keep the
+  tokens they had.
+
+### Fixed
+
+- `Setup` releases its guard on every exit that is not a success,
+  including a panic from a user-supplied sink. The panic still reaches
+  the caller unchanged, and the abandoned pipeline is stopped.
+- A nil or typed nil argument to an option no longer makes `New` or
+  `Setup` panic. A nil console writer, log level, sampler, trace exporter,
+  span processor, or metric reader selects the default. A nil log
+  exporter disables log export, as `WithLogExporter` documents. A nil
+  extra log handler, view, propagator entry, or `Option` is skipped, and a
+  nil `fs.FS` given to `WithAppRegistry` fails with
+  `ErrInvalidAppRegistry`.
+- When `New` or `Setup` fails after a provider exists, including a startup
+  canary rejection, the partly built pipeline is stopped without
+  flushing. `New` and `Setup` return promptly, where before an
+  unreachable collector held `New` for the metric reader's 30 second
+  export timeout and `Setup` for up to 5 seconds. A panic from an
+  injected part's `Shutdown` during that teardown is contained.
+- The log processor that classifies records from bridges other than slog
+  bounds its walk over map and slice values by the same depth bound and
+  node budget as the slog path, and drops what it did not examine. A large
+  shared map under a PII key no longer takes seconds to tokenize.
+- `redact.Struct` values guard fmt and JSON as well as slog. Every fmt
+  verb, `String`, and `GoString` render the protected form, and
+  `json.Marshal` renders an object of protected fields. Before, fmt and
+  JSON printed every field in the clear.
+- A nil `*SDK`, which `New` and `Setup` return with an error, and the
+  zero value are inert handles. Every method is safe to call and exports
+  nothing: `Shutdown` and `ForceFlush` return nil, the providers are the
+  OpenTelemetry no-op providers, `Handler` returns a text handler that
+  writes records at Info and above to standard error and `Logger` a logger
+  over it, so the host still sees its logs, and `ShutdownOnSignals` still
+  waits for a signal. The handler never writes through the `log` package,
+  so a host may wrap it and install the wrapper with `slog.SetDefault`
+  without the process hanging. `StartLinked` on an inert handle, or with
+  the SDK disabled, starts from no span, so detached work does not carry
+  the request's trace. Before, every method panicked, and `Shutdown` on
+  the zero value panicked in a goroutine the caller could not recover.
+  `Record.EmitEvent` with a nil SDK, a nil `*Record`, and the zero
+  `Record` no longer panic.
+- In `o11yhttp`, `o11ygrpc`, `o11ygin`, `o11yconnect`, and `o11ysql` a nil
+  `Option` is ignored. In `o11yhttp` and `o11ygin` a nil `WithFilter`
+  predicate adds no filter, and in `o11yhttp` a nil
+  `WithSpanNameFormatter` keeps the default. `o11yproc.Inject` with a nil
+  frame does nothing, and `o11ysql.RegisterPoolMetrics` with a nil
+  `*sql.DB` returns an error. Before, each of these panicked.
+- `Shutdown` and `ForceFlush` report a span export the collector rejects
+  while they run, as `o11y: shutdown traces: ...` or
+  `o11y: flush traces: ...` joined with the other signals, and `Shutdown`
+  emits `o11y.telemetry.dropped` for it. Before, the batch span processor
+  sent the failure only to the error handler. A log batch exported by the
+  processor's own goroutine during the call is reported the same way. A
+  call reports its first five distinct failures in full and counts the
+  rest. The error handler still receives every failure.
+
 ## [0.2.0] - 2026-11-18
 
 ### Added
