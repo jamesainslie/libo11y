@@ -225,9 +225,10 @@ impl Builder {
     }
 
     /// Replaces the default propagator, a composite of W3C Trace Context and
-    /// W3C Baggage. No propagators restore the default, one is used as it
-    /// is, several form a composite in order. The baggage egress filter
-    /// wraps the result either way.
+    /// W3C Baggage, overriding `OTEL_PROPAGATORS`. No propagators leave the
+    /// choice to the variable, then the default; one is used as it is,
+    /// several form a composite in order. The baggage egress filter wraps
+    /// the result either way.
     pub fn propagators(mut self, propagators: impl IntoIterator<Item = BoxedPropagator>) -> Self {
         self.settings.propagators = propagators.into_iter().collect();
         self
@@ -263,7 +264,9 @@ impl Builder {
     /// [`Error::PiiHashKey`] for a short hash key; the registry errors of
     /// [`AppRegistry::from_path`] and [`Error::DuplicateAppNamespace`]; and,
     /// under strict identity, [`Error::NoServiceName`],
-    /// [`Error::NoEnvironment`] and [`Error::InvalidEnvironment`].
+    /// [`Error::NoEnvironment`] and [`Error::InvalidEnvironment`]; and
+    /// [`Error::UnknownPropagator`] and [`Error::UnsupportedPropagator`] for
+    /// `OTEL_PROPAGATORS`.
     pub fn build(self) -> Result<Sdk, Error> {
         let mut settings = self.settings;
         if settings.pii_mode == PiiMode::Hash && settings.pii_hash_key.len() < MIN_PII_HASH_KEY_LEN
@@ -289,7 +292,8 @@ impl Builder {
             .take()
             .unwrap_or_else(Detected::from_system);
         let resolved = build_resource(&settings, &policy, &env, &detected)?;
-        let propagator = Propagator::new(std::mem::take(&mut settings.propagators), None);
+        let propagator =
+            Propagator::resolve(std::mem::take(&mut settings.propagators), &env, None)?;
         Ok(Sdk {
             resource: resolved.resource,
             resource_violations: resolved.violations,

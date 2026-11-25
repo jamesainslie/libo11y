@@ -127,6 +127,29 @@ pub enum Error {
     /// The log exporter could not be built.
     #[error("o11y: building log exporter: {0}")]
     BuildingLogExporter(#[source] BoxError),
+
+    /// `OTEL_PROPAGATORS` names a propagator nobody ships. The message is
+    /// Go's, which wraps the contrib registry's.
+    #[error(
+        "o11y: building propagator: {}: unknown propagator: {name}",
+        go_quote(name)
+    )]
+    UnknownPropagator {
+        /// The name, trimmed.
+        name: String,
+    },
+
+    /// `OTEL_PROPAGATORS` names a propagator Go resolves through its contrib
+    /// registry but the Rust library does not ship: `b3`, `b3multi`,
+    /// `jaeger`, `xray` or `ottrace`.
+    #[error(
+        "o11y: building propagator: {}: not shipped by libo11y for Rust: use tracecontext, baggage or none, or Builder::propagators",
+        go_quote(name)
+    )]
+    UnsupportedPropagator {
+        /// The name.
+        name: String,
+    },
 }
 
 impl Error {
@@ -184,6 +207,21 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "o11y: deployment environment not in the allowed set: \"pr\\\"od\\t\" (allowed: development, production)"
+        );
+    }
+
+    #[test]
+    fn propagator_messages() {
+        assert_eq!(
+            Error::UnknownPropagator {
+                name: "bogus".into()
+            }
+            .to_string(),
+            "o11y: building propagator: \"bogus\": unknown propagator: bogus"
+        );
+        assert_eq!(
+            Error::UnsupportedPropagator { name: "b3".into() }.to_string(),
+            "o11y: building propagator: \"b3\": not shipped by libo11y for Rust: use tracecontext, baggage or none, or Builder::propagators"
         );
     }
 

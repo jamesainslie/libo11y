@@ -10,11 +10,24 @@ use opentelemetry::propagation::text_map_propagator::FieldIter;
 use opentelemetry::propagation::{Extractor, Injector, TextMapPropagator};
 use opentelemetry_sdk::propagation::{BaggagePropagator, TraceContextPropagator};
 
+use crate::{EnvLookup, Error};
+
 /// A boxed propagator, as the SDK builder takes them.
 pub type BoxedPropagator = Box<dyn TextMapPropagator + Send + Sync>;
 
 /// Decides which baggage keys leave the process on inject.
 pub(crate) type BaggageAllow = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+
+/// The standard variable that names the propagators.
+const PROPAGATORS: &str = "OTEL_PROPAGATORS";
+
+/// The propagator that carries nothing, as `OTEL_PROPAGATORS` names it.
+const NO_PROPAGATION: &str = "none";
+
+/// What the effective configuration reports for propagators that name no
+/// fields but are not the none propagator. An empty value would be easy to
+/// misread.
+const FIELDLESS_PROPAGATION: &str = "custom";
 
 /// The SDK's propagator.
 ///
@@ -30,6 +43,10 @@ pub struct Propagator(Arc<Inner>);
 struct Inner {
     propagators: Vec<BoxedPropagator>,
     fields: Vec<String>,
+    /// What the effective configuration reports: the fields joined by
+    /// commas, `none` for the none propagator, `custom` for propagators
+    /// that name no fields.
+    reported: String,
     allow: BaggageAllow,
 }
 
@@ -54,11 +71,76 @@ impl Propagator {
                 fields.push(field.to_owned());
             }
         }
+        let reported = if fields.is_empty() {
+            FIELDLESS_PROPAGATION.to_owned()
+        } else {
+            fields.join(",")
+        };
         Self(Arc::new(Inner {
             propagators,
             fields,
+            reported,
             allow: allow.unwrap_or_else(|| Arc::new(|_| true)),
         }))
+    }
+
+    /// Resolves the propagator as Go does: the configured propagators win;
+    /// otherwise `OTEL_PROPAGATORS` is read as a comma-separated list, each
+    /// entry trimmed and empty entries dropped, so a value with no names is
+    /// unset. Names are case-sensitive. `tracecontext`, `baggage` and
+    /// `none` are shipped; a name Go resolves through its contrib registry
+    /// but the Rust library does not ship, or a name nobody knows, is an
+    /// error, checked in order, even next to known names or `none`. A list
+    /// that names `none` carries nothing. With no names the default applies.
+    pub(crate) fn resolve(
+        configured: Vec<BoxedPropagator>,
+        env: &EnvLookup,
+        allow: Option<BaggageAllow>,
+    ) -> Result<Self, Error> {
+        if !configured.is_empty() {
+            return Ok(Self::new(configured, allow));
+        }
+        let raw = env.get(PROPAGATORS).unwrap_or_default();
+        let names: Vec<&str> = raw
+            .split(',')
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .collect();
+        let mut propagators: Vec<BoxedPropagator> = Vec::with_capacity(names.len());
+        for name in &names {
+            match *name {
+                "tracecontext" => propagators.push(Box::new(TraceContextPropagator::new())),
+                "baggage" => propagators.push(Box::new(BaggagePropagator::new())),
+                NO_PROPAGATION => {}
+                "b3" | "b3multi" | "jaeger" | "xray" | "ottrace" => {
+                    return Err(Error::UnsupportedPropagator {
+                        name: (*name).to_owned(),
+                    });
+                }
+                other => {
+                    return Err(Error::UnknownPropagator {
+                        name: other.to_owned(),
+                    });
+                }
+            }
+        }
+        if names.contains(&NO_PROPAGATION) {
+            return Ok(Self(Arc::new(Inner {
+                propagators: Vec::new(),
+                fields: Vec::new(),
+                reported: NO_PROPAGATION.to_owned(),
+                allow: allow.unwrap_or_else(|| Arc::new(|_| true)),
+            })));
+        }
+        Ok(Self::new(propagators, allow))
+    }
+
+    /// The propagators as the effective configuration reports them: their
+    /// fields in configured order, each once, `none` for the none
+    /// propagator, and `custom` for propagators that name no fields.
+    #[cfg_attr(not(test), allow(dead_code, reason = "R3b's startup summary reads it"))]
+    pub(crate) fn reported_fields(&self) -> &str {
+        &self.0.reported
     }
 }
 
@@ -265,6 +347,258 @@ mod tests {
         assert_eq!(
             carrier.get("baggage").map(String::as_str),
             Some("k=v;prop=1")
+        );
+    }
+}
+
+#[cfg(test)]
+mod env_tests {
+    use super::*;
+
+    use std::collections::HashMap;
+
+    use opentelemetry::KeyValue;
+    use opentelemetry::trace::{
+        SpanContext, SpanId, TraceContextExt, TraceFlags, TraceId, TraceState,
+    };
+
+    use crate::{EnvLookup, Error};
+
+    fn env(value: &str) -> EnvLookup {
+        EnvLookup::from_pairs([("OTEL_PROPAGATORS", value)])
+    }
+
+    /// Injects a sampled span with baggage `keep=1,drop=2`.
+    fn inject(propagator: &Propagator) -> HashMap<String, String> {
+        let cx = Context::new()
+            .with_remote_span_context(SpanContext::new(
+                TraceId::from(1_u128),
+                SpanId::from(2_u64),
+                TraceFlags::SAMPLED,
+                true,
+                TraceState::default(),
+            ))
+            .with_baggage([KeyValue::new("keep", "1"), KeyValue::new("drop", "2")]);
+        let mut carrier = HashMap::new();
+        propagator.inject_context(&cx, &mut carrier);
+        carrier
+    }
+
+    /// A propagator that carries nothing and names no fields, but is not
+    /// the none propagator.
+    #[derive(Debug)]
+    struct Fieldless;
+
+    impl TextMapPropagator for Fieldless {
+        fn inject_context(&self, _: &Context, _: &mut dyn Injector) {}
+        fn extract_with_context(&self, cx: &Context, _: &dyn Extractor) -> Context {
+            cx.clone()
+        }
+        fn fields(&self) -> FieldIter<'_> {
+            FieldIter::new(&[])
+        }
+    }
+
+    // go/propagatorenv_test.go TestPropagatorsFromEnvironment.
+    #[test]
+    #[allow(clippy::too_many_lines, reason = "one table of Go's cases")]
+    fn the_variable_selects_the_propagators() {
+        struct Case {
+            name: &'static str,
+            env: &'static str,
+            configured: fn() -> Vec<BoxedPropagator>,
+            ignore_env: bool,
+            want: &'static [&'static str],
+            absent: &'static [&'static str],
+            reported: &'static str,
+        }
+        fn none() -> Vec<BoxedPropagator> {
+            Vec::new()
+        }
+        let cases = [
+            Case {
+                name: "unset keeps the default",
+                env: "",
+                configured: none,
+                ignore_env: false,
+                want: &["traceparent", "baggage"],
+                absent: &[],
+                reported: "traceparent,tracestate,baggage",
+            },
+            Case {
+                name: "tracecontext alone drops baggage",
+                env: "tracecontext",
+                configured: none,
+                ignore_env: false,
+                want: &["traceparent"],
+                absent: &["baggage"],
+                reported: "traceparent,tracestate",
+            },
+            Case {
+                name: "none injects nothing",
+                env: "none",
+                configured: none,
+                ignore_env: false,
+                want: &[],
+                absent: &["traceparent", "baggage"],
+                reported: "none",
+            },
+            Case {
+                name: "the option beats the variable",
+                env: "baggage",
+                configured: || vec![Box::new(TraceContextPropagator::new())],
+                ignore_env: false,
+                want: &["traceparent"],
+                absent: &["baggage"],
+                reported: "traceparent,tracestate",
+            },
+            Case {
+                name: "the option beats an unknown name",
+                env: "bogus",
+                configured: || vec![Box::new(TraceContextPropagator::new())],
+                ignore_env: false,
+                want: &["traceparent"],
+                absent: &[],
+                reported: "traceparent,tracestate",
+            },
+            Case {
+                name: "hermetic mode ignores the variable",
+                env: "bogus",
+                configured: none,
+                ignore_env: true,
+                want: &["traceparent", "baggage"],
+                absent: &[],
+                reported: "traceparent,tracestate,baggage",
+            },
+            Case {
+                name: "spaces around entries are trimmed",
+                env: " tracecontext , baggage ",
+                configured: none,
+                ignore_env: false,
+                want: &["traceparent", "baggage"],
+                absent: &[],
+                reported: "traceparent,tracestate,baggage",
+            },
+            Case {
+                name: "a trailing comma is ignored",
+                env: "tracecontext,",
+                configured: none,
+                ignore_env: false,
+                want: &["traceparent"],
+                absent: &["baggage"],
+                reported: "traceparent,tracestate",
+            },
+            Case {
+                name: "an all-empty value is unset",
+                env: " , ,",
+                configured: none,
+                ignore_env: false,
+                want: &["traceparent", "baggage"],
+                absent: &[],
+                reported: "traceparent,tracestate,baggage",
+            },
+            Case {
+                name: "the report keeps the configured order",
+                env: "baggage,tracecontext",
+                configured: none,
+                ignore_env: false,
+                want: &["traceparent", "baggage"],
+                absent: &[],
+                reported: "baggage,traceparent,tracestate",
+            },
+            Case {
+                name: "a fieldless propagator is not none",
+                env: "",
+                configured: || vec![Box::new(Fieldless)],
+                ignore_env: false,
+                want: &[],
+                absent: &["traceparent", "baggage"],
+                reported: "custom",
+            },
+            Case {
+                name: "duplicate entries are reported once",
+                env: "tracecontext,tracecontext",
+                configured: none,
+                ignore_env: false,
+                want: &["traceparent"],
+                absent: &["baggage"],
+                reported: "traceparent,tracestate",
+            },
+        ];
+        for case in cases {
+            let lookup = if case.ignore_env {
+                EnvLookup::empty()
+            } else {
+                env(case.env)
+            };
+            let propagator = Propagator::resolve((case.configured)(), &lookup, None)
+                .unwrap_or_else(|err| panic!("{}: {err}", case.name));
+            let carrier = inject(&propagator);
+            for key in case.want {
+                assert!(
+                    carrier.contains_key(*key),
+                    "{}: {carrier:?} lacks {key}",
+                    case.name
+                );
+            }
+            for key in case.absent {
+                assert!(
+                    !carrier.contains_key(*key),
+                    "{}: {carrier:?} holds {key}",
+                    case.name
+                );
+            }
+            if case.want.is_empty() {
+                assert!(carrier.is_empty(), "{}: {carrier:?}", case.name);
+            }
+            assert_eq!(propagator.reported_fields(), case.reported, "{}", case.name);
+        }
+    }
+
+    // TestUnknownPropagatorFailsFast.
+    #[test]
+    fn an_unknown_name_fails_fast() {
+        for (value, name) in [
+            ("bogus", "bogus"),
+            ("tracecontext,bogus", "bogus"),
+            ("tracecontext, bogus ", "bogus"),
+            ("bogus,none", "bogus"),
+            ("TraceContext", "TraceContext"),
+            ("tracecontext,Baggage", "Baggage"),
+        ] {
+            let err = Propagator::resolve(Vec::new(), &env(value), None).expect_err(value);
+            assert!(
+                matches!(&err, Error::UnknownPropagator { name: n } if n == name),
+                "{value}: {err}"
+            );
+            assert!(
+                err.to_string().starts_with("o11y: building propagator: "),
+                "{err}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_name_only_go_ships_is_unsupported() {
+        for name in ["b3", "b3multi", "jaeger", "xray", "ottrace"] {
+            let err = Propagator::resolve(Vec::new(), &env(&format!("tracecontext,{name}")), None)
+                .expect_err(name);
+            assert!(
+                matches!(&err, Error::UnsupportedPropagator { name: n } if n == name),
+                "{err}"
+            );
+        }
+    }
+
+    // TestEnvironmentPropagatorKeepsBaggageEgressFilter.
+    #[test]
+    fn the_egress_filter_wraps_a_propagator_from_the_variable() {
+        let allow: BaggageAllow = Arc::new(|key| key == "keep");
+        let propagator = Propagator::resolve(Vec::new(), &env("tracecontext,baggage"), Some(allow))
+            .expect("known names");
+        assert_eq!(
+            inject(&propagator).get("baggage").map(String::as_str),
+            Some("keep=1")
         );
     }
 }
