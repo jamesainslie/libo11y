@@ -17,7 +17,7 @@ everything is correlated and exported over OTLP.
 | TypeScript | Implemented for Bun, Node, browsers and Manifest V3 extensions. The browser packages first ship in `ts/v0.2.0` | [`ts/`](ts/) |
 | Rust | Planned | [`rust/`](rust/) |
 | Java | Planned | [`java/`](java/) |
-| Zig | Planned | [`zig/`](zig/) |
+| Zig | In progress, not released | [`zig/`](zig/) |
 
 ## Design principles
 

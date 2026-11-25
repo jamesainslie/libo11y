@@ -1,0 +1,29 @@
+# opentelemetry.proto.collector.logs.v1.ExportLogsServiceRequest
+resource_logs {
+  resource {
+    attributes { key: "service.name" value { string_value: "checkout" } }
+  }
+  scope_logs {
+    scope { name: "github.com/jamesainslie/libo11y/zig" }
+    log_records {
+      time_unix_nano: 1764000000000000000
+      observed_time_unix_nano: 1764000000000000010
+      severity_number: SEVERITY_NUMBER_INFO
+      severity_text: "INFO"
+      body { string_value: "order placed" }
+      attributes { key: "order.id" value { string_value: "o-123" } }
+      attributes {
+        key: "order.shipping"
+        value {
+          kvlist_value {
+            values { key: "method" value { string_value: "express" } }
+          }
+        }
+      }
+      flags: 1
+      trace_id: "\x4b\xf9\x2f\x35\x77\xb3\x4d\xa6\xa3\xce\x92\x9d\x0e\x0e\x47\x36"
+      span_id: "\x00\xf0\x67\xaa\x0b\xa9\x02\xb7"
+      event_name: "order.placed"
+    }
+  }
+}

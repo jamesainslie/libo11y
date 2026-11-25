@@ -171,6 +171,25 @@ jobs:
           key: msrv
       - run: make rust-msrv RUST_MSRV=1.88
 
+  # The Zig package on Linux and macOS. The process metrics a later step
+  # adds read different system interfaces on each.
+  zig:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # Also caches the global Zig cache, which holds the fetched packages.
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: "0.17.1"
+      - run: make zig-check ZIG_BUILD_J=4
+
   vuln:
     runs-on: ubuntu-latest
     timeout-minutes: 15

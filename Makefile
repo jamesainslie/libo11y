@@ -8,7 +8,7 @@ GO_TEST_P ?= 4
 # gate runs on each module separately.
 GO_MODULES := go go/o11ygin go/o11yconnect go/o11ysql
 
-.PHONY: spec-check spec-generate spec-drift test lint vet tidy-check vuln release-check schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-install ts-check ts-browser-test rust-check rust-msrv ci
+.PHONY: spec-check spec-generate spec-drift test lint vet tidy-check vuln release-check schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-install ts-check ts-browser-test rust-check rust-msrv zig-check zig-hygiene-test ci
 
 # Validate the spec registry against the libo11y policy suite (naming,
 # ownership, sensitivity, cardinality, events, units).
@@ -132,6 +132,27 @@ release-tag-test:
 ts-browser-bundle-test:
 	scripts/ts-browser-bundle-check_test.sh
 
+# Job count for zig build; lower it on a loaded machine.
+ZIG_BUILD_J ?= 8
+
+# Zig sources zig fmt checks: the root shim and the zig/ package, without
+# its build cache and fetched packages.
+ZIG_FMT := zig fmt --check --exclude zig/.zig-cache --exclude zig/zig-pkg --exclude zig/zig-out build.zig build.zig.zon zig
+
+# The Zig package (needs zig 0.17.1): zig fmt, the tests through the root
+# shim in Debug and ReleaseSafe, and the hygiene check with its test. The
+# check fails on @panic, std.debug.panic, std.debug.print and catch or
+# orelse unreachable outside tests.
+zig-check: zig-hygiene-test
+	$(ZIG_FMT)
+	zig build test -j$(ZIG_BUILD_J) -Doptimize=Debug
+	zig build test -j$(ZIG_BUILD_J) -Doptimize=ReleaseSafe
+	scripts/zig-hygiene.sh
+
+# Test zig-hygiene.sh against fixture trees.
+zig-hygiene-test:
+	scripts/zig-hygiene_test.sh
+
 # vuln runs last: it depends on the advisory database and the toolchain's
 # patch level, so local runs exercise every other gate first.
-ci: lint vet test tidy-check spec-check spec-drift ts-check ts-browser-test schema-published-test release-notes-test release-tag-test ts-browser-bundle-test rust-check rust-msrv release-check vuln
+ci: lint vet test tidy-check spec-check spec-drift ts-check ts-browser-test rust-check rust-msrv zig-check schema-published-test release-notes-test release-tag-test ts-browser-bundle-test release-check vuln

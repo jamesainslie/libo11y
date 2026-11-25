@@ -1,0 +1,24 @@
+.{
+    .name = .libo11y,
+    // Stays 0.0.0 until the zig/v0.1.0 release commit, which moves it
+    // together with the root shim's manifest.
+    .version = "0.0.0",
+    .fingerprint = 0xb41b258837919eb0, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{
+        .opentelemetry = .{
+            .url = "git+https://github.com/open-telemetry/opentelemetry-zig#64627959e72480505bdb46dc25764a211ab498bc",
+            .hash = "opentelemetry-0.0.1-U_uKJ5yaKwC1tcuszq7-Bu8-eOZkKXj3EZuaoR1mq8G_",
+        },
+        .protobuf = .{
+            .url = "git+https://github.com/Arwalk/zig-protobuf#94b9e065dae3dd7ee6f0d75d59e8f1505a3a70fe",
+            .hash = "protobuf-7.0.0-0e82ahsNPQCiEs7BbPYxjxqHNjpo9r6mMDHKlmpFhEDk",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "README.md",
+    },
+}

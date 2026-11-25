@@ -12,3 +12,8 @@ coverage.html
 
 # Bun and Node dependencies
 node_modules/
+
+# Zig build outputs and fetched packages
+.zig-cache/
+zig-out/
+zig-pkg/
