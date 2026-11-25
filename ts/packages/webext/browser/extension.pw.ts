@@ -1,8 +1,11 @@
 /**
  * WP5. @libo11y/webext in a real extension: content script records reach the sink through the
  * worker, trace context crosses runtime messages, a batch persisted before the worker stops is sent
- * by the next wake, and consent is one state for the whole extension.
+ * by the next wake (also when the stop cut off its send and left it leased), and consent is one
+ * state for the whole extension.
  */
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import type { BrowserContext, Page } from "@playwright/test";
 import { createSink, type SinkRequest } from "../../web/browser/harness/sink.ts";
 import { expect, sendFromExtensionPage, stopServiceWorker, test } from "./harness/fixtures.ts";
@@ -15,10 +18,81 @@ declare const chrome: {
 interface FixtureConfig {
   readonly endpoint: string;
   readonly consent?: "pending" | "granted" | "denied";
+  readonly timeoutMillis?: number;
 }
 
 /** A port Chromium refuses to connect to (ERR_UNSAFE_PORT), so every export fails at once. */
 const UNREACHABLE = "http://127.0.0.1:9";
+
+/** A collector that takes every request and never answers it, so each attempt stays on the wire. */
+interface HangingCollector {
+  readonly endpoint: string;
+  /** The paths of the requests received so far, in arrival order. */
+  readonly paths: string[];
+  close(): Promise<void>;
+}
+
+async function hangingCollector(): Promise<HangingCollector> {
+  const paths: string[] = [];
+  const server = createServer((req) => {
+    paths.push(req.url ?? "");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as AddressInfo;
+  return {
+    endpoint: `http://127.0.0.1:${port}`,
+    paths,
+    close: () =>
+      new Promise<void>((resolve) => {
+        server.closeAllConnections();
+        server.close(() => resolve());
+      }),
+  };
+}
+
+interface StoredEntry {
+  readonly signal: string;
+  readonly leaseUntil: number;
+}
+
+/**
+ * The entries of the worker's IndexedDB queue and the browser's clock, read from an extension page,
+ * which shares the worker's origin and does not wake it.
+ */
+async function storedEntries(
+  context: BrowserContext,
+  extensionId: string,
+): Promise<{ now: number; entries: StoredEntry[] }> {
+  const page = await context.newPage();
+  try {
+    await page.goto(`chrome-extension://${extensionId}/page.html`);
+    return await page.evaluate(
+      () =>
+        new Promise<{ now: number; entries: StoredEntry[] }>((resolve, reject) => {
+          const open = indexedDB.open("libo11y");
+          open.onerror = () => reject(open.error);
+          open.onsuccess = () => {
+            const db = open.result;
+            const all = db.transaction("otlp-batches", "readonly").objectStore("otlp-batches").getAll();
+            all.onsuccess = () => {
+              db.close();
+              const rows = all.result as StoredEntry[];
+              resolve({
+                now: Date.now(),
+                entries: rows.map((e) => ({ signal: e.signal, leaseUntil: e.leaseUntil })),
+              });
+            };
+            all.onerror = () => {
+              db.close();
+              reject(all.error);
+            };
+          };
+        }),
+    );
+  } finally {
+    await page.close();
+  }
+}
 
 interface SpanSeen {
   readonly name: string;
@@ -174,8 +248,10 @@ test("a batch persisted before the worker stops is sent by the next wake", async
   // The worker answered only once the batch was in its IndexedDB queue.
   expect(await workerQueueEntries(context, extensionId)).toBeGreaterThan(0);
 
-  await stopServiceWorker(context, extensionId);
+  // Stored before the stop, so a wake the open content page causes also finds the sink. The
+  // running worker keeps the configuration it set up with.
   await storeConfig(context, extensionId, { endpoint: sink.endpoint, consent: "granted" });
+  await stopServiceWorker(context, extensionId);
   expect(await sendFromExtensionPage(context, extensionId, { type: "wake" })).toEqual({ wakes: 2 });
 
   const got = await sink.waitFor((rs) => spansOf(rs).some((s) => s.name === "persisted"));
@@ -185,6 +261,51 @@ test("a batch persisted before the worker stops is sent by the next wake", async
     service: "fixture-content",
   });
   await expect.poll(() => workerQueueEntries(context, extensionId)).toBe(0);
+});
+
+test("a batch whose send the stop cut off is sent by the next wake, without waiting out its lease", async ({
+  context,
+  extensionId,
+  request,
+  baseURL,
+}) => {
+  const sink = createSink(request, baseURL ?? "");
+  const collector = await hangingCollector();
+  try {
+    // A 20 s timeout gives a 60 s lease, and keeps the attempt on the wire until the stop.
+    await configure(context, extensionId, {
+      endpoint: collector.endpoint,
+      consent: "granted",
+      timeoutMillis: 20_000,
+    });
+    const page = await openContentPage(context, baseURL ?? "");
+    const op = await command<SpanResult>(page, { libo11yFixture: "span", name: "cut-off" });
+    expect(op.flushed).toBe(true);
+    // The drain sends one entry at a time, so the first batch on the wire holds up the rest.
+    await expect.poll(() => collector.paths.length).toBeGreaterThan(0);
+    const onTheWire = /^\/v1\/(traces|logs|metrics)$/.exec(collector.paths[0] ?? "")?.[1];
+
+    // The next wake finds the sink; storing it first means no wake can start on the collector.
+    await storeConfig(context, extensionId, { endpoint: sink.endpoint, consent: "granted" });
+    await stopServiceWorker(context, extensionId);
+    const { now, entries } = await storedEntries(context, extensionId);
+    const cut = entries.find((e) => e.signal === onTheWire);
+    expect(cut?.leaseUntil ?? 0, `the ${onTheWire} batch the stop cut off is still leased`).toBeGreaterThan(
+      now + 30_000,
+    );
+
+    expect(await sendFromExtensionPage(context, extensionId, { type: "wake" })).toEqual({ wakes: 2 });
+    const got = await sink.waitFor(
+      (rs) => spansOf(rs).some((s) => s.name === "cut-off") && /cut-off log/.test(logTextOf(rs)),
+    );
+    expect(spansOf(got).find((s) => s.name === "cut-off")).toMatchObject({
+      traceId: op.traceId,
+      spanId: op.spanId,
+    });
+    await expect.poll(() => workerQueueEntries(context, extensionId)).toBe(0);
+  } finally {
+    await collector.close();
+  }
 });
 
 test("a grant in the extension page enables the content script", async ({

@@ -169,6 +169,30 @@ export function queueConformance(name: string, make: QueueFactory): void {
       assert.deepEqual(await q.claim(clock.now + 20_000, 10, 100), []);
     }));
 
+  test(`${name}: releaseLeases makes every leased entry claimable at once, keeping the rest`, () =>
+    withQueue({}, async (q, clock) => {
+      await q.put(batch("claimed"));
+      await q.claim(clock.now, 1, 60_000);
+      clock.now += 1;
+      await q.put(batch("put leased", { leaseMillis: 60_000 }));
+      clock.now += 1;
+      await q.put(batch("backing off", { notBefore: T0 + 5000, leaseMillis: 60_000 }));
+      await q.put(batch("free"));
+      assert.equal(await q.nextDue(), clock.now);
+      assert.deepEqual(bodies(await q.claim(clock.now, 10, 1)), ["free"]);
+      clock.now += 1;
+      await q.releaseLeases();
+      const released = await q.claim(clock.now, 10, 60_000);
+      assert.deepEqual(bodies(released), ["claimed", "put leased", "free"]);
+      for (const e of released) assert.equal(e.attempts, 0, "releasing is not a failed attempt");
+      assert.deepEqual(bodies(await q.claim(T0 + 4999, 10, 1)), []);
+      assert.deepEqual(bodies(await q.claim(T0 + 5000, 10, 1)), ["backing off"], "notBefore is kept");
+      assert.deepEqual(await q.size(), { entries: 4, bytes: 32 }, "releasing removes nothing");
+      await q.clear();
+      await q.releaseLeases();
+      assert.deepEqual(await q.size(), { entries: 0, bytes: 0 });
+    }));
+
   test(`${name}: nextDue is the earliest of each entry's later notBefore and leaseUntil`, () =>
     withQueue({}, async (q) => {
       assert.equal(await q.nextDue(), undefined);
@@ -255,6 +279,7 @@ export function queueConformance(name: string, make: QueueFactory): void {
     await q.reschedule("x", T0);
     await q.remove(["x"]);
     await q.clear();
+    await q.releaseLeases();
     await q.put(batch("after close"));
   });
 }

@@ -24,6 +24,22 @@ test("the fake queue leases, reschedules and reports nextDue", async () => {
   assert.deepEqual(await q.size(), { entries: 0, bytes: 0 });
 });
 
+test("the fake queue releases every lease", async () => {
+  const now = 1000;
+  const q = createFakeQueue(() => now);
+  await q.put({ signal: "traces", body: "{}", leaseMillis: 500 });
+  await q.put({ signal: "logs", body: "{}", notBefore: 2000, leaseMillis: 5000 });
+  await q.releaseLeases();
+  assert.deepEqual(
+    [...q.entries.values()].map((e) => [e.leaseUntil, e.notBefore, e.attempts]),
+    [
+      [0, 1000, 0],
+      [0, 2000, 0],
+    ],
+  );
+  assert.equal(await q.nextDue(), 1000);
+});
+
 test("the fake gate notifies on change only", () => {
   const gate = createFakeGate(false);
   const seen: boolean[] = [];

@@ -20,6 +20,8 @@ declare const chrome: webext.ChromeLike;
 interface FixtureConfig {
   readonly endpoint: string;
   readonly consent?: webext.ConsentState;
+  /** transport.timeoutMillis. Default 3000. */
+  readonly timeoutMillis?: number;
 }
 
 const CONFIG_KEY = "fixture.config";
@@ -78,7 +80,11 @@ function start(config: FixtureConfig): Promise<webext.WorkerTelemetry> {
       startupSummary: false,
       endpoint: config.endpoint,
       consent: { initial: config.consent ?? "granted" },
-      transport: { initialBackoffMillis: 200, maxBackoffMillis: 500, timeoutMillis: 3000 },
+      transport: {
+        initialBackoffMillis: 200,
+        maxBackoffMillis: 500,
+        timeoutMillis: config.timeoutMillis ?? 3000,
+      },
     })
     .then((handle) => {
       handle.onMessage((payload) => {

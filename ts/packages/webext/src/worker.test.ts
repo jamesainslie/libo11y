@@ -340,6 +340,67 @@ test("the queue is drained once the worker is up, on every wake", async () => {
   });
 });
 
+test("a wake releases the leases the last one left, before the delivery can use the queue", async () => {
+  const queue = createFakeQueue();
+  const into: { log: string[] } = { log: [] };
+  const releasing: PersistentQueue = {
+    ...queue,
+    async releaseLeases() {
+      into.log.push("releaseLeases");
+      await queue.releaseLeases();
+    },
+  };
+  // A batch the last wake claimed and was sending when the browser stopped it.
+  const cut = await queue.put({ signal: "traces", body: "{}", leaseMillis: 60_000 });
+  const r = rig({ stored: "granted", queue: releasing });
+  into.log = r.log;
+  const createDelivery = r.deps.createDelivery;
+  const deps: WorkerDeps = {
+    ...r.deps,
+    createDelivery: (o) => {
+      r.log.push("createDelivery");
+      return createDelivery(o);
+    },
+  };
+  const h = await setupWorkerWith(BASE, deps);
+  try {
+    assert.deepEqual(
+      r.log.filter((l) => ["openQueue", "releaseLeases", "createDelivery", "drain"].includes(l)),
+      ["openQueue", "releaseLeases", "createDelivery", "drain"],
+    );
+    assert.equal(queue.entries.get(cut?.id ?? "")?.leaseUntil, 0);
+  } finally {
+    await h.shutdown();
+  }
+});
+
+test("with the real IndexedDB queue, a batch leased by the last wake is claimable once the worker is up", async () => {
+  const { IDBFactory } = await import("fake-indexeddb");
+  const { openQueue } = await import("@libo11y/web/internal");
+  const factory = new IDBFactory();
+  const last = await openQueue({ indexedDB: factory });
+  await last.put({ signal: "traces", body: '{"cut":true}', leaseMillis: 60_000 });
+  last.close();
+  const r = rig({ stored: "granted" });
+  const h = await setupWorkerWith(BASE, {
+    ...r.deps,
+    openQueue: (o) => openQueue({ ...o, indexedDB: factory }),
+  });
+  try {
+    const next = await openQueue({ indexedDB: factory });
+    try {
+      assert.deepEqual(
+        (await next.claim(Date.now(), 10, 1000)).map((e) => e.body),
+        ['{"cut":true}'],
+      );
+    } finally {
+      next.close();
+    }
+  } finally {
+    await h.shutdown();
+  }
+});
+
 test("revoke flushes into the closed gate, then clears the delivery and its queue", async () => {
   const r = rig({ stored: "granted" });
   await withWorker(r, BASE, async (h) => {

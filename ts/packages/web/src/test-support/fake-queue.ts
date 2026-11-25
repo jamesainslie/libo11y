@@ -52,6 +52,9 @@ export function createFakeQueue(now: () => number = Date.now): FakeQueue {
     async clear() {
       entries.clear();
     },
+    async releaseLeases() {
+      for (const [id, e] of entries) entries.set(id, { ...e, leaseUntil: 0 });
+    },
     async nextDue() {
       let min: number | undefined;
       for (const e of entries.values()) {

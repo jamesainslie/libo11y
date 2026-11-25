@@ -71,7 +71,9 @@ export function defaultWorkerDeps(): WorkerDeps {
 /**
  * Builds and installs the worker's telemetry. Call it at the top level of the worker script on
  * every wake. In order: the consent controller with the stored state beating options.consent
- * (readStoredConsent) and syncConsent; openQueue (IndexedDB at the extension origin); the HTTP
+ * (readStoredConsent) and syncConsent; openQueue (IndexedDB at the extension origin), releasing
+ * every lease an earlier wake left (it is the queue's only user, so none of those sends is still in
+ * flight); the HTTP
  * transport with sendBeacon undefined; a delivery with persistFirst true, mode always "normal" and a
  * lease of three times transport.timeoutMillis when that is longer than the default;
  * webPlatform with name "webext" and WORKER_ENV_DEFAULTS; setupWith; serviceVersion defaulting to
@@ -299,6 +301,10 @@ export async function setupWorkerWith(
 
     const queue = await deps.openQueue(queueOptions(options));
     steps.push(() => queue.close());
+    // The worker is the only context that uses its queue, so a lease held now is one the browser
+    // cut off when it stopped an earlier wake mid-send. Released before the delivery exists, so no
+    // send of this wake is in flight yet, and the first drain sends those entries at once.
+    await queue.releaseLeases();
     const endpoints = deps.resolveEndpoints(options, options.hermetic === true);
     const t = options.transport ?? {};
     const transport = deps.createHttpTransport({

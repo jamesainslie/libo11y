@@ -73,6 +73,14 @@ export interface PersistentQueue {
   /** Removes every entry, leased or not. Consent revocation calls it. */
   clear(): Promise<void>;
   /**
+   * Releases every lease (leaseUntil 0), keeping notBefore and attempts, so leased entries are
+   * claimable at once. Internal: only a sole consumer may call it, when it knows no send of a
+   * leased entry is still in flight. The webext worker does at startup, because it is the only
+   * context that uses its queue and a stopped worker's sends died with it. A page never does:
+   * other tabs of its origin may be sending the entries they leased.
+   */
+  releaseLeases(): Promise<void>;
+  /**
    * The earliest time any entry becomes claimable: the larger of its notBefore and leaseUntil,
    * minimized over entries. Undefined when the queue is empty.
    */

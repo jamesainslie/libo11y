@@ -2,8 +2,8 @@
  * WP2 (queue and consent). The IndexedDB PersistentQueue.
  *
  * Database opts.databaseName (default "libo11y"), version 1, one object store "otlp-batches" with
- * keyPath "id" and an index "enqueuedAt". claim, put (with its evictions), reschedule, remove and
- * clear each run in one readwrite transaction and resolve on its complete event, so concurrent
+ * keyPath "id" and an index "enqueuedAt". claim, put (with its evictions), reschedule, remove,
+ * clear and releaseLeases each run in one readwrite transaction and resolve on its complete event, so concurrent
  * tabs and worker wakes never claim the same entry twice. A versionchange from another context
  * closes this connection; later calls reopen it once, then fall back to behaving as empty.
  */
@@ -354,6 +354,26 @@ class IndexedDbQueue implements PersistentQueue {
       (db) =>
         transact(db, "readwrite", (store) => {
           store.clear();
+          return () => undefined;
+        }),
+    );
+  }
+
+  releaseLeases(): Promise<void> {
+    return this.run(
+      "releaseLeases",
+      undefined,
+      (q) => q.releaseLeases(),
+      (db) =>
+        transact(db, "readwrite", (store, fail) => {
+          const req = store.openCursor();
+          req.onsuccess = guarded(fail, () => {
+            const cursor = req.result;
+            if (cursor === null) return;
+            const row: unknown = cursor.value;
+            if (isEntry(row) && row.leaseUntil !== 0) cursor.update({ ...row, leaseUntil: 0 });
+            cursor.continue();
+          });
           return () => undefined;
         }),
     );

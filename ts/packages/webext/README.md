@@ -213,8 +213,9 @@ other listeners in the extension keep working. Do not send messages with a
   through storage, and the worker refuses those batches.
 - Delivery from the worker's queue is at least once. A worker stopped after
   its request reached the collector, but before it removed the batch, sends
-  the batch again on a later wake once its lease runs out. The lease is 30
-  seconds, or three times `transport.timeoutMillis` when that is longer.
+  the batch again on the next wake. The worker is the only user of its
+  queue, so a new wake releases every lease the stopped one held and sends
+  those batches at once, without waiting for the leases to run out.
 - `onMessage` needs the handle, so a traced listener is added only after
   `setupContentScript` resolves. A traced message that reaches a content
   script before then is not answered by it. The worker holds up to 100

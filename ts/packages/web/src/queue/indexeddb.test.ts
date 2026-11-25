@@ -248,10 +248,11 @@ test("a storage failure is reported through diag and resolves as empty or droppe
       await q.reschedule("x", T0);
       await q.remove(["x"]);
       await q.clear();
+      await q.releaseLeases();
     } finally {
       db.transaction = original;
     }
-    assert.equal(messages.length, 7);
+    assert.equal(messages.length, 8);
     assert.equal((await q.size()).entries, 1, "the connection still works afterwards");
   });
 });
