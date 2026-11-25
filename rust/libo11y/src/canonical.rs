@@ -16,6 +16,8 @@
 //! the value itself, each array element, each map member. Once the budget
 //! is spent every remaining node renders as [`TRUNCATED`].
 
+use std::borrow::Cow;
+
 use opentelemetry::logs::AnyValue;
 use opentelemetry::{Array, Value};
 
@@ -30,26 +32,29 @@ pub(crate) const TRUNCATED: &str = "truncated";
 
 /// Renders an attribute value canonically.
 pub(crate) fn canonical_value(value: &Value) -> String {
-    render(&value_node(value, 0, &mut Walk::new()))
+    render(value_node(value, 0, &mut Walk::new()))
 }
 
 /// Renders a log attribute value canonically.
 pub(crate) fn canonical_any(value: &AnyValue) -> String {
-    render(&any_node(value, 0, &mut Walk::new()))
+    render(any_node(value, 0, &mut Walk::new()))
 }
 
 /// A rendered node: a scalar's canonical text, an array of nodes, or an
 /// object of nodes keyed in UTF-8 byte order. A composite is built as one
 /// tree and JSON-encoded once, so nesting never re-escapes encoded text.
-enum Node {
-    Text(String),
-    Array(Vec<Node>),
-    Object(Vec<(String, Node)>),
+/// Strings borrow from the value being rendered.
+enum Node<'a> {
+    Text(Cow<'a, str>),
+    Array(Vec<Node<'a>>),
+    Object(Vec<(&'a str, Node<'a>)>),
 }
 
-impl Node {
-    fn truncated() -> Self {
-        Self::Text(TRUNCATED.to_owned())
+impl Node<'_> {
+    const TRUNCATED: Self = Self::Text(Cow::Borrowed(TRUNCATED));
+
+    fn owned(text: String) -> Self {
+        Self::Text(Cow::Owned(text))
     }
 }
 
@@ -83,34 +88,40 @@ impl Walk {
     }
 }
 
-fn value_node(value: &Value, depth: usize, walk: &mut Walk) -> Node {
+fn value_node<'a>(value: &'a Value, depth: usize, walk: &mut Walk) -> Node<'a> {
     if !walk.admit(depth) {
-        return Node::truncated();
+        return Node::TRUNCATED;
     }
     match value {
-        Value::Bool(b) => Node::Text(b.to_string()),
-        Value::I64(i) => Node::Text(i.to_string()),
-        Value::F64(f) => Node::Text(go_float(*f)),
-        Value::String(s) => Node::Text(s.as_str().to_owned()),
-        Value::Array(Array::Bool(items)) => scalar_array(items, depth, walk, bool::to_string),
-        Value::Array(Array::I64(items)) => scalar_array(items, depth, walk, i64::to_string),
-        Value::Array(Array::F64(items)) => scalar_array(items, depth, walk, |f| go_float(*f)),
+        Value::Bool(b) => Node::Text(Cow::Borrowed(bool_text(*b))),
+        Value::I64(i) => Node::owned(i.to_string()),
+        Value::F64(f) => Node::owned(go_float(*f)),
+        Value::String(s) => Node::Text(Cow::Borrowed(s.as_str())),
+        Value::Array(Array::Bool(items)) => {
+            scalar_array(items, depth, walk, |b| Cow::Borrowed(bool_text(*b)))
+        }
+        Value::Array(Array::I64(items)) => {
+            scalar_array(items, depth, walk, |i| Cow::Owned(i.to_string()))
+        }
+        Value::Array(Array::F64(items)) => {
+            scalar_array(items, depth, walk, |f| Cow::Owned(go_float(*f)))
+        }
         Value::Array(Array::String(items)) => {
-            scalar_array(items, depth, walk, |s| s.as_str().to_owned())
+            scalar_array(items, depth, walk, |s| Cow::Borrowed(s.as_str()))
         }
         // A kind a later opentelemetry release adds renders as its own text,
         // as Go renders an attribute kind it does not know.
-        other => Node::Text(other.to_string()),
+        other => Node::owned(other.to_string()),
     }
 }
 
 /// Renders the elements of a scalar array held at `depth`, each one node.
-fn scalar_array<T>(
-    items: &[T],
+fn scalar_array<'a, T>(
+    items: &'a [T],
     depth: usize,
     walk: &mut Walk,
-    text: impl Fn(&T) -> String,
-) -> Node {
+    text: impl Fn(&'a T) -> Cow<'a, str>,
+) -> Node<'a> {
     Node::Array(
         items
             .iter()
@@ -118,23 +129,23 @@ fn scalar_array<T>(
                 if walk.admit(depth + 1) {
                     Node::Text(text(item))
                 } else {
-                    Node::truncated()
+                    Node::TRUNCATED
                 }
             })
             .collect(),
     )
 }
 
-fn any_node(value: &AnyValue, depth: usize, walk: &mut Walk) -> Node {
+fn any_node<'a>(value: &'a AnyValue, depth: usize, walk: &mut Walk) -> Node<'a> {
     if !walk.admit(depth) {
-        return Node::truncated();
+        return Node::TRUNCATED;
     }
     match value {
-        AnyValue::Int(i) => Node::Text(i.to_string()),
-        AnyValue::Double(f) => Node::Text(go_float(*f)),
-        AnyValue::String(s) => Node::Text(s.as_str().to_owned()),
-        AnyValue::Boolean(b) => Node::Text(b.to_string()),
-        AnyValue::Bytes(bytes) => Node::Text(base64(bytes)),
+        AnyValue::Int(i) => Node::owned(i.to_string()),
+        AnyValue::Double(f) => Node::owned(go_float(*f)),
+        AnyValue::String(s) => Node::Text(Cow::Borrowed(s.as_str())),
+        AnyValue::Boolean(b) => Node::Text(Cow::Borrowed(bool_text(*b))),
+        AnyValue::Bytes(bytes) => Node::owned(base64(bytes)),
         AnyValue::ListAny(items) => Node::Array(
             items
                 .iter()
@@ -147,31 +158,34 @@ fn any_node(value: &AnyValue, depth: usize, walk: &mut Walk) -> Node {
             Node::Object(
                 members
                     .into_iter()
-                    .map(|(key, member)| {
-                        (key.as_str().to_owned(), any_node(member, depth + 1, walk))
-                    })
+                    .map(|(key, member)| (key.as_str(), any_node(member, depth + 1, walk)))
                     .collect(),
             )
         }
         // A kind a later opentelemetry release adds renders as its debug
         // text, as Go renders a value kind it does not know.
-        other => Node::Text(format!("{other:?}")),
+        other => Node::owned(format!("{other:?}")),
     }
 }
 
+/// Go's `strconv.FormatBool`.
+fn bool_text(b: bool) -> &'static str {
+    if b { "true" } else { "false" }
+}
+
 /// Renders a node: a scalar as its text, a composite as JSON.
-fn render(node: &Node) -> String {
+fn render(node: Node<'_>) -> String {
     match node {
-        Node::Text(text) => text.clone(),
+        Node::Text(text) => text.into_owned(),
         composite => {
             let mut out = String::new();
-            encode(composite, &mut out);
+            encode(&composite, &mut out);
             out
         }
     }
 }
 
-fn encode(node: &Node, out: &mut String) {
+fn encode(node: &Node<'_>, out: &mut String) {
     match node {
         Node::Text(text) => quote(text, out),
         Node::Array(items) => {

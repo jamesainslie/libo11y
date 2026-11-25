@@ -230,10 +230,9 @@ fn the_instance_id_matches_the_conformance_vectors() {
         k8s_namespace_name: String,
         want: String,
     }
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../conformance/vectors/instance-id.json"
-    );
+    let Some(path) = crate::test_support::conformance("vectors/instance-id.json") else {
+        return;
+    };
     let raw = std::fs::read_to_string(path).expect("the conformance vectors are readable");
     let vectors: Vec<Vector> = serde_json::from_str(&raw).expect("the vectors are JSON");
     assert!(vectors.len() >= 4);
@@ -538,12 +537,11 @@ fn the_hash_key_is_copied() {
 
 #[test]
 fn registries_load_into_the_policy() {
-    let conformance = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../conformance/appregistry/valid.yaml"
-    );
+    let Some(conformance) = crate::test_support::conformance("appregistry/valid.yaml") else {
+        return;
+    };
     let sdk = identified()
-        .app_registry_file(conformance)
+        .app_registry_file(&conformance)
         .resource_attributes([KeyValue::new("lor.client.email", "a@b.c")])
         .build()
         .expect("a valid registry");
@@ -559,10 +557,10 @@ fn registries_load_into_the_policy() {
         "{missing}"
     );
 
-    let loaded = crate::AppRegistry::from_path(conformance).expect("valid");
+    let loaded = crate::AppRegistry::from_path(&conformance).expect("valid");
     let twice = identified()
         .app_registry(loaded)
-        .app_registry_file(conformance)
+        .app_registry_file(&conformance)
         .build()
         .expect_err("one namespace twice");
     assert!(twice.is_invalid_app_registry(), "{twice}");

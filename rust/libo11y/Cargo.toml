@@ -17,7 +17,9 @@ homepage.workspace = true
 libo11y-spec = { version = "0.0.0", path = "../libo11y-spec" }
 gethostname = "1.1.0"
 hmac = "0.13.0"
-libyaml-safer = "0.3.0"
+# Pinned: appregistry/yaml.rs works around this exact release's panics and
+# its byte-offset marks, so an upgrade reruns the conformance and fuzz checks.
+libyaml-safer = "=0.3.0"
 opentelemetry = { version = "0.33.1", default-features = false, features = ["logs", "trace"] }
 opentelemetry_sdk = { version = "0.33.1", default-features = false, features = ["trace"] }
 sha2 = "0.11.1"

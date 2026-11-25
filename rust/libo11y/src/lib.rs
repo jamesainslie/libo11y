@@ -40,3 +40,25 @@ pub use error::{BoxError, Error};
 pub use libo11y_spec::Environment;
 pub use policy::{Classified, Decision, MIN_PII_HASH_KEY_LEN, PiiMode, Policy, Rule, Violations};
 pub use propagation::{BoxedPropagator, Propagator};
+
+/// Helpers for tests that read the shared files under `conformance/` in
+/// the repository.
+#[cfg(test)]
+mod test_support {
+    use std::path::PathBuf;
+
+    /// The path of `relative` under the repository's `conformance/`
+    /// directory, or `None` outside the repository, as when the published
+    /// crate's tests run, which leaves those tests nothing to check.
+    pub(crate) fn conformance(relative: &str) -> Option<PathBuf> {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../conformance")
+            .join(relative);
+        if path.exists() {
+            Some(path)
+        } else {
+            eprintln!("skipped: {} is outside this package", path.display());
+            None
+        }
+    }
+}

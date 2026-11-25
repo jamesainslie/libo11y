@@ -1,4 +1,4 @@
-//! What libyaml's resource detectors find about the running process, in
+//! What libo11y's resource detectors find about the running process, in
 //! the layers the Go library uses: the telemetry SDK, `host.name`, the
 //! process runtime and `container.id`. Never the process ID, the command
 //! line or `host.id`.

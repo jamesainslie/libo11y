@@ -100,11 +100,7 @@ pub(crate) fn build_resource(
     }
 
     let (kept, counts) = policy.classify_all(layers.into_attributes());
-    for (rule, n) in counts.iter() {
-        for _ in 0..n {
-            violations.add(rule);
-        }
-    }
+    violations.merge(&counts);
     Ok(ResolvedResource {
         resource: Resource::builder_empty()
             .with_schema_url(kept, SCHEMA_URL)

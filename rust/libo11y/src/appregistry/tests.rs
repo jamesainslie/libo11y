@@ -39,13 +39,17 @@ fn rule_ids(text: &str) -> Vec<&'static str> {
         .collect()
 }
 
-fn conformance_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../conformance/appregistry")
+/// The conformance cases, or `None` outside the repository.
+fn conformance_dir() -> Option<PathBuf> {
+    crate::test_support::conformance("appregistry")
 }
 
 #[test]
 fn passes_every_conformance_case() {
-    let mut cases: Vec<PathBuf> = std::fs::read_dir(conformance_dir())
+    let Some(dir) = conformance_dir() else {
+        return;
+    };
+    let mut cases: Vec<PathBuf> = std::fs::read_dir(&dir)
         .expect("the conformance cases are readable")
         .map(|entry| entry.expect("a directory entry").path())
         .filter(|path| path.extension().is_some_and(|ext| ext == "yaml"))
@@ -67,7 +71,10 @@ fn passes_every_conformance_case() {
 
 #[test]
 fn every_want_has_a_case() {
-    for entry in std::fs::read_dir(conformance_dir()).expect("the conformance cases are readable") {
+    let Some(dir) = conformance_dir() else {
+        return;
+    };
+    for entry in std::fs::read_dir(&dir).expect("the conformance cases are readable") {
         let path = entry.expect("a directory entry").path();
         if path.extension().is_some_and(|ext| ext == "want") {
             assert!(
@@ -84,7 +91,10 @@ const HEAD: &str = "schema: libo11y.app-registry/v1\nnamespace: lor\nattributes:
 // go/internal/appregistry/appregistry_test.go TestValidRegistry.
 #[test]
 fn a_valid_registry_parses() {
-    let raw = std::fs::read(conformance_dir().join("valid.yaml")).expect("the case is readable");
+    let Some(dir) = conformance_dir() else {
+        return;
+    };
+    let raw = std::fs::read(dir.join("valid.yaml")).expect("the case is readable");
     let reg = Registry::parse(&raw).expect("the registry parses");
     assert!(reg.validate().is_empty());
     assert_eq!(reg.namespace, "lor");
@@ -598,7 +608,10 @@ fn deep_nesting_stays_bounded() {
 
 #[test]
 fn app_registries_load_from_bytes_and_paths() {
-    let valid = std::fs::read(conformance_dir().join("valid.yaml")).expect("the case is readable");
+    let Some(dir) = conformance_dir() else {
+        return;
+    };
+    let valid = std::fs::read(dir.join("valid.yaml")).expect("the case is readable");
     let reg = AppRegistry::from_bytes("valid.yaml", &valid).expect("the registry is valid");
     assert_eq!(reg.source(), "valid.yaml");
     assert_eq!(reg.namespace(), "lor");
@@ -613,8 +626,7 @@ fn app_registries_load_from_bytes_and_paths() {
     assert_eq!(reg.sensitivity_of("lor.unlisted"), None);
     assert_eq!(reg.classes().count(), 5);
 
-    let from_path =
-        AppRegistry::from_path(conformance_dir().join("valid.yaml")).expect("the file is valid");
+    let from_path = AppRegistry::from_path(dir.join("valid.yaml")).expect("the file is valid");
     assert_eq!(from_path.namespace(), "lor");
 
     let missing = AppRegistry::from_path("no-such-registry.yaml").expect_err("the file is missing");
@@ -742,4 +754,26 @@ fn mends_where_libyaml_safer_differs_from_yaml_v3() {
     for (text, want) in cases {
         assert_eq!(outcome(text.as_bytes()), want, "{text:?}");
     }
+}
+
+// Mapping scan offsets back to the text must not grow with the number of
+// tag-like commas, and the rewrites are bounded.
+#[test]
+fn many_tag_like_commas_parse_in_linear_time() {
+    let mut text = String::from(
+        "schema: libo11y.app-registry/v1\nnamespace: lor\nattributes:\n  lor.a.b: {type: string, sensitivity: public, cardinality: enum, values: [a]}\nx:\n",
+    );
+    for _ in 0..20_000 {
+        text.push_str("  - x!a,\n");
+    }
+    for _ in 0..40 {
+        text.push_str("  - \"a\\'b\"\n");
+    }
+    let start = Instant::now();
+    assert_eq!(kind_of(&text), "unknown-key");
+    assert!(
+        start.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        start.elapsed()
+    );
 }

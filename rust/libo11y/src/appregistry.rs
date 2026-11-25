@@ -118,6 +118,13 @@ impl ParseError {
     pub fn kind(&self) -> ParseErrorKind {
         self.kind
     }
+
+    /// Returns what the decoder found, such as the line and the problem.
+    /// The wording is not part of the contract; [`ParseError::kind`] is.
+    #[must_use]
+    pub fn detail(&self) -> &str {
+        &self.detail
+    }
 }
 
 impl fmt::Display for ParseError {

@@ -41,7 +41,7 @@ const MAX_DECODE_DEPTH: usize = 256;
 
 /// The most rewrites [`prepare`] makes before it refuses the text. Each
 /// rescans the text, and real registries need none.
-const MAX_FIXES: usize = 256;
+const MAX_FIXES: usize = 64;
 
 /// yaml.v3's `alias_ratio_range_low` and `alias_ratio_range_high`.
 const ALIAS_RATIO_LOW: f64 = 400_000.0;
@@ -256,22 +256,18 @@ impl Scan {
         if copy.ends_with('\\') {
             copy.push(' ');
         }
+        // Where the copy's inserted spaces sit, in increasing order.
+        let spaces: Vec<u64> = commas
+            .iter()
+            .enumerate()
+            .map(|(k, comma)| u64::try_from(comma + k).unwrap_or(u64::MAX))
+            .collect();
         // The copy's offset `at`, as an offset in the text.
         let original = |at: u64| -> usize {
-            let at = usize::try_from(at).unwrap_or(usize::MAX);
-            let before = commas
-                .iter()
-                .enumerate()
-                .take_while(|(k, comma)| **comma + *k < at)
-                .count();
-            at - before
+            let before = spaces.partition_point(|&space| space < at);
+            usize::try_from(at).unwrap_or(usize::MAX) - before
         };
-        let inserted = |at: u64| {
-            commas
-                .iter()
-                .enumerate()
-                .any(|(k, comma)| u64::try_from(comma + k).is_ok_and(|space| space == at))
-        };
+        let inserted = |at: u64| spaces.binary_search(&at).is_ok();
         let escape_at = |at: usize| {
             let c = text.as_bytes()[at];
             Fix {
@@ -298,10 +294,8 @@ impl Scan {
                     // there, as yaml.v3 would fail nearby too, and libyaml-safer
                     // would panic on the tag.
                     if scan.fix.is_none() {
-                        let unverified = commas.iter().enumerate().find(|(k, comma)| {
-                            u64::try_from(**comma + *k).is_ok_and(|space| space >= previous_end)
-                        });
-                        if let Some((_, &comma)) = unverified {
+                        let unverified = spaces.partition_point(|&space| space < previous_end);
+                        if let Some(&comma) = commas.get(unverified) {
                             scan.cut = Some(comma);
                         }
                     }
@@ -542,7 +536,7 @@ struct Stream<'a> {
     anchors: HashMap<String, NodeId>,
     fail_at: Option<u64>,
     scanner_failure: Option<usize>,
-    tokens: HashMap<u64, usize>,
+    tokens: &'a HashMap<u64, usize>,
     /// The text's length when [`Prepared::added_break`] added a line break.
     added_break_at: Option<u64>,
 }
@@ -562,7 +556,7 @@ impl<'a> Stream<'a> {
             anchors: HashMap::new(),
             fail_at: prepared.fail_at,
             scanner_failure: prepared.scanner_failure,
-            tokens: prepared.tokens.clone(),
+            tokens: &prepared.tokens,
             added_break_at: prepared
                 .added_break
                 .then(|| u64::try_from(prepared.text.len()).ok())

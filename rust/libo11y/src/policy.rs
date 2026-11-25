@@ -88,6 +88,18 @@ impl fmt::Display for Rule {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Violations(BTreeMap<Rule, u64>);
 
+impl<'a> IntoIterator for &'a Violations {
+    type Item = (Rule, u64);
+    type IntoIter = std::iter::Map<
+        std::collections::btree_map::Iter<'a, Rule, u64>,
+        fn((&'a Rule, &'a u64)) -> (Rule, u64),
+    >;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter().map(|(rule, n)| (*rule, *n))
+    }
+}
+
 impl Violations {
     /// Counts one more violation of `rule`.
     pub fn add(&mut self, rule: Rule) {
@@ -110,10 +122,18 @@ impl Violations {
     pub fn iter(&self) -> impl Iterator<Item = (Rule, u64)> + '_ {
         self.0.iter().map(|(rule, n)| (*rule, *n))
     }
+
+    /// Adds every count in `other`.
+    pub fn merge(&mut self, other: &Self) {
+        for (rule, n) in other {
+            *self.0.entry(rule).or_insert(0) += n;
+        }
+    }
 }
 
 /// What the policy does with an attribute under a given key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum Decision {
     /// The attribute passes unchanged.
     Keep,
@@ -137,6 +157,7 @@ impl Decision {
 
 /// What classification made of one attribute.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum Classified<T> {
     /// The attribute passes unchanged.
     Kept(T),
@@ -658,10 +679,9 @@ mod tests {
 
         #[test]
         fn match_the_conformance_vectors() {
-            let path = concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../conformance/vectors/pii-hash.json"
-            );
+            let Some(path) = crate::test_support::conformance("vectors/pii-hash.json") else {
+                return;
+            };
             let raw = std::fs::read_to_string(path).expect("the conformance vectors are readable");
             let file: File = serde_json::from_str(&raw).expect("the vectors are JSON");
             let policy = Policy::new(PiiMode::Hash, &decode_hex(&file.key_hex), HashMap::new())

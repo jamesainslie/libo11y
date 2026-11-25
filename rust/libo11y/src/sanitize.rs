@@ -493,10 +493,9 @@ mod tests {
 
     #[test]
     fn matches_the_conformance_vectors() {
-        let path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../conformance/vectors/endpoint-sanitize.json"
-        );
+        let Some(path) = crate::test_support::conformance("vectors/endpoint-sanitize.json") else {
+            return;
+        };
         let raw = std::fs::read_to_string(path).expect("the conformance vectors are readable");
         let vectors: Vec<Vector> = serde_json::from_str(&raw).expect("the vectors are JSON");
         assert!(vectors.len() >= 20, "found {} vectors", vectors.len());

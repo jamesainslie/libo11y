@@ -257,15 +257,14 @@ mod tests {
 
     #[test]
     fn baggage_metadata_survives_the_filter() {
-        let allow: BaggageAllow = Arc::new(|_| true);
+        let allow: BaggageAllow = Arc::new(|key| key != "drop");
         let propagator = Propagator::new(vec![Box::new(BaggagePropagator::new())], Some(allow));
-        let inbound = HashMap::from([("baggage".to_owned(), "k=v;prop=1".to_owned())]);
+        let inbound = HashMap::from([("baggage".to_owned(), "k=v;prop=1,drop=x".to_owned())]);
         let cx = propagator.extract_with_context(&Context::new(), &inbound);
         let carrier = carrier_after_inject(&propagator, &cx);
         assert_eq!(
             carrier.get("baggage").map(String::as_str),
             Some("k=v;prop=1")
         );
-        let _ = Baggage::new();
     }
 }
