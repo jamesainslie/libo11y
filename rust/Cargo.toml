@@ -2,7 +2,7 @@
 # together from a rust/vX.Y.Z tag.
 [workspace]
 resolver = "3"
-members = ["libo11y-spec"]
+members = ["libo11y", "libo11y-spec"]
 
 [workspace.package]
 version = "0.0.0"
