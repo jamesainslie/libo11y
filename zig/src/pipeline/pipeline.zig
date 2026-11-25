@@ -9,7 +9,12 @@ pub const ids = @import("ids.zig");
 pub const propagation = @import("propagation.zig");
 pub const resource = @import("resource.zig");
 pub const tracestate = @import("tracestate.zig");
+pub const memory_exporter = @import("memory_exporter.zig");
+pub const policy = @import("policy.zig");
+pub const processor = @import("processor.zig");
+pub const sampler = @import("sampler.zig");
 pub const span = @import("span.zig");
+pub const tracer = @import("tracer.zig");
 
 pub const otlp = struct {
     pub const json = @import("otlp/json.zig");
