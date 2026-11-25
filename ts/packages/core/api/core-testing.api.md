@@ -39,6 +39,8 @@ export interface Platform {
     // Warning: (ae-forgotten-export) The symbol "ResourceLayers" needs to be exported by the entry point testing.d.ts
     detectResource(hermetic: boolean): Promise<ResourceLayers>;
     env(): Readonly<Record<string, string | undefined>>;
+    // Warning: (ae-forgotten-export) The symbol "RecordingGate" needs to be exported by the entry point testing.d.ts
+    readonly gate?: RecordingGate;
     hmacSha256?(key: Uint8Array, data: Uint8Array): Uint8Array;
     readonly name: string;
     randomUUID(): string;

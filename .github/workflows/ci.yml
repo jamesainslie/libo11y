@@ -94,7 +94,44 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "24.x"
-      - run: make ts-check
+      - run: make ts-check ts-browser-bundle-test
+
+  # The browser packages' suites under Playwright and headless Chromium.
+  ts-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.13"
+      # Bun's global install cache, keyed on the lockfile.
+      - uses: actions/cache@v6
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('ts/bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24.x"
+      # Playwright's browser builds, keyed on the lockfile that pins
+      # Playwright. No restore-keys: another Playwright version's browsers
+      # would only take up space.
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('ts/bun.lock') }}
+      - run: make ts-install
+      # --no-install runs the Playwright that ts/bun.lock pins and fails if
+      # it is missing. --with-deps installs Chromium's system libraries,
+      # which the cache does not hold. A cached Chromium is not downloaded
+      # again.
+      - name: Install Playwright's Chromium
+        working-directory: ts
+        run: bun x --no-install playwright install --with-deps chromium
+      - run: make ts-browser-test
 
   vuln:
     runs-on: ubuntu-latest

@@ -256,6 +256,37 @@ test("the repository's examples are private, so no publish can include them", ()
   }
 });
 
+// The repository's packages, read the way pack reads them: every packages/* directory with a package.json.
+function repositoryPackages(): PackageJson[] {
+  const packagesDir = join(import.meta.dirname, "..", "packages");
+  return readdirSync(packagesDir, { withFileTypes: true })
+    .filter((e) => e.isDirectory() && existsSync(join(packagesDir, e.name, "package.json")))
+    .map((e) => JSON.parse(readFileSync(join(packagesDir, e.name, "package.json"), "utf8")) as PackageJson);
+}
+
+test("the repository's packages publish spec first, then core, each after its @libo11y/* dependencies", () => {
+  const order = packOrder(repositoryPackages());
+  const names = order.map((p) => p.name);
+  assert.deepEqual(names.slice(0, 2), ["@libo11y/spec", "@libo11y/core"]);
+  for (const [i, pkg] of order.entries()) {
+    for (const dep of Object.keys(pkg.dependencies ?? {})) {
+      if (!dep.startsWith("@libo11y/")) continue;
+      const at = names.indexOf(dep);
+      assert.ok(at !== -1, `${pkg.name} depends on ${dep}, which is not a workspace package`);
+      assert.ok(at < i, `${pkg.name} publishes before its dependency ${dep}`);
+    }
+  }
+});
+
+test("the repository's packages are all in the @libo11y scope and share one version", () => {
+  const pkgs = repositoryPackages();
+  assert.ok(pkgs.length >= 4, "expected at least spec, core, server and test");
+  for (const pkg of pkgs) {
+    assert.ok(pkg.name.startsWith("@libo11y/"), `${pkg.name} is outside the @libo11y scope`);
+    assert.equal(pkg.version, pkgs[0]?.version, `${pkg.name} is not at the lockstep version`);
+  }
+});
+
 test("pack refuses version 0.0.0 unless unreleased packages are allowed", () => {
   const root = fixture("unreleased");
   const out = join(work, "unreleased-out");

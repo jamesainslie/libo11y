@@ -1,0 +1,35 @@
+{
+  "name": "@libo11y/webext",
+  "version": "0.1.2",
+  "private": true,
+  "description": "The libo11y Manifest V3 extension platform for TypeScript: setup for the service worker with a queue persisted to IndexedDB on every batch, setup for content scripts and extension pages that forward their records to the worker by runtime messaging, and trace context that crosses with every message.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jamesainslie/libo11y.git",
+    "directory": "ts/packages/webext"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "api": "api-extractor run --local",
+    "api:check": "api-extractor run"
+  },
+  "dependencies": {
+    "@libo11y/core": "workspace:*",
+    "@libo11y/spec": "workspace:*",
+    "@libo11y/web": "workspace:*",
+    "@opentelemetry/api": "1.10.0",
+    "@opentelemetry/sdk-logs": "3.1.1",
+    "@opentelemetry/sdk-metrics": "3.1.1",
+    "@opentelemetry/sdk-trace": "3.1.1"
+  },
+  "devDependencies": {
+    "@libo11y/test": "workspace:*",
+    "fake-indexeddb": "6.2.7"
+  }
+}
