@@ -1,0 +1,35 @@
+# opentelemetry.proto.collector.trace.v1.ExportTraceServiceRequest
+resource_spans {
+  resource {
+    attributes { key: "service.name" value { string_value: "checkout" } }
+    attributes { key: "process.pid" value { int_value: 4242 } }
+  }
+  scope_spans {
+    scope { name: "github.com/jamesainslie/libo11y/zig" version: "0.0.0" }
+    spans {
+      trace_id: "\x4b\xf9\x2f\x35\x77\xb3\x4d\xa6\xa3\xce\x92\x9d\x0e\x0e\x47\x36"
+      span_id: "\x00\xf0\x67\xaa\x0b\xa9\x02\xb7"
+      parent_span_id: "\x53\x99\x5c\x3f\x42\xcd\x8a\xd8"
+      trace_state: "o11y=1"
+      flags: 257
+      name: "GET /orders/{id}"
+      kind: SPAN_KIND_SERVER
+      start_time_unix_nano: 1764000000000000000
+      end_time_unix_nano: 1764000000025000000
+      attributes { key: "http.response.status_code" value { int_value: 504 } }
+      events {
+        time_unix_nano: 1764000000000001000
+        name: "exception"
+        attributes { key: "exception.type" value { string_value: "error.Timeout" } }
+      }
+      links {
+        trace_id: "\x0a\xf7\x65\x19\x16\xcd\x43\xdd\x84\x48\xeb\x21\x1c\x80\x31\x9c"
+        span_id: "\xb7\xad\x6b\x71\x69\x20\x33\x31"
+        flags: 769
+      }
+      status { code: STATUS_CODE_ERROR message: "upstream timed out" }
+    }
+    schema_url: "https://schemas.o11y.ing/2.0.0"
+  }
+  schema_url: "https://schemas.o11y.ing/2.0.0"
+}

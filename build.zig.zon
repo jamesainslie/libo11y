@@ -15,10 +15,16 @@
     .dependencies = .{
         .libo11y = .{ .path = "zig" },
     },
-    // Only the shim and the Zig package count toward the package hash.
+    // Only the shim, the license and the published parts of the Zig
+    // package count toward the package hash. zig/test/ holds test code and
+    // fixtures that consumers do not need.
     .paths = .{
         "build.zig",
         "build.zig.zon",
-        "zig",
+        "LICENSE",
+        "zig/build.zig",
+        "zig/build.zig.zon",
+        "zig/README.md",
+        "zig/src",
     },
 }

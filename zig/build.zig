@@ -49,4 +49,16 @@ pub fn build(b: *std.Build) !void {
     const tests = b.addTest(.{ .root_module = o11y });
     const test_step = b.step("test", "Run the libo11y tests");
     test_step.dependOn(&b.addRunArtifact(tests).step);
+
+    // Tests that read fixtures under test/, which the published package
+    // leaves out. They build only when the test step runs.
+    const fixture_tests = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("test/otlp_fixtures_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "opentelemetry-proto", .module = proto },
+        },
+    }) });
+    test_step.dependOn(&b.addRunArtifact(fixture_tests).step);
 }
