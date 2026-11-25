@@ -116,12 +116,12 @@ fn mask_floor_protects_map_keys() {
 
 #[test]
 fn colliding_key_text_renders_by_position() {
-    let map: HashMap<Secret<&str>, i32> = [(Secret::new("k1"), 1), (Secret::new("k2"), 2)].into();
+    let map: HashMap<Masked<&str>, i32> = [(Masked::new("k1"), 1), (Masked::new("k2"), 2)].into();
     let out = json(&map);
     assert!(!out.contains("k1") && !out.contains("k2"), "{out}");
     assert_eq!(
         out,
-        r#"{"0":{"key":"REDACTED","value":1},"1":{"key":"REDACTED","value":2}}"#,
+        r#"{"0":{"key":"XX","value":1},"1":{"key":"XX","value":2}}"#
     );
 }
 
@@ -153,4 +153,11 @@ fn deep_nesting_fails_closed() {
     }
     assert_eq!(render(&chain(3)).to_string(), "leaf");
     assert_eq!(render(&chain(40)).to_string(), REDACTED);
+}
+
+#[test]
+fn f32_renders_at_its_own_precision() {
+    assert_eq!(render(&0.1_f32).to_string(), "0.1");
+    assert_eq!(json(&0.1_f32), "0.1");
+    assert_eq!(0.1_f32.redact(Protection::Mask), Protected::masked("0.1"));
 }

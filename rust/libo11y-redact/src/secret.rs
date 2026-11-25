@@ -7,7 +7,7 @@ use crate::{Protected, Protection, REDACTED, Redact};
 /// A value that must never appear in telemetry.
 ///
 /// `Secret` renders as [`REDACTED`] through `Display`, `Debug` (plain and
-/// `{:#?}`), `serde::Serialize` (feature `serde`), and so through tracing's
+/// `{:#?}`), `serde::Serialize`, and so through tracing's
 /// `%` and `?` field sigils, and under every [`Protection`] floor. Formatting
 /// flags such as a width are ignored, so the output is always the literal.
 ///
@@ -34,7 +34,12 @@ use crate::{Protected, Protection, REDACTED, Redact};
 /// # let token = libo11y_redact::Secret::new("sk-live-123");
 /// tracing::info!(token = %token, "authenticated"); // records token=REDACTED
 /// ```
-#[derive(Clone, Copy, Default, PartialEq, Eq, Hash)]
+///
+/// `Secret` implements neither `PartialEq` nor `Hash`. A derived comparison
+/// is not constant-time, and comparing secrets with it invites timing
+/// attacks: compare [`expose`](Self::expose)d values with a constant-time
+/// comparison instead.
+#[derive(Clone, Copy, Default)]
 pub struct Secret<T>(T);
 
 impl<T> Secret<T> {

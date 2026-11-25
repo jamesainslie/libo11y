@@ -15,21 +15,21 @@ use crate::{Protection, REDACTED};
 /// - `Display` renders the compact text form Go's `redact.Struct` prints:
 ///   fields as `name:value` separated by single spaces inside braces, so a
 ///   struct renders as `{card:XXXX cvv:REDACTED merchant:acme}`.
-/// - `serde::Serialize` (feature `serde`) renders the shape serde's own
-///   derive would, with protected leaves: structs as maps, sequences as
-///   sequences, and [`Protected::Redacted`] as the string `"REDACTED"`.
+/// - `serde::Serialize` renders the shape serde's own derive would, with
+///   protected leaves: structs as maps, sequences as sequences, and
+///   [`Protected::Redacted`] as the string `"REDACTED"`.
 ///
 /// ```
 /// use libo11y_redact::{Fields, Protected, Record};
 ///
-/// let payment = Protected::Record(Record {
-///     name: "Payment",
-///     variant: None,
-///     fields: Fields::Named(vec![
+/// let payment = Protected::Record(Record::new(
+///     "Payment",
+///     None,
+///     Fields::Named(vec![
 ///         ("card", Protected::Str("XXXX".into())),
 ///         ("cvv", Protected::Redacted),
 ///     ]),
-/// });
+/// ));
 /// assert_eq!(payment.to_string(), "{card:XXXX cvv:REDACTED}");
 /// assert_eq!(format!("{payment:?}"), r#"Payment { card: "XXXX", cvv: REDACTED }"#);
 /// ```
@@ -65,6 +65,7 @@ pub enum Protected {
 
 /// A struct or an enum variant inside a [`Protected`] tree.
 #[derive(Clone, PartialEq)]
+#[non_exhaustive]
 pub struct Record {
     /// The type's name.
     pub name: &'static str,
@@ -74,8 +75,21 @@ pub struct Record {
     pub fields: Fields,
 }
 
+impl Record {
+    /// A record of type `name`, as `variant` when the type is an enum.
+    #[must_use]
+    pub const fn new(name: &'static str, variant: Option<Variant>, fields: Fields) -> Self {
+        Self {
+            name,
+            variant,
+            fields,
+        }
+    }
+}
+
 /// An enum variant of a [`Record`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Variant {
     /// The variant's position in its enum's declaration, as serde numbers
     /// variants.
@@ -84,15 +98,46 @@ pub struct Variant {
     pub name: &'static str,
 }
 
+impl Variant {
+    /// The variant `name` at position `index` of its enum.
+    #[must_use]
+    pub const fn new(index: u32, name: &'static str) -> Self {
+        Self { index, name }
+    }
+}
+
 /// The fields of a [`Record`].
 #[derive(Clone, PartialEq)]
+#[non_exhaustive]
 pub enum Fields {
     /// Named fields, in declaration order.
     Named(Vec<(&'static str, Protected)>),
-    /// Positional fields, in declaration order.
+    /// The one field of a newtype, such as `struct Email(String)`. It
+    /// renders transparently, as serde renders a newtype struct.
+    Newtype(Box<Protected>),
+    /// The positional fields of a tuple shape, in declaration order. A
+    /// tuple stays a tuple even when omitted fields leave one or none.
     Unnamed(Vec<Protected>),
     /// No fields.
     Unit,
+}
+
+impl Fields {
+    fn mask_leaves(self) -> Self {
+        match self {
+            Self::Named(fields) => Self::Named(
+                fields
+                    .into_iter()
+                    .map(|(name, value)| (name, value.mask_leaves()))
+                    .collect(),
+            ),
+            Self::Newtype(value) => Self::Newtype(Box::new(value.mask_leaves())),
+            Self::Unnamed(fields) => {
+                Self::Unnamed(fields.into_iter().map(Protected::mask_leaves).collect())
+            }
+            Self::Unit => Self::Unit,
+        }
+    }
 }
 
 impl Protected {
@@ -112,12 +157,17 @@ impl Protected {
     /// Enforces `floor` on an already protected value.
     ///
     /// Under [`Protection::Passthrough`] the value is unchanged. Under
-    /// [`Protection::Mask`] every leaf is masked: strings, text and numbers
-    /// become a run of `X` of their character count, while names, field
-    /// names, `Null` and [`Protected::Redacted`] keep their stricter or
-    /// structural rendering. Under [`Protection::Redact`] and
-    /// [`Protection::Omit`] the whole value becomes [`Protected::Redacted`].
-    /// Enforcing a floor twice changes nothing more.
+    /// [`Protection::Mask`] every leaf is masked: strings, text, numbers and
+    /// booleans become a run of `X` of their character count, which keeps
+    /// their length, so a masked `true` and `false` still differ. Which
+    /// enum variant a value is counts as data too: a unit variant masks its
+    /// name, and a variant with fields renders as a plain record of its
+    /// type with masked fields. Its field names and shape still show, so
+    /// variants with different fields can still be told apart. Type and
+    /// field names, `Null` and [`Protected::Redacted`] are kept. Under
+    /// [`Protection::Redact`] and [`Protection::Omit`] the whole value
+    /// becomes [`Protected::Redacted`]. Enforcing a floor twice changes
+    /// nothing more.
     ///
     /// ```
     /// use libo11y_redact::{Protected, Protection};
@@ -154,21 +204,14 @@ impl Protected {
                     .map(|(k, v)| (k.mask_leaves(), v.mask_leaves()))
                     .collect(),
             ),
-            Self::Record(record) => Self::Record(Record {
-                fields: match record.fields {
-                    Fields::Named(fields) => Fields::Named(
-                        fields
-                            .into_iter()
-                            .map(|(name, v)| (name, v.mask_leaves()))
-                            .collect(),
-                    ),
-                    Fields::Unnamed(fields) => {
-                        Fields::Unnamed(fields.into_iter().map(Self::mask_leaves).collect())
-                    }
-                    Fields::Unit => Fields::Unit,
-                },
-                ..record
-            }),
+            Self::Record(Record {
+                variant: Some(variant),
+                fields: Fields::Unit,
+                ..
+            }) => Self::masked(variant.name),
+            Self::Record(record) => {
+                Self::Record(Record::new(record.name, None, record.fields.mask_leaves()))
+            }
         }
     }
 }
@@ -223,10 +266,10 @@ impl fmt::Display for Record {
                 write_spaced(f, fields.iter().map(|(name, value)| (Some(*name), value)))?;
                 f.write_char('}')
             }
-            // A newtype struct is transparent, as serde renders it.
-            Fields::Unnamed(fields) if variant.is_none() && fields.len() == 1 => {
-                fmt::Display::fmt(&fields[0], f)
-            }
+            Fields::Newtype(value) => match variant {
+                Some(variant) => write!(f, "{variant}({value})"),
+                None => fmt::Display::fmt(value, f),
+            },
             Fields::Unnamed(fields) => {
                 f.write_str(variant.unwrap_or_default())?;
                 f.write_char('(')?;
@@ -286,6 +329,7 @@ impl fmt::Debug for Record {
                 }
                 s.finish()
             }
+            Fields::Newtype(value) => f.debug_tuple(label).field(value).finish(),
             Fields::Unnamed(fields) => {
                 let mut t = f.debug_tuple(label);
                 for value in fields {
@@ -305,6 +349,7 @@ impl fmt::Debug for Fields {
                 .debug_map()
                 .entries(fields.iter().map(|(k, v)| (k, v)))
                 .finish(),
+            Self::Newtype(value) => fmt::Debug::fmt(value, f),
             Self::Unnamed(fields) => f.debug_list().entries(fields).finish(),
             Self::Unit => f.write_str("Unit"),
         }

@@ -113,7 +113,9 @@ leaf! {
     u64 => |v| Protected::Uint(u128::from(*v));
     u128 => |v| Protected::Uint(*v);
     usize => |v| u64::try_from(*v).map_or(Protected::Redacted, |n| Protected::Uint(u128::from(n)));
-    f32 => |v| Protected::Float(f64::from(*v));
+    // Through its own shortest text, so 0.1_f32 stays 0.1 rather than
+    // widening to 0.10000000149011612.
+    f32 => |v| v.to_string().parse().map_or(Protected::Redacted, Protected::Float);
     f64 => |v| Protected::Float(*v);
     char => |v| Protected::Str(v.to_string());
     str => |v| Protected::Str(v.to_owned());

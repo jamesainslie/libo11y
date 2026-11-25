@@ -12,10 +12,11 @@ use crate::{Protected, Protection, Redact};
 /// or an address can be masked alike. Characters are Unicode scalar
 /// values, which is Go's rune count: `"Jürgen"` masks to `XXXXXX`.
 /// `Display` writes the mask, `Debug` writes it quoted as a string, and
-/// `serde::Serialize` (feature `serde`) writes it as a string. Under a
+/// `serde::Serialize` writes it as a string. Under a
 /// [`Protection::Redact`] or stricter floor the value renders as
-/// [`REDACTED`](crate::REDACTED). A `Display` implementation that fails or
-/// panics renders `REDACTED` too.
+/// [`REDACTED`](crate::REDACTED). A `Display` implementation that returns an
+/// error or panics renders `REDACTED` too, though the panic hook still
+/// prints the panic's message.
 ///
 /// ```
 /// use libo11y_redact::Masked;

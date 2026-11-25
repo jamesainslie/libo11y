@@ -84,9 +84,7 @@ impl Serialize for Record {
                 }
                 s.end()
             }
-            (None, Fields::Unnamed(fields)) if fields.len() == 1 => {
-                serializer.serialize_newtype_struct(self.name, &fields[0])
-            }
+            (None, Fields::Newtype(value)) => serializer.serialize_newtype_struct(self.name, value),
             (None, Fields::Unnamed(fields)) => {
                 let mut t = serializer.serialize_tuple_struct(self.name, fields.len())?;
                 for value in fields {
@@ -107,8 +105,8 @@ impl Serialize for Record {
                 }
                 s.end()
             }
-            (Some(v), Fields::Unnamed(fields)) if fields.len() == 1 => {
-                serializer.serialize_newtype_variant(self.name, v.index, v.name, &fields[0])
+            (Some(v), Fields::Newtype(value)) => {
+                serializer.serialize_newtype_variant(self.name, v.index, v.name, value)
             }
             (Some(v), Fields::Unnamed(fields)) => {
                 let mut t =
