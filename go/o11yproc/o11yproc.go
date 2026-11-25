@@ -23,13 +23,19 @@
 // context in each frame as string fields under the W3C names:
 // "traceparent" when the context holds a valid span, and "tracestate" and
 // "baggage" when the context has them. [Inject] writes them into the map a
-// frame encodes and [Extract] reads them back. Both use the global
-// propagator, so after o11y.Setup the SDK's baggage egress filter applies.
-// Before Setup the global propagator is OpenTelemetry's no-op default:
-// Inject writes nothing and Extract returns ctx unchanged. With an SDK
-// built by o11y.New, call
-// sdk.Propagator().Inject(ctx, propagation.MapCarrier(frame)) and
-// sdk.Propagator().Extract(ctx, propagation.MapCarrier(frame)) directly.
+// frame encodes and [Extract] reads them back.
+//
+// Pass [WithSDK] to bind both to an SDK built with o11y.New: they then use
+// that SDK's propagator, so its baggage egress filter applies, and no
+// process global is read:
+//
+//	o11yproc.Inject(ctx, frame, o11yproc.WithSDK(sdk))
+//	ctx = o11yproc.Extract(ctx, frame, o11yproc.WithSDK(sdk))
+//
+// Without it they use the global propagator, so after o11y.Setup the SDK's
+// baggage egress filter applies. Before Setup the global propagator is
+// OpenTelemetry's no-op default: Inject writes nothing and Extract returns
+// ctx unchanged.
 package o11yproc
 
 import (
@@ -39,6 +45,8 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
+
+	o11y "github.com/jamesainslie/libo11y/go"
 )
 
 // Environment variable names for the W3C trace context.
@@ -87,16 +95,52 @@ func FromEnv(ctx context.Context) context.Context {
 	return propagation.TraceContext{}.Extract(ctx, m)
 }
 
-// Inject writes the trace context and baggage active in ctx into frame
-// with the global propagator. frame must not be nil. Before o11y.Setup
-// installs a propagator, Inject writes nothing.
-func Inject(ctx context.Context, frame map[string]string) {
-	otel.GetTextMapPropagator().Inject(ctx, propagation.MapCarrier(frame))
+// Option configures [Inject] and [Extract].
+type Option func(*config)
+
+type config struct {
+	sdk *o11y.SDK
 }
 
-// Extract returns ctx with the trace context and baggage the global
-// propagator reads from frame. Before o11y.Setup installs a propagator, it
-// returns ctx unchanged.
-func Extract(ctx context.Context, frame map[string]string) context.Context {
-	return otel.GetTextMapPropagator().Extract(ctx, propagation.MapCarrier(frame))
+// WithSDK binds [Inject] and [Extract] to sdk's propagator instead of the
+// process-global one, so sdk's baggage egress filter applies. Use it with
+// SDKs built by o11y.New; after o11y.Setup the global propagator already
+// is the SDK's. A nil sdk keeps the global propagator.
+func WithSDK(sdk *o11y.SDK) Option {
+	return func(c *config) { c.sdk = sdk }
+}
+
+// propagator returns the propagator opts select: the bound SDK's, or the
+// global one when no SDK is bound.
+func propagator(opts []Option) propagation.TextMapPropagator {
+	var c config
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&c)
+		}
+	}
+	if c.sdk == nil {
+		return otel.GetTextMapPropagator()
+	}
+	return c.sdk.Propagator()
+}
+
+// Inject writes the trace context and baggage active in ctx into frame
+// with the propagator of the SDK bound by [WithSDK], or the global
+// propagator without one. A nil frame has nowhere to write, so Inject does
+// nothing. Without [WithSDK] and before o11y.Setup installs a propagator,
+// Inject writes nothing.
+func Inject(ctx context.Context, frame map[string]string, opts ...Option) {
+	if frame == nil {
+		return
+	}
+	propagator(opts).Inject(ctx, propagation.MapCarrier(frame))
+}
+
+// Extract returns ctx with the trace context and baggage read from frame
+// by the propagator of the SDK bound by [WithSDK], or the global
+// propagator without one. Without [WithSDK] and before o11y.Setup installs
+// a propagator, it returns ctx unchanged.
+func Extract(ctx context.Context, frame map[string]string, opts ...Option) context.Context {
+	return propagator(opts).Extract(ctx, propagation.MapCarrier(frame))
 }
