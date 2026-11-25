@@ -247,7 +247,8 @@ install that version locally. Keep the two in step when adding a gate.
   --check` over `zig/` and the root shim, `zig build test` through the
   root shim in Debug and ReleaseSafe with the job count capped by
   `ZIG_BUILD_J` (default 8), and `scripts/zig-hygiene.sh` with its test.
-  The hygiene script fails on `@panic`, `catch unreachable` or
-  `std.debug.print` outside test blocks and test-only files (files under
-  `zig/test/` and files named `*_test.zig`). Every switch on an error set
-  the public API returns is exhaustive.
+  The hygiene script fails on `@panic`, `std.debug.panic`,
+  `std.debug.print` (also through an alias of `std.debug`), and `catch` or
+  `orelse` followed by `unreachable`, outside test blocks and test-only
+  files (files under `zig/test/` and files named `*_test.zig`). Every
+  switch on an error set the public API returns is exhaustive.

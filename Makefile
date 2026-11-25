@@ -140,8 +140,9 @@ ZIG_BUILD_J ?= 8
 ZIG_FMT := zig fmt --check --exclude zig/.zig-cache --exclude zig/zig-pkg --exclude zig/zig-out build.zig build.zig.zon zig
 
 # The Zig package (needs zig 0.17.1): zig fmt, the tests through the root
-# shim in Debug and ReleaseSafe, and the hygiene check, which fails on
-# @panic, catch unreachable or std.debug.print outside tests.
+# shim in Debug and ReleaseSafe, and the hygiene check with its test. The
+# check fails on @panic, std.debug.panic, std.debug.print and catch or
+# orelse unreachable outside tests.
 zig-check: zig-hygiene-test
 	$(ZIG_FMT)
 	zig build test -j$(ZIG_BUILD_J) -Doptimize=Debug
@@ -154,4 +155,4 @@ zig-hygiene-test:
 
 # vuln runs last: it depends on the advisory database and the toolchain's
 # patch level, so local runs exercise every other gate first.
-ci: lint vet test tidy-check spec-check spec-drift ts-check ts-browser-test rust-check rust-msrv zig-check schema-published-test release-notes-test release-tag-test ts-browser-bundle-test zig-hygiene-test release-check vuln
+ci: lint vet test tidy-check spec-check spec-drift ts-check ts-browser-test rust-check rust-msrv zig-check schema-published-test release-notes-test release-tag-test ts-browser-bundle-test release-check vuln

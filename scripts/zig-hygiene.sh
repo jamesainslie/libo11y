@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # zig-hygiene.sh: fail on calls that crash or print from library code in
-# the Zig sources: @panic, catch unreachable (with or without an error
-# capture) and std.debug.print, including an alias of it.
+# the Zig sources: @panic, std.debug.panic, std.debug.print, and catch or
+# orelse followed by unreachable. A catch may carry an error capture, and
+# unreachable may start the next line. Any debug.print or debug.panic
+# token counts, so `const debug = std.debug;` aliases are caught, and so
+# is an alias of std.debug.print itself.
 #
 # Usage: zig-hygiene.sh [PATH...]
 #
@@ -14,7 +17,8 @@
 #     (zig/test/ by default), or any file named *_test.zig;
 #   - a test block in any other file: from a line that opens a test
 #     declaration (`test "name" {`, `test {` or `test name {`, at any
-#     indentation) to the closing brace at the same indentation.
+#     indentation, optionally followed by a comment) to the closing
+#     brace at the same indentation.
 # The block rule relies on zig fmt's layout, which make zig-check enforces
 # before running this script. Comments and multiline string lines (\\) are
 # not code and are ignored. A // inside a string literal ends the checked
@@ -58,27 +62,42 @@ fi
 
 # Written for POSIX awk, so it runs the same with the BSD awk on macOS.
 violations="$(awk '
-	FNR == 1 { in_test = 0; indent = "" }
+	FNR == 1 { in_test = 0; indent = ""; pending = "" }
 	{
 		line = $0
 		if (in_test) {
 			if (line == indent "}") in_test = 0
 			next
 		}
-		if (line ~ /^[ \t]*test( "([^"\\]|\\.)*"| [A-Za-z_][A-Za-z0-9_]*)? [{]$/) {
+		if (line ~ /^[ \t]*test( "([^"\\]|\\.)*"| [A-Za-z_][A-Za-z0-9_]*)? [{]([ \t]*\/\/.*)?$/) {
 			match(line, /^[ \t]*/)
 			indent = substr(line, 1, RLENGTH)
 			in_test = 1
+			pending = ""
 			next
 		}
 		if (line ~ /^[ \t]*\\\\/) next
 		code = line
 		sub(/\/\/.*/, "", code)
+		if (code ~ /^[ \t]*$/) next
 		text = line
 		sub(/^[ \t]+/, "", text)
-		if (code ~ /@panic[(]/) printf "%s:%d: @panic outside a test: %s\n", FILENAME, FNR, text
-		if (code ~ /catch[ \t]+(\|[^|]*\|[ \t]*)?unreachable/) printf "%s:%d: catch unreachable outside a test: %s\n", FILENAME, FNR, text
-		if (code ~ /std\.debug\.print([^A-Za-z0-9_]|$)/) printf "%s:%d: std.debug.print outside a test: %s\n", FILENAME, FNR, text
+		if (code ~ /@panic[(]/) report("@panic")
+		if (code ~ /(^|[^A-Za-z0-9_])catch[ \t]+(\|[^|]*\|[ \t]*)?unreachable/) report("catch unreachable")
+		if (code ~ /(^|[^A-Za-z0-9_])orelse[ \t]+unreachable/) report("orelse unreachable")
+		# A catch or orelse that ends a line, followed by a line that
+		# starts with unreachable.
+		if (pending != "" && code ~ /^[ \t]*unreachable([^A-Za-z0-9_]|$)/) report(pending " unreachable")
+		pending = ""
+		if (code ~ /(^|[^A-Za-z0-9_])catch([ \t]+\|[^|]*\|)?[ \t]*$/) pending = "catch"
+		if (code ~ /(^|[^A-Za-z0-9_])orelse[ \t]*$/) pending = "orelse"
+		# std.debug.print and std.debug.panic, qualified, aliased through
+		# `const debug = std.debug;`, or aliased themselves.
+		if (code ~ /(^|[^A-Za-z0-9_])debug\.print([^A-Za-z0-9_]|$)/) report("std.debug.print")
+		if (code ~ /(^|[^A-Za-z0-9_])debug\.panic([^A-Za-z0-9_]|$)/) report("std.debug.panic")
+	}
+	function report(what) {
+		printf "%s:%d: %s outside a test: %s\n", FILENAME, FNR, what, text
 	}
 ' "${files[@]}")"
 

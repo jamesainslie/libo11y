@@ -102,6 +102,33 @@ expect_failure "checks code after a nested test closes" 1 "lib.zig:7: @panic out
 expect_failure "checks code after a test block ends" 1 "lib.zig:5: @panic outside a test" \
 	"$(tree after 'lib.zig=test "t" {\n    @panic("in test");\n}\n\npub fn f() void { @panic("after"); }')"
 
+expect_failure "fails std.debug.panic" 1 "lib.zig:2: std.debug.panic outside a test" \
+	"$(tree debug-panic 'lib.zig=pub fn f() void {\n    std.debug.panic("boom {d}", .{1});\n}')"
+
+expect_failure "fails orelse unreachable" 1 "lib.zig:2: orelse unreachable outside a test" \
+	"$(tree orelse 'lib.zig=pub fn f(x: ?u8) u8 {\n    return x orelse unreachable;\n}')"
+
+expect_failure "fails catch unreachable split across lines" 1 "lib.zig:3: catch unreachable outside a test" \
+	"$(tree split-catch 'lib.zig=pub fn f() u8 {\n    return g() catch\n        unreachable;\n}')"
+
+expect_failure "fails catch with a capture and unreachable on the next line" 1 "lib.zig:3: catch unreachable outside a test" \
+	"$(tree split-capture 'lib.zig=pub fn f() u8 {\n    return g() catch |err|\n        unreachable;\n}')"
+
+expect_failure "fails orelse unreachable split across lines" 1 "lib.zig:3: orelse unreachable outside a test" \
+	"$(tree split-orelse 'lib.zig=pub fn f(x: ?u8) u8 {\n    return x orelse\n        unreachable;\n}')"
+
+expect_failure "fails debug.print through an alias of std.debug" 1 "lib.zig:3: std.debug.print outside a test" \
+	"$(tree debug-alias-print 'lib.zig=const debug = std.debug;\npub fn f() void {\n    debug.print("x", .{});\n}')"
+
+expect_failure "fails debug.panic through an alias of std.debug" 1 "lib.zig:3: std.debug.panic outside a test" \
+	"$(tree debug-alias-panic 'lib.zig=const debug = std.debug;\npub fn f() void {\n    debug.panic("x", .{});\n}')"
+
+expect_pass "passes a plain unreachable and an identifier ending in debug" "$(tree plain-unreachable \
+	'lib.zig=pub fn f(x: u1) u8 {\n    switch (x) {\n        0 => return mydebug.printer(),\n        1 => unreachable,\n    }\n}')"
+
+expect_pass "passes a test opener with a trailing comment" "$(tree opener-comment \
+	'lib.zig=test "x" { // the opener may carry a comment\n    @panic("in test");\n}\n\ntest { // so may an anonymous one\n    @panic("in test");\n}')"
+
 expect_pass "passes test-only files" "$(tree test-files \
 	'test/harness.zig=pub fn f() void {\n    @panic("harness");\n}' \
 	'src/proto_roundtrip_test.zig=fn helper() void {\n    std.debug.print("x", .{});\n}')"
