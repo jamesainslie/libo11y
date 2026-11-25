@@ -280,3 +280,16 @@ test("logAttributes judges a member of an empty-keyed group on the parent's path
     { "": { ok: 1 }, http: { ok: 2 } },
   );
 });
+
+// Options are validated before a policy is built. Should a mode get past that, the policy still
+// fails closed: an unknown mode is not "allow", so PII is dropped on every signal.
+test("a PII mode the policy does not know fails closed", () => {
+  const p = SensitivityPolicy.create({ pii: "bogus" as never, registries: [lor] });
+  assert.equal(p.actionFor("host.ip"), "drop");
+  assert.equal(p.actionFor("lor.user.email"), "drop");
+  assert.equal(p.actionFor("lor.api.token"), "drop");
+  assert.equal(p.actionFor("lor.site.build"), "keep");
+  assert.deepEqual(p.attributes("traces", { "host.ip": "10.0.0.1", route: "/a" }), { route: "/a" });
+  assert.deepEqual(p.logAttributes({ "host.ip": "10.0.0.1", route: "/a" }), { route: "/a" });
+  assert.deepEqual(p.metricAttributes({ "host.ip": "10.0.0.1", route: "/a" }), { route: "/a" });
+});

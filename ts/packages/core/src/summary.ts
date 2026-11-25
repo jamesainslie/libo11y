@@ -15,7 +15,7 @@ import { LEVEL_TEXT } from "./console-sink.ts";
 export interface SummaryFlags {
   /** Whether service.version fell back to 0.0.0-unknown. */
   readonly versionFallback: boolean;
-  /** The configured propagator's fields. */
+  /** The configured propagator's fields in their configured order, or "none" alone. */
   readonly propagatorFields: readonly string[];
   /** Whether runtime metrics run. */
   readonly runtimeMetrics: boolean;

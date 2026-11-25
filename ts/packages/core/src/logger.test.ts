@@ -36,6 +36,7 @@ function harness(
     counts,
   );
   const lines: string[] = [];
+  const errors: unknown[] = [];
   const exporter = new InMemoryLogRecordExporter();
   const provider = new LoggerProvider({
     processors: [new RedactingLogRecordProcessor(policy), new SimpleLogRecordProcessor({ exporter })],
@@ -46,9 +47,10 @@ function harness(
     console: new ConsoleSink("json", opts.write ?? ((l) => lines.push(l))),
     otlp: provider.getLogger("@libo11y/core"),
     now: () => TIME,
+    onError: (err) => errors.push(err),
     ...(opts.replacer === undefined ? {} : { replacer: opts.replacer }),
   });
-  return { logger: new CoreLogger(pipeline), pipeline, lines, exporter, provider, counts, policy };
+  return { logger: new CoreLogger(pipeline), pipeline, lines, errors, exporter, provider, counts, policy };
 }
 
 function inSpan<T>(fn: () => T): T {
@@ -291,4 +293,276 @@ test("groups inside arrays are judged on the holder's path", () => {
   logger.info("b", { host: [[{ ip: "1.1.1.1" }]] } as never);
   const all = `${lines.join("\n")}\n${JSON.stringify(exporter.getFinishedLogRecords().map((r) => r.attributes))}`;
   for (const leaked of ["S3", "1.1.1.1"]) assert.ok(!all.includes(leaked), `${leaked} leaked:\n${all}`);
+});
+
+// Site review: telemetry-side input and user hooks must never throw into the host. Each failure is
+// reported to the pipeline's error handler, and the pipeline fails closed.
+const PREFIX = '{"time":"2026-11-24T01:02:03.4Z","level":"INFO","msg":"m"';
+
+function messages(errors: readonly unknown[]): string[] {
+  return errors.map((e) => (e instanceof Error ? e.message : String(e)));
+}
+
+function revoked(): never {
+  const { proxy, revoke } = Proxy.revocable({}, {});
+  revoke();
+  return proxy as never;
+}
+
+test("a replacer that throws drops the record from every sink and is reported, never thrown", () => {
+  const { logger, lines, errors, exporter } = harness({
+    replacer: () => {
+      throw new Error("replacer boom");
+    },
+  });
+  for (const level of ["trace", "debug", "info", "warn", "error", "fatal"] as const) {
+    assert.doesNotThrow(() => logger[level]("m", { a: 1 }));
+  }
+  assert.doesNotThrow(() => logger.error("m", new Error("e")));
+  assert.deepEqual(lines, [], "nothing unredacted reaches the console");
+  assert.equal(exporter.getFinishedLogRecords().length, 0, "nothing unredacted reaches OTLP");
+  assert.equal(errors.length, 5, "one report per record at or above the level");
+  assert.match(
+    messages(errors)[0] ?? "",
+    /^o11y: attrReplacer failed on "a", the INFO record is dropped: Error$/,
+  );
+});
+
+test("a replacer that returns something unusable drops the record", () => {
+  const { logger, lines, errors } = harness({ replacer: () => null as never });
+  assert.doesNotThrow(() => logger.info("m", { a: 1 }));
+  assert.deepEqual(lines, []);
+  assert.equal(errors.length, 1);
+  assert.equal(
+    messages(errors)[0],
+    'o11y: attrReplacer failed on "a", the INFO record is dropped: TypeError',
+  );
+});
+
+test("an attribute whose getter throws is dropped and reported, and the rest of the record is kept", () => {
+  const { logger, lines, errors, exporter } = harness();
+  const attrs = {
+    before: 1,
+    get bad(): string {
+      throw new Error("getter boom");
+    },
+    g: {
+      get inner(): string {
+        throw new Error("inner boom");
+      },
+      k: "v",
+    },
+    after: 2,
+  };
+  assert.doesNotThrow(() => logger.info("m", attrs));
+  assert.deepEqual(lines, [`${PREFIX},"before":1,"g":{"k":"v"},"after":2}`]);
+  assert.deepEqual(exporter.getFinishedLogRecords()[0]?.attributes, { before: 1, g: { k: "v" }, after: 2 });
+  assert.deepEqual(messages(errors), [
+    'o11y: log attribute "bad" cannot be read and is dropped: Error',
+    'o11y: log attribute "g.inner" cannot be read and is dropped: Error',
+  ]);
+});
+
+test("attributes that are a revoked proxy are dropped and the record is still emitted", () => {
+  const { logger, lines, errors } = harness();
+  assert.doesNotThrow(() => logger.info("m", revoked()));
+  assert.deepEqual(lines, [`${PREFIX}}`]);
+  assert.equal(errors.length, 1);
+  assert.equal(messages(errors)[0], "o11y: log attributes cannot be read and are dropped: TypeError");
+});
+
+test("a value that cannot be classified is dropped where it sits: top level, in a group, in an array", () => {
+  const { logger, lines, errors, exporter } = harness();
+  assert.doesNotThrow(() =>
+    logger.info("m", {
+      a: 1,
+      nested: revoked(),
+      g: { inner: revoked(), k: "v" },
+      list: [1, revoked()],
+      deep: [{ ok: true }, [{ bad: revoked() }]],
+      z: 2,
+    }),
+  );
+  assert.deepEqual(lines, [`${PREFIX},"a":1,"g":{"k":"v"},"z":2}`]);
+  assert.deepEqual(exporter.getFinishedLogRecords()[0]?.attributes, { a: 1, g: { k: "v" }, z: 2 });
+  assert.equal(errors.length, 4);
+  for (const [i, key] of ["nested", "g.inner", "list", "deep"].entries()) {
+    assert.equal(
+      messages(errors)[i],
+      `o11y: log attribute "${key}" cannot be read and is dropped: TypeError`,
+    );
+  }
+});
+
+test("values inside arrays are read once, so a getter cannot change between the policy and the sink", () => {
+  const { logger, lines, errors } = harness();
+  let reads = 0;
+  const member = {
+    get n(): number {
+      reads++;
+      return reads;
+    },
+  };
+  logger.info("m", { list: [member] } as never);
+  assert.equal(reads, 1);
+  assert.deepEqual(lines, [`${PREFIX},"list":[{"n":1}]}`]);
+  assert.deepEqual(errors, []);
+});
+
+test("arrays keep cycles and shared members as the policy expects them", () => {
+  const { logger, lines, errors } = harness();
+  const shared = { s: 1 };
+  const cyclic: unknown[] = [shared, shared];
+  cyclic.push(cyclic);
+  assert.doesNotThrow(() => logger.info("m", { list: cyclic } as never));
+  assert.deepEqual(lines, [`${PREFIX},"list":[{"s":1},{"s":1}]}`]);
+  assert.deepEqual(errors, []);
+});
+
+test("child never throws: unreadable bindings are dropped and reported, the rest are kept", () => {
+  const { logger, lines, errors } = harness();
+  let child = logger;
+  assert.doesNotThrow(() => {
+    child = logger.child(revoked()) as CoreLogger;
+  });
+  assert.doesNotThrow(() => {
+    child = child.child({
+      svc: "a",
+      get bad(): string {
+        throw new Error("getter boom");
+      },
+    }) as CoreLogger;
+  });
+  child.info("m", { k: 1 });
+  assert.deepEqual(lines, [`${PREFIX},"svc":"a","k":1}`]);
+  assert.equal(errors.length, 2);
+  assert.equal(messages(errors)[0], "o11y: log attributes cannot be read and are dropped: TypeError");
+  assert.equal(messages(errors)[1], 'o11y: log attribute "bad" cannot be read and is dropped: Error');
+});
+
+test("an Error argument that cannot be read costs its exception attributes, not the record", () => {
+  const { logger, lines, errors } = harness();
+  const err = new Error("e");
+  Object.defineProperty(err, "message", {
+    get() {
+      throw new Error("message boom");
+    },
+  });
+  assert.doesNotThrow(() => logger.error("m", err));
+  assert.doesNotThrow(() => logger.fatal("m", revoked()));
+  assert.equal(lines.length, 2);
+  assert.match(lines[0] ?? "", /"level":"ERROR","msg":"m"\}$/);
+  assert.match(lines[1] ?? "", /"level":"FATAL","msg":"m"\}$/);
+  assert.equal(errors.length, 2);
+});
+
+test("a sink that throws is reported, and the other sink still gets the record", () => {
+  const { logger, errors, exporter } = harness({
+    write: () => {
+      throw new Error("EPIPE");
+    },
+  });
+  assert.doesNotThrow(() => logger.info("m"));
+  assert.equal(exporter.getFinishedLogRecords().length, 1);
+  assert.deepEqual(messages(errors), ["o11y: writing a log record to the console failed: Error"]);
+});
+
+test("an error handler that throws is itself contained", () => {
+  const policy = SensitivityPolicy.create({ pii: "drop", registries: [] });
+  const pipeline = new LogPipeline({
+    level: "info",
+    policy,
+    replacer: () => {
+      throw new Error("replacer boom");
+    },
+    onError: () => {
+      throw new Error("handler boom");
+    },
+  });
+  assert.doesNotThrow(() => new CoreLogger(pipeline).info("m", { a: 1 }));
+});
+
+test("the strict path still throws what a replacer throws, for the startup canary", () => {
+  const { pipeline, lines } = harness({
+    replacer: () => {
+      throw new Error("replacer boom");
+    },
+  });
+  assert.throws(() => pipeline.emit("info", "canary", { a: 1 }, { strict: true }), /replacer boom/);
+  assert.deepEqual(lines, []);
+});
+
+// Second review, W2. An error's message can carry the value that made it fail: new URL(value) and
+// JSON.parse(value) both quote their input. So a report names the step, the class of the error and
+// the attribute key, and never the message. The error itself stays on cause.
+const MARKER = "sk_live_MARKER_9f8e7d";
+
+test("no report carries the message of what was thrown, only its class, and the cause keeps the error", () => {
+  const thrown = new RangeError(`cannot parse ${MARKER}`);
+  const replacing = harness({
+    replacer: () => {
+      throw thrown;
+    },
+  });
+  replacing.logger.fatal("webhook rejected", { payload: MARKER });
+  const reading = harness();
+  reading.logger.info("lookup", {
+    get user(): string {
+      throw new SyntaxError(`no row for ${MARKER}`);
+    },
+    list: [
+      {
+        get inner(): string {
+          throw new Error(MARKER);
+        },
+      },
+    ],
+  } as never);
+  const writing = harness({
+    write: () => {
+      throw Object.assign(new Error(`write failed near ${MARKER}`), { code: "EPIPE" });
+    },
+  });
+  writing.logger.info("m");
+
+  assert.deepEqual(messages(replacing.errors), [
+    'o11y: attrReplacer failed on "payload", the FATAL record is dropped: RangeError',
+  ]);
+  assert.deepEqual(messages(reading.errors), [
+    'o11y: log attribute "user" cannot be read and is dropped: SyntaxError',
+    'o11y: log attribute "list" cannot be read and is dropped: Error',
+  ]);
+  assert.deepEqual(messages(writing.errors), ["o11y: writing a log record to the console failed: Error"]);
+  for (const err of [...replacing.errors, ...reading.errors, ...writing.errors]) {
+    assert.ok(!String((err as Error).message).includes("MARKER"), (err as Error).message);
+    assert.ok(!String((err as Error).stack).includes("MARKER"), "the stack repeats the message");
+  }
+  assert.equal((replacing.errors[0] as Error).cause, thrown, "the cause keeps the original error");
+  assert.deepEqual(replacing.lines, [], "the record is still dropped whole");
+});
+
+test("a thrown value that is not an Error is reported by its type, and a made-up class name is not trusted", () => {
+  const { logger, errors } = harness();
+  class Odd extends Error {}
+  Object.defineProperty(Odd, "name", { value: `leak ${MARKER}` });
+  logger.info("m", {
+    get a(): string {
+      throw MARKER;
+    },
+    get b(): string {
+      throw null;
+    },
+    get c(): string {
+      throw new Odd(MARKER);
+    },
+    get d(): string {
+      throw Object.assign(new Error("x"), { code: `not a code ${MARKER}` });
+    },
+  });
+  assert.deepEqual(messages(errors), [
+    'o11y: log attribute "a" cannot be read and is dropped: string',
+    'o11y: log attribute "b" cannot be read and is dropped: null',
+    'o11y: log attribute "c" cannot be read and is dropped: Error',
+    'o11y: log attribute "d" cannot be read and is dropped: Error',
+  ]);
 });

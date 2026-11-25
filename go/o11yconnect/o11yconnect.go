@@ -66,6 +66,8 @@ type config struct {
 // WithSDK binds the instrumentation to sdk's tracer provider, meter
 // provider, and propagator instead of the process globals. Use it with SDKs
 // built by o11y.New; after o11y.Setup the globals already point at the SDK.
+// A nil sdk is the same as not giving the option: the process globals
+// are used.
 func WithSDK(sdk *o11y.SDK) Option {
 	return func(c *config) { c.sdk = sdk }
 }
@@ -143,7 +145,9 @@ func (c *config) interceptor(summarize *o11y.SDK) (connect.Interceptor, error) {
 func newConfig(opts []Option) *config {
 	cfg := &config{}
 	for _, opt := range opts {
-		opt(cfg)
+		if opt != nil {
+			opt(cfg)
+		}
 	}
 	return cfg
 }

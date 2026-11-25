@@ -16,15 +16,15 @@ import {
   validateAppRegistry,
 } from "@libo11y/spec";
 import type { Attributes } from "@opentelemetry/api";
+import { compareCodePoints, MAX_DEPTH, renderCanonical, WALK_BUDGET } from "./canonical.ts";
 import {
-  compareCodePoints,
-  MAX_DEPTH,
-  renderCanonical,
-  renderCanonicalAttribute,
-  WALK_BUDGET,
-} from "./canonical.ts";
-import { duplicateNamespaceError, invalidAppRegistryError, piiHashKeyError } from "./errors.ts";
+  duplicateNamespaceError,
+  invalidAppRegistryError,
+  piiHashKeyError,
+  piiHashKeyTypeError,
+} from "./errors.ts";
 import { hmacSha256 } from "./hmac.ts";
+import { isBytes } from "./internal/bytes.ts";
 import { isError } from "./is-error.ts";
 import type { LogAttributes, LogValue } from "./log-values.ts";
 import { hexEncode, utf8Encode } from "./utf8.ts";
@@ -46,6 +46,11 @@ export interface ViolationSink {
 /** The shortest key hash mode accepts: 256 bits. */
 export const MIN_PII_HASH_KEY_LENGTH = 32;
 
+/** Whether key can key an HMAC: a Uint8Array, never something converted to one, of 32 bytes or more. */
+function usableKey(key: unknown): key is Uint8Array {
+  return isBytes(key) && key.length >= MIN_PII_HASH_KEY_LENGTH;
+}
+
 /** The violation rule for an attribute of class that classification dropped or rewrote. */
 export function ruleFor(sensitivity: Sensitivity | undefined): string {
   return sensitivity === "secret" ? "secret_attribute" : "pii_attribute";
@@ -54,7 +59,10 @@ export function ruleFor(sensitivity: Sensitivity | undefined): string {
 /** Options for SensitivityPolicy.create. */
 export interface PolicyOptions {
   readonly pii: PIIMode;
-  /** The HMAC key, at least 32 bytes, required by hash mode. */
+  /**
+   * The HMAC key: a Uint8Array, at least 32 bytes in hash mode, which requires one. Anything that
+   * is not a Uint8Array is refused in every mode.
+   */
   readonly key?: Uint8Array;
   readonly registries: readonly CompiledAppRegistry[];
   /** A native HMAC-SHA256, such as the platform's. Defaults to the pure one in hmac.ts. */
@@ -108,14 +116,15 @@ class CompositeWalk {
 /** The sensitivity policy. Immutable: withRecorder and silent return copies. */
 export class SensitivityPolicy {
   private readonly pii: PIIMode;
-  private readonly key: Uint8Array;
+  // The policy's own copy of the key, or undefined when none was given. token() checks it again.
+  private readonly key: Uint8Array | undefined;
   private readonly app: ReadonlyMap<string, Sensitivity>;
   private readonly hmac: (key: Uint8Array, data: Uint8Array) => Uint8Array;
   private readonly recorder: ViolationSink | undefined;
 
   private constructor(
     pii: PIIMode,
-    key: Uint8Array,
+    key: Uint8Array | undefined,
     app: ReadonlyMap<string, Sensitivity>,
     hmac: (key: Uint8Array, data: Uint8Array) => Uint8Array,
     recorder: ViolationSink | undefined,
@@ -128,13 +137,19 @@ export class SensitivityPolicy {
   }
 
   /**
-   * Builds a policy. Throws PII_HASH_KEY when hash mode has no key of at least 32 bytes, and
-   * INVALID_APP_REGISTRY when two registries declare one namespace.
+   * Builds a policy. Throws PII_HASH_KEY for a key that is not a Uint8Array, in every mode, and
+   * when hash mode has no key of at least 32 bytes. Throws INVALID_APP_REGISTRY when two registries
+   * declare one namespace.
+   *
+   * The key is never converted from another type. A string passed the old length check, since a
+   * 32-character string has length 32, and `new Uint8Array(string)` then made an empty key, so
+   * every token was HMAC-SHA256 under no key at all.
    */
   static create(opts: PolicyOptions): SensitivityPolicy {
-    if (opts.pii === "hash" && (opts.key === undefined || opts.key.length < MIN_PII_HASH_KEY_LENGTH)) {
-      throw piiHashKeyError();
-    }
+    if (opts.key !== undefined && !isBytes(opts.key)) throw piiHashKeyTypeError(opts.key);
+    // A copy of bytes already known to be a Uint8Array, so the caller cannot change the key later.
+    const key = opts.key === undefined ? undefined : new Uint8Array(opts.key);
+    if (opts.pii === "hash" && !usableKey(key)) throw piiHashKeyError();
     const app = new Map<string, Sensitivity>();
     const declaredBy = new Map<string, string>();
     opts.registries.forEach((reg, i) => {
@@ -147,13 +162,7 @@ export class SensitivityPolicy {
         if (cls !== undefined) app.set(name, cls);
       }
     });
-    return new SensitivityPolicy(
-      opts.pii,
-      new Uint8Array(opts.key ?? new Uint8Array(0)),
-      app,
-      opts.hmac ?? hmacSha256,
-      undefined,
-    );
+    return new SensitivityPolicy(opts.pii, key, app, opts.hmac ?? hmacSha256, undefined);
   }
 
   /** A copy that counts violations on rec. */
@@ -188,14 +197,27 @@ export class SensitivityPolicy {
     return this.actionForClass(this.classOf(key));
   }
 
-  /** The token for a canonical rendering: "hmac-sha256:" and the hex of the first 16 MAC bytes. */
-  token(canonical: string): string {
-    return `hmac-sha256:${hexEncode(this.hmac(this.key, utf8Encode(canonical)).subarray(0, 16))}`;
+  /**
+   * The token for a canonical rendering: "hmac-sha256:" and the hex of the first 16 MAC bytes.
+   *
+   * Undefined when the policy holds no usable key, and the caller then drops the value. This is
+   * the one place the key becomes HMAC key material, so the key is checked here on every call and
+   * not only where the policy is built: whatever path a policy was made by, a token is never keyed
+   * with something that is not a Uint8Array of at least 32 bytes.
+   */
+  token(canonical: string): string | undefined {
+    const key = this.key;
+    if (!usableKey(key)) return undefined;
+    return `hmac-sha256:${hexEncode(this.hmac(key, utf8Encode(canonical)).subarray(0, 16))}`;
   }
 
-  /** The token for value, rendered canonically with the log walk's bounds. */
-  tokenOf(value: unknown): string {
-    return this.token(renderCanonical(value));
+  /**
+   * The token for value, over its one canonical rendering. Every signal's token comes from here, so
+   * a value has the same token on a log record, a span, a span event, a span link and the resource.
+   * Undefined when the policy holds no usable key: drop the value.
+   */
+  tokenOf(value: unknown): string | undefined {
+    return usableKey(this.key) ? this.token(renderCanonical(value)) : undefined;
   }
 
   /** Counts n violations of rule on signal. */
@@ -213,7 +235,9 @@ export class SensitivityPolicy {
 
   /**
    * Classifies flat attributes, as spans, the resource and bridge logs carry them: a map value is
-   * judged on its own key, its members are not walked. Returns attrs itself when nothing changes.
+   * judged on its own key, its members are not walked. A PII value under hash mode becomes
+   * tokenOf(value), the token a log record gives the same value. Returns attrs itself when nothing
+   * changes.
    */
   attributes(signal: PolicySignal, attrs: Attributes): Attributes {
     let out: Record<string, unknown> | undefined;
@@ -226,9 +250,19 @@ export class SensitivityPolicy {
         for (const prev of keys.slice(0, i)) out[prev] = attrs[prev];
       }
       if (act === "keep") out[k] = attrs[k];
-      else if (act === "rewrite") out[k] = this.token(renderCanonicalAttribute(attrs[k]));
+      else if (act === "rewrite") {
+        // No token means no usable key: the value is dropped, never passed through.
+        const token = this.tokenOf(attrs[k]);
+        if (token !== undefined) out[k] = token;
+      }
     });
     return out ?? attrs;
+  }
+
+  /** Whether a metric attribute under key is kept: never a secret, and PII only in allow mode. */
+  keepsMetricKey(key: string): boolean {
+    const cls = this.classOf(key);
+    return cls !== "secret" && (cls !== "pii" || this.pii === "allow");
   }
 
   /**
@@ -240,8 +274,7 @@ export class SensitivityPolicy {
     let out: Record<string, unknown> | undefined;
     const keys = Object.keys(attrs);
     keys.forEach((k, i) => {
-      const cls = this.classOf(k);
-      const keep = cls !== "secret" && (cls !== "pii" || this.pii === "allow");
+      const keep = this.keepsMetricKey(k);
       if (keep && out === undefined) return;
       if (out === undefined) {
         out = {};
@@ -308,8 +341,11 @@ export class SensitivityPolicy {
     switch (this.decide("logs", effective)) {
       case "drop":
         return { value: undefined, keep: false, changed: true };
-      case "rewrite":
-        return { value: this.tokenOf(value), keep: true, changed: true };
+      case "rewrite": {
+        // No token means no usable key: the value is dropped, never passed through.
+        const token = this.tokenOf(value);
+        return { value: token, keep: token !== undefined, changed: true };
+      }
     }
     if (isGroup(value) || (Array.isArray(value) && holdsComposite(value))) {
       return this.classifyComposite([...path, key], value, depth, walk);

@@ -17,14 +17,19 @@ import {
   propagation,
   SpanKind,
   SpanStatusCode,
+  type TextMapPropagator,
   TraceFlags,
   trace,
 } from "@opentelemetry/api";
 import type { DataPoint, Histogram } from "@opentelemetry/sdk-metrics";
 import type { ReadableSpan } from "@opentelemetry/sdk-trace";
+import { instrumentFetch } from "./fetch.ts";
 import { DURATION_BUCKETS, normalizeMethod } from "./http-common.ts";
 import { instrumentServe, type ServeOptions, setRoute } from "./serve.ts";
+import { capturingDiag } from "./test-support/diag.ts";
+import { capturingErrors } from "./test-support/errors.ts";
 import { bun, close, IS_BUN, listen, nodeListener } from "./test-support/http.ts";
+import { metricsRig } from "./test-support/metrics.ts";
 
 const DURATION = "http.server.request.duration";
 const INBOUND_TRACE = "4bf92f3577b34da6a3ce929d0e0e4736";
@@ -970,5 +975,299 @@ test("ignorePaths match the decoded path, as Go's URL.Path, and a malformed esca
       serverSpans(rec).map((s) => s.attributes["url.path"]),
       ["/caf%C3%A9s"],
     );
+  });
+});
+
+// Site review: no telemetry step may fail the request. A propagator that throws and a span that
+// cannot start are reported to the error handler, and the handler still runs. The handler's own
+// error still reaches the caller.
+const THROWING_EXTRACT: TextMapPropagator = {
+  inject() {},
+  extract() {
+    throw new Error("extract boom");
+  },
+  fields: () => [],
+};
+
+test("a propagator whose extract throws is reported, and the request is handled in a trace of its own", async () => {
+  const rec = await createRecorder({ serviceName: "serve-test", propagators: [THROWING_EXTRACT] });
+  try {
+    const handler = instrumentServe(ok, { telemetry: rec.telemetry, route: () => "/x" });
+    const { result, viaHandle, viaGlobal } = await capturingErrors(
+      async () =>
+        (await handler(new Request("http://svc/x", { headers: { traceparent: TRACEPARENT } }))).text(),
+      rec.telemetry,
+    );
+    assert.equal(result, "ok");
+    assert.deepEqual(viaHandle, [
+      "o11y: instrumentServe: extracting the inbound context failed, it is ignored: Error",
+    ]);
+    assert.deepEqual(viaGlobal, [], "a handle's reports go to the handle");
+    const span = onlySpan(rec);
+    assert.equal(span.name, "GET /x");
+    assert.equal(span.parentSpanContext, undefined);
+    assert.equal(span.attributes["http.response.status_code"], 200);
+  } finally {
+    await rec.shutdown();
+  }
+});
+
+test("a span that cannot start is reported, the handler runs once uninstrumented, and its own error still propagates", async () => {
+  await withRecorder(async (rec) => {
+    const tracer = rec.telemetry.tracerProvider.getTracer("broken");
+    const telemetry = {
+      tracerProvider: {
+        getTracer: () => ({
+          startSpan: (..._args: Parameters<typeof tracer.startSpan>) => {
+            throw new Error("start boom");
+          },
+        }),
+      },
+      meterProvider: rec.telemetry.meterProvider,
+      propagator: rec.telemetry.propagator,
+    } as unknown as Telemetry;
+    let calls = 0;
+    const boom = new Error("handler broke");
+    const handler = instrumentServe(
+      async (req) => {
+        calls++;
+        if (new URL(req.url).pathname === "/throw") throw boom;
+        return new Response("ok");
+      },
+      { telemetry },
+    );
+    const served = await capturingErrors(async () => (await handler(new Request("http://svc/x"))).text());
+    assert.equal(served.result, "ok");
+    assert.equal(calls, 1);
+    assert.deepEqual(served.errors, [
+      "o11y: instrumentServe: starting the request's telemetry failed, the request is not instrumented: Error",
+    ]);
+    const thrown = await capturingErrors(() =>
+      assert.rejects(handler(new Request("http://svc/throw")), (err) => err === boom),
+    );
+    assert.equal(thrown.errors.length, 1);
+    assert.equal(calls, 2);
+  });
+});
+
+test("a throw while ending the request is reported to the error handler", async () => {
+  await withRecorder(async (rec) => {
+    const handler = instrumentServe(ok, { telemetry: brokenEndTelemetry(rec) });
+    const { result, errors } = await capturingErrors(async () =>
+      (await handler(new Request("http://svc/plain"))).text(),
+    );
+    assert.equal(result, "ok");
+    assert.deepEqual(errors, ["o11y: instrumentServe: ending the request's telemetry failed: Error"]);
+  });
+});
+
+test("a request the instrumentation cannot read is handed to the handler as it is", async () => {
+  await withRecorder(async (rec) => {
+    const seen: unknown[] = [];
+    const handler = instrumentServe(
+      async (req) => {
+        seen.push(req);
+        return new Response("ok");
+      },
+      { telemetry: rec.telemetry, ignorePaths: ["/healthz"] },
+    );
+    const { result, errors } = await capturingErrors(
+      async () => (await handler(undefined as unknown as Request)).text(),
+      rec.telemetry,
+    );
+    assert.equal(result, "ok");
+    assert.deepEqual(seen, [undefined]);
+    assert.deepEqual(errors, [
+      "o11y: instrumentServe: starting the request's telemetry failed, the request is not instrumented: TypeError",
+    ]);
+    assert.equal(serverSpans(rec).length, 0);
+  });
+});
+
+test("whatever the handler resolves with is returned as it is, even when it is not a Response", async () => {
+  await withRecorder(async (rec) => {
+    const odd = { not: "a response" } as unknown as Response;
+    const handler = instrumentServe(
+      async (req) => (new URL(req.url).pathname === "/null" ? null : odd) as Response,
+      {
+        telemetry: rec.telemetry,
+        serverTiming: true,
+      },
+    );
+    const first = await capturingErrors(() => handler(new Request("http://svc/odd")), rec.telemetry);
+    assert.equal(first.result, odd);
+    assert.deepEqual(first.errors, [
+      "o11y: instrumentServe: reading the response failed, it is returned as the handler made it: TypeError",
+    ]);
+    const second = await capturingErrors(() => handler(new Request("http://svc/null")), rec.telemetry);
+    assert.equal(second.result, null);
+    assert.equal(serverSpans(rec).length, 2, "both requests still end their spans");
+  });
+});
+
+// Second review. A report goes through the handle the instrumentation was given, so it is written
+// for a createTelemetry handle too, which installs no global handler. And it never repeats the
+// message of what a hook threw, which can quote a header.
+test("with a handle, a report is written by that handle's own handler, without the thrown message", async () => {
+  const marker = "Bearer MARKER-9f8e7d";
+  const leaky: TextMapPropagator = {
+    inject(_ctx, carrier) {
+      throw new Error(`cannot inject next to ${String((carrier as Headers).get("authorization"))}`);
+    },
+    extract(_ctx, carrier, getter) {
+      throw new RangeError(`bad header ${String(getter.get(carrier, "authorization"))}`);
+    },
+    fields: () => [],
+  };
+  const rig = await metricsRig({ propagators: [leaky] });
+  try {
+    const serve = instrumentServe(ok, { telemetry: rig.telemetry });
+    const traced = instrumentFetch((async () => new Response("ok")) as unknown as typeof fetch, {
+      telemetry: rig.telemetry,
+    });
+    const { viaGlobal } = await capturingErrors(async () => {
+      await serve(new Request("http://svc/x", { headers: { authorization: marker } }));
+      await traced("http://upstream/", { headers: { authorization: marker } });
+    });
+    assert.deepEqual(viaGlobal, [], "nothing went to the global handler");
+    assert.equal(rig.diagnostics.length, 2, rig.diagnostics.join("\n"));
+    assert.match(
+      rig.diagnostics[0] ?? "",
+      /^time=\S+ level=WARN msg="o11y: telemetry error" error="o11y: instrumentServe: extracting the inbound context failed, it is ignored: RangeError"$/,
+    );
+    assert.match(
+      rig.diagnostics[1] ?? "",
+      /error="o11y: instrumentFetch: injecting the trace context failed, the request is sent without it: Error"$/,
+    );
+    assert.ok(!rig.diagnostics.join("\n").includes("MARKER"), rig.diagnostics.join("\n"));
+  } finally {
+    await rig.shutdown();
+  }
+});
+
+test("a report keeps what was thrown on its cause", async () => {
+  const thrown = new Error("extract boom");
+  const rec = await createRecorder({
+    serviceName: "serve-test",
+    propagators: [
+      {
+        inject() {},
+        extract() {
+          throw thrown;
+        },
+        fields: () => [],
+      },
+    ],
+  });
+  try {
+    const handler = instrumentServe(ok, { telemetry: rec.telemetry });
+    const { reports } = await capturingErrors(() => handler(new Request("http://svc/x")), rec.telemetry);
+    assert.equal(reports.length, 1);
+    assert.equal((reports[0] as Error).cause, thrown);
+  } finally {
+    await rec.shutdown();
+  }
+});
+
+test("a handle's instrumentation reports are rate limited apart from its exporter errors", async () => {
+  const rig = await metricsRig({ propagators: [THROWING_EXTRACT] });
+  try {
+    const serve = instrumentServe(ok, { telemetry: rig.telemetry });
+    for (let i = 0; i < 20; i++) await serve(new Request("http://svc/x"));
+    assert.equal(rig.diagnostics.length, 5, "one burst, then silence");
+  } finally {
+    await rig.shutdown();
+  }
+});
+
+// Fourth review: the route and watchBody options are hooks too. Their failures went to the diag
+// logger with the thrown message, which a hook handed the request can fill with its URL: with a
+// diag logger at WARN, a throwing route printed "no route for http://svc/reset?token=SECRET-TOKEN-1".
+test("a route or watchBody option that throws is reported by class through the handle, never with its message", async () => {
+  const routeError = new Error("unset");
+  const watchError = new TypeError("unset");
+  const rig = await metricsRig();
+  try {
+    const serve = instrumentServe(
+      async () => new Response("ok", { headers: { "content-type": "text/html" } }),
+      {
+        telemetry: rig.telemetry,
+        route: (req) => {
+          routeError.message = `no route for ${req.url}`;
+          throw routeError;
+        },
+        watchBody: (res) => {
+          watchError.message = `cannot judge ${res.headers.get("content-type")} for session=abc123`;
+          throw watchError;
+        },
+      },
+    );
+    let captured: Awaited<ReturnType<typeof capturingErrors<string>>> | undefined;
+    const diagLines = await capturingDiag(async () => {
+      captured = await capturingErrors(async () =>
+        (await serve(new Request("http://svc/reset?token=SECRET-TOKEN-1"))).text(),
+      );
+    });
+    assert.equal(captured?.result, "ok", "the request is served");
+    assert.deepEqual(captured?.viaGlobal, [], "a handle's reports go to the handle");
+    assert.equal(rig.diagnostics.length, 2, rig.diagnostics.join("\n"));
+    assert.match(
+      rig.diagnostics[0] ?? "",
+      /^time=\S+ level=WARN msg="o11y: telemetry error" error="o11y: instrumentServe: the route option failed, the request is unrouted: Error"$/,
+    );
+    assert.match(
+      rig.diagnostics[1] ?? "",
+      /error="o11y: instrumentServe: the watchBody option failed, the body is not watched: TypeError"$/,
+    );
+    const written = [...rig.diagnostics, ...diagLines].join("\n");
+    for (const secret of ["SECRET-TOKEN-1", "abc123", "no route for", "cannot judge", "reset?token"]) {
+      assert.ok(!written.includes(secret), `${secret} was written:\n${written}`);
+    }
+    assert.deepEqual(
+      diagLines.filter((line) => /libo11y|o11y:/.test(line)),
+      [],
+      "nothing of these failures goes to the diag logger",
+    );
+    assert.match(routeError.message, /SECRET-TOKEN-1/, "the route did throw with the URL in its message");
+  } finally {
+    await rig.shutdown();
+  }
+});
+
+test("a throwing route or watchBody option keeps what was thrown on the report's cause, and without a handle reports globally", async () => {
+  const routeError = new RangeError("router broke on /secret-path");
+  const watchError = new Error("predicate broke");
+  await withRecorder(async (rec) => {
+    const options = {
+      route: (): string => {
+        throw routeError;
+      },
+      watchBody: (): boolean => {
+        throw watchError;
+      },
+    };
+    const withHandle = instrumentServe(ok, { telemetry: rec.telemetry, ...options });
+    const first = await capturingErrors(
+      async () => (await withHandle(new Request("http://svc/x"))).text(),
+      rec.telemetry,
+    );
+    assert.deepEqual(first.viaHandle, [
+      "o11y: instrumentServe: the route option failed, the request is unrouted: RangeError",
+      "o11y: instrumentServe: the watchBody option failed, the body is not watched: Error",
+    ]);
+    assert.deepEqual(first.viaGlobal, []);
+    assert.deepEqual(
+      first.reports.map((r) => (r as Error).cause),
+      [routeError, watchError],
+    );
+
+    // Without a telemetry the instruments are the global ones, and so is the error handler.
+    const global = instrumentServe(ok, options);
+    const second = await capturingErrors(async () => (await global(new Request("http://svc/x"))).text());
+    assert.equal(second.result, "ok");
+    assert.deepEqual(second.viaGlobal, [
+      "o11y: instrumentServe: the route option failed, the request is unrouted: RangeError",
+      "o11y: instrumentServe: the watchBody option failed, the body is not watched: Error",
+    ]);
   });
 });

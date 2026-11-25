@@ -95,6 +95,10 @@ func TestValidateRules(t *testing.T) {
 			"schema: libo11y.app-registry/v1\nnamespace: oracle\nattributes:\n  oracle.db.name: {type: string, sensitivity: public, cardinality: bounded}\n",
 			[]string{"libo11y_app_namespace_reserved"},
 		},
+		"deprecated semconv root namespace": {
+			"schema: libo11y.app-registry/v1\nnamespace: state\nattributes:\n  state.thing: {type: string, sensitivity: public, cardinality: bounded}\n",
+			[]string{"libo11y_app_namespace_reserved"},
+		},
 		"o11y namespace": {
 			"schema: libo11y.app-registry/v1\nnamespace: o11y\nattributes:\n  o11y.thing: {type: string, sensitivity: public, cardinality: bounded}\n",
 			[]string{"libo11y_app_namespace_reserved"},

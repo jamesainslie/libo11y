@@ -37,7 +37,8 @@ import {
   type PushMetricExporter,
   type ResourceMetrics,
 } from "@opentelemetry/sdk-metrics";
-import { renderCanonicalAttribute } from "./canonical.ts";
+import { renderUnbounded } from "./canonical.ts";
+import { metricWatchFor } from "./internal/watches.ts";
 
 /** Which measurements may become exemplars. */
 export type ExemplarFilter = "trace_based" | "always_on" | "always_off";
@@ -208,7 +209,8 @@ export class ExemplarStore {
     if (this.filter === "trace_based" && !(valid && (sc.traceFlags & TraceFlags.SAMPLED) !== 0)) return;
 
     const instrumentKey = `${m.scope}\u0000${m.instrument}`;
-    const key = `${instrumentKey}\u0000${renderCanonicalAttribute(m.attributes)}`;
+    // The key tells attribute sets apart, so it is rendered without the token's bounds.
+    const key = `${instrumentKey}\u0000${renderUnbounded(m.attributes)}`;
     const time = m.time === undefined ? nowNanos() : toNanos(m.time);
     if (time > this.newest) this.newest = time;
     const horizon = this.newest - MAX_SAMPLE_AGE_NANOS;
@@ -380,13 +382,23 @@ function capped(metric: MetricData, point: DataPoint<unknown>, list: readonly Ex
 
 /**
  * Wraps a push exporter so every collection it exports carries the store's exemplars. A platform
- * builds its periodic reader over this.
+ * builds its periodic reader over this. When store belongs to a telemetry, the wrapper also lets
+ * that telemetry watch the exports, so its shutdown reports a failed one and stops the exporter.
  */
 export function exemplarMetricExporter(inner: PushMetricExporter, store: ExemplarStore): PushMetricExporter {
-  const exporter: PushMetricExporter = {
+  const attaching: Pick<PushMetricExporter, "export" | "forceFlush" | "shutdown"> = {
     export: (metrics, resultCallback) => inner.export(store.attach(metrics), resultCallback),
     forceFlush: () => inner.forceFlush(),
     shutdown: () => inner.shutdown(),
+  };
+  // The telemetry that owns store watches the exporter through here, since the reader that holds
+  // it is the platform's: a failed export reaches the shutdown report, and shutdown stops the
+  // exporter. A store no telemetry owns leaves the exporter as it is.
+  const watched = metricWatchFor(store)?.watch<ResourceMetrics>(attaching) ?? attaching;
+  const exporter: PushMetricExporter = {
+    export: (metrics, resultCallback) => watched.export(metrics, resultCallback),
+    forceFlush: () => watched.forceFlush(),
+    shutdown: () => watched.shutdown(),
   };
   if (inner.selectAggregationTemporality !== undefined) {
     const select = inner.selectAggregationTemporality.bind(inner);

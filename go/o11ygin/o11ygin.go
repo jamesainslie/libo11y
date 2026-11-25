@@ -54,14 +54,21 @@ type config struct {
 // provider, and propagator instead of the process globals. Use it with
 // SDKs built by o11y.New; after o11y.Setup the globals already point at
 // the SDK.
+// A nil sdk is the same as not giving the option: the process globals
+// are used.
 func WithSDK(sdk *o11y.SDK) Option {
 	return func(c *config) { c.sdk = sdk }
 }
 
 // WithFilter adds a predicate; requests for which it returns false are not
 // traced or measured. All filters must pass for a request to be recorded.
+// A nil allow adds no filter.
 func WithFilter(allow func(*http.Request) bool) Option {
-	return func(c *config) { c.filters = append(c.filters, otelgin.Filter(allow)) }
+	return func(c *config) {
+		if allow != nil {
+			c.filters = append(c.filters, otelgin.Filter(allow))
+		}
+	}
 }
 
 // WithIgnorePaths excludes requests whose URL path matches any of the given
@@ -87,7 +94,7 @@ func WithIgnorePaths(patterns ...string) Option {
 // the route already matched, so c.FullPath is available; it is "" when no
 // route matched. If the formatter returns "", otelgin names the span
 // "HTTP <method> route not found". Keep the output low-cardinality: never
-// include raw paths or identifiers.
+// include raw paths or identifiers. A nil format keeps the default.
 func WithSpanNameFormatter(format func(c *gin.Context) string) Option {
 	return func(c *config) { c.nameFormatter = format }
 }
@@ -99,7 +106,9 @@ func WithSpanNameFormatter(format func(c *gin.Context) string) Option {
 func Middleware(operation string, opts ...Option) gin.HandlerFunc {
 	cfg := &config{}
 	for _, opt := range opts {
-		opt(cfg)
+		if opt != nil {
+			opt(cfg)
+		}
 	}
 
 	ginOpts := make([]otelgin.Option, 0, 5)

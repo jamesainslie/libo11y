@@ -16,7 +16,9 @@ import (
 // synchronous changes to the record are visible to the next one. Map values,
 // and maps inside slices, are walked so grouped attributes are judged on
 // their dotted effective keys; a value under a classified key is judged as
-// one value. The record body is not classified.
+// one value. The walk is bounded by the slog path's depth bound and node
+// budget and fails closed at either, dropping what it did not examine. The
+// record body is not classified.
 //
 // Records from the SDK's own slog pipeline are skipped: that leg classifies
 // slog values before the bridge converts them (see [classifyingHandler]),
@@ -50,7 +52,7 @@ func (p redactingLogProcessor) OnEmit(ctx context.Context, r *sdklog.Record) err
 	}
 	needed := false
 	r.WalkAttributes(func(kv attribute.KeyValue) bool {
-		needed = p.needsClassification("", kv)
+		needed = p.needsClassification("", kv, 0, newCompositeWalk())
 		return !needed
 	})
 	if !needed {
@@ -58,7 +60,7 @@ func (p redactingLogProcessor) OnEmit(ctx context.Context, r *sdklog.Record) err
 	}
 	kept := make([]attribute.KeyValue, 0, r.AttributesLen())
 	r.WalkAttributes(func(kv attribute.KeyValue) bool {
-		if out, keep, _ := p.classify("", kv); keep {
+		if out, keep, _ := p.classify("", kv, 0, newCompositeWalk()); keep {
 			kept = append(kept, out)
 		}
 		return true
@@ -76,30 +78,50 @@ func nestedKey(prefix string, key attribute.Key) string {
 	return prefix + "." + string(key)
 }
 
+// isComposite reports whether v is a map or slice value, the values the
+// walk descends into.
+func isComposite(v attribute.Value) bool {
+	return v.Type() == attribute.MAP || v.Type() == attribute.SLICE
+}
+
 // needsClassification reports, without recording violations, whether kv or
-// any attribute nested in it is classified.
-func (p redactingLogProcessor) needsClassification(prefix string, kv attribute.KeyValue) bool {
+// any attribute nested in it is classified, or whether the walk would cut
+// it at the depth bound or the node budget. depth is the number of
+// composites enclosing kv's value, and w is the walk of the top-level
+// attribute that holds it.
+func (p redactingLogProcessor) needsClassification(prefix string, kv attribute.KeyValue, depth int, w *compositeWalk) bool {
 	key := nestedKey(prefix, kv.Key)
 	if p.policy.classOf(attribute.Key(key)) != actionKeep {
 		return true
 	}
-	return p.valueNeedsClassification(key, kv.Value)
+	return p.valueNeedsClassification(key, kv.Value, depth, w)
 }
 
 // valueNeedsClassification reports whether any attribute nested in v, a
-// value held under the effective key prefix, is classified. Map members are
-// judged on their dotted keys; slice elements share their holder's key.
-func (p redactingLogProcessor) valueNeedsClassification(prefix string, v attribute.Value) bool {
+// value held under the effective key prefix, is classified, or whether the
+// walk would cut v. Map members are judged on their dotted keys; slice
+// elements share their holder's key. It spends the budget exactly as
+// classifyValue does.
+func (p redactingLogProcessor) valueNeedsClassification(prefix string, v attribute.Value, depth int, w *compositeWalk) bool {
+	if !isComposite(v) {
+		return false
+	}
+	if depth >= maxCompositeDepth || !w.spend() {
+		return true
+	}
 	switch v.Type() {
 	case attribute.MAP:
 		for _, m := range v.AsMap() {
-			if p.needsClassification(prefix, m) {
+			if !w.spend() || p.needsClassification(prefix, m, depth+1, w) {
 				return true
 			}
 		}
 	case attribute.SLICE:
 		for _, e := range v.AsSlice() {
-			if p.valueNeedsClassification(prefix, e) {
+			if isComposite(e) && !w.spend() {
+				return true
+			}
+			if p.valueNeedsClassification(prefix, e, depth+1, w) {
 				return true
 			}
 		}
@@ -112,8 +134,9 @@ func (p redactingLogProcessor) valueNeedsClassification(prefix string, v attribu
 // under a classified key is judged whole; a map or slice under an
 // unclassified key is rebuilt from what survives classification of its
 // members, and dropped when nothing survives. Change tracking comes from the
-// policy's action, never from comparing values.
-func (p redactingLogProcessor) classify(prefix string, kv attribute.KeyValue) (out attribute.KeyValue, keep, changed bool) {
+// policy's action, never from comparing values. depth and w are as for
+// needsClassification.
+func (p redactingLogProcessor) classify(prefix string, kv attribute.KeyValue, depth int, w *compositeWalk) (out attribute.KeyValue, keep, changed bool) {
 	key := nestedKey(prefix, kv.Key)
 	switch p.policy.decide(spec.SignalLogs, attribute.Key(key)) {
 	case actionDrop:
@@ -121,7 +144,7 @@ func (p redactingLogProcessor) classify(prefix string, kv attribute.KeyValue) (o
 	case actionRewrite:
 		return kv.Key.String(p.policy.token(canonicalAttr(kv.Value))), true, true
 	}
-	v, keep, changed := p.classifyValue(key, kv.Value)
+	v, keep, changed := p.classifyValue(key, kv.Value, depth, w)
 	switch {
 	case !changed:
 		return kv, true, false
@@ -135,13 +158,30 @@ func (p redactingLogProcessor) classify(prefix string, kv attribute.KeyValue) (o
 // classifyValue classifies the attributes nested in v, a value held under
 // the effective key prefix. It reports whether anything changed and whether
 // the value survives: a map or slice emptied by classification is dropped.
-func (p redactingLogProcessor) classifyValue(prefix string, v attribute.Value) (out attribute.Value, keep, changed bool) {
+//
+// The walk fails closed, as the slog path's does (see classifyComposite): a
+// map or slice at maxCompositeDepth enclosing composites is dropped whole,
+// and once the walk's node budget is spent the members and elements not yet
+// examined are dropped. Each map or slice entered and each map member
+// costs one node, as does each slice element that is itself a map or
+// slice; scalar slice elements carry no key of their own and cost nothing.
+func (p redactingLogProcessor) classifyValue(prefix string, v attribute.Value, depth int, w *compositeWalk) (out attribute.Value, keep, changed bool) {
+	if !isComposite(v) {
+		return v, true, false
+	}
+	if depth >= maxCompositeDepth || !w.spend() {
+		return attribute.Value{}, false, true
+	}
 	switch v.Type() {
 	case attribute.MAP:
 		members := v.AsMap()
 		kept := make([]attribute.KeyValue, 0, len(members))
 		for _, m := range members {
-			mo, mk, mc := p.classify(prefix, m)
+			if !w.spend() {
+				changed = true // the budget is spent: drop the remaining members
+				break
+			}
+			mo, mk, mc := p.classify(prefix, m, depth+1, w)
 			changed = changed || mc
 			if mk {
 				kept = append(kept, mo)
@@ -151,11 +191,15 @@ func (p redactingLogProcessor) classifyValue(prefix string, v attribute.Value) (
 			return v, true, false
 		}
 		return attribute.MapValue(kept...), len(kept) > 0, true
-	case attribute.SLICE:
+	default: // attribute.SLICE
 		elems := v.AsSlice()
 		kept := make([]attribute.Value, 0, len(elems))
 		for _, e := range elems {
-			eo, ek, ec := p.classifyValue(prefix, e)
+			if isComposite(e) && !w.spend() {
+				changed = true // the budget is spent: drop the remaining elements
+				break
+			}
+			eo, ek, ec := p.classifyValue(prefix, e, depth+1, w)
 			changed = changed || ec
 			if ek {
 				kept = append(kept, eo)
@@ -165,8 +209,6 @@ func (p redactingLogProcessor) classifyValue(prefix string, v attribute.Value) (
 			return v, true, false
 		}
 		return attribute.SliceValue(kept...), len(kept) > 0, true
-	default:
-		return v, true, false
 	}
 }
 

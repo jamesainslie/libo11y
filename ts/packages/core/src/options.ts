@@ -46,7 +46,11 @@ export interface TelemetryOptions {
   logExport?: boolean;
   /** The sampler. Default OTEL_TRACES_SAMPLER, else parentbased_always_on. */
   sampler?: Sampler;
-  /** The propagators. Empty means the default, W3C trace context plus baggage. */
+  /**
+   * The propagators. Empty means none given: then OTEL_PROPAGATORS selects tracecontext, baggage
+   * or none by name, and without it the default is W3C trace context plus baggage. Any other name
+   * in the variable fails with UNSUPPORTED_PROPAGATOR, and this option is the way to use one.
+   */
   propagators?: readonly TextMapPropagator[];
   views?: readonly ViewOptions[];
   /** Explicit histogram boundaries by instrument name. */
@@ -57,7 +61,7 @@ export interface TelemetryOptions {
   runtimeMetrics?: boolean;
   /** Emit the o11y.telemetry.configured canary at setup. Default true. */
   startupSummary?: boolean;
-  /** Ignore every OTEL_* variable (Go WithoutOTELEnv). A signal with nothing injected is off. */
+  /** Ignore every OTEL_* variable, OTEL_PROPAGATORS included (Go WithoutOTELEnv). A signal with nothing injected is off. */
   hermetic?: boolean;
   spanExporter?: SpanExporter;
   spanProcessor?: SpanProcessor;

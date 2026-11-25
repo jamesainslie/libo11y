@@ -22,6 +22,7 @@ import { O11yError } from "./errors.ts";
 import { exemplarMetricExporter, exemplarsOf } from "./exemplars.ts";
 import type { TelemetryOptions } from "./options.ts";
 import type { ExporterRequest, Platform, PlatformConsole } from "./platform.ts";
+import { startRecord } from "./record.ts";
 import { createTelemetryWith, type SignalReport, setupWith, type Telemetry } from "./telemetry.ts";
 import { createTestPlatform, exemplarStoreOf } from "./testing.ts";
 
@@ -725,4 +726,416 @@ test("an unexpected shutdown failure is reported on the lifecycle signal and sti
   );
   assert.notEqual((globalThis as Record<symbol, unknown>)[GUARD], true);
   assert.notEqual(metrics.getMeterProvider(), t.meterProvider);
+});
+
+// Site review: nothing the logger or event is given may throw into the host. What is dropped is
+// reported through the telemetry's rate-limited error handler, on the diagnostic stream.
+function revokedProxy(): never {
+  const { proxy, revoke } = Proxy.revocable({}, {});
+  revoke();
+  return proxy as never;
+}
+
+const boomReplacer: NonNullable<TelemetryOptions["attrReplacer"]> = (key, value) => {
+  if (key === "boom") throw new Error("replacer boom");
+  return [key, value];
+};
+
+function errorLines(platform: { readonly diagnostics: readonly string[] }): string[] {
+  return platform.diagnostics.filter((l) => l.includes('msg="o11y: telemetry error"'));
+}
+
+test("the logger, child and event never throw: what they drop is reported on the diagnostic stream", async () => {
+  const { platform } = rig();
+  const t = await createTelemetryWith({ ...OPTIONS, attrReplacer: boomReplacer }, platform);
+  try {
+    assert.doesNotThrow(() => t.logger.info("unredacted", { boom: 1 }));
+    assert.doesNotThrow(() => t.event("o11y.custom", revokedProxy()));
+    assert.doesNotThrow(() => t.event("o11y.custom.dropped", { boom: 1 }));
+    assert.doesNotThrow(() => t.logger.child(revokedProxy()).warn("kept"));
+    const lines = lineObjects(platform.lines as string[]);
+    assert.deepEqual(
+      lines.map((l) => l.msg),
+      ["o11y.custom", "kept"],
+    );
+    assert.equal(lines[0]?.["event.name"], "o11y.custom");
+    const errors = errorLines(platform);
+    assert.equal(errors.length, 4, errors.join("\n"));
+    assert.match(
+      errors[0] ?? "",
+      /^time=\S+ level=WARN msg="o11y: telemetry error" error="o11y: attrReplacer failed on \\"boom\\", the INFO record is dropped: Error"$/,
+    );
+    assert.match(errors[1] ?? "", /error="o11y: log attributes cannot be read and are dropped: TypeError"$/);
+  } finally {
+    await t.shutdown();
+  }
+});
+
+// Second review: the logger and the exporters each have a rate limit of their own, so a getter that
+// fails on a hot path cannot use up the lines an exporter failure needs.
+test("logger failures and exporter errors are rate limited separately", async () => {
+  const { platform } = rig();
+  await withSetup({ ...OPTIONS, attrReplacer: boomReplacer }, platform, (t) => {
+    for (let i = 0; i < 20; i++) t.logger.info("unredacted", { boom: i });
+    assert.equal(errorLines(platform).length, 5, "the logger's own burst");
+    for (let i = 0; i < 20; i++) globalErrorHandler(new Error(`e${i}`));
+    const errors = errorLines(platform);
+    assert.equal(errors.length, 10, errors.join("\n"));
+    assert.match(errors[5] ?? "", /error=e0$/);
+    assert.match(errors[9] ?? "", /error=e4$/);
+    assert.ok(!platform.lines.some((l) => l.includes("unredacted")));
+
+    // The handle's reporter, which instrumentation built on core uses, has a third.
+    const report = (t as unknown as Record<symbol, unknown>)[Symbol.for("libo11y.report")];
+    assert.equal(typeof report, "function");
+    for (let i = 0; i < 20; i++) (report as (err: unknown) => void)(new Error(`r${i}`));
+    const all = errorLines(platform);
+    assert.equal(all.length, 15, all.join("\n"));
+    assert.match(all[10] ?? "", /error=r0$/);
+  });
+});
+
+// Second review, W2: the diagnostic stream never gets the message of what a hook threw.
+test("nothing a replacer or a getter throws reaches the diagnostic stream by its message", async () => {
+  const marker = "tok_MARKER_51Habc";
+  const { platform } = rig();
+  const t = await createTelemetryWith(
+    {
+      ...OPTIONS,
+      attrReplacer: (key, value) =>
+        key === "callback" ? [key, new URL(String(value)).origin] : [key, value],
+    },
+    platform,
+  );
+  try {
+    t.logger.error("payment failed", { callback: marker, amount: 12 });
+    t.logger.info("lookup", {
+      get user(): string {
+        throw new Error(`no row for ${marker}`);
+      },
+    });
+    t.event("o11y.custom", { callback: `${marker} again` });
+    const errors = errorLines(platform);
+    assert.equal(errors.length, 3, errors.join("\n"));
+    assert.match(
+      errors[0] ?? "",
+      /error="o11y: attrReplacer failed on \\"callback\\", the ERROR record is dropped: TypeError"$/,
+    );
+    assert.match(
+      errors[1] ?? "",
+      /error="o11y: log attribute \\"user\\" cannot be read and is dropped: Error"$/,
+    );
+    const everything = [...platform.diagnostics, ...platform.lines].join("\n");
+    assert.ok(!everything.includes("MARKER"), everything);
+  } finally {
+    await t.shutdown();
+  }
+});
+
+test("a replacer that throws on the startup canary still fails setup with CANARY_REJECTED", async () => {
+  const { platform } = rig();
+  await assert.rejects(
+    setupWith(
+      {
+        ...OPTIONS,
+        attrReplacer: () => {
+          throw new Error("replacer boom");
+        },
+      },
+      platform,
+    ),
+    (err: unknown) =>
+      err instanceof O11yError && err.code === "CANARY_REJECTED" && /replacer boom/.test(err.message),
+  );
+  assert.equal((globalThis as Record<symbol, unknown>)[GUARD], undefined);
+});
+
+// Site review: upstream's batch log processor and periodic reader hand a failed export to the
+// error handler and resolve, so shutdown and forceFlush used to report ok while telemetry was lost.
+function refusing(calls: { exports: number; shutdowns: number }, healthy = { value: false }) {
+  return {
+    export: (_items: unknown, cb: (result: { code: number; error?: Error }) => void): void => {
+      calls.exports++;
+      cb(healthy.value ? { code: 0 } : { code: 1, error: new Error("Not Found") });
+    },
+    forceFlush: async (): Promise<void> => {},
+    shutdown: async (): Promise<void> => {
+      calls.shutdowns++;
+    },
+  };
+}
+
+function emitOnEverySignal(t: Telemetry): void {
+  t.tracerProvider.getTracer("t").startSpan("s").end();
+  t.logger.info("l");
+  t.meterProvider.getMeter("m").createCounter("c").add(1);
+}
+
+test("shutdown reports every signal whose final export failed, and says each one was dropped", async () => {
+  const calls = { exports: 0, shutdowns: 0 };
+  const exporter = refusing(calls);
+  const { platform } = rig({}, exporter as PushMetricExporter);
+  const t = await createTelemetryWith(
+    { ...OPTIONS, spanExporter: exporter as SpanExporter, logExporter: exporter as LogRecordExporter },
+    platform,
+  );
+  emitOnEverySignal(t);
+  const report = await t.shutdown();
+  assert.equal(calls.exports, 3);
+  assert.equal(report.ok, false);
+  assert.deepEqual(
+    report.errors.map((e) => [e.signal, (e.error as Error).message]),
+    [
+      ["logs", "o11y: shutdown logs: Not Found"],
+      ["metrics", "o11y: shutdown metrics: Not Found"],
+      ["traces", "o11y: shutdown traces: Not Found"],
+    ],
+  );
+  const dropped = lineObjects(platform.lines as string[]).filter((l) => l.msg === "o11y.telemetry.dropped");
+  assert.deepEqual(
+    dropped.map((d) => d["o11y.signal"]),
+    ["logs", "metrics", "traces"],
+  );
+});
+
+test("forceFlush reports every signal whose export failed, and only for the flush that failed", async () => {
+  const calls = { exports: 0, shutdowns: 0 };
+  const healthy = { value: false };
+  const exporter = refusing(calls, healthy);
+  const { platform } = rig({}, exporter as PushMetricExporter);
+  const t = await createTelemetryWith(
+    { ...OPTIONS, spanExporter: exporter as SpanExporter, logExporter: exporter as LogRecordExporter },
+    platform,
+  );
+  try {
+    emitOnEverySignal(t);
+    const failed = await t.forceFlush();
+    // The tracer provider rejects with a list of errors, which reads "Error: Not Found".
+    assert.deepEqual(
+      failed.errors.map((e) => [e.signal, (e.error as Error).message]),
+      [
+        ["logs", "o11y: flush logs: Not Found"],
+        ["metrics", "o11y: flush metrics: Not Found"],
+        ["traces", "o11y: flush traces: Error: Not Found"],
+      ],
+    );
+    healthy.value = true;
+    emitOnEverySignal(t);
+    assert.deepEqual(await t.forceFlush(), { ok: true, errors: [] });
+  } finally {
+    assert.deepEqual(await t.shutdown(), { ok: true, errors: [] });
+  }
+});
+
+test("an export that throws is a failed export, not a crash", async () => {
+  const throwing: LogRecordExporter = {
+    export: () => {
+      throw new Error("serializer broke");
+    },
+    forceFlush: async () => {},
+    shutdown: async () => {},
+  };
+  const { platform } = rig();
+  const t = await createTelemetryWith({ ...OPTIONS, logExporter: throwing }, platform);
+  t.logger.info("l");
+  const report = await t.shutdown();
+  assert.deepEqual(
+    report.errors.map((e) => [e.signal, (e.error as Error).message]),
+    [["logs", "o11y: shutdown logs: serializer broke"]],
+  );
+});
+
+test("when the deadline passes, an exporter still exporting is stopped and its export is failed", async () => {
+  let shutdowns = 0;
+  const hung: SpanExporter = {
+    export: () => {},
+    shutdown: async () => {
+      shutdowns++;
+    },
+  };
+  const { platform } = rig();
+  const t = await createTelemetryWith({ ...OPTIONS, spanExporter: hung }, platform);
+  t.tracerProvider.getTracer("t").startSpan("stuck").end();
+  const report = await t.shutdown({ timeoutMillis: 50 });
+  assert.deepEqual(
+    report.errors.map((e) => [e.signal, (e.error as Error).message]),
+    [["traces", "o11y: shutdown traces: deadline exceeded"]],
+  );
+  assert.equal(shutdowns, 1, "the exporter is told to stop once the deadline has passed");
+});
+
+// OTEL_PROPAGATORS, for parity with Go.
+function withPropagators(named: string, overrides: Partial<Platform> = {}) {
+  return rig({ env: () => ({ OTEL_PROPAGATORS: named }), ...overrides });
+}
+
+const SPAN_CTX = propagation.setBaggage(
+  trace.setSpanContext(ROOT_CONTEXT, {
+    traceId: "0af7651916cd43dd8448eb211c80319c",
+    spanId: "b7ad6b7169203331",
+    traceFlags: TraceFlags.SAMPLED,
+  }),
+  propagation.createBaggage({ keep: { value: "1" }, secret: { value: "2" } }),
+);
+
+function injected(t: Telemetry): Record<string, string> {
+  const carrier: Record<string, string> = {};
+  t.propagator.inject(SPAN_CTX, carrier, {
+    set: (c: Record<string, string>, k: string, v: string) => {
+      c[k] = v;
+    },
+  });
+  return carrier;
+}
+
+test("OTEL_PROPAGATORS selects the propagators, in its order, on the handle, the canary and the config line", async () => {
+  const { platform } = withPropagators(" baggage , tracecontext ");
+  await withSetup(OPTIONS, platform, (t) => {
+    assert.deepEqual(t.propagator.fields(), ["baggage", "traceparent", "tracestate"]);
+    assert.deepEqual(Object.keys(injected(t)), ["baggage", "traceparent"]);
+    assert.match(t.effectiveConfig(), / o11y\.config\.propagators=baggage,traceparent,tracestate /);
+    const [canary] = lineObjects(platform.lines as string[]);
+    assert.equal(canary?.["o11y.config.propagators"], "baggage,traceparent,tracestate");
+    assert.deepEqual(propagation.fields(), ["baggage", "traceparent", "tracestate"]);
+  });
+});
+
+test("OTEL_PROPAGATORS=tracecontext sends no baggage, and none sends nothing and is reported as none", async () => {
+  const tc = await createTelemetryWith(OPTIONS, withPropagators("tracecontext").platform);
+  const none = await createTelemetryWith(OPTIONS, withPropagators("none").platform);
+  try {
+    assert.deepEqual(Object.keys(injected(tc)), ["traceparent"]);
+    assert.match(tc.effectiveConfig(), / o11y\.config\.propagators=traceparent,tracestate /);
+    assert.deepEqual(injected(none), {});
+    assert.match(none.effectiveConfig(), / o11y\.config\.propagators=none /);
+  } finally {
+    await tc.shutdown();
+    await none.shutdown();
+  }
+});
+
+test("the baggage egress filter still wraps what OTEL_PROPAGATORS selects", async () => {
+  const { seams } = await import("./internal/seams.ts");
+  seams.baggageEgress = (key) => key !== "secret";
+  let t: Telemetry;
+  try {
+    t = await createTelemetryWith(OPTIONS, withPropagators("baggage").platform);
+  } finally {
+    seams.baggageEgress = undefined;
+  }
+  try {
+    assert.deepEqual(injected(t), { baggage: "keep=1" });
+  } finally {
+    await t.shutdown();
+  }
+});
+
+test("a propagator the packages do not ship fails createTelemetryWith and setupWith with UNSUPPORTED_PROPAGATOR", async () => {
+  const unsupported = (err: unknown): boolean =>
+    err instanceof O11yError &&
+    err.code === "UNSUPPORTED_PROPAGATOR" &&
+    err.message ===
+      'o11y: unsupported propagator "b3" in OTEL_PROPAGATORS: use tracecontext, baggage or none, or pass the propagators option';
+  await assert.rejects(
+    createTelemetryWith(OPTIONS, withPropagators("tracecontext,b3").platform),
+    unsupported,
+  );
+  await assert.rejects(setupWith(OPTIONS, withPropagators("tracecontext,b3").platform), unsupported);
+  assert.equal((globalThis as Record<symbol, unknown>)[GUARD], undefined, "setup gave the guard back");
+});
+
+test("the propagators option beats OTEL_PROPAGATORS, and hermetic mode never reads it", async () => {
+  const custom = {
+    inject: (_ctx: unknown, carrier: unknown) => {
+      (carrier as Record<string, string>)["x-custom"] = "1";
+    },
+    extract: <T>(ctx: T): T => ctx,
+    fields: () => ["x-custom"],
+  };
+  const withOption = await createTelemetryWith(
+    { ...OPTIONS, propagators: [custom as never] },
+    withPropagators("b3").platform,
+  );
+  const hermetic = await createTelemetryWith({ ...OPTIONS, hermetic: true }, withPropagators("b3").platform);
+  // An empty option is no option, as in Go: the variable applies.
+  const empty = await createTelemetryWith(
+    { ...OPTIONS, propagators: [] },
+    withPropagators("baggage").platform,
+  );
+  // A propagator that names no fields is reported as "custom", as Go reports it, never as nothing.
+  const fieldless = await createTelemetryWith(
+    { ...OPTIONS, propagators: [{ ...custom, fields: () => [] } as never] },
+    withPropagators("b3").platform,
+  );
+  try {
+    assert.match(fieldless.effectiveConfig(), / o11y\.config\.propagators=custom /);
+    assert.deepEqual(injected(fieldless), { "x-custom": "1" }, "it still propagates");
+    assert.deepEqual(injected(withOption), { "x-custom": "1" });
+    assert.match(withOption.effectiveConfig(), / o11y\.config\.propagators=x-custom /);
+    assert.deepEqual(hermetic.propagator.fields(), ["traceparent", "tracestate", "baggage"]);
+    assert.match(hermetic.effectiveConfig(), / o11y\.config\.propagators=traceparent,tracestate,baggage /);
+    assert.deepEqual(empty.propagator.fields(), ["baggage"]);
+  } finally {
+    await fieldless.shutdown();
+    await withOption.shutdown();
+    await hermetic.shutdown();
+    await empty.shutdown();
+  }
+});
+
+// Second review: a deadline that is not a number. A string that reads as a finite number is taken
+// as that number, as it always was. Anything else is the default, where it used to arm a timer
+// with NaN, which fires after a millisecond.
+test("timeoutMillis that is not a number: a numeric string is that number, anything else is the default", async () => {
+  for (const [given, expires] of [
+    ["abc", false],
+    [null, false],
+    [{}, false],
+    ["", false],
+    [" 5000 ", false],
+    ["1", true],
+  ] as const) {
+    const t = await createTelemetryWith(
+      { ...OPTIONS, hermetic: true, spanExporter: slowSpanExporter(60) },
+      rig().platform,
+    );
+    t.tracerProvider.getTracer("t").startSpan("s").end();
+    const report = await t.shutdown({ timeoutMillis: given as never });
+    assert.equal(report.ok, !expires, `timeoutMillis ${JSON.stringify(given)}: ${JSON.stringify(report)}`);
+  }
+});
+
+// Third review: instrument calls and wide records never throw into the application, and what they
+// drop is written by the handle's own handler, without the message of what was thrown.
+test("instruments and wide records on a handle never throw, and report on its diagnostic stream", async () => {
+  const marker = "tok_MARKER_handle";
+  const { platform } = rig();
+  const t = await createTelemetryWith(OPTIONS, platform);
+  try {
+    const meter = t.meterProvider.getMeter("app");
+    const attrs = {
+      route: "/a",
+      get bad(): string {
+        throw new RangeError(`no row for ${marker}`);
+      },
+    };
+    assert.doesNotThrow(() => meter.createCounter("app.jobs").add(1, attrs));
+    assert.doesNotThrow(() => meter.createHistogram("app.latency").record(0.2, revokedProxy()));
+    const { record } = startRecord(ROOT_CONTEXT);
+    assert.doesNotThrow(() => record.emitEvent(t, "o11y.custom", attrs));
+    const errors = errorLines(platform);
+    assert.deepEqual(
+      errors.map((l) => l.replace(/^time=\S+ level=WARN msg="o11y: telemetry error" error=/, "")),
+      [
+        '"o11y: metric attribute \\"bad\\" cannot be read and is dropped: RangeError"',
+        '"o11y: metric attributes cannot be read and are dropped: TypeError"',
+        '"o11y: wide record attribute \\"bad\\" cannot be read and is dropped: RangeError"',
+      ],
+    );
+    assert.ok(!platform.diagnostics.join("\n").includes("MARKER"));
+    const event = lineObjects(platform.lines as string[]).find((l) => l.msg === "o11y.custom");
+    assert.equal(event?.route, "/a", "the event went out with what could be read");
+  } finally {
+    await t.shutdown();
+  }
 });

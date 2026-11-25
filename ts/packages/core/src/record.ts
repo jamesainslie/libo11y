@@ -6,9 +6,19 @@
  * JavaScript has one number type, so add and max work on any number: add sums onto an existing
  * number and max keeps the larger, and either replaces a value of another type. Go distinguishes
  * int64 for Add and float64 for Max.
+ *
+ * No method throws. A record is written from application code, in a request handler, and must not
+ * be the reason the request fails. set and emitEvent read each attribute once: one that cannot be
+ * read is dropped and reported, and the rest is kept. add and max leave the value as it was when
+ * they cannot compute. A record has no telemetry of its own, so set, add and max report to the
+ * OpenTelemetry global error handler, which setup makes libo11y's. emitEvent reports through the
+ * telemetry it is given. A report never repeats the message of what was thrown
+ * (internal/report.ts).
  */
 import { type Context, context, createContextKey } from "@opentelemetry/api";
+import { globalErrorHandler } from "@opentelemetry/core";
 import { lastWins } from "./events.ts";
+import { type AttributeNoun, failure, type Report, readInto, reporterOf } from "./internal/report.ts";
 import type { LogAttributes, LogValue } from "./log-values.ts";
 
 /** What emitEvent needs: a Telemetry, or anything with its event method. */
@@ -16,7 +26,7 @@ export interface EventEmitter {
   event(name: string, attrs?: LogAttributes, ctx?: Context): void;
 }
 
-/** One request's wide event. */
+/** One request's wide event. No method throws. */
 export interface WideRecord {
   /** Records or overwrites attributes. A key keeps the position of its first insertion. */
   set(attrs: LogAttributes): void;
@@ -36,6 +46,11 @@ const RECORD_KEY: symbol = createContextKey("libo11y.record");
 // other's records where instanceof would not.
 const BRAND: unique symbol = Symbol.for("libo11y.wide-record") as never;
 
+const WIDE: AttributeNoun = { one: "wide record attribute", all: "wide record attributes" };
+
+// The global handler contains what it throws itself.
+const toGlobal: Report = (err) => globalErrorHandler(err);
+
 function isWideRecord(value: unknown): value is WideRecord {
   return typeof value === "object" && value !== null && (value as { [BRAND]?: unknown })[BRAND] === true;
 }
@@ -45,18 +60,26 @@ class AttachedRecord implements WideRecord {
   private readonly attrs: { [key: string]: LogValue } = {};
 
   set(attrs: LogAttributes): void {
-    Object.assign(this.attrs, attrs);
+    readInto(this.attrs, attrs, WIDE, toGlobal);
   }
 
   add(key: string, delta: number): void {
-    const current = this.attrs[key];
-    this.attrs[key] = typeof current === "number" ? current + delta : delta;
+    try {
+      const current = this.attrs[key];
+      this.attrs[key] = typeof current === "number" ? current + delta : delta;
+    } catch (err) {
+      toGlobal(failure("o11y: wide record add failed, the value is unchanged", err));
+    }
   }
 
   max(key: string, value: number): void {
-    const current = this.attrs[key];
-    if (typeof current === "number" && current >= value) return;
-    this.attrs[key] = value;
+    try {
+      const current = this.attrs[key];
+      if (typeof current === "number" && current >= value) return;
+      this.attrs[key] = value;
+    } catch (err) {
+      toGlobal(failure("o11y: wide record max failed, the value is unchanged", err));
+    }
   }
 
   snapshot(): LogAttributes {
@@ -64,7 +87,14 @@ class AttachedRecord implements WideRecord {
   }
 
   emitEvent(telemetry: EventEmitter, name: string, attrs?: LogAttributes, ctx?: Context): void {
-    telemetry.event(name, lastWins(this.snapshot(), attrs ?? {}), ctx);
+    const report = reporterOf(telemetry, toGlobal);
+    try {
+      const extra: { [key: string]: LogValue } = {};
+      readInto(extra, attrs, WIDE, report);
+      telemetry.event(name, lastWins(this.snapshot(), extra), ctx);
+    } catch (err) {
+      report(failure("o11y: emitting a wide record's event failed", err));
+    }
   }
 }
 

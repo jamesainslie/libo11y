@@ -5,6 +5,8 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"reflect"
+	"slices"
 	"sort"
 	"strings"
 
@@ -44,7 +46,7 @@ type ErrorHandler func(error)
 // Option configures [New] and [Setup]. Precedence is strict: an explicit
 // option overrides the corresponding standard OTEL_* environment variable,
 // which overrides the library default. [WithoutOTELEnv] removes the
-// environment layer entirely.
+// environment layer entirely. A nil Option is ignored.
 type Option func(*settings)
 
 type settings struct {
@@ -66,8 +68,10 @@ type settings struct {
 	attrReplacer    AttrReplacer
 	extraLogHandler []slog.Handler
 
-	sampler    sdktrace.Sampler
-	propagator propagation.TextMapPropagator
+	sampler sdktrace.Sampler
+	// propagators are the propagators WithPropagators gave, in order; nil
+	// when the option was not given.
+	propagators []propagation.TextMapPropagator
 	// baggageAllow decides which baggage keys leave the process on inject;
 	// nil allows every key.
 	baggageAllow func(string) bool
@@ -88,6 +92,10 @@ type settings struct {
 	metricReader  sdkmetric.Reader
 
 	ignoreEnv bool
+
+	// disabled is set by newSDK when OTEL_SDK_DISABLED switches the SDK
+	// off (see settings.sdkDisabled).
+	disabled bool
 
 	// sensitivity overrides the classification lookup when non-nil. It is
 	// set only by test options; production SDKs use the generated table.
@@ -111,7 +119,9 @@ func newSettings(opts []Option) *settings {
 		strictIdentity:     true,
 	}
 	for _, opt := range opts {
-		opt(s)
+		if opt != nil {
+			opt(s)
+		}
 	}
 	return s
 }
@@ -196,13 +206,20 @@ func WithResourceAttributes(attrs ...attribute.KeyValue) Option {
 
 // WithLogLevel sets the minimum level for all log sinks. The default is
 // [slog.LevelInfo]. Pass a [slog.LevelVar] to change the level at runtime.
+// A nil level, including a typed nil pointer, selects the default.
 func WithLogLevel(level slog.Leveler) Option {
+	if isNil(level) {
+		level = nil
+	}
 	return func(s *settings) { s.logLevel = level }
 }
 
 // WithConsoleWriter directs the console log stream to w. The default is
-// [os.Stdout].
+// [os.Stdout]. A nil w, including a typed nil pointer, selects the default.
 func WithConsoleWriter(w io.Writer) Option {
+	if isNil(w) {
+		w = os.Stdout
+	}
 	return func(s *settings) { s.consoleWriter = w }
 }
 
@@ -229,8 +246,16 @@ func WithoutLogExport() Option {
 // would otherwise be built from OTEL_LOGS_EXPORTER and OTEL_EXPORTER_OTLP_*
 // environment variables. Records are still batched. It enables log export,
 // overriding an earlier [WithoutLogExport]. A nil exporter instead disables
-// log export, as [WithoutLogExport] does.
+// log export, as [WithoutLogExport] does, and so does a typed nil pointer.
+//
+// OTEL_SDK_DISABLED=true overrides this option: nothing injected here
+// receives telemetry while the SDK is disabled (see the package
+// documentation). The SDK still owns what is injected and shuts it down
+// exactly once, in [SDK.Shutdown] or when [New] fails.
 func WithLogExporter(exporter sdklog.Exporter) Option {
+	if isNil(exporter) {
+		exporter = nil
+	}
 	return func(s *settings) {
 		s.logExporter = exporter
 		s.logExport = exporter != nil
@@ -289,38 +314,58 @@ func WithPIIHashKey(key []byte) Option {
 // the global LoggerProvider (for example through an otelslog bridge): the
 // SDK has already classified them, and that provider would classify them a
 // second time.
+//
+// A nil handler, including a typed nil pointer, adds no sink.
 func WithExtraLogHandler(handler slog.Handler) Option {
-	return func(s *settings) { s.extraLogHandler = append(s.extraLogHandler, handler) }
+	return func(s *settings) {
+		if isNil(handler) {
+			return
+		}
+		s.extraLogHandler = append(s.extraLogHandler, handler)
+	}
 }
 
 // WithTraceSampler sets the trace sampler. By default the SDK honors the
 // standard OTEL_TRACES_SAMPLER environment variable and falls back to
-// parentbased_always_on, preserving inbound sampling decisions.
+// parentbased_always_on, preserving inbound sampling decisions. A nil
+// sampler, including a typed nil pointer, selects that default.
 func WithTraceSampler(sampler sdktrace.Sampler) Option {
+	if isNil(sampler) {
+		sampler = nil
+	}
 	return func(s *settings) { s.sampler = sampler }
 }
 
 // WithPropagators replaces the default propagator (a composite of W3C Trace
-// Context and W3C Baggage). Multiple propagators compose into one composite
-// applied in order.
+// Context and W3C Baggage), overriding the OTEL_PROPAGATORS environment
+// variable. Without this option a non-empty OTEL_PROPAGATORS selects the
+// propagators by name (tracecontext, baggage, b3, b3multi, jaeger, xray,
+// ottrace, or none, resolved by OpenTelemetry contrib's autoprop package),
+// and a name it does not know fails [New] and [Setup]. Multiple propagators
+// compose into one composite applied in order.
+//
+// Nil entries, including typed nil pointers, are skipped. When none
+// remain, the option has no effect: OTEL_PROPAGATORS applies, and without
+// it the default composite.
 func WithPropagators(propagators ...propagation.TextMapPropagator) Option {
+	propagators = slices.DeleteFunc(slices.Clone(propagators), func(p propagation.TextMapPropagator) bool {
+		return isNil(p)
+	})
 	return func(s *settings) {
-		switch len(propagators) {
-		case 0:
-			s.propagator = nil // fall back to the default composite
-		case 1:
-			s.propagator = propagators[0]
-		default:
-			s.propagator = propagation.NewCompositeTextMapPropagator(propagators...)
+		if len(propagators) == 0 {
+			s.propagators = nil
+			return
 		}
+		s.propagators = propagators
 	}
 }
 
 // WithViews registers metric views on the meter provider. Each stream a view
 // produces keeps its own attribute filter and exemplar reservoir, composed
 // with the sensitivity policy, which removes secret and PII attributes from
-// data points and exemplars (see [WithPIIMode]).
+// data points and exemplars (see [WithPIIMode]). Nil views are skipped.
 func WithViews(views ...sdkmetric.View) Option {
+	views = slices.DeleteFunc(slices.Clone(views), func(v sdkmetric.View) bool { return v == nil })
 	return func(s *settings) { s.views = append(s.views, views...) }
 }
 
@@ -347,13 +392,14 @@ func WithHistogramBuckets(instrumentName string, boundaries []float64) Option {
 // to the exact request that produced it.
 //
 // Use [exemplar.AlwaysOnFilter] to record exemplars for unsampled traffic
-// too, or [exemplar.AlwaysOffFilter] to disable exemplars.
+// too, or [exemplar.AlwaysOffFilter] to disable exemplars. A nil filter
+// selects the default.
 func WithExemplarFilter(filter exemplar.Filter) Option {
 	return func(s *settings) { s.exemplarFilter = filter }
 }
 
 // WithoutRuntimeMetrics disables the Go runtime metrics that are otherwise
-// collected by default.
+// collected by default. They also stay off while OTEL_SDK_DISABLED=true.
 func WithoutRuntimeMetrics() Option {
 	return func(s *settings) { s.runtimeMetrics = false }
 }
@@ -396,7 +442,9 @@ func WithoutSlogDefault() Option {
 // default does.
 //
 // The OpenTelemetry error handler is process-global, so only [Setup]
-// installs it; under [New] this option has no effect.
+// installs it. Under [New] the handler receives only the SDK's own
+// warnings about its configuration, such as an OTEL_SDK_DISABLED value
+// that is neither true nor false. A nil handle selects the default handler.
 func WithErrorHandler(handle ErrorHandler) Option {
 	return func(s *settings) { s.errorHandler = handle }
 }
@@ -405,8 +453,21 @@ func WithErrorHandler(handle ErrorHandler) Option {
 // would otherwise be built from OTEL_TRACES_EXPORTER and OTEL_EXPORTER_OTLP_*
 // environment variables. Spans are still batched, and the exporter receives
 // them redacted by the sensitivity policy. It coexists with
-// [WithSpanProcessor]: when both are given, both run.
+// [WithSpanProcessor]: when both are given, both run. A nil exporter,
+// including a typed nil pointer, means none is injected.
+//
+// OTEL_SDK_DISABLED=true overrides this option: nothing injected here
+// receives telemetry while the SDK is disabled (see the package
+// documentation). The SDK still owns what is injected and shuts it down
+// exactly once, in [SDK.Shutdown] or when [New] fails.
+//
+// One value given to both [WithSpanProcessor] and [WithTraceExporter] is
+// shut down twice, once in each role. Pass distinct values, or make the
+// value's Shutdown idempotent.
 func WithTraceExporter(exporter sdktrace.SpanExporter) Option {
+	if isNil(exporter) {
+		exporter = nil
+	}
 	return func(s *settings) { s.spanExporter = exporter }
 }
 
@@ -417,14 +478,56 @@ func WithTraceExporter(exporter sdktrace.SpanExporter) Option {
 // processor's OnEnd are redacted by the sensitivity policy; OnStart receives
 // the live span before redaction, so a processor that reads attributes at
 // start sees classified values. Intended for tests and custom pipelines; the
-// o11ytest package uses it to record spans synchronously.
+// o11ytest package uses it to record spans synchronously. A nil processor,
+// including a typed nil pointer, means none is set.
+//
+// OTEL_SDK_DISABLED=true overrides this option: nothing injected here
+// receives telemetry while the SDK is disabled (see the package
+// documentation). The SDK still owns what is injected and shuts it down
+// exactly once, in [SDK.Shutdown] or when [New] fails.
+//
+// One value given to both [WithSpanProcessor] and [WithTraceExporter] is
+// shut down twice, once in each role. Pass distinct values, or make the
+// value's Shutdown idempotent.
 func WithSpanProcessor(processor sdktrace.SpanProcessor) Option {
+	if isNil(processor) {
+		processor = nil
+	}
 	return func(s *settings) { s.spanProcessor = processor }
 }
 
 // WithMetricReader injects a metric reader, bypassing the reader that would
 // otherwise be built from OTEL_METRICS_EXPORTER and OTEL_EXPORTER_OTLP_*
 // environment variables. The o11ytest package uses it with a manual reader.
+// A nil reader, including a typed nil pointer, means none is injected.
+//
+// OTEL_SDK_DISABLED=true overrides this option: nothing injected here
+// receives telemetry while the SDK is disabled (see the package
+// documentation). The SDK still owns what is injected and shuts it down
+// exactly once, in [SDK.Shutdown] or when [New] fails. An injected reader
+// is shut down while [New] builds the SDK, because it is never registered
+// and a periodic reader would otherwise run, reporting that it is not
+// registered, on every interval; [SDK.MeterProvider] stays a real provider
+// with no readers, so instruments can be created and nothing is collected.
 func WithMetricReader(reader sdkmetric.Reader) Option {
+	if isNil(reader) {
+		reader = nil
+	}
 	return func(s *settings) { s.metricReader = reader }
+}
+
+// isNil reports whether v is nil or an interface holding a nil pointer or
+// func, so an option can treat a typed nil collaborator as not set instead
+// of storing a value whose methods panic.
+func isNil(v any) bool {
+	if v == nil {
+		return true
+	}
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Pointer, reflect.Func:
+		return rv.IsNil()
+	default:
+		return false
+	}
 }

@@ -38,6 +38,8 @@ type config struct {
 // WithSDK binds the instrumentation to sdk's tracer provider, meter
 // provider, and propagator instead of the process globals. Use it with SDKs
 // built by o11y.New; after o11y.Setup the globals already point at the SDK.
+// A nil sdk is the same as not giving the option: the process globals
+// are used.
 func WithSDK(sdk *o11y.SDK) Option {
 	return func(c *config) { c.sdk = sdk }
 }
@@ -45,9 +47,13 @@ func WithSDK(sdk *o11y.SDK) Option {
 // WithFilter adds a predicate; requests for which it returns false are not
 // traced or measured. All filters must pass for a request to be recorded.
 // A filter may run more than once per request, so it must be deterministic
-// and free of side effects.
+// and free of side effects. A nil allow adds no filter.
 func WithFilter(allow func(*http.Request) bool) Option {
-	return func(c *config) { c.filters = append(c.filters, otelhttp.Filter(allow)) }
+	return func(c *config) {
+		if allow != nil {
+			c.filters = append(c.filters, otelhttp.Filter(allow))
+		}
+	}
 }
 
 // WithIgnorePaths excludes requests whose URL path matches any of the given
@@ -86,15 +92,21 @@ func WithCanonicalLine() Option {
 
 // WithSpanNameFormatter replaces the default span name formatter. The
 // default prefers the matched ServeMux pattern ("GET /users/{id}"), then
-// the operation name, then the request method.
+// the operation name, then the request method. A nil format keeps the
+// default.
 func WithSpanNameFormatter(format func(operation string, r *http.Request) string) Option {
-	return func(c *config) { c.nameFormatter = format }
+	return func(c *config) {
+		if format != nil {
+			c.nameFormatter = format
+		}
+	}
 }
 
 // NewHandler instruments an http.Handler. The operation name seeds span
 // names for requests that match no route pattern. A panic in the handler,
 // including http.ErrAbortHandler, marks the server span Error and keeps
-// propagating.
+// propagating. handler must not be nil: a nil handler is a programming
+// error, and a request through it panics.
 func NewHandler(handler http.Handler, operation string, opts ...Option) http.Handler {
 	cfg := newConfig(opts)
 	if cfg.canonicalLine {
@@ -130,7 +142,9 @@ func NewTransport(base http.RoundTripper, opts ...Option) http.RoundTripper {
 func newConfig(opts []Option) *config {
 	cfg := &config{nameFormatter: defaultSpanName}
 	for _, opt := range opts {
-		opt(cfg)
+		if opt != nil {
+			opt(cfg)
+		}
 	}
 	return cfg
 }

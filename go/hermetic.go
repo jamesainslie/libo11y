@@ -2,6 +2,7 @@ package o11y
 
 import (
 	"os"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -80,6 +81,11 @@ import (
 //   - OTEL_TRACES_EXPORTER, OTEL_METRICS_EXPORTER, OTEL_LOGS_EXPORTER,
 //     OTEL_TRACES_SAMPLER, OTEL_EXPORTER_OTLP_ENDPOINT (this package's startup
 //     summary): read through settings.getenv, which returns "".
+//   - OTEL_SDK_DISABLED (this package's settings.sdkDisabled): read through
+//     settings.getenv, so the SDK is never switched off.
+//   - OTEL_PROPAGATORS (this package's buildPropagator, which resolves the
+//     names with contrib autoprop): read through settings.getenv, so the
+//     default W3C Trace Context and Baggage composite applies.
 //
 // Irrelevant under WithoutOTELEnv:
 //   - OTEL_METRIC_EXPORT_INTERVAL, OTEL_METRIC_EXPORT_TIMEOUT (sdk/metric
@@ -111,9 +117,28 @@ func (s *settings) getenv(key string) string {
 
 // logExportEnabled reports whether the SDK builds an OTLP log pipeline.
 // Under WithoutOTELEnv a log exporter is never built from the environment,
-// so log export without an injected exporter is disabled.
+// so log export without an injected exporter is disabled. While the SDK is
+// disabled (OTEL_SDK_DISABLED) there is no OTLP log pipeline at all.
 func (s *settings) logExportEnabled() bool {
-	return s.logExport && (s.logExporter != nil || !s.ignoreEnv)
+	return !s.disabled && s.logExport && (s.logExporter != nil || !s.ignoreEnv)
+}
+
+// envSDKDisabled is the standard kill switch for every signal.
+const envSDKDisabled = "OTEL_SDK_DISABLED"
+
+// sdkDisabled reports whether OTEL_SDK_DISABLED switches the SDK off: its
+// value is "true" in any case, as the OpenTelemetry specification defines
+// boolean variables, and every other value, including an unset one, is
+// false. Under [WithoutOTELEnv] the variable is ignored, like every other.
+func (s *settings) sdkDisabled() bool {
+	return strings.EqualFold(s.getenv(envSDKDisabled), "true")
+}
+
+// runtimeMetricsEnabled reports whether the Go runtime metrics start: they
+// are on by default, off under [WithoutRuntimeMetrics], and off while the
+// SDK is disabled.
+func (s *settings) runtimeMetricsEnabled() bool {
+	return s.runtimeMetrics && !s.disabled
 }
 
 // envOr returns the environment variable key, or fallback when it is unset,

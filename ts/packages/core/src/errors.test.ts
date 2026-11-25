@@ -7,10 +7,12 @@ import {
   exporterError,
   invalidAppRegistryError,
   invalidEnvironmentError,
+  invalidOptionError,
   noEnvironmentError,
   noServiceNameError,
   O11yError,
   piiHashKeyError,
+  unsupportedPropagatorError,
   unsupportedProtocolError,
 } from "./errors.ts";
 
@@ -50,6 +52,16 @@ test("each error carries its code and Go's message", () => {
       unsupportedProtocolError("grpc", "traces"),
       "UNSUPPORTED_PROTOCOL",
       'o11y: unsupported OTLP protocol "grpc" for traces: use http/protobuf or http/json',
+    ],
+    [
+      unsupportedPropagatorError("b3"),
+      "UNSUPPORTED_PROPAGATOR",
+      'o11y: unsupported propagator "b3" in OTEL_PROPAGATORS: use tracecontext, baggage or none, or pass the propagators option',
+    ],
+    [
+      invalidOptionError("console", "pre\u0007tty", ["json", "text", false]),
+      "INVALID_OPTION",
+      'o11y: invalid option console: "pre\\atty" (allowed: json, text, false)',
     ],
   ];
   for (const [err, code, message] of cases) {

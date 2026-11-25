@@ -25,11 +25,14 @@ export interface MetricsRig {
   readonly telemetry: Telemetry;
   /** Collects every instrument, with the exemplars the store sampled attached. */
   collect(): Promise<ResourceMetricsWithExemplars>;
+  /** Every line the telemetry wrote to the diagnostic stream. */
+  readonly diagnostics: readonly string[];
   shutdown(): Promise<void>;
 }
 
 export async function metricsRig(options: TelemetryOptions = {}): Promise<MetricsRig> {
   const reader = new ManualReader();
+  const platform = createTestPlatform({ contextManager: () => new AsyncLocalStorageContextManager() });
   const telemetry = await createTelemetryWith(
     {
       serviceName: "server-test",
@@ -42,10 +45,11 @@ export async function metricsRig(options: TelemetryOptions = {}): Promise<Metric
       hermetic: true,
       metricReader: reader,
     },
-    createTestPlatform({ contextManager: () => new AsyncLocalStorageContextManager() }),
+    platform,
   );
   return {
     telemetry,
+    diagnostics: platform.diagnostics,
     collect: async () => exemplarStoreOf(telemetry).attach((await reader.collect()).resourceMetrics),
     shutdown: async () => {
       await telemetry.shutdown();

@@ -7,13 +7,25 @@
 import assert from "node:assert/strict";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { test } from "node:test";
+import type { Telemetry } from "@libo11y/core";
 import { createRecorder, type Recorder } from "@libo11y/test";
-import { context, metrics, propagation, SpanKind, SpanStatusCode, trace } from "@opentelemetry/api";
+import {
+  context,
+  metrics,
+  propagation,
+  SpanKind,
+  SpanStatusCode,
+  type TextMapPropagator,
+  trace,
+} from "@opentelemetry/api";
 import type { DataPoint, Histogram } from "@opentelemetry/sdk-metrics";
 import type { ReadableSpan } from "@opentelemetry/sdk-trace";
 import { instrumentFetch } from "./fetch.ts";
 import { DURATION_BUCKETS } from "./http-common.ts";
+import { capturingDiag } from "./test-support/diag.ts";
+import { capturingErrors } from "./test-support/errors.ts";
 import { close, listen } from "./test-support/http.ts";
+import { metricsRig } from "./test-support/metrics.ts";
 
 const DURATION = "http.client.request.duration";
 
@@ -360,6 +372,206 @@ test("headers that cannot be copied fail the request through fetch's own error a
     const span = onlyClient(rec);
     assert.equal(span.status.code, SpanStatusCode.ERROR);
     assert.equal(span.attributes["error.type"], "TypeError");
+  } finally {
+    await rec.shutdown();
+  }
+});
+
+// Site review: no telemetry step may fail the request. A propagator that throws, a span that cannot
+// start and a span that cannot end are reported to the error handler, and the request goes on.
+const THROWING_INJECT: TextMapPropagator = {
+  inject() {
+    throw new Error("inject boom");
+  },
+  extract: (ctx) => ctx,
+  fields: () => [],
+};
+
+/** rec's telemetry with a tracer whose startSpan throws, or whose spans throw on end. */
+function brokenTelemetry(rec: Recorder, broken: "start" | "end"): Telemetry {
+  const tracer = rec.telemetry.tracerProvider.getTracer("broken");
+  return {
+    tracerProvider: {
+      getTracer: () => ({
+        startSpan: (...args: Parameters<typeof tracer.startSpan>) => {
+          if (broken === "start") throw new Error("start boom");
+          const span = tracer.startSpan(...args);
+          return new Proxy(span, {
+            get(target, key) {
+              if (key === "end") {
+                return () => {
+                  throw new Error("end boom");
+                };
+              }
+              const value = Reflect.get(target, key);
+              return typeof value === "function" ? value.bind(target) : value;
+            },
+          });
+        },
+      }),
+    },
+    meterProvider: rec.telemetry.meterProvider,
+    propagator: rec.telemetry.propagator,
+  } as unknown as Telemetry;
+}
+
+test("a propagator whose inject throws is reported, and the request is sent without the context", async () => {
+  const rec = await createRecorder({ serviceName: "fetch-test", propagators: [THROWING_INJECT] });
+  const { server, url } = await listen(echo);
+  try {
+    const traced = instrumentFetch(fetch, { telemetry: rec.telemetry });
+    const init = { headers: { "x-app": "1" } };
+    const { result, viaHandle, viaGlobal } = await capturingErrors(
+      async () => (await traced(`${url}/x`, init)).json() as Promise<Echo>,
+      rec.telemetry,
+    );
+    assert.equal(result.headers.traceparent, undefined);
+    assert.equal(result.headers["x-app"], "1", "the caller's own headers still go out");
+    assert.deepEqual(viaHandle, [
+      "o11y: instrumentFetch: injecting the trace context failed, the request is sent without it: Error",
+    ]);
+    assert.deepEqual(viaGlobal, [], "a handle's reports go to the handle");
+    const span = onlyClient(rec);
+    assert.equal(span.attributes["http.response.status_code"], 200);
+    assert.equal(span.status.code, SpanStatusCode.UNSET);
+  } finally {
+    await close(server);
+    await rec.shutdown();
+  }
+});
+
+test("a span that cannot start is reported, and the request is sent uninstrumented exactly once", async () => {
+  await withRig(async (rec, base) => {
+    let calls = 0;
+    const counting = ((...args: Parameters<typeof fetch>) => {
+      calls++;
+      return fetch(...args);
+    }) as typeof fetch;
+    const traced = instrumentFetch(counting, { telemetry: brokenTelemetry(rec, "start") });
+    const { result, errors } = await capturingErrors(async () => (await traced(`${base}/x`)).status);
+    assert.equal(result, 200);
+    assert.equal(calls, 1);
+    assert.deepEqual(errors, [
+      "o11y: instrumentFetch: starting the request's telemetry failed, the request is not instrumented: Error",
+    ]);
+  });
+});
+
+test("a span that cannot end is reported, and neither the response nor fetch's own error is replaced", async () => {
+  await withRig(async (rec, base) => {
+    const telemetry = brokenTelemetry(rec, "end");
+    const ok = await capturingErrors(
+      async () => (await instrumentFetch(fetch, { telemetry })(`${base}/x`)).status,
+    );
+    assert.equal(ok.result, 200);
+    assert.deepEqual(ok.errors, ["o11y: instrumentFetch: ending the request's telemetry failed: Error"]);
+
+    const down = new TypeError("fetch failed");
+    const failing = (async () => {
+      throw down;
+    }) as unknown as typeof fetch;
+    const failed = await capturingErrors(() =>
+      assert.rejects(instrumentFetch(failing, { telemetry })("http://svc/"), (err) => err === down),
+    );
+    assert.equal(failed.errors.length, 1);
+  });
+});
+
+test("whatever fetchImpl resolves with is returned as it is, even when it is not a Response", async () => {
+  const rec = await createRecorder();
+  try {
+    const odd = (async () => undefined) as unknown as typeof fetch;
+    const { result, errors } = await capturingErrors(() =>
+      instrumentFetch(odd, { telemetry: rec.telemetry })("http://svc/"),
+    );
+    assert.equal(result, undefined);
+    assert.deepEqual(errors, []);
+    const span = onlyClient(rec);
+    assert.equal(span.attributes["http.response.status_code"], undefined);
+  } finally {
+    await rec.shutdown();
+  }
+});
+
+test("a propagate predicate that throws something that cannot be printed still sends the request", async () => {
+  await withRig(async (rec, base) => {
+    const traced = instrumentFetch(fetch, {
+      telemetry: rec.telemetry,
+      propagate: () => {
+        throw Object.create(null);
+      },
+    });
+    assert.equal((await traced(`${base}/x`)).status, 200);
+  });
+});
+
+// Fourth review: the propagate option is a hook too. Its failure went to the diag logger with the
+// thrown message, which a predicate handed the URL can fill with it.
+test("a propagate option that throws is reported by class through the handle, never with its message", async () => {
+  const thrown = new RangeError("unset");
+  const rig = await metricsRig();
+  try {
+    const traced = instrumentFetch((async () => new Response("ok")) as unknown as typeof fetch, {
+      telemetry: rig.telemetry,
+      propagate: (url) => {
+        thrown.message = `blocked ${url.href}`;
+        throw thrown;
+      },
+    });
+    let captured: Awaited<ReturnType<typeof capturingErrors<string>>> | undefined;
+    const diagLines = await capturingDiag(async () => {
+      captured = await capturingErrors(async () =>
+        (await traced("http://upstream/pay?card=4111111111111111")).text(),
+      );
+    });
+    assert.equal(captured?.result, "ok", "the request is sent");
+    assert.deepEqual(captured?.viaGlobal, [], "a handle's reports go to the handle");
+    assert.equal(rig.diagnostics.length, 1, rig.diagnostics.join("\n"));
+    assert.match(
+      rig.diagnostics[0] ?? "",
+      /^time=\S+ level=WARN msg="o11y: telemetry error" error="o11y: instrumentFetch: the propagate option failed, the context is not sent: RangeError"$/,
+    );
+    const written = [...rig.diagnostics, ...diagLines].join("\n");
+    for (const secret of ["4111111111111111", "blocked", "upstream/pay"]) {
+      assert.ok(!written.includes(secret), `${secret} was written:\n${written}`);
+    }
+    assert.deepEqual(
+      diagLines.filter((line) => /libo11y|o11y:/.test(line)),
+      [],
+      "nothing of this failure goes to the diag logger",
+    );
+    assert.match(thrown.message, /4111111111111111/, "the predicate did throw with the URL in its message");
+  } finally {
+    await rig.shutdown();
+  }
+});
+
+test("a throwing propagate option keeps what was thrown on the report's cause, and without a handle reports globally", async () => {
+  const thrown = new Error("policy broke");
+  const propagate = (): boolean => {
+    throw thrown;
+  };
+  const base = (async () => new Response("ok")) as unknown as typeof fetch;
+  const rec = await createRecorder();
+  try {
+    const first = await capturingErrors(
+      async () =>
+        (await instrumentFetch(base, { telemetry: rec.telemetry, propagate })("http://svc/")).text(),
+      rec.telemetry,
+    );
+    assert.deepEqual(first.viaHandle, [
+      "o11y: instrumentFetch: the propagate option failed, the context is not sent: Error",
+    ]);
+    assert.deepEqual(first.viaGlobal, []);
+    assert.equal((first.reports[0] as Error).cause, thrown);
+
+    const second = await capturingErrors(async () =>
+      (await instrumentFetch(base, { propagate })("http://svc/")).text(),
+    );
+    assert.equal(second.result, "ok");
+    assert.deepEqual(second.viaGlobal, [
+      "o11y: instrumentFetch: the propagate option failed, the context is not sent: Error",
+    ]);
   } finally {
     await rec.shutdown();
   }

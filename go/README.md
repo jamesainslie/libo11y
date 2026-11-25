@@ -106,12 +106,33 @@ Downward API attributes, otherwise a random UUIDv4 per process.
   pipeline without touching globals, for tests and dependency injection.
 - **Standard configuration.** Exporters honor `OTEL_EXPORTER_OTLP_*`,
   `OTEL_{TRACES,METRICS,LOGS}_EXPORTER`, `OTEL_SERVICE_NAME`,
-  `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_TRACES_SAMPLER`, and friends. Explicit
+  `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_TRACES_SAMPLER`, and friends.
+  `OTEL_PROPAGATORS` selects the propagators by name through
+  OpenTelemetry contrib's autoprop package (`tracecontext`, `baggage`,
+  `b3`, `b3multi`, `jaeger`, `xray`, `ottrace`, or `none`). Entries are
+  trimmed and empty ones dropped; unset or empty keeps W3C Trace Context
+  and Baggage, and an unknown name fails `New` and `Setup`. Explicit
   options override the environment; the library defines no environment
   variables of its own. `WithoutOTELEnv` is the one opt-in exception: it
   makes behavior independent of `OTEL_*` variables. Exporters dial lazily
   and never block startup; export failures are non-fatal and rate-limit
-  reported.
+  reported, and a failed export during `Shutdown` or `ForceFlush` is
+  reported in that call's error.
+- **A kill switch from outside.** `OTEL_SDK_DISABLED=true` (in any case)
+  is the one variable that beats code options. Nothing is exported on
+  any signal, even through exporters, readers, and processors injected
+  with options, and runtime metrics do not start. The tracer provider is
+  the OpenTelemetry no-op provider, so no span is recorded, but context
+  still propagates, the console and extra log sinks keep writing, logs
+  stay correlated with an inbound trace, and identity is validated as
+  usual, so application code does not change. The startup summary
+  reports `traces`, `metrics`, and `logs` as `none`. `MeterProvider()`
+  stays a real provider with no readers, so instruments can be created and
+  nothing is collected. The SDK still owns what options injected and shuts
+  each part down once: an injected metric reader when `New` builds the
+  SDK, the rest in `Shutdown`. A value that is neither `true` nor `false`
+  is reported once through the error handler. `WithoutOTELEnv` ignores the
+  variable.
 - **One identity, three surfaces.** Logs read the active span context at
   emission, spans carry it natively, and instrumented clients inject W3C
   `traceparent` on egress. Console log records carry top-level `trace_id`
@@ -139,7 +160,9 @@ Downward API attributes, otherwise a random UUIDv4 per process.
   in production. The OTLP sink batches asynchronously, so this does not
   verify collector connectivity. The event carries the resolved
   configuration as `o11y.config.*` attributes (`traces`, `metrics`, `logs`,
-  `console`, `level`, `sampler`, `propagators`, `runtime_metrics`, and,
+  `console`, `level`, `sampler`, `propagators` (the propagators' fields in
+  their configured order, `none` for the none propagator, or `custom` for
+  propagators that name no fields), `runtime_metrics`, and,
   when set, `service_version_fallback` and the `endpoint`,
   `traces_endpoint`, `metrics_endpoint`, and `logs_endpoint` values from
   `OTEL_EXPORTER_OTLP_*`). Endpoints are sanitized: userinfo, query, and
@@ -190,7 +213,7 @@ Downward API attributes, otherwise a random UUIDv4 per process.
 | `WithTraceSampler` | sampler (default from `OTEL_TRACES_SAMPLER`, else `parentbased_always_on`) |
 | `WithTraceExporter` | inject a span exporter; spans are batched and redacted |
 | `WithSpanProcessor` | set the span processor (the SDK holds one; a later call replaces an earlier one); `OnEnd` sees redacted spans, `OnStart` the live span. Alone, it owns the export path (no exporter is built from the environment); with `WithTraceExporter`, both run |
-| `WithPropagators` | replace the default W3C Trace Context and Baggage composite; the baggage egress filter still wraps it |
+| `WithPropagators` | propagators (default from `OTEL_PROPAGATORS`, else the W3C Trace Context and Baggage composite); the baggage egress filter still wraps either |
 | `WithMetricReader` | inject a metric reader instead of building one from the environment |
 | `WithViews`, `WithHistogramBuckets` | metric views and bucket boundaries; every instrument stream still applies the sensitivity policy |
 | `WithExemplarFilter` | exemplar filter (default trace-based) |
@@ -203,7 +226,8 @@ Downward API attributes, otherwise a random UUIDv4 per process.
 `WithoutOTELEnv` takes configuration only from options and library
 defaults. The resource takes no values from `OTEL_RESOURCE_ATTRIBUTES` or
 `OTEL_SERVICE_NAME`; sampler, span and log record limits, batching, the
-cardinality limit, and the exemplar filter use the SDK defaults; and a
+cardinality limit, and the exemplar filter use the SDK defaults; the
+propagator ignores `OTEL_PROPAGATORS`; `OTEL_SDK_DISABLED` has no effect; and a
 signal with nothing injected is disabled instead of built from the
 environment (traces are still sampled for in-process processors, metrics
 have no reader, logs are not exported). Two experimental switches have no
@@ -245,6 +269,27 @@ The `SDK` handle exposes `TracerProvider`, `MeterProvider`,
 otellogr; their records are classified like slog records), `Propagator`,
 `Resource`, `Handler`, `Logger`, `EffectiveConfig`, `Capture`,
 `StartLinked`, `ForceFlush`, `Shutdown`, and `ShutdownOnSignals`.
+
+A nil `*SDK`, which `New` and `Setup` return with an error, and the zero
+value are inert handles. Every method is safe to call and exports
+nothing: `Shutdown` and `ForceFlush` return nil, the providers are the
+OpenTelemetry no-op providers, `Handler` returns a text handler that
+writes records at Info and above to standard error and `Logger` a logger
+over it, so the host still sees its logs (the handler is safe to wrap and install with
+`slog.SetDefault`, which `slog.Default().Handler()` is not), and
+`ShutdownOnSignals` still waits for a signal. A host that would rather run
+without telemetry than fail can log the error and carry on:
+
+```go
+sdk, err := o11y.Setup(ctx, opts...)
+if err != nil {
+    log.Printf("telemetry disabled: %v", err)
+}
+defer sdk.Shutdown(context.Background())
+```
+
+The instrumentation packages treat `WithSDK(nil)` as no SDK given and
+use the process globals.
 
 ## HTTP, gRPC, and Connect
 
@@ -490,9 +535,10 @@ inherits this process's environment. In the child,
 `o11yproc.FromEnv(ctx)` adopts the parent's span context. Baggage does not
 travel through the environment, because other tools on the host can read
 it. `o11yproc.Inject` and `o11yproc.Extract` carry trace context and
-baggage in the `map[string]string` of a framed socket message. They use
-the global propagator and do nothing before `Setup`. SDKs built with `New`
-use `sdk.Propagator()` directly.
+baggage in the `map[string]string` of a framed socket message. By default
+they use the global propagator and do nothing before `Setup`. With an SDK
+built by `New`, pass `o11yproc.WithSDK(sdk)` to either one so it uses that
+SDK's propagator and its baggage egress filter.
 
 ## Sensitivity and redaction
 
@@ -530,8 +576,11 @@ classification on every signal:
   over one canonical rendering shared by every signal, so a value
   tokenizes identically on a log, a span, and the resource. Keep the key
   stable; rotating it breaks joins. A composite value too large or deep to
-  render in full hashes its truncated rendering, which may not match the
-  token a bridge produces for the same value.
+  render in full hashes its truncated rendering. The slog path and the
+  bridge path truncate maps, slices, and scalar slices at the same point,
+  so they agree on those. A Go value with levels a bridge flattens away,
+  such as pointers, can truncate at a different point and get a different
+  token.
 - `WithAttrReplacer` runs on every slog sink before classification, so
   renaming a key to a classified name cannot bypass the policy (renaming a
   classified key to an unclassified one is the replacer's own decision).
@@ -601,6 +650,7 @@ type Payment struct {
     Merchant string                  // passthrough
 }
 slog.InfoContext(ctx, "charge", "payment", redact.Struct(payment))
+fmt.Printf("%v", redact.Struct(payment)) // {Card:XXXX... CVV:REDACTED Merchant:...}
 
 token := redact.NewSecret(rawToken) // REDACTED via slog, fmt, and JSON
 card := redact.Masked(cardNumber)   // XXXX... via slog, fmt, and JSON
@@ -631,6 +681,14 @@ cannot do.
   reachable from them may carry protection, otherwise `REDACTED`;
 - nil values as nil, and cyclic structures or structures deeper than 32
   levels as `REDACTED`.
+
+The value `redact.Struct` returns guards fmt and JSON as well as slog. Every
+fmt verb, `String`, and `GoString` render the protected form as
+`{Field:value Field:value}`, with nested structs in nested braces.
+`json.Marshal` renders it as an object whose fields are the protected
+values, with omitted fields absent and nested structs as nested objects.
+All three surfaces render the same protected value, so they agree on what
+is masked, redacted, or omitted.
 
 ### Emit-time replacer
 

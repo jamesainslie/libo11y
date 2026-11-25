@@ -116,8 +116,10 @@ normative in the specification.
 ## Configuration
 
 Precedence, strictly: explicit code option, then standard `OTEL_*` environment
-variable, then library default. TypeScript has one exception: the kill
-switch `OTEL_SDK_DISABLED=true` also turns off exporters injected in code.
+variable, then library default. There is one exception: the kill switch
+`OTEL_SDK_DISABLED=true` turns every export off, including exporters
+injected in code, because its purpose is to switch telemetry off from
+outside the program.
 
 libo11y honors the standard OpenTelemetry environment surface
 (`OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_EXPORTER_OTLP_*`,

@@ -26,6 +26,9 @@ import (
 //
 // The flush is bounded by the SDK's usual shutdown deadline even though the
 // triggering context is, by then, canceled.
+//
+// On an inert handle (see [SDK]) it still waits for a signal or ctx, so it
+// can serve as a host's main wait, then returns nil.
 func (s *SDK) ShutdownOnSignals(ctx context.Context, signals ...os.Signal) error {
 	if len(signals) == 0 {
 		signals = []os.Signal{os.Interrupt, syscall.SIGTERM}

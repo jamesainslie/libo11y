@@ -5,9 +5,9 @@
 // Capture-time protection is expressed through [log/slog.LogValuer], Go's
 // native mechanism for controlling how a value renders in logs: a protected
 // value is redacted wherever it is logged, on every sink, with no handler
-// cooperation required. [Secret] and [Masked] also guard the fmt and JSON
-// surfaces, so a value that must never leak renders redacted under %v, %s,
-// %#v, and json.Marshal as well.
+// cooperation required. [Secret], [Masked], and the value [Struct] returns
+// also guard the fmt and JSON surfaces, so a value that must never leak
+// renders protected under every fmt verb and json.Marshal as well.
 //
 // Three protections exist, from weakest to strictest:
 //
@@ -38,6 +38,7 @@ package redact
 import (
 	"cmp"
 	"encoding"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -194,17 +195,126 @@ const maxDepth = 32
 // LogValuer that carries data in group keys must protect those keys itself.
 // Cyclic or deeper than 32-level structures render as REDACTED rather than
 // recursing without bound.
+//
+// The returned value also guards the fmt and JSON surfaces. Both render the
+// protected value LogValue returns, so the three surfaces cannot drift, and
+// they fail closed in the same places.
+//
+// Under fmt, every verb and flag (%v, %+v, %#v, %s, %q, %d, and the rest),
+// String, and GoString render one text form. A group renders as its
+// members in order, each written Key:value, separated by single spaces and
+// enclosed in braces. Nested groups nest the same way. Any other value
+// renders as the text of its protected slog value. The Payment in the
+// package example, with Card "4111", CVV "123", PIN "9", and Merchant
+// "acme", renders as {Card:XXXX CVV:REDACTED Merchant:acme}.
+//
+// Under encoding/json, a group renders as an object with its members in
+// order. A struct is therefore an object whose fields are the protected
+// values, with omitted fields absent and nested structs as nested objects.
+// Strings, integers, finite floats, and booleans are JSON scalars, and a
+// nil pointer, interface, slice, or map is null. A leaf whose type has a
+// text form renders as that text: a time.Duration as its String form, such
+// as "1s", and a time.Time as RFC 3339. A value encoding/json cannot
+// represent renders as a string of its text: NaN and the infinities as
+// "NaN", "+Inf", and "-Inf", and a nil func or chan as "<nil>".
 func Struct(v any) slog.LogValuer {
-	return structValuer{v: v}
+	return &structValuer{v: v}
 }
 
+// structValuer is used through a pointer so that fmt, printing it inside an
+// unexported field it cannot call methods on, shows an address rather than
+// walking the raw value.
 type structValuer struct {
 	v any
 }
 
 // LogValue implements [slog.LogValuer].
-func (s structValuer) LogValue() slog.Value {
+func (s *structValuer) LogValue() slog.Value {
 	return protectValue(reflect.ValueOf(s.v), passthrough, 0)
+}
+
+// String implements [fmt.Stringer] with the protected text form.
+func (s *structValuer) String() string {
+	var b strings.Builder
+	writeText(&b, s.LogValue())
+	return b.String()
+}
+
+// GoString implements [fmt.GoStringer], guarding the %#v verb.
+func (s *structValuer) GoString() string { return s.String() }
+
+// Format implements [fmt.Formatter], guarding every fmt verb. Without it,
+// fmt reflects into the wrapped value and prints protected fields raw.
+func (s *structValuer) Format(f fmt.State, _ rune) {
+	_, _ = io.WriteString(f, s.String()) // writing to fmt.State never fails
+}
+
+// MarshalJSON implements [encoding/json.Marshaler] with the protected form.
+func (s *structValuer) MarshalJSON() ([]byte, error) {
+	return appendJSON(nil, s.LogValue()), nil
+}
+
+// writeText writes the fmt text form of a protected value.
+func writeText(b *strings.Builder, v slog.Value) {
+	v = v.Resolve()
+	if v.Kind() != slog.KindGroup {
+		b.WriteString(v.String())
+		return
+	}
+	b.WriteByte('{')
+	for i, m := range v.Group() {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteString(m.Key)
+		b.WriteByte(':')
+		writeText(b, m.Value)
+	}
+	b.WriteByte('}')
+}
+
+// appendJSON appends the JSON form of a protected value to buf.
+func appendJSON(buf []byte, v slog.Value) []byte {
+	v = v.Resolve()
+	switch v.Kind() {
+	case slog.KindGroup:
+		buf = append(buf, '{')
+		for i, m := range v.Group() {
+			if i > 0 {
+				buf = append(buf, ',')
+			}
+			buf = appendJSONString(buf, m.Key)
+			buf = append(buf, ':')
+			buf = appendJSON(buf, m.Value)
+		}
+		return append(buf, '}')
+	case slog.KindString:
+		return appendJSONString(buf, v.String())
+	case slog.KindInt64:
+		return strconv.AppendInt(buf, v.Int64(), 10)
+	case slog.KindUint64:
+		return strconv.AppendUint(buf, v.Uint64(), 10)
+	case slog.KindBool:
+		return strconv.AppendBool(buf, v.Bool())
+	case slog.KindDuration:
+		return strconv.AppendInt(buf, int64(v.Duration()), 10)
+	case slog.KindAny:
+		if v.Any() == nil {
+			return append(buf, "null"...)
+		}
+	}
+	// Floats, times, and any other value: their own JSON encoding, or
+	// their text as a string where they have none (NaN, a func).
+	if b, err := json.Marshal(v.Any()); err == nil {
+		return append(buf, b...)
+	}
+	return appendJSONString(buf, v.String())
+}
+
+// appendJSONString appends s as a JSON string.
+func appendJSONString(buf []byte, s string) []byte {
+	b, _ := json.Marshal(s) // marshaling a string never fails
+	return append(buf, b...)
 }
 
 type fieldPlan struct {

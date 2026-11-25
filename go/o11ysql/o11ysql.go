@@ -112,6 +112,8 @@ type config struct {
 // WithSDK binds the instrumentation to sdk's tracer and meter providers
 // instead of the process globals. Use it with SDKs built by o11y.New;
 // after o11y.Setup the globals already point at the SDK.
+// A nil sdk is the same as not giving the option: the process globals
+// are used.
 func WithSDK(sdk *o11y.SDK) Option {
 	return func(c *config) { c.sdk = sdk }
 }
@@ -150,7 +152,9 @@ func newConfig(system string, opts []Option) *config {
 // other_sql.
 func (c config) with(opts []Option) *config {
 	for _, opt := range opts {
-		opt(&c)
+		if opt != nil {
+			opt(&c)
+		}
 	}
 	if c.system == "" {
 		c.system = otherSQL
@@ -171,6 +175,10 @@ func providers(cfg *config) (trace.TracerProvider, metric.MeterProvider) {
 // *sql.DB, so register them separately with [RegisterPoolMetrics], or use
 // [Open], which does both. db.query.text is recorded for postgresql,
 // sqlite, mysql and mariadb, so name the database with [WithSystem].
+//
+// c must not be nil: a nil connector is a programming error, and the
+// first connection opened through the result panics. Wrap has no error
+// to report it with.
 func Wrap(c driver.Connector, opts ...Option) driver.Connector {
 	return newConnector(c, newInstrumenter(newConfig("", opts)))
 }

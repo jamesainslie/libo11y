@@ -7,6 +7,12 @@
  * shutdown stops logs, metrics and traces concurrently under one deadline, so a hung exporter on
  * one signal cannot spend the others' budget. Every caller gets the same promise, which never
  * rejects. forceFlush runs the signals in turn under the same deadline handling.
+ *
+ * Each signal's exporter is watched (export-watch.ts). A signal is reported as failed when its
+ * provider says so, when the deadline passes, or when an export failed while it flushed, which the
+ * upstream log processor and metric reader keep to themselves. When shutdown has settled, the
+ * exports still in flight are failed and their exporters stopped, so nothing the telemetry started
+ * keeps the process alive.
  */
 import { EVENT_TELEMETRY_CONFIGURED, EVENT_TELEMETRY_DROPPED } from "@libo11y/spec";
 import {
@@ -15,7 +21,6 @@ import {
   type Context,
   context,
   createNoopLogger,
-  type Exception,
   logs,
   type MeterProvider,
   metrics,
@@ -34,24 +39,28 @@ import {
   type ViewOptions,
 } from "@opentelemetry/sdk-metrics";
 import { BatchSpanProcessor, type SpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
-import { type ResolvedConfig, resolveConfig } from "./config.ts";
+import { type ResolvedConfig, resolveConfig, validateOptions } from "./config.ts";
 import { captureConsole } from "./console-capture.ts";
 import { ConsoleSink, formatTextLine } from "./console-sink.ts";
 import { alreadySetupError, canaryRejectedError, piiHashKeyError } from "./errors.ts";
 import { emitEvent, eventAttributes } from "./events.ts";
 import { ExemplarStore } from "./exemplars.ts";
+import { ExportWatch } from "./export-watch.ts";
 import { gatedLogRecordProcessor, gatedSampler, gatedSpanProcessor } from "./gate.ts";
 import { buildResource } from "./identity.ts";
+import { REPORT_KEY } from "./internal/report.ts";
 import { seams } from "./internal/seams.ts";
 import { registerExemplarStore } from "./internal/stores.ts";
+import { after, MAX_TIMEOUT_MILLIS } from "./internal/timers.ts";
+import { registerMetricWatch } from "./internal/watches.ts";
 import type { LogAttributes } from "./log-values.ts";
 import { CoreLogger, forceEmit, type Logger, LogPipeline } from "./logger.ts";
-import { RedactingLogRecordProcessor } from "./logs-processor.ts";
+import { CoalescingLogRecordProcessor, RedactingLogRecordProcessor } from "./logs-processor.ts";
 import { PolicyMeterProvider } from "./metrics.ts";
 import type { TelemetryOptions } from "./options.ts";
 import type { ExporterSet, Platform, RuntimeMetrics } from "./platform.ts";
 import { compileRegistries, MIN_PII_HASH_KEY_LENGTH, SensitivityPolicy } from "./policy.ts";
-import { BaggageEgressPropagator, buildPropagator } from "./propagation.ts";
+import { BaggageEgressPropagator, resolvePropagator } from "./propagation.ts";
 import { redactingSpanExporter, redactingSpanProcessor } from "./spans.ts";
 import { buildSummary } from "./summary.ts";
 import { VERSION } from "./version.ts";
@@ -71,7 +80,11 @@ export interface SignalReport {
 
 /** Options for shutdown and forceFlush. */
 export interface LifecycleOptions {
-  /** The deadline for all signals together. Default 5000. */
+  /**
+   * The deadline for all signals together, in milliseconds. Default 5000. A negative value is 0 and
+   * anything past 2147483647 is that. A string that reads as a finite number is taken as that
+   * number, and any other value that is not a number is the default.
+   */
   readonly timeoutMillis?: number;
 }
 
@@ -97,25 +110,16 @@ export interface Telemetry {
 
 const DEFAULT_TIMEOUT_MILLIS = 5000;
 
-/** The longest delay a timer takes: setTimeout treats anything larger as 1 ms. */
-const MAX_TIMEOUT_MILLIS = 2 ** 31 - 1;
-
-// clampTimeout bounds a caller's deadline to what a timer can wait: negative is 0, Infinity and
-// anything past the timer maximum is the maximum, NaN is the default.
-function clampTimeout(ms: number | undefined): number {
-  if (ms === undefined || Number.isNaN(ms)) return DEFAULT_TIMEOUT_MILLIS;
+// clampTimeout reads a caller's deadline. A number is bounded to what a timer can wait: negative is
+// 0, and Infinity or anything past the timer maximum is the maximum. A string that reads as a
+// finite number is that number, as it always was. NaN, any other string and any other value are
+// the default: a timer armed with NaN fires after a millisecond.
+function clampTimeout(given: unknown): number {
+  const ms = typeof given === "string" && given.trim() !== "" ? Number(given) : given;
+  if (typeof ms !== "number" || Number.isNaN(ms)) return DEFAULT_TIMEOUT_MILLIS;
   return Math.min(Math.max(ms, 0), MAX_TIMEOUT_MILLIS);
 }
 const GUARD: unique symbol = Symbol.for("libo11y.setup") as never;
-
-type Timers = {
-  setTimeout(fn: () => void, ms: number): unknown;
-  clearTimeout(handle: unknown): void;
-};
-
-// The timer functions exist in every runtime core targets, but the ES library types do not
-// declare them.
-const timers = globalThis as unknown as Timers;
 
 function causeText(err: unknown): string {
   if (err instanceof Error) return err.message;
@@ -135,9 +139,7 @@ function deadline(ms: number): { readonly expired: Promise<void>; cancel(): void
   const expired = new Promise<void>((resolve) => {
     fire = resolve;
   });
-  const handle = timers.setTimeout(() => fire(), ms);
-  (handle as { unref?: () => void } | undefined)?.unref?.();
-  return { expired, cancel: () => timers.clearTimeout(handle) };
+  return { expired, cancel: after(ms, () => fire()) };
 }
 
 const EXPIRED: unique symbol = Symbol("expired") as never;
@@ -155,9 +157,13 @@ function report(errors: { signal: Signal | "lifecycle"; error: unknown }[]): Sig
   return { ok: errors.length === 0, errors };
 }
 
-// The default error handler: Go's, a token bucket of 5 refilled one per 30 s, writing slog text
-// lines to the diagnostic stream, outside the pipeline so a failing exporter cannot recurse.
-function rateLimitedErrorHandler(platform: Platform): (err: Exception) => void {
+// A rate-limited error handler: Go's, a token bucket of 5 refilled one per 30 s, writing slog text
+// lines to the diagnostic stream, outside the pipeline so a failing exporter cannot recurse. Each
+// call makes a bucket of its own. A telemetry has three: one for what the SDK and the exporters
+// report, which setupWith installs as the global error handler, one for what the logger drops, and
+// one for what the instrumentation built on core reports. A getter that fails on every request
+// then cannot use up the lines an exporter failure needs.
+function rateLimitedErrorHandler(platform: Platform): (err: unknown) => void {
   const burst = 5;
   const refillMillis = 30_000;
   let tokens = burst;
@@ -218,6 +224,20 @@ interface Parts {
   readonly effectiveConfig: string;
   readonly runtime: RuntimeMetrics | undefined;
   readonly restoreConsole: (() => void) | undefined;
+  /** The rate-limited handler for the SDK and the exporters: the global one once setupWith installs it. */
+  readonly errorHandler: (err: unknown) => void;
+  /** The rate-limited handler for instrumentation built on core, which the handle carries under REPORT_KEY. */
+  readonly instrumentationErrorHandler: (err: unknown) => void;
+  /** The watch over each signal's exporter. */
+  readonly watches: Readonly<Record<Signal, ExportWatch>>;
+}
+
+/** One signal's part in a flush or a shutdown. */
+interface Step {
+  readonly signal: Signal;
+  readonly watch: ExportWatch;
+  shutdown(): Promise<void>;
+  flush(): Promise<void>;
 }
 
 /** What setupWith installed, so shutdown removes only that. */
@@ -237,6 +257,7 @@ class TelemetryHandle implements Telemetry {
   readonly propagator: TextMapPropagator;
   readonly resource: Resource;
   readonly parts: Parts;
+  readonly [REPORT_KEY]: (err: unknown) => void;
   installed: Installed | undefined;
   /** Stops waiting for the gate's first open, while the canary's OTLP leg is deferred. */
   stopDeferredCanary: (() => void) | undefined;
@@ -244,6 +265,7 @@ class TelemetryHandle implements Telemetry {
 
   constructor(parts: Parts) {
     this.parts = parts;
+    this[REPORT_KEY] = parts.instrumentationErrorHandler;
     this.logger = parts.logger;
     this.tracerProvider = parts.tracerProvider;
     this.meterProvider = parts.meterProvider;
@@ -260,15 +282,31 @@ class TelemetryHandle implements Telemetry {
     emitEvent(this.parts.pipeline, name, attrs, ctx);
   }
 
-  private steps(): { signal: Signal; shutdown: () => Promise<void>; flush: () => Promise<void> }[] {
-    const { loggerProvider: lp, sdkMeterProvider: mp, tracerProvider: tp } = this.parts;
-    const steps: { signal: Signal; shutdown: () => Promise<void>; flush: () => Promise<void> }[] = [];
-    if (lp !== undefined)
-      steps.push({ signal: "logs", shutdown: () => lp.shutdown(), flush: () => lp.forceFlush() });
-    steps.push(
-      { signal: "metrics", shutdown: () => mp.shutdown(), flush: () => mp.forceFlush() },
-      { signal: "traces", shutdown: () => tp.shutdown(), flush: () => tp.forceFlush() },
-    );
+  private steps(): Step[] {
+    const { loggerProvider: lp, sdkMeterProvider: mp, tracerProvider: tp, watches } = this.parts;
+    // A flush also waits for the exports the batch timer had started, which the provider does not.
+    // It waits for those in flight when the signal's turn comes and no others, so the exports of a
+    // flush that begins later never hold this one back. A log flush that overlaps another shares
+    // one follow-up flush (CoalescingLogRecordProcessor), so it resolves with its own records sent.
+    const step = (
+      signal: Signal,
+      provider: { shutdown(): Promise<void>; forceFlush(): Promise<void> },
+    ): Step => {
+      const watch = watches[signal];
+      return {
+        signal,
+        watch,
+        shutdown: () => provider.shutdown(),
+        flush: async () => {
+          const inFlight = watch.inFlight();
+          await provider.forceFlush();
+          await inFlight;
+        },
+      };
+    };
+    const steps: Step[] = [];
+    if (lp !== undefined) steps.push(step("logs", lp));
+    steps.push(step("metrics", mp), step("traces", tp));
     return steps;
   }
 
@@ -281,9 +319,14 @@ class TelemetryHandle implements Telemetry {
   private async runFlush(timeoutMillis: number): Promise<SignalReport> {
     const timer = deadline(timeoutMillis);
     const errors: { signal: Signal; error: unknown }[] = [];
+    const steps = this.steps();
+    // Every signal is observed from the start: the signals flush in turn, and an export already in
+    // flight can fail while an earlier signal is still flushing.
+    const seen = steps.map((s) => s.watch.observe());
     try {
-      for (const step of this.steps()) {
-        const outcome = await settle(step.flush, timer.expired);
+      for (const [i, step] of steps.entries()) {
+        // The provider's own failure first, else an export that failed since the flush began.
+        const outcome = (await settle(step.flush, timer.expired)) ?? seen[i]?.failure()?.error;
         if (outcome === EXPIRED)
           errors.push({
             signal: step.signal,
@@ -294,6 +337,7 @@ class TelemetryHandle implements Telemetry {
       }
     } finally {
       timer.cancel();
+      for (const observation of seen) observation.end();
     }
     return report(errors);
   }
@@ -328,11 +372,31 @@ class TelemetryHandle implements Telemetry {
     }
     const timer = deadline(timeoutMillis);
     const steps = this.steps();
+    const watches = Object.values(this.parts.watches);
+    const seen = steps.map((s) => s.watch.observe());
     let outcomes: unknown[];
     try {
       outcomes = await Promise.all(steps.map((s) => settle(s.shutdown, timer.expired)));
+      // A provider can settle with exports still in flight. Upstream's span processor sends its
+      // batches together and rejects at the first that fails, and an injected processor can reject
+      // at once. The others get the rest of the deadline, still observed, before anything is stopped.
+      await Promise.race([Promise.all(watches.map((w) => w.idle())), timer.expired]);
+      // A provider that resolved may still have lost its last export: upstream's log processor and
+      // metric reader report that to the error handler only.
+      outcomes = outcomes.map((outcome, i) => outcome ?? seen[i]?.failure()?.error);
     } finally {
       timer.cancel();
+      for (const observation of seen) observation.end();
+      // Whatever is still exporting has had its time. Failing it clears the processors' export
+      // timers, and stopping the exporters lets them drop what they hold, so nothing here keeps
+      // the process alive once shutdown has resolved.
+      for (const watch of watches) {
+        try {
+          watch.close();
+        } catch {
+          // Stopping an exporter is best effort.
+        }
+      }
       // Runtime metrics stop only after the meter provider's final collection, so a process that
       // exits before its first periodic export still reports them.
       try {
@@ -425,29 +489,42 @@ function handleFor(parts: Parts): TelemetryHandle {
 }
 
 async function build(options: TelemetryOptions, platform: Platform): Promise<Parts> {
+  // Before anything is built: a value outside an option's set fails here, typed, not later in
+  // silence, and so does a PII hash key that is not a Uint8Array, in every PII mode.
+  validateOptions(options);
   const pii = options.piiMode ?? "drop";
-  if (pii === "hash" && (options.piiHashKey?.length ?? 0) < MIN_PII_HASH_KEY_LENGTH) throw piiHashKeyError();
+  // Null is "not given", as for the other options. validateOptions has shown the key is bytes.
+  const key = options.piiHashKey ?? undefined;
+  if (pii === "hash" && (key === undefined || key.length < MIN_PII_HASH_KEY_LENGTH)) throw piiHashKeyError();
   let policy = SensitivityPolicy.create({
     pii,
     registries: compileRegistries(options.registry),
-    ...(options.piiHashKey === undefined ? {} : { key: options.piiHashKey }),
+    ...(key === undefined ? {} : { key }),
     ...(platform.hmacSha256 === undefined ? {} : { hmac: platform.hmacSha256.bind(platform) }),
   });
 
-  const config = resolveConfig(options, options.hermetic === true ? {} : platform.env());
+  // Hermetic mode reads no OTEL_* variable at all.
+  const env = options.hermetic === true ? {} : platform.env();
+  const config = resolveConfig(options, env);
+  // Null is "not given", as for the other options.
+  const selected = resolvePropagator(options.propagators ?? undefined, env.OTEL_PROPAGATORS);
   const layers = await platform.detectResource(config.hermetic);
   const built = await buildResource(options, layers, policy, platform);
   const resource = built.resource;
 
-  const propagator = new BaggageEgressPropagator(
-    buildPropagator(options.propagators),
-    seams.baggageEgress ?? (() => true),
-  );
+  const propagator = new BaggageEgressPropagator(selected.propagator, seams.baggageEgress ?? (() => true));
 
   // With metrics off nothing can read the store, so it samples nothing.
   const exemplars = new ExemplarStore({
     filter: config.metrics === "none" || config.sdkDisabled ? "always_off" : config.exemplarFilter,
   });
+  const watches: Record<Signal, ExportWatch> = {
+    traces: new ExportWatch(config.batch.spans.exportTimeoutMillis),
+    metrics: new ExportWatch(Math.min(config.metricExport.timeoutMillis, config.metricExport.intervalMillis)),
+    logs: new ExportWatch(config.batch.logs.exportTimeoutMillis),
+  };
+  // A platform's metric reader holds its own exporter. exemplarMetricExporter puts the watch on it.
+  registerMetricWatch(exemplars, watches.metrics);
   const needsPlatform = wants(config.traces) || wants(config.metrics) || wants(config.logs);
   const exporters = selectExporters(
     config,
@@ -464,8 +541,17 @@ async function build(options: TelemetryOptions, platform: Platform): Promise<Par
   const violations = new ViolationRecorder(sdkMeterProvider);
   policy = policy.withRecorder(violations);
   for (const [rule, n] of built.violations) violations.add("resource", rule, n);
-  const meterProvider = new PolicyMeterProvider(sdkMeterProvider, policy, exemplars, platform.gate);
+  // One handler for everything instruments and instrumentation report: the handle carries it.
+  const instrumentationErrorHandler = rateLimitedErrorHandler(platform);
+  const meterProvider = new PolicyMeterProvider(
+    sdkMeterProvider,
+    policy,
+    exemplars,
+    instrumentationErrorHandler,
+    platform.gate,
+  );
 
+  const errorHandler = rateLimitedErrorHandler(platform);
   let runtime: RuntimeMetrics | undefined;
   let tracerProvider: TracerProvider | undefined;
   let loggerProvider: LoggerProvider | undefined;
@@ -487,7 +573,7 @@ async function build(options: TelemetryOptions, platform: Platform): Promise<Par
     if (exporters.spanExporter !== undefined) {
       spanProcessors.push(
         new BatchSpanProcessor({
-          exporter: redactingSpanExporter(exporters.spanExporter, policy),
+          exporter: watches.traces.watch(redactingSpanExporter(exporters.spanExporter, policy)),
           ...config.batch.spans,
         }),
       );
@@ -509,10 +595,19 @@ async function build(options: TelemetryOptions, platform: Platform): Promise<Par
 
     if (exporters.logExporter !== undefined || exporters.logProcessor !== undefined) {
       const processors: LogRecordProcessor[] = [new RedactingLogRecordProcessor(policy)];
-      if (exporters.logProcessor !== undefined) processors.push(exporters.logProcessor);
+      // A flush never overlaps another on a processor that exports, and its shutdown never
+      // overlaps a flush: upstream's batch processor skips a flush that does, and loses records.
+      if (exporters.logProcessor !== undefined) {
+        processors.push(new CoalescingLogRecordProcessor(exporters.logProcessor));
+      }
       if (exporters.logExporter !== undefined) {
         processors.push(
-          new BatchLogRecordProcessor({ exporter: exporters.logExporter, ...config.batch.logs }),
+          new CoalescingLogRecordProcessor(
+            new BatchLogRecordProcessor({
+              exporter: watches.logs.watch(exporters.logExporter),
+              ...config.batch.logs,
+            }),
+          ),
         );
       }
       const gate = platform.gate;
@@ -524,6 +619,7 @@ async function build(options: TelemetryOptions, platform: Platform): Promise<Par
     const pipeline = new LogPipeline({
       level: config.logLevel,
       policy,
+      onError: rateLimitedErrorHandler(platform),
       ...(options.attrReplacer === undefined ? {} : { replacer: options.attrReplacer }),
       ...(config.console === "off"
         ? {}
@@ -538,7 +634,7 @@ async function build(options: TelemetryOptions, platform: Platform): Promise<Par
 
     const summary = buildSummary(config, resource, {
       versionFallback: built.versionFallback,
-      propagatorFields: propagator.fields(),
+      propagatorFields: selected.fields,
       runtimeMetrics: runtime !== undefined,
     });
     return {
@@ -557,6 +653,9 @@ async function build(options: TelemetryOptions, platform: Platform): Promise<Par
       effectiveConfig: summary.effectiveConfig,
       runtime,
       restoreConsole,
+      errorHandler,
+      instrumentationErrorHandler,
+      watches,
     };
   } catch (err) {
     restoreConsole?.();
@@ -643,7 +742,7 @@ export async function setupWith(options: TelemetryOptions, platform: Platform): 
     deferCanary(handle);
   }
 
-  const handler = rateLimitedErrorHandler(platform);
+  const handler = parts.errorHandler;
   const refused: string[] = [];
   const installed: Installed = {
     context: false,

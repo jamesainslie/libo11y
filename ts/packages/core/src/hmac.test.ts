@@ -96,3 +96,32 @@ test("hmacSha256 agrees with node:crypto for keys around the block size", () => 
     );
   }
 });
+
+// Fourth review, security: nothing that is not bytes becomes key material. `typedArray.set("1234")`
+// writes the digits 1, 2, 3, 4 and `typedArray.set(32)` writes nothing, and neither throws.
+test("hmacSha256 refuses a key or data that is not a Uint8Array, and says nothing of the value", () => {
+  const data = utf8Encode("data");
+  const notBytes: unknown[] = [
+    "S3CR3T+KEY+MATERIAL+ZYXWVUTSRQPO",
+    "1234",
+    32,
+    [1, 2, 3, 4],
+    new ArrayBuffer(32),
+    new Uint16Array(32),
+    { length: 32 },
+    undefined,
+    null,
+  ];
+  for (const key of notBytes) {
+    assert.throws(
+      () => hmacSha256(key as never, data),
+      (err: unknown) =>
+        err instanceof TypeError && /Uint8Array/.test(err.message) && !/S3CR|1234|,/.test(err.message),
+      `key ${typeof key}`,
+    );
+    assert.throws(() => hmacSha256(new Uint8Array(32), key as never), TypeError, `data ${typeof key}`);
+  }
+  // Bytes of any length are a key here: the 32-byte floor is the policy's rule, not HMAC's.
+  assert.equal(hmacSha256(new Uint8Array(0), data).length, 32);
+  assert.equal(hmacSha256(Buffer.from("Jefe"), data).length, 32);
+});

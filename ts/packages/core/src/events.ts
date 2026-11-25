@@ -5,9 +5,9 @@
  * accepted, as in Go: registered contracts are checked by @libo11y/test, not at runtime.
  */
 import { EVENT_NAME_KEY } from "@libo11y/spec";
-import { type Context, context } from "@opentelemetry/api";
+import type { Context } from "@opentelemetry/api";
 import type { LogAttributes, LogValue } from "./log-values.ts";
-import { forceEmit, type LogPipeline } from "./logger.ts";
+import type { LogPipeline } from "./logger.ts";
 
 /** The attributes of event name: event.name first, then attrs without any event.name. */
 export function eventAttributes(name: string, attrs?: LogAttributes): LogAttributes {
@@ -30,7 +30,11 @@ export function lastWins(earlier: LogAttributes, later: LogAttributes): LogAttri
   return Object.assign(out, later);
 }
 
-/** Emits event name through pipeline. strict rethrows a sink failure, for the startup canary. */
+/**
+ * Emits event name through pipeline. The pipeline reads attrs and forces the context inside its own
+ * guard, so nothing a caller passes throws from here. strict rethrows a replacer or sink failure,
+ * for the startup canary.
+ */
 export function emitEvent(
   pipeline: LogPipeline,
   name: string,
@@ -38,8 +42,10 @@ export function emitEvent(
   ctx?: Context,
   opts: { readonly strict?: boolean; readonly consoleOnly?: boolean } = {},
 ): void {
-  pipeline.emit("info", name, eventAttributes(name, attrs), {
+  pipeline.emit("info", name, attrs, {
     ...opts,
-    ctx: forceEmit(ctx ?? context.active()),
+    ...(ctx === undefined ? {} : { ctx }),
+    force: true,
+    shape: (read) => eventAttributes(name, read),
   });
 }
