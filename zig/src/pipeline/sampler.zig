@@ -369,9 +369,10 @@ test "descriptions match Go" {
 
 test "a custom sampler is called with the parameters" {
     const Impl = struct {
+        const tag = [_]attribute.KeyValue{attribute.kv("sampler", "custom")};
         fn shouldSample(_: ?*const anyopaque, p: Parameters) Result {
             const keep = std.mem.eql(u8, p.name, "keep");
-            return .{ .decision = if (keep) .record_only else .drop, .attributes = &.{attribute.kv("sampler", "custom")} };
+            return .{ .decision = if (keep) .record_only else .drop, .attributes = &tag };
         }
         fn writeDescription(_: ?*const anyopaque, w: *std.Io.Writer) std.Io.Writer.Error!void {
             try w.writeAll("Custom");
