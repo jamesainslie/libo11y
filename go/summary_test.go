@@ -22,13 +22,14 @@ func TestStartupSummaryConformsAndHidesCredentials(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = sdk.Shutdown(context.Background()) })
 
-	var summary *slog.Record
+	var summary slog.Record
+	found := false
 	for _, r := range captured() {
 		if r.Message == spec.EventTelemetryConfigured {
-			summary = &r
+			summary, found = r, true
 		}
 	}
-	if summary == nil {
+	if !found {
 		t.Fatal("no startup summary captured")
 	}
 	var keys []string

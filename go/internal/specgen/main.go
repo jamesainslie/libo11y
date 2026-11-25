@@ -1,7 +1,8 @@
 // Command specgen generates the libo11y spec artifacts from the registry
 // at spec/registry: the public go/spec package (typed keys, enums, event
 // names, version constants), the go/internal/spectables validation tables,
-// the docs/taxonomy markdown, and the OpenTelemetry schema file at
+// the docs/taxonomy markdown, the TypeScript @libo11y/spec and Rust
+// libo11y-spec generated modules, and the OpenTelemetry schema file at
 // spec/schemas/<version>. Run via `make spec-generate`. Every
 // artifact is rendered in memory first and nothing is written unless all of
 // them render.
@@ -460,6 +461,17 @@ func render(m *model) (map[string]string, error) {
 	outputs[tsSpecPath] = genTSSpec(m)
 	outputs[tsTablesPath] = tsTables
 	outputs[tsGoPrintPath] = genTSGoPrint()
+	rustSpec, err := genRustSpec(m)
+	if err != nil {
+		return nil, err
+	}
+	rustTables, err := genRustTables(m)
+	if err != nil {
+		return nil, err
+	}
+	outputs[rustSpecPath] = rustSpec
+	outputs[rustTablesPath] = rustTables
+	outputs[rustGoPrintPath] = genRustGoPrint()
 	goSources := []struct{ rel, src string }{
 		{"go/spec/spec.go", genSpec(m)},
 		{"go/internal/spectables/tables.go", tables},

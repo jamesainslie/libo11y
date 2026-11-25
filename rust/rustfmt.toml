@@ -1,0 +1,5 @@
+# rustfmt settings for the libo11y workspace. specgen writes the generated
+# modules in libo11y-spec already in this layout, so these must stay at
+# rustfmt's defaults for the 2024 style edition unless genrust.go changes too.
+edition = "2024"
+style_edition = "2024"

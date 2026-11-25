@@ -8,7 +8,7 @@ GO_TEST_P ?= 4
 # gate runs on each module separately.
 GO_MODULES := go go/o11ygin go/o11yconnect go/o11ysql
 
-.PHONY: spec-check spec-generate spec-drift test lint vet tidy-check vuln release-check schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-install ts-check ts-browser-test ci
+.PHONY: spec-check spec-generate spec-drift test lint vet tidy-check vuln release-check schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-install ts-check ts-browser-test rust-check rust-msrv ci
 
 # Validate the spec registry against the libo11y policy suite (naming,
 # ownership, sensitivity, cardinality, events, units).
@@ -16,10 +16,11 @@ spec-check:
 	cd go && go run ./internal/specgen -root .. -check
 
 # Directories holding generated artifacts.
-GENERATED := go/spec go/internal/spectables docs/taxonomy spec/schemas ts/packages/spec/src/generated
+GENERATED := go/spec go/internal/spectables docs/taxonomy spec/schemas ts/packages/spec/src/generated rust/libo11y-spec/src/generated
 
 # Validate the registry, then regenerate go/spec, go/internal/spectables,
-# docs/taxonomy, spec/schemas, and ts/packages/spec/src/generated from it.
+# docs/taxonomy, spec/schemas, ts/packages/spec/src/generated, and
+# rust/libo11y-spec/src/generated from it.
 # An invalid registry generates nothing.
 spec-generate:
 	cd go && go run ./internal/specgen -root ..
@@ -46,6 +47,26 @@ ts-check: ts-install
 # chromium` in ts/.
 ts-browser-test: ts-install
 	cd ts && bun run test:browser
+
+# Rust workspace (rust/): formatting, clippy with warnings as errors, the
+# tests, and the docs with warnings as errors (needs cargo with rustfmt and
+# clippy; CI pins the 1.95.0 toolchain). Cargo jobs and test threads are
+# capped at RUST_JOBS; lower it on a loaded machine.
+RUST_JOBS ?= 8
+
+rust-check:
+	cd rust && cargo fmt --all --check
+	cd rust && cargo clippy --workspace --all-targets --all-features -j $(RUST_JOBS) -- -D warnings
+	cd rust && cargo test --workspace --all-features -j $(RUST_JOBS) -- --test-threads=$(RUST_JOBS)
+	cd rust && RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --all-features -j $(RUST_JOBS)
+
+# The minimum supported Rust version, rust-version in rust/Cargo.toml.
+RUST_MSRV ?= 1.88
+
+# The workspace must build on RUST_MSRV. Needs rustup with that toolchain
+# installed (rustup toolchain install $(RUST_MSRV)); CI installs it.
+rust-msrv:
+	cd rust && cargo +$(RUST_MSRV) check --workspace --all-targets --all-features -j $(RUST_JOBS)
 
 vet:
 	@set -e; for m in $(GO_MODULES); do echo "go vet: $$m"; (cd $$m && go vet ./...); done
@@ -113,4 +134,4 @@ ts-browser-bundle-test:
 
 # vuln runs last: it depends on the advisory database and the toolchain's
 # patch level, so local runs exercise every other gate first.
-ci: lint vet test tidy-check spec-check spec-drift ts-check ts-browser-test schema-published-test release-notes-test release-tag-test ts-browser-bundle-test release-check vuln
+ci: lint vet test tidy-check spec-check spec-drift ts-check ts-browser-test schema-published-test release-notes-test release-tag-test ts-browser-bundle-test rust-check rust-msrv release-check vuln
