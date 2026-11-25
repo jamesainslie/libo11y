@@ -22,6 +22,7 @@ pub const otlp = struct {
     pub const http = @import("otlp/http.zig");
     pub const transport = @import("otlp/transport.zig");
     pub const env = @import("otlp/env.zig");
+    pub const encode = @import("otlp/encode.zig");
 };
 
 test {
