@@ -100,6 +100,11 @@ func TestVectorsPIIHash(t *testing.T) {
 		{"html-escaped array members", "string_array", attribute.StringSliceValue([]string{"<a&b>", "\u2028\u2029"})},
 		{"control characters in an array", "string_array", attribute.StringSliceValue([]string{"\b\f\u0001\t\n\"\\"})},
 		{"empty array", "string_array", attribute.StringSliceValue([]string{})},
+		// The walk spends one node on the array and one on each element, from a
+		// budget of compositeWalkBudget (2048): 2047 elements fit, and the
+		// 2048th renders as the truncation marker.
+		{"string array at the walk budget", "string_array", attribute.StringSliceValue(cycledStrings(compositeWalkBudget - 1))},
+		{"string array past the walk budget", "string_array", attribute.StringSliceValue(cycledStrings(compositeWalkBudget))},
 		{"int array", "int_array", attribute.Int64SliceValue([]int64{1, 2, 3})},
 		{"float array", "float_array", attribute.Float64SliceValue([]float64{0.5, 1e-7})},
 		{"bool array", "bool_array", attribute.BoolSliceValue([]bool{true, false})},
@@ -197,4 +202,15 @@ func TestVectorsEndpointSanitize(t *testing.T) {
 		cases[i] = endpointCase{in, sanitizeEndpoint(in)}
 	}
 	checkVector(t, "endpoint-sanitize.json", cases)
+}
+
+// cycledStrings returns n one-character strings cycling through a short
+// alphabet, so neighbouring elements differ and a vector stays small.
+func cycledStrings(n int) []string {
+	const alphabet = "abcdefghij"
+	out := make([]string, n)
+	for i := range out {
+		out[i] = string(alphabet[i%len(alphabet)])
+	}
+	return out
 }

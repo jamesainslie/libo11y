@@ -86,6 +86,11 @@ The canonical rendering is the one Go's sensitivity policy uses:
   deeper renders as `truncated`. The walk also spends one unit of a
   2048-node budget per node, depth first, in sorted key order. Once the
   budget is gone, every remaining node renders as `truncated`.
+  A scalar array is one node, and each element is a node of its own. The
+  `string array at the walk budget` case has 2047 one-character elements,
+  which with the array itself spend the whole budget, so nothing is
+  truncated. The `string array past the walk budget` case has 2048, so
+  its last element renders as `truncated`.
 
 The token is `hmac-sha256:` followed by the lowercase hex of the first
 16 bytes of HMAC-SHA256 over the UTF-8 canonical rendering.
