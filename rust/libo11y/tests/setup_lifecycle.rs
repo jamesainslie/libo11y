@@ -1,0 +1,121 @@
+//! The global lifecycle, in one sequential test because it changes process
+//! globals: a failed setup installs nothing and holds no guard, setup
+//! installs every global, a second setup fails, shutdown releases the
+//! guard, and a later setup takes over the tracing stack.
+
+mod common;
+
+use std::collections::HashMap;
+
+use opentelemetry::trace::{Span as _, TraceContextExt as _, Tracer as _, TracerProvider as _};
+use opentelemetry_sdk::metrics::InMemoryMetricExporter;
+
+use common::{Spans, hermetic};
+use libo11y::{Environment, Error, Sdk};
+
+/// Whether the global tracer records spans.
+fn global_tracer_records() -> bool {
+    let span = opentelemetry::global::tracer_provider()
+        .tracer("probe")
+        .start("probe");
+    span.span_context().is_valid()
+}
+
+/// What the global propagator injects for a sampled span of `sdk`.
+fn global_inject(sdk: &Sdk) -> HashMap<String, String> {
+    let span = sdk.tracer("t").start("inject");
+    let cx = opentelemetry::Context::new().with_span(span);
+    let mut carrier = HashMap::new();
+    opentelemetry::global::get_text_map_propagator(|p| p.inject_context(&cx, &mut carrier));
+    carrier
+}
+
+#[test]
+fn the_global_lifecycle() {
+    // A failed setup installs nothing and releases the guard.
+    let err = Sdk::builder()
+        .environment(Environment::Test)
+        .without_otel_env()
+        .setup()
+        .expect_err("no service name");
+    assert!(matches!(err, Error::NoServiceName), "{err}");
+    assert!(!global_tracer_records(), "no global tracer provider");
+    assert!(!tracing::dispatcher::has_been_set(), "no tracing default");
+    let probe = hermetic("probe").build().expect("SDK");
+    assert!(global_inject(&probe).is_empty(), "no global propagator");
+
+    // Setup installs every global.
+    let first_spans = Spans::default();
+    let metrics = InMemoryMetricExporter::default();
+    let first = hermetic("first")
+        .with_span_exporter(first_spans.clone())
+        .with_metric_exporter(metrics.clone())
+        .setup()
+        .expect("setup after a failed setup");
+    assert!(global_tracer_records());
+    assert!(tracing::dispatcher::has_been_set());
+    assert!(global_inject(&first).contains_key("traceparent"));
+    opentelemetry::global::meter("probe")
+        .u64_counter("global.counter")
+        .build()
+        .add(1, &[]);
+    tracing::info_span!("first-tracing").in_scope(|| {});
+    opentelemetry::global::tracer("probe")
+        .start("first-global")
+        .end();
+    first.force_flush().expect("flush");
+    let names = first_spans.names();
+    assert!(names.contains(&"first-tracing".to_owned()), "{names:?}");
+    assert!(names.contains(&"first-global".to_owned()), "{names:?}");
+    assert!(
+        metrics
+            .get_finished_metrics()
+            .expect("metrics")
+            .iter()
+            .flat_map(opentelemetry_sdk::metrics::data::ResourceMetrics::scope_metrics)
+            .any(|sm| sm.metrics().any(|m| m.name() == "global.counter")),
+        "the global meter provider is the SDK's"
+    );
+
+    // One global SDK at a time.
+    let err = hermetic("second").setup().expect_err("already set up");
+    assert!(matches!(err, Error::AlreadySetup));
+
+    // A span opened under the first SDK ends under the next one.
+    let straddling = tracing::info_span!("straddling");
+    let entered = tracing::info_span!("entered-straddling").entered();
+
+    first.shutdown().expect("shutdown");
+    let second_spans = Spans::default();
+    let second = hermetic("second")
+        .with_span_exporter(second_spans.clone())
+        .setup()
+        .expect("setup after shutdown");
+    drop(straddling);
+    drop(entered);
+    tracing::info_span!("second-tracing").in_scope(|| {});
+    second.force_flush().expect("flush");
+    let second_names = second_spans.names();
+    assert!(
+        second_names.contains(&"second-tracing".to_owned()),
+        "{second_names:?}"
+    );
+    assert!(!first_spans.names().contains(&"second-tracing".to_owned()));
+    // A span that was never entered starts its OpenTelemetry span when it
+    // closes, on the SDK installed then.
+    let first_names = first_spans.names();
+    assert_eq!(
+        usize::from(first_names.contains(&"straddling".to_owned()))
+            + usize::from(second_names.contains(&"straddling".to_owned())),
+        1,
+        "{first_names:?} {second_names:?}"
+    );
+    second.shutdown().expect("shutdown");
+
+    // A setup that leaves tracing alone still works after one that did not.
+    let third = hermetic("third")
+        .without_tracing_default()
+        .setup()
+        .expect("setup");
+    third.shutdown().expect("shutdown");
+}

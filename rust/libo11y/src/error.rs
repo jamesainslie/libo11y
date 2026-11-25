@@ -7,9 +7,10 @@
 
 use std::io;
 
-use libo11y_spec::go_quote;
+use libo11y_spec::{Signal, go_quote};
 
 use crate::appregistry::{ParseError, Violation};
+use crate::export::{Protocol, component};
 
 /// A boxed error from a component libo11y builds on, such as an exporter.
 pub type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
@@ -128,6 +129,60 @@ pub enum Error {
     #[error("o11y: building log exporter: {0}")]
     BuildingLogExporter(#[source] BoxError),
 
+    /// `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER` or
+    /// `OTEL_LOGS_EXPORTER` names an exporter libo11y does not know. The
+    /// message is Go's autoexport's.
+    #[error("o11y: building {}: unknown exporter or metrics producer", component(*signal))]
+    UnknownExporter {
+        /// The signal whose variable is wrong.
+        signal: Signal,
+        /// The exporter it names, trimmed and lowercased.
+        value: String,
+    },
+
+    /// An exporter variable names an exporter the Rust library does not
+    /// ship, such as `prometheus` for metrics.
+    #[error(
+        "o11y: building {}: {} is not supported by libo11y for Rust: use otlp, console or none",
+        component(*signal),
+        go_quote(value)
+    )]
+    UnsupportedExporter {
+        /// The signal whose variable names it.
+        signal: Signal,
+        /// The exporter it names.
+        value: String,
+    },
+
+    /// `OTEL_EXPORTER_OTLP_PROTOCOL` or a signal's own protocol variable
+    /// names no OTLP protocol. The message is Go's autoexport's, with
+    /// `http/json`, which the Rust library also ships.
+    #[error(
+        "o11y: building {}: invalid OTLP protocol - should be one of ['grpc', 'http/protobuf', 'http/json']",
+        component(*signal)
+    )]
+    InvalidOtlpProtocol {
+        /// The signal routed to OTLP.
+        signal: Signal,
+        /// The protocol the variable names.
+        value: String,
+    },
+
+    /// A signal is routed to OTLP over a protocol whose cargo feature
+    /// (`otlp-http` or `otlp-grpc`) this build leaves out.
+    #[error(
+        "o11y: building {}: OTLP protocol {} needs the libo11y feature {}",
+        component(*signal),
+        go_quote(protocol.as_str()),
+        go_quote(protocol.feature())
+    )]
+    OtlpFeatureDisabled {
+        /// The signal routed to OTLP.
+        signal: Signal,
+        /// The protocol it uses.
+        protocol: Protocol,
+    },
+
     /// `OTEL_PROPAGATORS` names a propagator nobody ships. The message is
     /// Go's, which wraps the contrib registry's.
     #[error(
@@ -150,6 +205,14 @@ pub enum Error {
         /// The name.
         name: String,
     },
+
+    /// [`Builder::setup`](crate::Builder::setup) found a global `tracing`
+    /// subscriber that libo11y did not install. `tracing` allows one global
+    /// subscriber per process, so libo11y cannot install its own.
+    #[error(
+        "o11y: a global tracing subscriber is already set: set up with Builder::without_tracing_default and add Sdk::tracing_layer to that subscriber"
+    )]
+    ForeignTracingSubscriber,
 }
 
 impl Error {
@@ -211,7 +274,15 @@ mod tests {
     }
 
     #[test]
-    fn propagator_messages() {
+    fn export_and_propagator_messages() {
+        assert_eq!(
+            Error::OtlpFeatureDisabled {
+                signal: Signal::Logs,
+                protocol: Protocol::Grpc,
+            }
+            .to_string(),
+            "o11y: building log exporter: OTLP protocol \"grpc\" needs the libo11y feature \"otlp-grpc\""
+        );
         assert_eq!(
             Error::UnknownPropagator {
                 name: "bogus".into()
@@ -222,6 +293,11 @@ mod tests {
         assert_eq!(
             Error::UnsupportedPropagator { name: "b3".into() }.to_string(),
             "o11y: building propagator: \"b3\": not shipped by libo11y for Rust: use tracecontext, baggage or none, or Builder::propagators"
+        );
+        assert!(
+            Error::ForeignTracingSubscriber
+                .to_string()
+                .contains("without_tracing_default")
         );
     }
 
