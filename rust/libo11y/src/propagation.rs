@@ -37,10 +37,6 @@ impl Propagator {
     /// Builds the propagator from the configured list: none gives the
     /// default composite, one is used as it is, several form a composite in
     /// order. `allow` is the egress predicate, every key when `None`.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the builder constructs the propagator")
-    )]
     pub(crate) fn new(propagators: Vec<BoxedPropagator>, allow: Option<BaggageAllow>) -> Self {
         let propagators = if propagators.is_empty() {
             vec![

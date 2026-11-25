@@ -6,6 +6,7 @@ No crate has been published yet.
 
 | Crate | Status |
 |-------|--------|
+| [`libo11y`](libo11y/) | The core: builder, identity and resource, sensitivity policy, application registries, propagation |
 | [`libo11y-spec`](libo11y-spec/) | The attribute keys, enums and tables, generated from `spec/registry` |
 
 The design it implements is in [docs/DESIGN.md](../docs/DESIGN.md), the

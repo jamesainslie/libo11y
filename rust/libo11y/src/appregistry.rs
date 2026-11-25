@@ -414,10 +414,6 @@ impl AppRegistry {
 
 /// Joins the classes of several registries into one table. Fails, as Go
 /// does, when two registries declare the same namespace.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the builder joins the registries")
-)]
 pub(crate) fn merge_classes(
     registries: &[AppRegistry],
 ) -> Result<HashMap<String, Sensitivity>, Error> {

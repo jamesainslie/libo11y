@@ -187,10 +187,6 @@ impl Policy {
     /// declare. Fails with [`Error::PiiHashKey`] when `mode` is
     /// [`PiiMode::Hash`] and `key` is shorter than
     /// [`MIN_PII_HASH_KEY_LEN`] bytes.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the builder constructs the policy")
-    )]
     pub(crate) fn new(
         mode: PiiMode,
         key: &[u8],
