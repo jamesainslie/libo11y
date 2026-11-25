@@ -15,10 +15,11 @@ pub const Record = opaque {};
 ///
 /// A context borrows what it points to. The owner of a span, of extracted
 /// baggage or of the trace state text must keep it alive for as long as
-/// any context derived from it is in use. The span pointer in particular
-/// is valid only until that span ends. Starting a child only reads
-/// `span_context`, which is a copy, so children may start after their
-/// parent has ended.
+/// any context derived from it is in use. For a local span that means
+/// until the span ends, because the trace state text in `span_context`
+/// lives in the span's record, and `span` points to the caller's span
+/// handle. Start children before the parent
+/// ends; work that outlives it starts from a serialized carrier instead.
 pub const Context = struct {
     /// The span context of the current span, or of the remote parent
     /// that a propagator extracted.
