@@ -1,0 +1,16 @@
+[package]
+name = "libo11y-spec"
+description = "The libo11y telemetry specification for Rust: attribute keys, closed enums, event and metric names, and the sensitivity and contract tables, generated from the libo11y spec registry."
+readme = "README.md"
+keywords = ["observability", "opentelemetry", "telemetry", "semconv", "libo11y"]
+categories = ["development-tools::debugging"]
+include = ["src/**/*.rs", "README.md", "LICENSE"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lints]
+workspace = true

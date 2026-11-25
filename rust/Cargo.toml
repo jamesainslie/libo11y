@@ -1,0 +1,21 @@
+# The libo11y Rust workspace. Every crate shares one version and is released
+# together from a rust/vX.Y.Z tag.
+[workspace]
+resolver = "3"
+members = ["libo11y-spec"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.88"
+license = "Apache-2.0"
+repository = "https://github.com/jamesainslie/libo11y"
+homepage = "https://o11y.ing"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "deny"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
