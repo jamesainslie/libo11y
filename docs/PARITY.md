@@ -59,7 +59,7 @@ current releases" lists those.
 | Resource: container detector | full | `resource.WithContainer` (container.id) | full | upstream `resource-detector-container` (`container.id`) |
 | Resource: Kubernetes identity | idiom | via Downward API + OTEL_RESOURCE_ATTRIBUTES; libo11y runs no in-process Kubernetes detector | idiom | via Downward API + `OTEL_RESOURCE_ATTRIBUTES`, as in Go. The server README has the manifest snippet |
 | Resource: build info | full | `debug.ReadBuildInfo` detector: service.version (when real), `vcs.ref.head.revision`, `o11y.build.time`, `o11y.build.modified`; `WithoutBuildInfo` opt-out | excluded | a JavaScript runtime embeds no module build info or VCS stamp. Set `serviceVersion`, and pass `vcs.ref.head.revision` through `resourceAttributes` when the build knows it |
-| Runtime metrics | full | contrib runtime, on by default | full | upstream `RuntimeNodeInstrumentation` on the telemetry's meter provider, on by default, `runtimeMetrics: false` to turn off. On Bun there is no `nodejs.eventloop.utilization` (always zero, oven-sh/bun#34068) and there are no `v8js.*` metrics. Its require hook outlives `shutdown()` |
+| Runtime metrics | full | contrib runtime, on by default | full | upstream `RuntimeNodeInstrumentation` on the telemetry's meter provider, on by default, `runtimeMetrics: false` to turn off. On Bun there is no `nodejs.eventloop.utilization` (always zero, oven-sh/bun#34068) and there are no `v8js.*` metrics. Its require hook outlives `shutdown()`, and a `createTelemetry` handle installs it too |
 | Histogram bucket control | full | `WithHistogramBuckets`, `WithViews` | full | `histogramBuckets`, `views` |
 | Exemplars (metric-to-trace reconciliation) | full | on by default (trace-based); `WithExemplarFilter` + OTEL_METRICS_EXEMPLAR_FILTER; verified through otelhttp instruments; `o11ytest.Recorder.Exemplars` for consumer assertions | idiom | on by default (trace-based), sampled by libo11y because upstream records none (see the TypeScript-only rows). `exemplarFilter` + `OTEL_METRICS_EXEMPLAR_FILTER`. `Recorder.exemplars` for consumer assertions |
 | Sampler configuration | full | OTEL_TRACES_SAMPLER + `WithTraceSampler` | full | `OTEL_TRACES_SAMPLER` + `sampler` |
@@ -116,7 +116,9 @@ differs.
 ## Known defects in the current releases
 
 These are places where a release breaks a rule of the design contract. Each
-one is a defect to fix, not a decision.
+one is a defect to fix, not a decision. Every one is fixed on `main`, and
+each library's changelog describes the fix under Unreleased. The fixes
+reach users with the next release of each library.
 
 | Release | Defect | Rule it breaks |
 |---|---|---|
@@ -128,7 +130,13 @@ one is a defect to fix, not a decision.
 | `go/v0.2.0` | the redacting processor for records from other log bridges has no depth bound or node budget of its own. Only the SDK's default attribute depth limit of 64 applies, and nothing fails closed | the log walk fails closed at a depth bound and a node budget |
 | `go/v0.2.0` | a final trace export that the collector rejects reaches the error handler but not the error `Shutdown` returns | shutdown reports per-signal failures |
 | `go/v0.2.0`, `ts/v0.1.2` | the application registry's reserved list misses the semconv root `state` | reserve the root of every semconv attribute |
-| `ts/v0.1.2` | logger methods rethrow an exception from a user `attrReplacer` or from an attribute that cannot be read, and `instrumentFetch` and `instrumentServe` let a failing user propagator fail the request | never be the reason the host fails |
+| `go/v0.2.0`, `ts/v0.1.2` | `OTEL_PROPAGATORS` is not read, so a process that sets it keeps the W3C default | standard `OTEL_*` variables are honored |
+| `go/v0.2.0` | `OTEL_SDK_DISABLED` is not honored, so a process that sets it still exports | standard `OTEL_*` variables are honored |
+| `go/v0.2.0`, `ts/v0.1.2` | a PII token for an array of more than 2047 elements differs between a log record and a span or resource attribute, because only the log path bounds the rendering | one canonical rendering shared by every signal |
+| `ts/v0.1.2` | logger methods rethrow an exception from a user `attrReplacer` or from an attribute that cannot be read, wide-record and instrument calls throw on an unreadable attribute too, and `instrumentFetch` and `instrumentServe` let a failing user propagator fail the request | never be the reason the host fails |
+| `ts/v0.1.2` | an option value outside its allowed set is accepted silently. An unknown `logLevel` drops every record | initialization fails fast on configuration errors |
+| `ts/v0.1.2` | a `piiHashKey` given as a string, which JavaScript allows and the type forbids, is converted to an empty byte array, so every token is HMAC-SHA256 under an empty key. A `Uint8Array` key is not affected | hash mode requires a key of at least 32 bytes |
+| `ts/v0.1.2` | a `forceFlush` that overlaps another can resolve as ok before its caller's own log records have been exported | never drop buffered telemetry without saying so |
 | `ts/v0.1.2` | a final log or metric export that the collector rejects reaches the error handler but not the shutdown report, which can say `ok: true`. A rejected trace export is in the report | shutdown reports per-signal failures |
 | `ts/v0.1.2` | a connection attempt still pending when shutdown resolves keeps the process alive past the deadline: until the exporter's request timeout on Bun (10 s by default), and until the operating system gives up on Node (about 135 s on Linux) | bounded shutdown |
 | `ts/v0.1.2` | `shutdownOnSignals` gives `beforeShutdown` and `shutdown` a full deadline each, so it can take twice the stated bound | bounded shutdown |
