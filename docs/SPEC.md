@@ -94,7 +94,10 @@ processors MUST be configured non-destructively.
 
 - **Trace**: resource tier 0 plus applicable tier 1; span name is
   `{method} {low-cardinality target}`, never a raw path; HTTP spans carry
-  the stable semconv required set; status is ERROR only per semconv.
+  the stable semconv required set; status is ERROR only per semconv. The
+  Go middleware names spans this way by default, but no runtime check
+  verifies span names or status, so a custom span-name formatter or a
+  hand-made span can break the rule.
 - **Metric**: only the identity quintet (`service.name`,
   `service.namespace`, `service.instance.id`, `deployment.environment.name`,
   `service.version`) may be effective labels; every other resource
@@ -103,7 +106,8 @@ processors MUST be configured non-destructively.
   enforce (the metric-label allowlist is planned). Exemplars MUST be
   emitted (trace-based by default), each retaining trace ID, span ID,
   timestamp, value, and its filtered attributes minus any the sensitivity
-  layer removes.
+  layer removes. An application can still switch them off, in code or with
+  `OTEL_METRICS_EXEMPLAR_FILTER=always_off`.
 - **Log**: required record fields (below); resource tier 0 plus applicable
   tier 1; trace correlation whenever a span is active; `error.type` on
   ERROR and above; `event.name` on any registered event. The Go
@@ -141,7 +145,8 @@ The slog-to-OTel mapping is normative: `SeverityNumber = slog.Level + 9`
 
 A string `Body` MUST be a constant template; values belong in attributes. A
 map `Body` is permitted only on records whose event name is registered with
-a body schema. Any field used for filtering or grouping MUST be an
+a body schema. No event registers one yet, so today no record may carry a
+map `Body`. Any field used for filtering or grouping MUST be an
 attribute. Bodies are not classified by the sensitivity layer (section 5),
 so a value interpolated into a message escapes it.
 
@@ -179,8 +184,9 @@ is sampled. libo11y v1 registers:
 | `o11y.rum.session.end` | the end of a RUM session, with the reason its telemetry was kept (spec 1.1.0) |
 
 Exceptions are not a registered event. The semconv exception attributes
-(`exception.type`, `exception.message`, `exception.stacktrace`) are
-registered as record attributes required on exception records.
+are registered as record attributes. An exception record MUST carry
+`exception.type` or `exception.message`, and `exception.stacktrace` is
+recommended.
 
 ### Audit class
 
@@ -201,8 +207,9 @@ three PII modes: `drop` (the default), `hash`, and `allow`. `hash` replaces
 the value with a keyed HMAC-SHA256 token, truncated to 128 bits, over one
 canonical rendering of the value shared by every signal; it requires a key
 of at least 32 bytes and refuses to start without one. `allow` emits PII in
-the clear and requires an explicit opt-in with a data-handling
-justification.
+the clear. It is never a default and no environment variable selects it,
+so an application opts in in code. The option takes no justification, so
+record the data-handling reason where the option is set.
 
 | Surface | Secret | PII, drop (default) | PII, hash | PII, allow |
 |---|---|---|---|---|
@@ -216,7 +223,11 @@ justification.
 On logs, a grouped attribute is judged on its dotted effective key, and
 composite values (maps, slices of maps, pointers) are walked so their
 members are judged the same way; the walk fails closed at cycles, at a
-depth bound, and at a node budget, dropping what it did not examine.
+depth bound, and at a node budget, dropping what it did not examine. In
+`go/v0.2.0` the bounds apply on the slog sinks only. The processor for
+records from other log bridges has no depth bound or node budget of its
+own, so only the SDK's default attribute depth limit of 64 applies, and
+nothing fails closed. That is a defect, listed in [PARITY.md](PARITY.md).
 
 The sensitivity layer runs after any user attribute replacer (in Go, the
 replacer runs on the slog sinks only), so renaming a key to a classified
@@ -241,7 +252,8 @@ it does not cover:
   their own key only;
 - attributes a span processor reads when a span starts, before redaction;
 - baggage, which crosses process boundaries unclassified. The Go egress
-  filter wraps every propagator but its default predicate allows every key;
+  filter wraps every propagator, but its predicate allows every key and no
+  public option changes it yet;
 - an environment-provided resource key that is dropped (or, in Go's
   hermetic mode, any environment key the library resource does not
   define): OpenTelemetry Go
@@ -265,7 +277,9 @@ Go loads a registry at setup with the option `WithAppRegistry(fs.FS,
 path)`, from `go/v0.2.0`. A registry that breaks a rule fails setup with
 `ErrInvalidAppRegistry`. Only sensitivity applies at runtime. The
 validator checks types, cardinality budgets and enum values.
-TypeScript loading arrives in `ts/v0.1.0`.
+TypeScript loads a registry through the `registry` option or
+`loadAppRegistry(path)`, from `ts/v0.1.1`, the first version on npm. It
+rejects an invalid registry with the `INVALID_APP_REGISTRY` error code.
 
 ### Schema
 
@@ -313,7 +327,9 @@ its model directories, spelled as attribute namespaces. It also reserves
 the root of every attribute it defines, which includes `oracle`. The list
 is in `go/internal/appregistry/reserved.go`. A test fails when the semconv
 pin in `spec/registry/manifest.yaml` names a release the list does not
-reflect.
+reflect. The list in `go/v0.2.0` and `ts/v0.1.2` misses one root, `state`,
+which semconv 1.41.0 defines as a deprecated database attribute. That is a
+defect, listed in [PARITY.md](PARITY.md).
 
 ### Checking a registry
 
@@ -343,9 +359,14 @@ as `{area}.{client|server}.{name}` (for example
 `http.server.request.duration`, a seconds histogram). Every metric
 attribute carries a cardinality budget (`enum`, `bounded`, or `unbounded`);
 an `unbounded` attribute MUST NOT be a metric label. The registry checks
-enforce these rules for metrics the registry defines; they are not checked
-on application instruments at runtime. HTTP span and metric conventions are
-imported verbatim from stable semconv.
+enforce these rules for metrics the registry defines, with one exception:
+no check verifies the `{area}.{client|server}.{name}` form. The checks
+also require every metric the registry defines to be named under `o11y.*`
+(`libo11y_metric_namespace`), so upstream metrics such as
+`http.server.request.duration` are used as upstream defines them and never
+redefined. None of
+these rules is checked on application instruments at runtime. HTTP span
+and metric conventions are imported verbatim from stable semconv.
 
 Spec 1.1.0 adds the RUM conventions under `o11y.rum.*`. They define three
 span shapes, `view`, `action` and `app_load`, each with its required
@@ -398,11 +419,12 @@ URL, and the commit is tagged `spec/v1.2.0`. Spec 1.1.0 is tagged
    states unrepresentable at compile time. Forbidden keys get no
    constants.
 2. **Registry policy checks** (`make spec-check`, also run before every
-   `make spec-generate`): strict decoding of every registry file (unknown
-   fields fail with `libo11y_registry_unknown_field`, and the manifest's
-   `schema_url` must be an absolute http(s) URL ending in a bare semantic
-   version, with no query or fragment), followed by the rules below. It
-   also validates the manifest version history against the rules of
+   `make spec-generate`): strict decoding of every registry group file
+   (an unknown field fails with `libo11y_registry_unknown_field`), followed
+   by the rules below. The manifest is the one file decoded leniently, so
+   an unknown manifest key is ignored. Its `schema_url` must still be an
+   absolute http(s) URL ending in a bare semantic version, with no query
+   or fragment, and its version history must follow the rules of
    section 7. Rule IDs are stable.
 3. **Init-time** (`Setup`/`New`): tier-0 identity is validated and
    required; `hash` mode without a key fails; a registry passed to
@@ -422,8 +444,8 @@ URL, and the commit is tagged `spec/v1.2.0`. Spec 1.1.0 is tagged
    - metric views (data point attributes) and exemplar reservoirs (filtered
      attributes) on every stream of the SDK's own instruments (metric
      producers bypass views and are not covered);
-   - the baggage egress filter, a seam on every propagator's inject path
-     whose default predicate allows every key.
+   - the baggage egress filter, a seam on every propagator's inject path.
+     Its predicate allows every key, and no public option changes it yet.
 5. **CI conformance** (`make spec-check` policy validation, the
    `make spec-drift` generation gate, and the language test harnesses,
    including `o11ytest.AssertConforms` in a consumer's own suite): the only
@@ -438,6 +460,7 @@ allowlist enforcing the identity quintet.
 
 | Area | Rule IDs |
 |---|---|
+| decoding | `libo11y_registry_unknown_field`, a load error raised before the policy rules run |
 | naming | `libo11y_attr_naming`, `libo11y_event_naming`, `libo11y_metric_naming`, `libo11y_go_name_collision` |
 | ownership | `libo11y_namespace_ownership` |
 | sensitivity | `libo11y_sensitivity_missing`, `libo11y_sensitivity_unknown`, `libo11y_secret_referenced`, `libo11y_classification_conflict` |
