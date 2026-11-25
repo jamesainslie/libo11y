@@ -18,8 +18,8 @@ pub const Record = opaque {};
 /// any context derived from it is in use. For a local span that means
 /// until the span ends, because the trace state text in `span_context`
 /// lives in the span's record, and `span` points to the caller's span
-/// handle. Start children before the parent
-/// ends; work that outlives it starts from a serialized carrier instead.
+/// handle. Start children before the parent ends; work that outlives it
+/// starts from a serialized carrier instead.
 pub const Context = struct {
     /// The span context of the current span, or of the remote parent
     /// that a propagator extracted.

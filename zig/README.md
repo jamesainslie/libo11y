@@ -5,12 +5,23 @@ In progress. The Zig implementation of the libo11y design contract
 plan and its decisions are in
 [docs/design/2026-11-25-libo11y-zig-design.md](../docs/design/2026-11-25-libo11y-zig-design.md).
 
-The package builds with Zig 0.17.1. It exports one module, `o11y`, which
-so far holds `o11y.version` and `o11y.spec`. `o11y.spec` is the
-specification that specgen generates from `spec/registry`: attribute
-keys, closed enums, event and metric names, and the sensitivity and
-cardinality tables. Nothing here is ready to use, and no version is
-released.
+The package builds with Zig 0.17.1. It exports one module, `o11y`. So
+far its public API is `o11y.version`, `o11y.spec` (the specification that
+specgen generates from `spec/registry`: attribute keys, closed enums,
+event and metric names, and the sensitivity and cardinality tables), and
+the explicit `o11y.Context` with the span identity types it carries. The
+internal pipeline under `src/pipeline/` has the trace side: W3C
+propagation, samplers, spans, the simple and batch processors, and
+OTLP/HTTP export with protobuf or JSON, gzip, retries and TLS. Setup and
+the public signal APIs come in later steps. Nothing here is ready to use,
+and no version is released.
+
+Dependencies, each pinned by commit:
+
+- [zig-protobuf](https://github.com/Arwalk/zig-protobuf), the runtime for
+  the OTLP bindings vendored under [src/proto/](src/proto/README.md);
+- [tls.zig](https://github.com/ianic/tls.zig), for OTLP over TLS with
+  client certificates.
 
 The core's internal pieces that the shared conformance cases cover are
 in place, with no public API yet:
