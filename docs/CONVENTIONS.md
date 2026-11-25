@@ -38,8 +38,9 @@ module itself. Make targets from the repository root:
   [SPEC.md](SPEC.md), section 8.
 - `make spec-generate` validates first, then regenerates `go/spec`,
   `go/internal/spectables`, `docs/taxonomy`,
-  `ts/packages/spec/src/generated`, and the OpenTelemetry schema files
-  under `spec/schemas` from the registry. An invalid registry
+  `ts/packages/spec/src/generated`, `rust/libo11y-spec/src/generated`,
+  `zig/src/spec/generated`, and the OpenTelemetry schema files under
+  `spec/schemas` from the registry. An invalid registry
   generates nothing. Generated files are never edited by hand.
 - `make spec-drift` fails if generated artifacts are stale or if the
   generator produced files git does not track. CI runs it, and a golden
