@@ -15,7 +15,8 @@ libo11y/
   scripts/       release and schema checks, with their tests
   rust/          Rust workspace (planned)
   java/          Java/Maven module (planned)
-  zig/           Zig package (planned)
+  zig/           Zig package (in progress), published through the
+                 root build.zig and build.zig.zon shim
 ```
 
 Each language directory is self-contained: its own build, tests, lint
@@ -229,6 +230,8 @@ install that version locally. Keep the two in step when adding a gate.
 | `make release-check` | the Go release sequence, then packing and a consumer smoke test of the TypeScript packages, including the browser bundle check (needs a clean tree) |
 | `make release-notes-test`, `make release-tag-test` | the release workflow's scripts: changelog sections become release notes, and each release tag routes to its kind, module and version |
 | `make schema-published-test` | the schema URL check against a loopback HTTP server |
+| `make zig-check` | the Zig package: `zig fmt --check`, the tests through the root shim in Debug and ReleaseSafe (`ZIG_BUILD_J` caps the job count), and the hygiene check. CI runs it in the `zig` job on Linux and macOS |
+| `make zig-hygiene-test` | `scripts/zig-hygiene.sh` against fixture trees |
 | `make vuln` | `govulncheck` on every Go module; runs last because it depends on the advisory database and the toolchain's patch level |
 
 - Go: the gates above. Standard-library advisories are fixed by the
@@ -237,4 +240,14 @@ install that version locally. Keep the two in step when adding a gate.
   patch version, because each new advisory moves it.
 - Rust (planned): clippy pedantic, `unsafe_code = "forbid"`, cargo-deny.
 - Java (planned): errorprone, spotless.
-- Zig (planned): zig fmt, exhaustive switch on error sets.
+- Zig: Zig 0.17.1. On NixOS development machines it comes from
+  home-manager with mitchellh/zig-overlay. mise does not manage Zig on
+  any machine. CI installs it with `mlugg/setup-zig`, pinned by commit,
+  and runs `make zig-check` on Linux and macOS. The gate runs `zig fmt
+  --check` over `zig/` and the root shim, `zig build test` through the
+  root shim in Debug and ReleaseSafe with the job count capped by
+  `ZIG_BUILD_J` (default 8), and `scripts/zig-hygiene.sh` with its test.
+  The hygiene script fails on `@panic`, `catch unreachable` or
+  `std.debug.print` outside test blocks and test-only files (files under
+  `zig/test/` and files named `*_test.zig`). Every switch on an error set
+  the public API returns is exhaustive.

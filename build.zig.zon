@@ -1,0 +1,24 @@
+// The root shim for the libo11y Zig package in zig/. Zig fetches whole
+// repositories, so this manifest makes the repository itself a package
+// that consumers fetch with
+//
+//   zig fetch --save git+https://github.com/jamesainslie/libo11y#zig/vX.Y.Z
+//
+// It shares the name `libo11y` with zig/build.zig.zon, so the key in a
+// consumer's dependencies is `libo11y`. Its version moves with that
+// manifest's in the release commit.
+.{
+    .name = .libo11y,
+    .version = "0.0.0",
+    .fingerprint = 0xb41b2588dbe9a936, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{
+        .libo11y = .{ .path = "zig" },
+    },
+    // Only the shim and the Zig package count toward the package hash.
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "zig",
+    },
+}
