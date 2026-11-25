@@ -30,3 +30,21 @@ func WithBaggageEgressForTest(allow func(string) bool) Option {
 
 // SanitizeEndpoint exposes sanitizeEndpoint to the external test package.
 var SanitizeEndpoint = sanitizeEndpoint
+
+// MaxCompositeDepth and CompositeWalkBudget expose the composite walk's
+// bounds so tests can build values just past them.
+const (
+	MaxCompositeDepth   = maxCompositeDepth
+	CompositeWalkBudget = compositeWalkBudget
+)
+
+// ExportWindowOpen reports whether a Shutdown or ForceFlush call is
+// recording the export failures of signal ("traces" or "logs") right now.
+func (s *SDK) ExportWindowOpen(signal string) bool {
+	f := s.spanFailures
+	if signal == "logs" {
+		f = s.logFailures
+	}
+	w := f.windows.Load()
+	return w != nil && len(*w) > 0
+}

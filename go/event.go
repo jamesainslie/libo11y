@@ -25,8 +25,12 @@ import (
 // carrier until the log bridge can set the top-level EventName field
 // directly; the API is unchanged by that future migration. Events at or
 // above the configured level also record normally; force-emit ensures those
-// below it are not dropped.
+// below it are not dropped. On an inert handle (see [SDK]) Event does
+// nothing.
 func (s *SDK) Event(ctx context.Context, name string, attrs ...slog.Attr) {
+	if !s.live() {
+		return
+	}
 	// Delivery is best effort for application events: Event has no error
 	// return, and a synchronously rejecting sink is caught once, at Setup,
 	// by the startup canary.

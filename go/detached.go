@@ -60,8 +60,12 @@ func Capture(ctx context.Context) Carrier {
 }
 
 // Capture is [Capture] bound to this SDK's propagator, for SDKs built with
-// [New].
+// [New]. On an inert handle (see [SDK]) it returns the zero Carrier, even
+// when ctx holds a valid span context.
 func (s *SDK) Capture(ctx context.Context) Carrier {
+	if !s.live() {
+		return Carrier{}
+	}
 	return capture(ctx, s.propagator)
 }
 
@@ -210,13 +214,20 @@ func StartLinked(ctx context.Context, carrier Carrier, name string, opts ...trac
 }
 
 // StartLinked is [StartLinked] bound to this SDK's tracer provider, for
-// SDKs built with [New].
+// SDKs built with [New]. On an inert handle (see [SDK]) the span comes from
+// the no-op tracer provider.
 func (s *SDK) StartLinked(ctx context.Context, carrier Carrier, name string, opts ...trace.SpanStartOption) (context.Context, trace.Span) {
-	return startLinked(ctx, s.tracerProvider, carrier, name, opts)
+	return startLinked(ctx, s.TracerProvider(), carrier, name, opts)
 }
 
 func startLinked(ctx context.Context, tp trace.TracerProvider, carrier Carrier, name string, opts []trace.SpanStartOption) (context.Context, trace.Span) {
 	ctx = restoreBaggage(ctx, carrier.baggage)
+	// Start from no span at all. The SDK tracer already ignores the parent
+	// under WithNewRoot, but a no-op tracer (an inert handle, or the SDK
+	// disabled by OTEL_SDK_DISABLED) ignores WithNewRoot and would hand
+	// back the request's span, so detached work would carry the request's
+	// trace. The restored baggage is kept.
+	ctx = trace.ContextWithSpanContext(ctx, trace.SpanContext{})
 	startOpts := make([]trace.SpanStartOption, 0, len(opts)+2)
 	startOpts = append(startOpts, trace.WithNewRoot())
 	if sc := carrier.SpanContext(); sc.IsValid() {

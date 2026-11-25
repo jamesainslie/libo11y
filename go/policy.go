@@ -238,7 +238,9 @@ func (p *sensitivityPolicy) kv(signal spec.Signal, kv attribute.KeyValue) (attri
 // only in invalid bytes share a token.
 
 // canonicalAttr renders an attribute value in the canonical form.
-func canonicalAttr(v attribute.Value) string { return renderCanonical(attrNode(v)) }
+func canonicalAttr(v attribute.Value) string {
+	return renderCanonical(attrNode(v, 0, newCompositeWalk()))
+}
 
 // canonicalSlog renders a resolved, non-group slog value in the canonical
 // form.
@@ -261,8 +263,20 @@ func renderCanonical(n any) string {
 	return string(out)
 }
 
-// attrNode builds the canonical node of an attribute value.
-func attrNode(v attribute.Value) any {
+// attrNode builds the canonical node of a bridge attribute value, the form
+// a PII token hashes. It spends nodes from w the way [anyNode] spends them
+// on the matching Go value on the slog path, so both paths render, and
+// tokenize, the same value the same way: one node for the value itself and
+// one for each element of a slice, scalar slices included, and each map
+// member as a value of its own. A node past maxCompositeDepth, or once the
+// budget is spent, renders as canonicalTruncated. Map members are visited
+// in sorted key order so the truncation is deterministic. A byte slice is
+// one node, rendered as base64, as on the slog path. An attribute value
+// cannot refer to itself, so no cycle check is needed.
+func attrNode(v attribute.Value, depth int, w *compositeWalk) any {
+	if depth > maxCompositeDepth || !w.spend() {
+		return canonicalTruncated
+	}
 	switch v.Type() {
 	case attribute.BOOL:
 		return strconv.FormatBool(v.AsBool())
@@ -275,20 +289,21 @@ func attrNode(v attribute.Value) any {
 	case attribute.BYTESLICE:
 		return base64.StdEncoding.EncodeToString(v.AsByteSlice())
 	case attribute.BOOLSLICE:
-		return arrayNode(v.AsBoolSlice(), func(b bool) any { return strconv.FormatBool(b) })
+		return boundedArray(v.AsBoolSlice(), depth, w, func(b bool) any { return strconv.FormatBool(b) })
 	case attribute.INT64SLICE:
-		return arrayNode(v.AsInt64Slice(), func(i int64) any { return strconv.FormatInt(i, 10) })
+		return boundedArray(v.AsInt64Slice(), depth, w, func(i int64) any { return strconv.FormatInt(i, 10) })
 	case attribute.FLOAT64SLICE:
-		return arrayNode(v.AsFloat64Slice(), func(f float64) any { return canonicalFloat(f) })
+		return boundedArray(v.AsFloat64Slice(), depth, w, func(f float64) any { return canonicalFloat(f) })
 	case attribute.STRINGSLICE:
-		return arrayNode(v.AsStringSlice(), func(s string) any { return s })
+		return boundedArray(v.AsStringSlice(), depth, w, func(s string) any { return s })
 	case attribute.SLICE:
-		return arrayNode(v.AsSlice(), attrNode)
+		return arrayNode(v.AsSlice(), func(e attribute.Value) any { return attrNode(e, depth+1, w) })
 	case attribute.MAP:
-		members := v.AsMap()
+		members := slices.Clone(v.AsMap())
+		slices.SortStableFunc(members, func(a, b attribute.KeyValue) int { return strings.Compare(string(a.Key), string(b.Key)) })
 		obj := make(map[string]any, len(members))
 		for _, m := range members {
-			obj[string(m.Key)] = attrNode(m.Value)
+			obj[string(m.Key)] = attrNode(m.Value, depth+1, w)
 		}
 		return obj
 	default:
@@ -333,8 +348,12 @@ const canonicalTruncated = "truncated"
 // anything else (structs, for example) with %+v, as otelslog renders it.
 //
 // The walk w bounds the rendering like the classifier's composite walk: a
-// value whose rendering exceeds it is truncated, so its token is stable but
-// can differ from the token a bridge's attribute value gets.
+// value whose rendering exceeds it is truncated, so its token is stable.
+// [attrNode] spends nodes the same way on the bridge path, so maps,
+// slices, and scalar slices truncate at the same point on both paths. A
+// value whose Go form has levels the bridge's form lacks, such as a
+// pointer, spends extra nodes here and can truncate, and tokenize,
+// differently.
 func anyNode(x any, depth int, w *compositeWalk) any {
 	if depth > maxCompositeDepth || !w.spend() {
 		return canonicalTruncated
@@ -412,7 +431,22 @@ func textForm(x any) (text string, ok bool) {
 // canonicalFloat renders a float in the shortest form that round-trips.
 func canonicalFloat(f float64) string { return strconv.FormatFloat(f, 'g', -1, 64) }
 
-// arrayNode builds an array node from elems.
+// boundedArray renders the elements of a scalar slice held at depth,
+// spending one node per element as [anyNode] does for each element of a Go
+// slice, so an element past the bound or the budget is canonicalTruncated.
+func boundedArray[T any](elems []T, depth int, w *compositeWalk, node func(T) any) []any {
+	arr := make([]any, len(elems))
+	for i, e := range elems {
+		if depth+1 > maxCompositeDepth || !w.spend() {
+			arr[i] = canonicalTruncated
+			continue
+		}
+		arr[i] = node(e)
+	}
+	return arr
+}
+
+// arrayNode builds an array node from elems, rendering each with node.
 func arrayNode[T any](elems []T, node func(T) any) []any {
 	arr := make([]any, len(elems))
 	for i, e := range elems {

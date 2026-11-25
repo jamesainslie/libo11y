@@ -27,6 +27,21 @@
 // Configuration follows a strict precedence: explicit options override the
 // standard OTEL_* environment variables, which override library defaults.
 // The package defines no environment variables of its own.
+//
+// One standard variable beats code options: OTEL_SDK_DISABLED=true (in any
+// case) switches telemetry off from outside the process. Nothing is
+// exported on any signal, including through exporters, readers, and
+// processors injected with options, and runtime metrics do not start.
+// Tracer providers are the OpenTelemetry no-op provider, so no span is
+// recorded, while context propagation and the console and extra log sinks
+// keep working, and identity is validated as usual. The meter provider
+// stays a real provider with no readers, so instruments can be created and
+// nothing is collected. The SDK still owns what options injected and shuts
+// it down exactly once: an injected metric reader when [New] builds the
+// SDK, everything else in [SDK.Shutdown]. The effective configuration
+// reports each signal as none. A value that is neither true nor false is
+// reported once through the SDK's error handler and counts as false.
+// [WithoutOTELEnv] ignores the variable.
 package o11y
 
 import (
@@ -34,6 +49,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -44,6 +61,7 @@ import (
 	"go.opentelemetry.io/otel/log"
 	lognoop "go.opentelemetry.io/otel/log/noop"
 	"go.opentelemetry.io/otel/metric"
+	metricnoop "go.opentelemetry.io/otel/metric/noop"
 	"go.opentelemetry.io/otel/propagation"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -51,6 +69,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
+	tracenoop "go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/jamesainslie/libo11y/go/internal/fanout"
 	"github.com/jamesainslie/libo11y/go/spec"
@@ -67,17 +86,54 @@ const defaultShutdownTimeout = 5 * time.Second
 // providers sharing one resource and one propagator. Build one with [New]
 // (no global side effects) or [Setup] (also installs process globals).
 //
-// The zero value is not usable.
+// A nil *SDK, and the zero value, is an inert handle: every method is safe
+// to call and does nothing useful but nothing harmful. [New] and [Setup]
+// return a nil *SDK with their error, so a host may log the error and carry
+// on without telemetry:
+//
+//	sdk, err := o11y.Setup(ctx, opts...)
+//	if err != nil {
+//		log.Printf("telemetry disabled: %v", err)
+//	}
+//	defer sdk.Shutdown(context.Background())
+//
+// On an inert handle Shutdown and ForceFlush return nil, and Event does
+// nothing. EffectiveConfig returns "". The provider accessors return the
+// OpenTelemetry no-op providers, and Propagator returns a propagator that
+// injects and extracts nothing. Resource returns an empty resource.
+// Handler returns a handler of the library's own that writes text records
+// at Info and above to os.Stderr and never goes through the log package,
+// and Logger returns a logger over it, so a host that carries on still
+// sees its logs, and may wrap the handler and install it with
+// [slog.SetDefault] safely. Capture returns the zero [Carrier], StartLinked
+// starts a no-op span, and ShutdownOnSignals still waits for a signal or
+// ctx, then returns nil. Only an SDK returned by New or Setup without error
+// is live.
 type SDK struct {
 	res            *resource.Resource
 	tracerProvider *sdktrace.TracerProvider
 	meterProvider  *sdkmetric.MeterProvider
 	loggerProvider *sdklog.LoggerProvider
-	propagator     propagation.TextMapPropagator
-	handler        slog.Handler
-	logger         *slog.Logger
-	errorHandler   ErrorHandler
-	global         bool
+	// spanProcessors and logProcessors are the processors the providers
+	// own, kept so abandon can stop them directly.
+	spanProcessors []sdktrace.SpanProcessor
+	logProcessors  []sdklog.Processor
+	// spanFailures and logFailures observe the span and log exporters, so
+	// Shutdown and ForceFlush report exports that fail while they run.
+	spanFailures *exportFailures
+	logFailures  *exportFailures
+	// injected are the parts options injected; see injectedPart.
+	injected   []*injectedPart
+	propagator propagation.TextMapPropagator
+	// propagatorFields is what the effective configuration reports for
+	// the propagator (see buildPropagator).
+	propagatorFields string
+	// disabled records that OTEL_SDK_DISABLED switched the SDK off.
+	disabled     bool
+	handler      slog.Handler
+	logger       *slog.Logger
+	errorHandler ErrorHandler
+	global       bool
 
 	effectiveConfig string
 	summaryAttrs    []slog.Attr
@@ -98,6 +154,24 @@ func New(ctx context.Context, opts ...Option) (*SDK, error) {
 }
 
 func newSDK(ctx context.Context, s *settings) (_ *SDK, err error) {
+	s.disabled = s.sdkDisabled()
+	// The SDK owns what options injected from here on, so it exists before
+	// the first check that can fail, and is filled in as construction goes.
+	// Any exit before it is complete, an error or a panic, abandons what
+	// exists so far without flushing it, injected parts included.
+	sdk := &SDK{
+		injected:     injectedParts(s),
+		disabled:     s.disabled,
+		spanFailures: &exportFailures{},
+		logFailures:  &exportFailures{},
+		shutdownDone: make(chan struct{}),
+	}
+	built := false
+	defer func() {
+		if !built {
+			sdk.abandon(ctx)
+		}
+	}()
 	if s.piiMode == PIIHash && len(s.piiHashKey) < minPIIHashKeyLen {
 		return nil, ErrPIIHashKey
 	}
@@ -116,9 +190,9 @@ func newSDK(ctx context.Context, s *settings) (_ *SDK, err error) {
 		return nil, err
 	}
 
-	base := s.propagator
-	if base == nil {
-		base = propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{})
+	builtProp, err := buildPropagator(s)
+	if err != nil {
+		return nil, err
 	}
 	allow := s.baggageAllow
 	if allow == nil {
@@ -126,47 +200,53 @@ func newSDK(ctx context.Context, s *settings) (_ *SDK, err error) {
 	}
 	// The egress filter wraps whichever propagator is configured, so the
 	// baggage choke point cannot be bypassed by WithPropagators.
-	propagator := filterBaggageEgress(base, allow)
+	propagator := filterBaggageEgress(builtProp.propagator, allow)
 
-	// Tear down partially constructed providers if a later step fails.
-	var cleanups []func(context.Context) error
-	defer func() {
-		if err == nil {
-			return
-		}
-		for _, cleanup := range cleanups {
-			_ = cleanup(ctx) // best effort: the constructor error is what matters
-		}
-	}()
+	sdk.res = res
+	sdk.propagator = propagator
+	sdk.propagatorFields = builtProp.fields
 
-	meterProvider, err := buildMeterProvider(ctx, s, res, policy)
+	sdk.meterProvider, err = buildMeterProvider(ctx, s, res, policy)
 	if err != nil {
 		return nil, err
 	}
-	cleanups = append(cleanups, meterProvider.Shutdown)
+	if s.disabled {
+		// An injected reader is not registered while the SDK is disabled. A
+		// periodic reader runs from its constructor and would report that it
+		// is not registered on every interval, so it is shut down now.
+		sdk.stopInjectedNow(ctx, "metrics")
+	} else {
+		sdk.handOver("metrics")
+	}
 
-	if s.runtimeMetrics {
-		if err := runtime.Start(runtime.WithMeterProvider(meterProvider)); err != nil {
+	if s.runtimeMetricsEnabled() {
+		if err := runtime.Start(runtime.WithMeterProvider(sdk.meterProvider)); err != nil {
 			return nil, fmt.Errorf("o11y: starting runtime metrics: %w", err)
 		}
 	}
 
-	violations := newViolationRecorder(meterProvider)
+	violations := newViolationRecorder(sdk.meterProvider)
 	policy.rec = violations
 	// The resource was classified before the violation counter existed.
 	for rule, n := range resourceViolations {
 		violations.add(spec.SignalResource, rule, int64(n))
 	}
 
-	tracerProvider, err := buildTracerProvider(ctx, s, res, policy)
+	sdk.tracerProvider, sdk.spanProcessors, err = buildTracerProvider(ctx, s, res, policy, sdk.spanFailures)
 	if err != nil {
 		return nil, err
 	}
-	cleanups = append(cleanups, tracerProvider.Shutdown)
+	if !s.disabled {
+		sdk.handOver("traces")
+	}
 
-	loggerProvider, handler, err := buildLogPipeline(ctx, s, res, policy)
+	var handler slog.Handler
+	sdk.loggerProvider, sdk.logProcessors, handler, err = buildLogPipeline(ctx, s, res, policy, sdk.logFailures)
 	if err != nil {
 		return nil, err
+	}
+	if s.logExportEnabled() {
+		sdk.handOver("logs")
 	}
 
 	errorHandler := s.errorHandler
@@ -174,22 +254,74 @@ func newSDK(ctx context.Context, s *settings) (_ *SDK, err error) {
 		errorHandler = newRateLimitedErrorHandler(nil)
 	}
 
-	sdk := &SDK{
-		res:            res,
-		tracerProvider: tracerProvider,
-		meterProvider:  meterProvider,
-		loggerProvider: loggerProvider,
-		propagator:     propagator,
-		handler:        handler,
-		logger:         slog.New(handler),
-		errorHandler:   errorHandler,
-		shutdownDone:   make(chan struct{}),
+	sdk.handler = handler
+	sdk.logger = slog.New(handler)
+	sdk.errorHandler = errorHandler
+	if value := s.getenv(envSDKDisabled); value != "" && !s.disabled && !strings.EqualFold(value, "false") {
+		// The specification asks an SDK to warn on a boolean variable that
+		// is neither true nor false. Such a value counts as false.
+		errorHandler(fmt.Errorf("o11y: %s=%q is neither true nor false; the SDK stays enabled", envSDKDisabled, value))
 	}
 	sdk.summaryAttrs, sdk.effectiveConfig = buildSummary(s, sdk)
+	built = true
 	return sdk, nil
 }
 
-func buildTracerProvider(ctx context.Context, s *settings, res *resource.Resource, policy *sensitivityPolicy) (*sdktrace.TracerProvider, error) {
+// abandon stops a pipeline that New or Setup is discarding because
+// construction failed. Nothing in it is worth flushing, so the parts it
+// holds are stopped directly, each exactly once, with a context that is
+// already past its deadline: the log processors, the span processors
+// (including one from [WithSpanProcessor]), and the meter provider. The
+// trace and log providers are not shut down, so how they would treat a
+// done context does not matter; they are dropped with the SDK. Fields not
+// yet built are skipped.
+//
+// What is guaranteed: abandon itself does not wait on the network, so the
+// constructor returns promptly, and every processor and reader has been
+// told to stop. A batch processor's goroutine may outlive abandon while it
+// drains its queue into an exporter that honours the expired context, and
+// a periodic metric export already in flight can hold the reader's
+// shutdown until that export returns.
+//
+// Each call runs user code (an injected processor, reader, or exporter),
+// so a panic from one is recovered and discarded: abandon may run while a
+// panic is already unwinding through Setup, and that panic must reach the
+// caller unchanged. abandon claims the one shutdown, so a later
+// [SDK.Shutdown] reports a clean, finished shutdown.
+func (s *SDK) abandon(ctx context.Context) {
+	if !s.shutdownStarted.CompareAndSwap(false, true) {
+		return
+	}
+	defer close(s.shutdownDone)
+	ctx, cancel := context.WithDeadline(context.WithoutCancel(ctx), time.Unix(0, 0))
+	defer cancel()
+
+	for _, p := range s.logProcessors {
+		stopQuietly(ctx, p.Shutdown)
+	}
+	for _, p := range s.spanProcessors {
+		stopQuietly(ctx, p.Shutdown)
+	}
+	if s.meterProvider != nil {
+		stopQuietly(ctx, s.meterProvider.Shutdown)
+	}
+	for _, p := range s.injected {
+		stopQuietly(ctx, p.stop)
+	}
+}
+
+// stopQuietly calls stop, discarding its error and recovering a panic it
+// raises. The deferred recover only sees a panic raised by stop: one
+// already unwinding through the caller is not handed to it.
+func stopQuietly(ctx context.Context, stop func(context.Context) error) {
+	defer func() { _ = recover() }()
+	_ = stop(ctx)
+}
+
+// buildTracerProvider returns the tracer provider and the span processors
+// registered on it, in registration order.
+func buildTracerProvider(ctx context.Context, s *settings, res *resource.Resource, policy *sensitivityPolicy, failures *exportFailures) (*sdktrace.TracerProvider, []sdktrace.SpanProcessor, error) {
+	var processors []sdktrace.SpanProcessor
 	opts := []sdktrace.TracerProviderOption{sdktrace.WithResource(res)}
 	if s.ignoreEnv {
 		opts = append(opts, sdktrace.WithRawSpanLimits(defaultSpanLimits()))
@@ -199,6 +331,13 @@ func buildTracerProvider(ctx context.Context, s *settings, res *resource.Resourc
 		opts = append(opts, sdktrace.WithSampler(s.sampler))
 	case s.ignoreEnv:
 		opts = append(opts, sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.AlwaysSample())))
+	}
+	if s.disabled {
+		// OTEL_SDK_DISABLED: no processor at all, so nothing is exported.
+		// The provider still exists for the SDK's lifecycle; the SDK hands
+		// out a no-op tracer provider instead (see SDK.TracerProvider), so
+		// no span is recorded either.
+		return sdktrace.NewTracerProvider(opts...), nil, nil
 	}
 	batch := traceBatchOptions(s)
 	if s.spanProcessor != nil {
@@ -210,11 +349,11 @@ func buildTracerProvider(ctx context.Context, s *settings, res *resource.Resourc
 		if s.spanExporter != nil {
 			procPolicy = policy.silent()
 		}
-		opts = append(opts, sdktrace.WithSpanProcessor(redactingProcessor(s.spanProcessor, procPolicy)))
+		processors = append(processors, redactingProcessor(s.spanProcessor, procPolicy))
 	}
 	switch {
 	case s.spanExporter != nil:
-		opts = append(opts, sdktrace.WithBatcher(redactingExporter(s.spanExporter, policy), batch...))
+		processors = append(processors, sdktrace.NewBatchSpanProcessor(observedSpanExporter{redactingExporter(s.spanExporter, policy), failures}, batch...))
 	case s.spanProcessor != nil, s.ignoreEnv:
 		// A caller-supplied processor owns the export path, or the
 		// environment is ignored: build no environment exporter. Spans are
@@ -222,17 +361,23 @@ func buildTracerProvider(ctx context.Context, s *settings, res *resource.Resourc
 	default:
 		exporter, err := autoexport.NewSpanExporter(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("o11y: building span exporter: %w", err)
+			return nil, nil, fmt.Errorf("o11y: building span exporter: %w", err)
 		}
-		opts = append(opts, sdktrace.WithBatcher(redactingExporter(exporter, policy), batch...))
+		processors = append(processors, sdktrace.NewBatchSpanProcessor(observedSpanExporter{redactingExporter(exporter, policy), failures}, batch...))
 	}
-	return sdktrace.NewTracerProvider(opts...), nil
+	for _, p := range processors {
+		opts = append(opts, sdktrace.WithSpanProcessor(p))
+	}
+	return sdktrace.NewTracerProvider(opts...), processors, nil
 }
 
 func buildMeterProvider(ctx context.Context, s *settings, res *resource.Resource, policy *sensitivityPolicy) (*sdkmetric.MeterProvider, error) {
 	opts := []sdkmetric.Option{sdkmetric.WithResource(res)}
 	opts = append(opts, meterProviderOptions(s)...)
 	switch {
+	case s.disabled:
+		// OTEL_SDK_DISABLED: no reader, even an injected one, so nothing
+		// is collected or exported.
 	case s.metricReader != nil:
 		opts = append(opts, sdkmetric.WithReader(s.metricReader))
 	case s.ignoreEnv:
@@ -262,7 +407,7 @@ func buildMeterProvider(ctx context.Context, s *settings, res *resource.Resource
 // optional OTLP sink (through the otelslog bridge), and any extra sinks.
 // Console and extra sinks receive top-level trace correlation attributes;
 // the OTLP sink derives trace context natively from the record context.
-func buildLogPipeline(ctx context.Context, s *settings, res *resource.Resource, policy *sensitivityPolicy) (*sdklog.LoggerProvider, slog.Handler, error) {
+func buildLogPipeline(ctx context.Context, s *settings, res *resource.Resource, policy *sensitivityPolicy, failures *exportFailures) (*sdklog.LoggerProvider, []sdklog.Processor, slog.Handler, error) {
 	var legs []slog.Handler
 
 	if s.consoleEnabled {
@@ -278,19 +423,23 @@ func buildLogPipeline(ctx context.Context, s *settings, res *resource.Resource, 
 	}
 
 	var loggerProvider *sdklog.LoggerProvider
+	var processors []sdklog.Processor
 	if s.logExportEnabled() {
 		exporter := s.logExporter
 		if exporter == nil {
 			var err error
 			exporter, err = autoexport.NewLogExporter(ctx)
 			if err != nil {
-				return nil, nil, fmt.Errorf("o11y: building log exporter: %w", err)
+				return nil, nil, nil, fmt.Errorf("o11y: building log exporter: %w", err)
 			}
 		}
-		providerOpts := []sdklog.LoggerProviderOption{
-			sdklog.WithResource(res),
-			sdklog.WithProcessor(redactingLogProcessor{policy: policy}),
-			sdklog.WithProcessor(sdklog.NewBatchProcessor(exporter, logBatchOptions(s)...)),
+		processors = []sdklog.Processor{
+			redactingLogProcessor{policy: policy},
+			sdklog.NewBatchProcessor(observedLogExporter{exporter, failures}, logBatchOptions(s)...),
+		}
+		providerOpts := []sdklog.LoggerProviderOption{sdklog.WithResource(res)}
+		for _, p := range processors {
+			providerOpts = append(providerOpts, sdklog.WithProcessor(p))
 		}
 		providerOpts = append(providerOpts, logProviderOptions(s)...)
 		loggerProvider = sdklog.NewLoggerProvider(providerOpts...)
@@ -317,7 +466,7 @@ func buildLogPipeline(ctx context.Context, s *settings, res *resource.Resource, 
 		Level:   s.logLevel,
 		Replace: userReplaceFunc(s.attrReplacer),
 	})
-	return loggerProvider, handler, nil
+	return loggerProvider, processors, handler, nil
 }
 
 // userReplaceFunc adapts an optional user [AttrReplacer] to the fan-out
@@ -330,42 +479,104 @@ func userReplaceFunc(user AttrReplacer) fanout.ReplaceFunc {
 	return fanout.ReplaceFunc(user)
 }
 
-// TracerProvider returns the SDK's tracer provider.
-func (s *SDK) TracerProvider() trace.TracerProvider { return s.tracerProvider }
+// live reports whether s was built by [New] or [Setup], rather than being a
+// nil pointer or the zero value. newSDK sets the handler only once every
+// provider is built, and a zero SDK has none.
+func (s *SDK) live() bool { return s != nil && s.handler != nil }
 
-// MeterProvider returns the SDK's meter provider.
-func (s *SDK) MeterProvider() metric.MeterProvider { return s.meterProvider }
+// inertHandler returns the handler an inert handle logs through: slog's
+// text handler over os.Stderr, looked up at each write. It never touches
+// the log package.
+func inertHandler() slog.Handler { return slog.NewTextHandler(stderrWriter{}, nil) }
+
+// stderrWriter writes to whatever os.Stderr is at the time of the write.
+type stderrWriter struct{}
+
+func (stderrWriter) Write(p []byte) (int, error) { return os.Stderr.Write(p) }
+
+// TracerProvider returns the SDK's tracer provider, or the OpenTelemetry
+// no-op tracer provider on an inert handle and while OTEL_SDK_DISABLED
+// switches the SDK off. The no-op provider records nothing, and a span it
+// starts carries the parent's span context, so context still propagates
+// and logs stay correlated with an inbound trace.
+func (s *SDK) TracerProvider() trace.TracerProvider {
+	if !s.live() || s.disabled {
+		return tracenoop.NewTracerProvider()
+	}
+	return s.tracerProvider
+}
+
+// MeterProvider returns the SDK's meter provider, or the OpenTelemetry
+// no-op meter provider on an inert handle.
+func (s *SDK) MeterProvider() metric.MeterProvider {
+	if !s.live() {
+		return metricnoop.NewMeterProvider()
+	}
+	return s.meterProvider
+}
 
 // Propagator returns the SDK's context propagator (by default a composite
 // of W3C Trace Context and W3C Baggage). Whichever propagator is
 // configured, it is wrapped by the baggage egress filter, so the value
-// returned is not the one passed to [WithPropagators].
-func (s *SDK) Propagator() propagation.TextMapPropagator { return s.propagator }
+// returned is not the one passed to [WithPropagators]. On an inert handle
+// it returns a propagator that injects and extracts nothing.
+func (s *SDK) Propagator() propagation.TextMapPropagator {
+	if !s.live() {
+		return propagation.NewCompositeTextMapPropagator()
+	}
+	return s.propagator
+}
 
 // Resource returns the resource describing this process's telemetry
-// identity.
-func (s *SDK) Resource() *resource.Resource { return s.res }
+// identity, or an empty resource on an inert handle.
+func (s *SDK) Resource() *resource.Resource {
+	if !s.live() {
+		return resource.Empty()
+	}
+	return s.res
+}
 
 // Handler returns the correlated slog handler backing [SDK.Logger]. Use it
 // to construct additional loggers that share the SDK's log pipeline.
-func (s *SDK) Handler() slog.Handler { return s.handler }
+//
+// On an inert handle it returns a text handler that writes records at Info
+// and above to os.Stderr, so the host's logs are not lost; Debug records
+// are dropped. It is not slog.Default().Handler():
+// slog's built-in default writes through the log package, so a host that
+// wrapped it and installed the wrapper with [slog.SetDefault] would route
+// every record back into the wrapper and hang. This handler is safe to wrap
+// and install as the default.
+func (s *SDK) Handler() slog.Handler {
+	if !s.live() {
+		return inertHandler()
+	}
+	return s.handler
+}
 
 // LoggerProvider returns the SDK's OpenTelemetry logger provider, for log
 // bridges other than slog (otelzap, otellogr, and so on). Records emitted
 // through it receive the same sensitivity enforcement as the slog pipeline:
 // secret and PII attributes, including those nested in map values, are
 // dropped or tokenized per [WithPIIMode]. When log export is disabled it
-// returns a no-op provider.
+// returns a no-op provider, as it does on an inert handle.
 func (s *SDK) LoggerProvider() log.LoggerProvider {
-	if s.loggerProvider == nil {
+	if !s.live() || s.loggerProvider == nil {
 		return lognoop.NewLoggerProvider()
 	}
 	return s.loggerProvider
 }
 
 // Logger returns a logger that writes to every configured log sink with
-// trace correlation.
-func (s *SDK) Logger() *slog.Logger { return s.logger }
+// trace correlation. On an inert handle it returns a logger over the same
+// stderr text handler [SDK.Handler] returns, which writes at Info and above,
+// rather than [slog.Default], so the two agree and the logger is safe
+// however the host sets its default.
+func (s *SDK) Logger() *slog.Logger {
+	if !s.live() {
+		return slog.New(inertHandler())
+	}
+	return s.logger
+}
 
 // Shutdown flushes and stops all telemetry pipelines concurrently under one
 // deadline, so a hung exporter on one signal cannot consume the budget of
@@ -376,7 +587,17 @@ func (s *SDK) Logger() *slog.Logger { return s.logger }
 // inspected with [errors.Is]/[errors.As]; a non-nil error means buffered
 // telemetry may have been dropped, never that the host application is
 // broken.
+//
+// The error covers every span and log export that fails while the call
+// runs, including a batch the processors export on their own goroutines
+// that the call did not start, as well as the final flush. Two overlapping
+// Shutdown or ForceFlush calls each report the same failure. The first
+// five distinct failures are reported in full and the rest are counted.
+// Each failure also still reaches the error handler.
 func (s *SDK) Shutdown(ctx context.Context) error {
+	if !s.live() {
+		return nil
+	}
 	if s.shutdownStarted.CompareAndSwap(false, true) {
 		s.runShutdown(ctx)
 		return s.shutdownErr
@@ -407,14 +628,23 @@ func (s *SDK) runShutdown(ctx context.Context) {
 		signal   string
 		shutdown func(context.Context) error
 	}
-	var steps []step
-	if s.loggerProvider != nil {
-		steps = append(steps, step{"logs", s.loggerProvider.Shutdown})
+	// Each signal's step also shuts down the injected parts of that signal
+	// that no provider owns (see injectedPart).
+	steps := []step{
+		{"logs", func(ctx context.Context) error {
+			var err error
+			if s.loggerProvider != nil {
+				err = s.logFailures.during(ctx, s.loggerProvider.Shutdown)
+			}
+			return errors.Join(err, s.stopInjected(ctx, "logs"))
+		}},
+		{"metrics", func(ctx context.Context) error {
+			return errors.Join(s.meterProvider.Shutdown(ctx), s.stopInjected(ctx, "metrics"))
+		}},
+		{"traces", func(ctx context.Context) error {
+			return errors.Join(s.spanFailures.during(ctx, s.tracerProvider.Shutdown), s.stopInjected(ctx, "traces"))
+		}},
 	}
-	steps = append(steps,
-		step{"metrics", s.meterProvider.Shutdown},
-		step{"traces", s.tracerProvider.Shutdown},
-	)
 	errs := make([]error, len(steps))
 	var wg sync.WaitGroup
 	for i, st := range steps {
@@ -439,21 +669,28 @@ func (s *SDK) runShutdown(ctx context.Context) {
 }
 
 // ForceFlush exports all buffered telemetry without stopping the pipelines.
-// If ctx carries no deadline a 5 second timeout is applied.
+// If ctx carries no deadline a 5 second timeout is applied. The returned
+// error covers failed exports as [SDK.Shutdown] describes: every span and
+// log export that fails while the call runs, including a background batch
+// export the call did not start, and two overlapping calls each report the
+// same failure.
 func (s *SDK) ForceFlush(ctx context.Context) error {
+	if !s.live() {
+		return nil
+	}
 	ctx, cancel := ensureDeadline(ctx)
 	defer cancel()
 
 	var errs []error
 	if s.loggerProvider != nil {
-		if err := s.loggerProvider.ForceFlush(ctx); err != nil {
+		if err := s.logFailures.during(ctx, s.loggerProvider.ForceFlush); err != nil {
 			errs = append(errs, fmt.Errorf("o11y: flush logs: %w", err))
 		}
 	}
 	if err := s.meterProvider.ForceFlush(ctx); err != nil {
 		errs = append(errs, fmt.Errorf("o11y: flush metrics: %w", err))
 	}
-	if err := s.tracerProvider.ForceFlush(ctx); err != nil {
+	if err := s.spanFailures.during(ctx, s.tracerProvider.ForceFlush); err != nil {
 		errs = append(errs, fmt.Errorf("o11y: flush traces: %w", err))
 	}
 	return errors.Join(errs...)

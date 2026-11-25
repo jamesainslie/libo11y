@@ -35,15 +35,34 @@ func Setup(ctx context.Context, opts ...Option) (*SDK, error) {
 	setupMu.Lock()
 	if setupActive {
 		setupMu.Unlock()
+		// The caller still handed over what its options injected, so this
+		// exit stops it too, after the mutex is released (it is user code)
+		// and without touching the installed SDK.
+		discardInjected(ctx, newSettings(opts))
 		return nil, ErrAlreadySetup
 	}
 	setupActive = true
 	setupMu.Unlock()
 
+	// Every exit but success releases the guard and abandons whatever was
+	// built, without flushing it, including a panic from a user-supplied
+	// sink unwinding through here. The panic is not recovered: it reaches
+	// the caller unchanged.
+	var sdk *SDK
+	succeeded := false
+	defer func() {
+		if succeeded {
+			return
+		}
+		defer releaseSetupGuard()
+		if sdk != nil {
+			sdk.abandon(ctx)
+		}
+	}()
+
 	s := newSettings(opts)
 	sdk, err := newSDK(ctx, s)
 	if err != nil {
-		releaseSetupGuard()
 		return nil, err
 	}
 
@@ -52,14 +71,12 @@ func Setup(ctx context.Context, opts ...Option) (*SDK, error) {
 	// a rejecting sink fails Setup instead of dropping records later.
 	if s.startupSummary {
 		if err := sdk.emitStartupSummary(ctx, sdk.summaryAttrs); err != nil {
-			_ = sdk.Shutdown(ctx) // best effort: the canary error is what matters
-			releaseSetupGuard()
 			return nil, fmt.Errorf("o11y: startup canary rejected by log pipeline: %w", err)
 		}
 	}
 	sdk.global = true
 
-	otel.SetTracerProvider(sdk.tracerProvider)
+	otel.SetTracerProvider(sdk.TracerProvider())
 	otel.SetMeterProvider(sdk.meterProvider)
 	if sdk.loggerProvider != nil {
 		otel.SetLoggerProvider(sdk.loggerProvider)
@@ -70,6 +87,7 @@ func Setup(ctx context.Context, opts ...Option) (*SDK, error) {
 		slog.SetDefault(sdk.logger)
 	}
 
+	succeeded = true
 	return sdk, nil
 }
 

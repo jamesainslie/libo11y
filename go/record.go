@@ -12,6 +12,8 @@ type recordKey struct{}
 // event (a canonical log line): the single, analytically rich record
 // emitted once per request instead of many scattered logs. It is safe for
 // concurrent use, since request handling may fan out across goroutines.
+// A nil *Record discards what it is given, and the zero value is ready to
+// use.
 type Record struct {
 	mu    sync.Mutex
 	attrs map[string]slog.Value
@@ -38,8 +40,12 @@ func RecordFromContext(ctx context.Context) *Record {
 
 // Set records or overwrites attributes on the wide event.
 func (r *Record) Set(attrs ...slog.Attr) {
+	if r == nil {
+		return
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.init()
 	for _, a := range attrs {
 		if _, seen := r.attrs[a.Key]; !seen {
 			r.order = append(r.order, a.Key)
@@ -52,8 +58,12 @@ func (r *Record) Set(attrs ...slog.Attr) {
 // if absent. Useful for per-request tallies (queries issued, retries, bytes).
 // A key holding a value of another kind is replaced by delta.
 func (r *Record) Add(key string, delta int64) {
+	if r == nil {
+		return
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.init()
 	current := int64(0)
 	if v, ok := r.attrs[key]; ok && v.Kind() == slog.KindInt64 {
 		current = v.Int64()
@@ -67,8 +77,12 @@ func (r *Record) Add(key string, delta int64) {
 // the slowest downstream call in a request). A key holding a value of
 // another kind is replaced by v.
 func (r *Record) Max(key string, v float64) {
+	if r == nil {
+		return
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.init()
 	if existing, ok := r.attrs[key]; ok && existing.Kind() == slog.KindFloat64 {
 		if existing.Float64() >= v {
 			return
@@ -79,8 +93,18 @@ func (r *Record) Max(key string, v float64) {
 	r.attrs[key] = slog.Float64Value(v)
 }
 
+// init allocates the attribute map of a zero Record. r.mu must be held.
+func (r *Record) init() {
+	if r.attrs == nil {
+		r.attrs = map[string]slog.Value{}
+	}
+}
+
 // snapshot returns the accumulated attributes in insertion order.
 func (r *Record) snapshot() []slog.Attr {
+	if r == nil {
+		return nil
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	attrs := make([]slog.Attr, 0, len(r.order))
@@ -92,7 +116,8 @@ func (r *Record) snapshot() []slog.Attr {
 
 // EmitEvent flushes the accumulated wide event under the given event name
 // through sdk. Additional attrs replace accumulated attributes with the same
-// key. Intended to be deferred so it fires even if the handler panics.
+// key. Intended to be deferred so it fires even if the handler panics. A
+// nil or inert sdk (see [SDK]) emits nothing.
 func (r *Record) EmitEvent(ctx context.Context, sdk *SDK, name string, attrs ...slog.Attr) {
 	sdk.Event(ctx, name, append(r.snapshot(), attrs...)...)
 }

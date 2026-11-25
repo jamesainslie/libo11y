@@ -16,8 +16,14 @@ import (
 // EffectiveConfig returns a single-line rendering of the fully resolved
 // configuration: service identity, the exporter chosen per signal, sampler,
 // log level, and propagator fields. [Setup] also emits it as the startup
-// summary record unless [WithoutStartupSummary] is given.
-func (s *SDK) EffectiveConfig() string { return s.effectiveConfig }
+// summary record unless [WithoutStartupSummary] is given. On an inert
+// handle (see [SDK]) it returns "".
+func (s *SDK) EffectiveConfig() string {
+	if !s.live() {
+		return ""
+	}
+	return s.effectiveConfig
+}
 
 // buildSummary resolves the observable configuration into log attributes
 // and a one-line string. It reports what will actually happen, after
@@ -59,6 +65,11 @@ func buildSummary(s *settings, sdk *SDK) ([]slog.Attr, string) {
 	default:
 		logs = s.envOr("OTEL_LOGS_EXPORTER", "otlp")
 	}
+	if s.disabled {
+		// OTEL_SDK_DISABLED beats every exporter, reader, and processor,
+		// injected ones included, and is reported as OTEL_*_EXPORTER=none is.
+		traces, metrics, logs = "none", "none", "none"
+	}
 	console := "off"
 	if s.consoleEnabled {
 		console = "json"
@@ -83,7 +94,7 @@ func buildSummary(s *settings, sdk *SDK) ([]slog.Attr, string) {
 		level = s.logLevel.Level()
 	}
 
-	propagators := strings.Join(sdk.propagator.Fields(), ",")
+	propagators := sdk.propagatorFields
 
 	// Every resolved setting travels as an o11y.config.<key> attribute, the
 	// registered contract of the o11y.telemetry.configured event.
@@ -99,7 +110,7 @@ func buildSummary(s *settings, sdk *SDK) ([]slog.Attr, string) {
 		configAttr("level", level.String()),
 		configAttr("sampler", sampler),
 		configAttr("propagators", propagators),
-		configAttr("runtime_metrics", strconv.FormatBool(s.runtimeMetrics)),
+		configAttr("runtime_metrics", strconv.FormatBool(s.runtimeMetricsEnabled())),
 	)
 	if s.versionFallback {
 		attrs = append(attrs, configAttr("service_version_fallback", "true"))
