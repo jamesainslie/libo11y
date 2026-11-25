@@ -33,6 +33,8 @@ type config struct {
 
 // WithSDK binds the instrumentation to sdk's tracer provider, meter
 // provider, and propagator instead of the process globals.
+// A nil sdk is the same as not giving the option: the process globals
+// are used.
 func WithSDK(sdk *o11y.SDK) Option {
 	return func(c *config) { c.sdk = sdk }
 }
@@ -88,7 +90,9 @@ func ClientHandler(opts ...Option) stats.Handler {
 func newConfig(opts []Option) *config {
 	cfg := &config{}
 	for _, opt := range opts {
-		opt(cfg)
+		if opt != nil {
+			opt(cfg)
+		}
 	}
 	return cfg
 }

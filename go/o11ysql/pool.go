@@ -3,12 +3,16 @@ package o11ysql
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
 )
+
+// errNilDB reports a nil *sql.DB given to RegisterPoolMetrics.
+var errNilDB = errors.New("o11ysql: RegisterPoolMetrics: nil *sql.DB")
 
 // RegisterPoolMetrics reports db's connection pool from sql.DB.Stats at
 // every collection: db.client.connection.count by db.client.connection.state
@@ -21,7 +25,12 @@ import (
 // under the same system and pool name; opts are applied on top of them.
 // Do not call it for a database from [Open], which registers its pool
 // metrics already: a second registration counts the pool twice.
+//
+// A nil db fails with an error.
 func RegisterPoolMetrics(db *sql.DB, opts ...Option) (metric.Registration, error) {
+	if db == nil {
+		return nil, errNilDB
+	}
 	return registerPoolMetrics(db, poolConfig(db, opts))
 }
 
