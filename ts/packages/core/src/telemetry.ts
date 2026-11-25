@@ -40,7 +40,7 @@ import { ConsoleSink, formatTextLine } from "./console-sink.ts";
 import { alreadySetupError, canaryRejectedError, piiHashKeyError } from "./errors.ts";
 import { emitEvent, eventAttributes } from "./events.ts";
 import { ExemplarStore } from "./exemplars.ts";
-import { gatedLogRecordProcessor, gatedSampler } from "./gate.ts";
+import { gatedLogRecordProcessor, gatedSampler, gatedSpanProcessor } from "./gate.ts";
 import { buildResource } from "./identity.ts";
 import { seams } from "./internal/seams.ts";
 import { registerExemplarStore } from "./internal/stores.ts";
@@ -492,12 +492,20 @@ async function build(options: TelemetryOptions, platform: Platform): Promise<Par
         }),
       );
     }
-    // A gate wraps the configured sampler; the summary still names the configured one.
+    // A gate wraps the configured sampler, so nothing is sampled while it is closed (the summary
+    // still names the configured sampler), and every span processor, so a span that ends after the
+    // gate closed is dropped rather than buffered.
+    const traceGate = platform.gate;
     const sampler =
-      platform.gate === undefined
-        ? config.sampler.instance
-        : gatedSampler(config.sampler.instance, platform.gate);
-    tracerProvider = new TracerProvider({ resource, sampler, spanProcessors });
+      traceGate === undefined ? config.sampler.instance : gatedSampler(config.sampler.instance, traceGate);
+    tracerProvider = new TracerProvider({
+      resource,
+      sampler,
+      spanProcessors:
+        traceGate === undefined
+          ? spanProcessors
+          : spanProcessors.map((p) => gatedSpanProcessor(p, traceGate)),
+    });
 
     if (exporters.logExporter !== undefined || exporters.logProcessor !== undefined) {
       const processors: LogRecordProcessor[] = [new RedactingLogRecordProcessor(policy)];

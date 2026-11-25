@@ -462,3 +462,136 @@ test("deliver never rejects when the transport or queue throws", async () => {
   assert.ok(got.error);
   await d.shutdown();
 });
+
+test("a retry that settles after revocation cleared the queue does not refill it", async () => {
+  const s = setupDelivery();
+  let release: () => void = () => {};
+  const slow = {
+    send: async () => {
+      await new Promise<void>((r) => (release = r));
+      return { kind: "retry", reason: "HTTP 503" } as const;
+    },
+  };
+  const d = createDelivery({
+    transport: slow,
+    queue: s.queue,
+    gate: s.gate,
+    isOnline: () => true,
+    setTimer: s.timers.setTimer,
+    clearTimer: s.timers.clearTimer,
+  });
+  const delivering = d.deliver(BATCH);
+  await settle();
+  // Revocation: the gate closes, then the queue is cleared while the attempt is on the wire.
+  s.gate.set(false);
+  await d.clear();
+  release();
+  assert.deepEqual(await delivering, { outcome: "dropped" });
+  assert.equal(s.queue.entries.size, 0, "nothing is stored after revocation");
+  assert.equal(s.timers.armed.size, 0);
+  await d.shutdown();
+});
+
+test("a Retry-After of zero still backs off, so a rate-limiting collector is not hammered", async () => {
+  const s = setupDelivery({ initialBackoffMillis: 1000, random: () => 0.5 });
+  s.transport.script({ kind: "retry", reason: "HTTP 429", retryAfterMillis: 0 });
+  assert.equal((await s.delivery.deliver(BATCH)).outcome, "queued");
+  const [entry] = [...s.queue.entries.values()];
+  assert.ok(entry);
+  assert.equal(entry.notBefore, s.now() + 500, "backoffDelay(1) is the floor");
+  // Every later 429 with Retry-After: 0 waits at least the growing backoff.
+  s.transport.script(
+    { kind: "retry", reason: "HTTP 429", retryAfterMillis: 0 },
+    { kind: "retry", reason: "HTTP 429", retryAfterMillis: 0 },
+  );
+  // The queued entry starts at attempts 0, so drain retries use backoffDelay(attempts + 1).
+  s.advance(500);
+  await s.delivery.drain();
+  assert.equal(s.queue.entries.get(entry.id)?.notBefore, s.now() + 500);
+  s.advance(500);
+  await s.delivery.drain();
+  assert.equal(s.queue.entries.get(entry.id)?.notBefore, s.now() + 1000);
+  assert.equal(s.transport.requests.length, 3);
+});
+
+test("a slow drain round never sends an entry whose lease another tab may already hold", async () => {
+  const s = setupDelivery();
+  await seed(s.queue, s.advance, ["a", "b", "c"]);
+  const sent: string[] = [];
+  // Tab B shares the queue and clock and drains whenever it can.
+  const tabB = createDelivery({
+    transport: {
+      send: async (req) => {
+        sent.push(req.body);
+        return { kind: "ok" };
+      },
+    },
+    queue: s.queue,
+    gate: s.gate,
+    isOnline: () => true,
+    now: s.now,
+    leaseMillis: 30_000,
+    setTimer: s.timers.setTimer,
+    clearTimer: s.timers.clearTimer,
+  });
+  // Tab A's collector takes 20 s per request; tab B drains while each request is on the wire.
+  const tabA = createDelivery({
+    transport: {
+      send: async (req) => {
+        sent.push(req.body);
+        s.advance(20_000);
+        await tabB.drain();
+        return { kind: "ok" };
+      },
+    },
+    queue: s.queue,
+    gate: s.gate,
+    isOnline: () => true,
+    now: s.now,
+    leaseMillis: 30_000,
+    setTimer: s.timers.setTimer,
+    clearTimer: s.timers.clearTimer,
+  });
+  await tabA.drain();
+  s.advance(30_000);
+  await tabB.drain();
+  assert.deepEqual([...sent].sort(), ["a", "b", "c"], "each entry is sent exactly once");
+  assert.equal(s.queue.entries.size, 0);
+  await tabA.shutdown();
+  await tabB.shutdown();
+});
+
+test("a hidden page with an empty queue arms no polling timer", async () => {
+  const s = setupDelivery({ mode: () => "unload" });
+  await s.delivery.drain();
+  await settle();
+  assert.equal(s.timers.armed.size, 0);
+  // With a due entry it looks again later, no sooner than the initial backoff.
+  await seed(s.queue, s.advance, ["a"]);
+  await s.delivery.drain();
+  await settle();
+  assert.deepEqual(s.timers.delays(), [1000]);
+  assert.equal(s.transport.requests.length, 0);
+});
+
+test("persistFirst keeps nothing when the gate closes while the attempt is on the wire", async () => {
+  const s = setupDelivery();
+  const closing = {
+    send: async () => {
+      s.gate.set(false);
+      return { kind: "retry", reason: "HTTP 503" } as const;
+    },
+  };
+  const d = createDelivery({
+    transport: closing,
+    queue: s.queue,
+    gate: s.gate,
+    persistFirst: true,
+    isOnline: () => true,
+    setTimer: s.timers.setTimer,
+    clearTimer: s.timers.clearTimer,
+  });
+  assert.deepEqual(await d.deliver(BATCH), { outcome: "dropped" });
+  assert.equal(s.queue.entries.size, 0);
+  await d.shutdown();
+});

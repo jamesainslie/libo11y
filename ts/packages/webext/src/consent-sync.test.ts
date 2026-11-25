@@ -165,7 +165,7 @@ test("a change in another storage area is ignored", async () => {
 test("stopping ends the sync both ways", async () => {
   const ext = createFakeExtension();
   const here = createFakeConsentController("pending");
-  const stop = syncConsent(here, ext.context().chrome);
+  const { stop } = syncConsent(here, ext.context().chrome);
   stop();
   here.consent.grant();
   await ext.context().chrome.storage?.local.set({ [CONSENT_STORAGE_KEY]: "denied" });
@@ -177,7 +177,7 @@ test("stopping ends the sync both ways", async () => {
 test("without storage the sync is a no-op", () => {
   const ext = createFakeExtension();
   const here = createFakeConsentController("pending");
-  const stop = syncConsent(here, ext.context({ withoutStorage: true }).chrome);
+  const { stop } = syncConsent(here, ext.context({ withoutStorage: true }).chrome);
   here.consent.grant();
   stop();
   assert.equal(here.consent.state(), "granted");
@@ -197,4 +197,24 @@ test("a failing write is reported, never thrown", async () => {
   syncConsent(here, chrome);
   assert.equal(here.consent.grant(), "granted");
   await new Promise((r) => setTimeout(r, 10));
+});
+
+test("refresh applies the stored state before it resolves, without writing it back", async () => {
+  const ext = createFakeExtension();
+  const here = createFakeConsentController("pending");
+  const sync = syncConsent(here, ext.context().chrome);
+  await ext.settle();
+  // Stored by another context; its onChanged has not arrived here.
+  ext.stored.set(CONSENT_STORAGE_KEY, "granted");
+  await sync.refresh();
+  assert.equal(here.consent.state(), "granted");
+  ext.stored.set(CONSENT_STORAGE_KEY, "denied");
+  await sync.refresh();
+  assert.equal(here.consent.state(), "denied");
+  await ext.settle();
+  assert.equal(ext.writes.length, 0);
+  sync.stop();
+  ext.stored.set(CONSENT_STORAGE_KEY, "granted");
+  await sync.refresh();
+  assert.equal(here.consent.state(), "denied");
 });

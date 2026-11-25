@@ -25,10 +25,21 @@ export async function readStoredConsent(chrome: ChromeLike): Promise<ConsentStat
   }
 }
 
+/** A running sync between a controller and storage. */
+export interface ConsentSync {
+  /** Stops syncing both ways. Idempotent. */
+  readonly stop: () => void;
+  /**
+   * Re-reads the stored state and applies it now, resolving once applied. For a decision that
+   * must not wait for storage.onChanged, such as accepting a batch just after a grant elsewhere.
+   */
+  readonly refresh: () => Promise<void>;
+}
+
 /**
  * Keeps controller and storage in step: every controller change is written, and a storage change
  * from another context is applied with grant() or revoke() when it differs (so a revoke anywhere
- * clears this context's queues). Returns a function that stops syncing.
+ * clears this context's queues). Returns the running sync.
  *
  * A storage change is a signal to re-read the stored state rather than a value to apply, because
  * storage operations run in order: the echo of an earlier write of this context can arrive after a
@@ -36,9 +47,9 @@ export async function readStoredConsent(chrome: ChromeLike): Promise<ConsentStat
  * because consent has no way back to it. The stored state is also read once at the start, to
  * catch a change between readStoredConsent and this call.
  */
-export function syncConsent(controller: ConsentController, chrome: ChromeLike): () => void {
+export function syncConsent(controller: ConsentController, chrome: ChromeLike): ConsentSync {
   const storage = chrome.storage;
-  if (storage === undefined) return () => {};
+  if (storage === undefined) return { stop: () => {}, refresh: async () => {} };
   let stopped = false;
   let applying = false;
 
@@ -54,8 +65,14 @@ export function syncConsent(controller: ConsentController, chrome: ChromeLike): 
       applying = false;
     }
   };
+  const refresh = (): Promise<void> =>
+    readStoredConsent(chrome)
+      .then(apply)
+      .catch((err: unknown) => {
+        diag.warn("o11y: applying the stored consent", err);
+      });
   const reconcile = (): void => {
-    void readStoredConsent(chrome).then(apply);
+    void refresh();
   };
 
   const unsubscribe = controller.consent.subscribe((state) => {
@@ -71,10 +88,11 @@ export function syncConsent(controller: ConsentController, chrome: ChromeLike): 
   storage.onChanged.addListener(onChanged);
   reconcile();
 
-  return () => {
+  const stop = (): void => {
     if (stopped) return;
     stopped = true;
     unsubscribe();
     storage.onChanged.removeListener(onChanged);
   };
+  return { stop, refresh };
 }

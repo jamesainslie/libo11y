@@ -132,7 +132,7 @@ export async function setupContentScriptWith(
   }
   const stored = await readStoredConsent(chrome);
   const controller = deps.createConsentController(stored === undefined ? {} : { initial: stored });
-  const steps: (() => unknown)[] = [syncConsent(controller, chrome)];
+  const steps: (() => unknown)[] = [syncConsent(controller, chrome).stop];
   const queue = deps.createMemoryQueue({});
   steps.push(() => queue.close());
   const delivery = deps.createDelivery({

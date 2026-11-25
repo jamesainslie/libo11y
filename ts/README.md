@@ -1,20 +1,25 @@
 # libo11y for TypeScript
 
-The TypeScript implementation of libo11y, as a Bun workspace of four
-`@libo11y/*` packages for Bun 1.3.13 and Node 24. The packages are built on
+The TypeScript implementation of libo11y, as a Bun workspace of six
+`@libo11y/*` packages. `@libo11y/server` and `@libo11y/test` run on Bun
+1.3.13 and Node 24. `@libo11y/web` and `@libo11y/webext` run in browsers
+and Manifest V3 extensions. `@libo11y/spec` and `@libo11y/core` run in
+both. The packages are built on
 OpenTelemetry JS 3.x (`@opentelemetry/api` 1.10.0, the SDK packages at
 3.1.1 and the OTLP exporters at 0.301.1). They release together at one
 version from a `ts/vX.Y.Z` tag, and [CHANGELOG.md](CHANGELOG.md) lists
 each release.
 
-| Package                              | What it holds                                                                                                                                                             |
-| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`@libo11y/spec`](packages/spec)     | the spec constants and tables generated from `spec/registry`, the application registry validator, and the `libo11y` bin. It also runs in browsers                         |
-| [`@libo11y/core`](packages/core)     | the platform-neutral core: configuration, identity, the sensitivity policy, the logger, events, exemplars and the signal pipelines                                        |
-| [`@libo11y/server`](packages/server) | the Bun and Node platform: `setup`, the `AsyncLocalStorage` context manager, resource detection, OTLP exporters, runtime metrics, `instrumentServe` and `instrumentFetch` |
-| [`@libo11y/test`](packages/test)     | the hermetic recorder, its assertions, and an in-process OTLP/HTTP sink                                                                                                   |
+| Package                              | What it holds                                                                                                                                                                                                |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| [`@libo11y/spec`](packages/spec)     | the spec constants and tables generated from `spec/registry`, the application registry validator, and the `libo11y` bin. It also runs in browsers                                                            |
+| [`@libo11y/core`](packages/core)     | the platform-neutral core: configuration, identity, the sensitivity policy, the logger, events, exemplars and the signal pipelines                                                                           |
+| [`@libo11y/server`](packages/server) | the Bun and Node platform: `setup`, the `AsyncLocalStorage` context manager, resource detection, OTLP exporters, runtime metrics, `instrumentServe` and `instrumentFetch`                                    |
+| [`@libo11y/test`](packages/test)     | the hermetic recorder, its assertions, and an in-process OTLP/HTTP sink                                                                                                                                      |
+| [`@libo11y/web`](packages/web)       | the browser platform: `setup` with a pluggable context manager, the browser resource, the OTLP/HTTP JSON transport with an IndexedDB retry queue, the consent gate, and `fetch`, XHR and document-load spans |
+| [`@libo11y/webext`](packages/webext) | the Manifest V3 extension platform: `setupWorker` for the service worker, `setupContentScript` for content scripts and extension pages, and traced runtime messaging                                         |
 
-A browser platform is planned for `ts/v0.2.0`.
+`@libo11y/web` and `@libo11y/webext` first ship in `ts/v0.2.0`.
 [docs/PARITY.md](../docs/PARITY.md) compares every capability with Go.
 
 ## Install
@@ -28,6 +33,18 @@ npm install --save-dev @libo11y/test
 re-exports the core types an application needs most. Add `@libo11y/core`
 as a direct dependency to import `forceEmit`, `startRecord`,
 `currentRecord` or the other core types.
+
+For a browser application or a Manifest V3 extension, install the browser
+platform instead:
+
+```sh
+npm install @libo11y/web      # pages
+npm install @libo11y/webext   # Manifest V3 service workers, content scripts and extension pages
+```
+
+The [web README](packages/web/README.md) and the
+[webext README](packages/webext/README.md) cover consent, endpoints and
+CORS, and offline delivery.
 
 ## Quick start
 
@@ -53,31 +70,49 @@ tested end to end against the OTLP sink.
 
 ```
 ts/
-  packages/spec/     @libo11y/spec
-  packages/core/     @libo11y/core
-  packages/server/   @libo11y/server
-  packages/test/     @libo11y/test
-  examples/          bun-server and node-server, private workspace apps
-  scripts/           release.ts: sets the version and packs the packages
+  packages/spec/       @libo11y/spec
+  packages/core/       @libo11y/core
+  packages/server/     @libo11y/server
+  packages/test/       @libo11y/test
+  packages/web/        @libo11y/web, with its Playwright specs and fixture server in browser/
+  packages/webext/     @libo11y/webext, with its Playwright specs and test extension in browser/
+  examples/            bun-server and node-server, private workspace apps
+  scripts/             release.ts: sets the version and packs the packages
+  playwright.config.ts the browser test configuration
 ```
 
 ## Commands
 
 Run these in `ts/`:
 
-| Command                                 | What it does                                              |
-| --------------------------------------- | --------------------------------------------------------- |
-| `bun install --frozen-lockfile`         | installs the locked dependencies                          |
-| `bun run lint`                          | Biome lint and format check                               |
-| `bun run typecheck`                     | tsc over every package, the examples and the scripts      |
-| `bun run build`                         | ESM JavaScript and declarations in each package's `dist/` |
-| `bun run api:check`                     | fails when the build's API differs from `api/*.api.md`    |
-| `bun run api`                           | rewrites the API reports after a deliberate API change    |
-| `bun run test:bun`, `bun run test:node` | every suite under Bun, then under Node                    |
+| Command                                 | What it does                                                                                          |
+| --------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `bun install --frozen-lockfile`         | installs the locked dependencies                                                                      |
+| `bun run lint`                          | Biome lint and format check                                                                           |
+| `bun run typecheck`                     | tsc over every package, the examples, the scripts and the browser specs                               |
+| `bun run build`                         | ESM JavaScript and declarations in each package's `dist/`                                             |
+| `bun run api:check`                     | fails when the build's API differs from `api/*.api.md`                                                |
+| `bun run api`                           | rewrites the API reports after a deliberate API change                                                |
+| `bun run test:bun`, `bun run test:node` | every unit suite under Bun, then under Node                                                           |
+| `bun run test:browser`                  | the `web` and `webext` browser suites under Playwright 1.64.1 and headless Chromium, with two workers |
 
-From the repository root, `make ts-check` runs all of these, and
+The browser specs are `packages/*/browser/**/*.pw.ts`, a suffix that
+neither `bun test` nor the Node glob picks up. Their global setup bundles
+the page fixtures and the test extension with `Bun.build`. The fixture
+server and OTLP sink in `packages/web/browser/harness/server.ts` serve the
+pages at `http://127.0.0.1:47311`, and `http://localhost:47311` is the
+second origin for the cross-origin tests. `LIBO11Y_BROWSER_PORT` changes
+the port. Install Playwright's Chromium once with
+`bun x --no-install playwright install chromium`.
+
+From the repository root, `make ts-check` runs every command except
+`test:browser`, and `make ts-browser-test` runs `test:browser`.
 `make release-check` also packs the packages and installs them into a
-throwaway consumer.
+throwaway consumer. There it imports the server packages under Node and
+Bun, and it bundles every entry point of `@libo11y/web` and
+`@libo11y/webext` with `bun build --target=browser`
+(`scripts/ts-browser-bundle-check.sh`). The bundle check fails when any
+module in the graph is a Node builtin or a Bun polyfill for one.
 
 ## Conventions
 

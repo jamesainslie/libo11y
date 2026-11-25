@@ -10,6 +10,7 @@ import {
   errorName,
   type HttpInstruments,
   instrumentResolver,
+  isHttpUrl,
   methodAttributes,
   normalizeMethod,
   pageHref,
@@ -110,7 +111,8 @@ function startXhrSpan(
 /** Whether installXhrInstrumentation's patch is on the prototype. */
 let installed = false;
 
-/** XMLHttpRequest.prototype's readyState DONE. */
+/** XMLHttpRequest.prototype's readyState OPENED and DONE. */
+const OPENED = 1;
 const DONE = 4;
 
 /**
@@ -118,8 +120,10 @@ const DONE = 4;
  * against the page), send starts a CLIENT span with the fetch span's name and attributes, injects
  * context by setRequestHeader under the same propagate rule, and the span ends on loadend with
  * http.response.status_code from status (status 0 is a failure with error.type from the event:
- * "abort", "timeout" or "error"). Synchronous XHR is instrumented the same way. Returns a function
- * that restores the original methods. A no-op where XMLHttpRequest does not exist (workers).
+ * "abort", "timeout" or "error"). Synchronous XHR is instrumented the same way. A URL that is not
+ * http: or https:, and a send the XHR refuses, get no span. Returns a function that restores the
+ * original methods where they are still the patched ones; either way the patched ones pass every
+ * later call straight through. A no-op where XMLHttpRequest does not exist (workers).
  */
 export function installXhrInstrumentation(opts: HttpInstrumentationOptions = {}): () => void {
   const Xhr = (globalThis as { XMLHttpRequest?: typeof XMLHttpRequest }).XMLHttpRequest;
@@ -131,10 +135,17 @@ export function installXhrInstrumentation(opts: HttpInstrumentationOptions = {})
   const propagateTo = opts.propagateTo ?? [];
   const ignoreUrls = opts.ignoreUrls ?? [];
   const requests = new WeakMap<XMLHttpRequest, Opened>();
+  // Set by uninstall: a patch still reached through a wrapper installed over it passes through.
+  let done = false;
 
   const open = function (this: XMLHttpRequest, ...args: unknown[]): void {
     // Reopening aborts a request in flight without firing loadend, so its span ends here.
     requests.get(this)?.finish?.({ kind: "abandoned" });
+    if (done) {
+      requests.delete(this);
+      Reflect.apply(originalOpen, this, args);
+      return;
+    }
     const [method, url] = args;
     requests.set(this, {
       method: sentMethod(String(method)),
@@ -145,9 +156,13 @@ export function installXhrInstrumentation(opts: HttpInstrumentationOptions = {})
   };
 
   const send = function (this: XMLHttpRequest, ...args: unknown[]): void {
-    const opened = requests.get(this);
+    const opened = done ? undefined : requests.get(this);
+    // A send the XHR will refuse (one in flight, or done without a reopen) gets no span of its own.
+    const sendable = opened?.finish === undefined && this.readyState === OPENED;
     const resolved =
-      opened?.url === undefined || isIgnored(opened.url, ignoreUrls) ? undefined : instruments();
+      opened?.url === undefined || !sendable || !isHttpUrl(opened.url) || isIgnored(opened.url, ignoreUrls)
+        ? undefined
+        : instruments();
     if (opened?.url === undefined || resolved === undefined || !consentAllows(resolved.consent)) {
       Reflect.apply(originalSend, this, args);
       return;
@@ -175,7 +190,6 @@ export function installXhrInstrumentation(opts: HttpInstrumentationOptions = {})
   proto.open = open as typeof proto.open;
   proto.send = send as typeof proto.send;
   installed = true;
-  let done = false;
   return () => {
     if (done) return;
     done = true;

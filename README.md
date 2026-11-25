@@ -14,7 +14,7 @@ everything is correlated and exported over OTLP.
 | Language | Status | Location |
 |----------|--------|----------|
 | Go | Implemented | [`go/`](go/) |
-| TypeScript | Implemented for Bun and Node. Browsers are planned for `ts/v0.2.0` | [`ts/`](ts/) |
+| TypeScript | Implemented for Bun, Node, browsers and Manifest V3 extensions. The browser packages first ship in `ts/v0.2.0` | [`ts/`](ts/) |
 | Rust | Planned | [`rust/`](rust/) |
 | Java | Planned | [`java/`](java/) |
 | Zig | Planned | [`zig/`](zig/) |
@@ -177,10 +177,14 @@ npm install @libo11y/server          # setup, instrumentServe, instrumentFetch
 npm install @libo11y/core            # only for forceEmit, wide records and the core types
 npm install @libo11y/spec            # only for the spec constants or the libo11y bin on its own
 npm install --save-dev @libo11y/test # the hermetic recorder and the OTLP sink
+npm install @libo11y/web             # browsers: setup, consent, the offline queue, fetch and XHR spans
+npm install @libo11y/webext          # Manifest V3 extensions: the service worker and content scripts
 ```
 
-The four packages release together at one version. They run on Bun
-1.3.13 and Node 24, and they are built on OpenTelemetry JS 3.x.
+The six packages release together at one version, and they are built on
+OpenTelemetry JS 3.x. `@libo11y/server` and `@libo11y/test` run on Bun
+1.3.13 and Node 24. `@libo11y/web` and `@libo11y/webext` run in browsers,
+and by default they record nothing until the application grants consent.
 
 ## Quick start (TypeScript)
 
@@ -214,8 +218,10 @@ environment is missing, and when a standard variable selects something the
 packages do not support, such as the `grpc` protocol. A top-level `await`
 then ends the process, so catch the error if the service should start
 without telemetry. See
-[`ts/README.md`](ts/README.md) for the packages and
-[`ts/packages/server`](ts/packages/server) for the server documentation.
+[`ts/README.md`](ts/README.md) for the packages,
+[`ts/packages/server`](ts/packages/server) for the server documentation,
+and [`ts/packages/web`](ts/packages/web) and
+[`ts/packages/webext`](ts/packages/webext) for browsers and extensions.
 
 ## Versioning
 
@@ -230,12 +236,14 @@ From `go/v0.2.0`, each release also tags `go/o11yconnect/vX.Y.Z` and
 remote before a release.
 
 The TypeScript packages release in lockstep. One `ts/vX.Y.Z` tag publishes
-`@libo11y/spec`, `@libo11y/core`, `@libo11y/server` and `@libo11y/test` to
-npm at version X.Y.Z, with provenance, through npm trusted publishing.
-The first version on npm is 0.1.1. Each
+`@libo11y/spec`, `@libo11y/core`, `@libo11y/server`, `@libo11y/test`,
+`@libo11y/web` and `@libo11y/webext` to npm at version X.Y.Z, with
+provenance, through npm trusted publishing. The first version on npm is
+0.1.1, and `@libo11y/web` and `@libo11y/webext` join at 0.2.0. Each
 TypeScript release is listed in [`ts/CHANGELOG.md`](ts/CHANGELOG.md).
 `make release-check` also packs the packages and installs them into a
-throwaway consumer under Node and Bun.
+throwaway consumer under Node and Bun, and it bundles the browser packages
+for the browser.
 
 ## License
 

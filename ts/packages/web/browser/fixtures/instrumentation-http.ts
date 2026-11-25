@@ -35,6 +35,20 @@ const api = {
   fetchEcho: async (url: string): Promise<Echo> => (await fetch(url)).json() as Promise<Echo>,
   xhrEcho: (url: string): Promise<Echo> => xhrEcho(url, true),
   xhrEchoSync: (url: string): Promise<Echo> => xhrEcho(url, false),
+  /** POSTs a Request built in a same-origin iframe, which fails instanceof Request in this realm. */
+  fetchFrameRequest: async (url: string): Promise<Echo & { body: string }> => {
+    const frame = document.createElement("iframe");
+    document.body.append(frame);
+    try {
+      const FrameRequest = (frame.contentWindow as unknown as { Request: typeof Request }).Request;
+      const req = new FrameRequest(url, { method: "POST", headers: { "x-app": "1" }, body: "payload" });
+      return (await (await fetch(req)).json()) as Echo & { body: string };
+    } finally {
+      frame.remove();
+    }
+  },
+  /** Fetches a data: URL and reads it back. */
+  fetchData: async (): Promise<string> => (await fetch("data:text/plain,secret%20payload")).text(),
   grant: () => consent.grant(),
   /** The finished spans, after a flush, since the simple processor exports in a microtask. */
   spans: async (): Promise<SpanJson[]> => {

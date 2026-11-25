@@ -1,11 +1,11 @@
 /**
- * WP2 (queue and consent). The recording gate in core: the sampler wrapper the tracer provider
- * uses, the log record processor wrapper the logger provider uses, and the check the meter and log
+ * WP2 (queue and consent). The recording gate in core: the sampler and span processor wrappers the
+ * tracer provider uses, the log record processor wrapper the logger provider uses, and the check the meter and log
  * pipelines share. telemetry.ts, metrics.ts and logger.ts call these; only WP2 edits those files in
  * L4.
  */
 import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
-import { type Sampler, SamplingDecision } from "@opentelemetry/sdk-trace";
+import { type Sampler, SamplingDecision, type SpanProcessor } from "@opentelemetry/sdk-trace";
 import type { RecordingGate } from "./platform.ts";
 
 /**
@@ -39,6 +39,27 @@ export function gatedLogRecordProcessor(inner: LogRecordProcessor, gate: Recordi
     forceFlush: (opts) => inner.forceFlush(opts),
     shutdown: () => inner.shutdown(),
   };
+}
+
+/**
+ * A span processor that drops every span ending while the gate is closed, so a span started under
+ * consent and ended after revocation is neither buffered nor exported, as the log processor drops
+ * records. onStart, onEnding, flush and shutdown always reach inner.
+ */
+export function gatedSpanProcessor(inner: SpanProcessor, gate: RecordingGate): SpanProcessor {
+  const processor: SpanProcessor = {
+    onStart: (span, ctx) => inner.onStart(span, ctx),
+    onEnd(span) {
+      if (gate.recording()) inner.onEnd(span);
+    },
+    forceFlush: () => inner.forceFlush(),
+    shutdown: () => inner.shutdown(),
+  };
+  if (inner.onEnding !== undefined) {
+    const onEnding = inner.onEnding.bind(inner);
+    processor.onEnding = (span) => onEnding(span);
+  }
+  return processor;
 }
 
 /** True when there is no gate or the gate is open. */

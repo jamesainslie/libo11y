@@ -251,6 +251,8 @@ test("other messages are left to other listeners", async () => {
 test("acceptForwarded false registers no export listener", async () => {
   const r = rig({ stored: "granted" });
   await withWorker(r, { ...BASE, acceptForwarded: false }, async () => {
+    // The holder of early traced messages goes one task after setup resolves.
+    await new Promise((resolve) => setTimeout(resolve, 0));
     assert.equal(r.worker.listeners().length, 0);
     await assert.rejects(r.content.chrome.runtime.sendMessage(exportMessage()));
   });
@@ -270,8 +272,9 @@ test("a batch that arrives while the worker is still setting up is answered once
     },
   };
   const pending = setupWorkerWith(BASE, slow);
-  // The listener exists before the first await, so the message that woke the worker is caught.
-  assert.equal(r.worker.listeners().length, 1);
+  // The listeners exist before the first await, so the message that woke the worker is caught:
+  // the export listener and the holder of early traced messages.
+  assert.equal(r.worker.listeners().length, 2);
   const reply = r.content.chrome.runtime.sendMessage(exportMessage());
   await new Promise((resolve) => setTimeout(resolve, 10));
   release();
@@ -459,4 +462,163 @@ test("with the real consent controller and IndexedDB queue, a batch is durable b
   } finally {
     await h.shutdown();
   }
+});
+
+// slowRig is a rig whose openQueue waits for release, so a test can deliver messages to a worker
+// that is still setting up, as the message that woke it is.
+function slowRig(opts: { stored?: unknown } = {}) {
+  const r = rig(opts);
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const deps: WorkerDeps = {
+    ...r.deps,
+    openQueue: async (o) => {
+      await gate;
+      return r.deps.openQueue(o);
+    },
+  };
+  return { ...r, deps, release };
+}
+
+const TRACEPARENT = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+
+test("a traced message that woke the worker reaches the listener added once setup resolves", async () => {
+  const r = slowRig({ stored: "granted" });
+  const pending = setupWorkerWith(BASE, r.deps);
+  const reply = r.content.chrome.runtime.sendMessage({
+    libo11y: 1,
+    type: "traced",
+    carrier: { traceparent: TRACEPARENT },
+    payload: "early",
+  });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  r.release();
+  const h = await pending;
+  try {
+    // Added after the await, as an application can only add it.
+    h.onMessage((payload) => ({
+      payload,
+      traceId: trace.getSpan(context.active())?.spanContext().traceId,
+    }));
+    assert.deepEqual(await reply, {
+      libo11y: 1,
+      type: "traced-reply",
+      ok: true,
+      result: { payload: "early", traceId: "0af7651916cd43dd8448eb211c80319c" },
+    });
+    // Later traced messages reach the listener directly, once each.
+    let calls = 0;
+    h.onMessage(() => {
+      calls++;
+      return undefined;
+    });
+    await r.content.chrome.runtime.sendMessage({ libo11y: 1, type: "traced", carrier: {}, payload: 2 });
+    assert.equal(calls, 1);
+  } finally {
+    await h.shutdown();
+  }
+});
+
+test("an early traced message the worker has no listener for is left to other contexts", async () => {
+  const r = slowRig({ stored: "granted" });
+  const page = r.ext.context({ url: "chrome-extension://ext-id/page.html" });
+  page.chrome.runtime.onMessage.addListener((m, _s, sendResponse) => {
+    if ((m as { type?: string }).type !== "traced") return undefined;
+    setTimeout(() => sendResponse({ libo11y: 1, type: "traced-reply", ok: true, result: "page" }), 30);
+    return true;
+  });
+  const pending = setupWorkerWith(BASE, r.deps);
+  const reply = r.content.chrome.runtime.sendMessage({ libo11y: 1, type: "traced", carrier: {}, payload: 1 });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  r.release();
+  const h = await pending;
+  try {
+    assert.deepEqual(await reply, { libo11y: 1, type: "traced-reply", ok: true, result: "page" });
+  } finally {
+    await h.shutdown();
+  }
+});
+
+test("a batch sent right after a grant elsewhere is accepted before the worker sees the change", async () => {
+  const r = rig();
+  await withWorker(r, BASE, async (h) => {
+    await r.ext.settle();
+    assert.equal(h.consent.state(), "pending");
+    // Another context granted; its storage.onChanged has not reached the worker yet.
+    r.ext.stored.set(CONSENT_STORAGE_KEY, "granted");
+    const reply = await r.content.chrome.runtime.sendMessage(exportMessage());
+    assert.deepEqual(reply, { libo11y: 1, type: "export-reply", ok: true });
+    assert.equal(h.consent.state(), "granted");
+    assert.equal((r.queue as ReturnType<typeof createFakeQueue>).entries.size, 1);
+  });
+});
+
+test("a batch sent right after a revoke elsewhere is refused before the worker sees the change", async () => {
+  const r = rig({ stored: "granted" });
+  await withWorker(r, BASE, async (h) => {
+    await r.ext.settle();
+    assert.equal(h.consent.state(), "granted");
+    r.ext.stored.set(CONSENT_STORAGE_KEY, "denied");
+    const reply = (await r.content.chrome.runtime.sendMessage(exportMessage())) as { ok: boolean };
+    assert.equal(reply.ok, false);
+    assert.equal(h.consent.state(), "denied");
+    assert.equal((r.queue as ReturnType<typeof createFakeQueue>).entries.size, 0);
+  });
+});
+
+test("a queue that throws gets a refusal, not silence", async () => {
+  const queue = createFakeQueue();
+  const throwing: PersistentQueue = {
+    ...queue,
+    put: async () => {
+      throw new Error("disk on fire");
+    },
+  };
+  const r = rig({ stored: "granted", queue: throwing });
+  await withWorker(r, BASE, async () => {
+    const reply = (await Promise.race([
+      r.content.chrome.runtime.sendMessage(exportMessage()),
+      new Promise((resolve) => setTimeout(() => resolve("no reply"), 500)),
+    ])) as { ok?: boolean; reason?: string } | string;
+    assert.notEqual(reply, "no reply");
+    assert.equal((reply as { ok: boolean }).ok, false);
+  });
+});
+
+test("an accepted batch is drained even when the reply cannot be sent", async () => {
+  const r = rig({ stored: "granted" });
+  await withWorker(r, BASE, async () => {
+    const [listener] = r.worker.listeners();
+    assert.ok(listener);
+    r.log.length = 0;
+    const kept = listener(exportMessage(), { id: "ext-id" }, () => {
+      throw new Error("Attempting to use a disconnected port object");
+    });
+    assert.equal(kept, true);
+    await r.ext.settle();
+    assert.deepEqual(r.log, ["drain"]);
+  });
+});
+
+test("a revoke while a batch is being stored leaves nothing in the queue", async () => {
+  const queue = createFakeQueue();
+  let revoke: () => Promise<void> = async () => {};
+  const revoking: PersistentQueue = {
+    ...queue,
+    // The revoke and its queue clear run while the put is in flight; the put lands after the clear.
+    put: async (b) => {
+      await revoke();
+      return queue.put(b);
+    },
+  };
+  const r = rig({ stored: "granted", queue: revoking });
+  await withWorker(r, BASE, async (h) => {
+    await r.ext.settle();
+    revoke = () => h.consent.revoke();
+    const reply = (await r.content.chrome.runtime.sendMessage(exportMessage())) as { ok: boolean };
+    assert.equal(reply.ok, false);
+    assert.equal(queue.entries.size, 0);
+  });
 });

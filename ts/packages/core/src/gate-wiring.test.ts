@@ -273,3 +273,21 @@ test("startupSummary false defers nothing", async () => {
     await t.shutdown();
   }
 });
+
+test("a span that ends after the gate closed is neither buffered nor exported, even after a re-open", async () => {
+  const gate = localGate(true);
+  const { platform, spans } = rig(gate);
+  const t = await createTelemetryWith(OPTIONS, platform);
+  try {
+    const span = t.tracerProvider.getTracer("app").startSpan("straddles revoke");
+    assert.equal(span.isRecording(), true);
+    gate.set(false);
+    span.end();
+    // Consent is granted again before the batch processor's next export.
+    gate.set(true);
+    await t.forceFlush();
+    assert.deepEqual(spans.getFinishedSpans(), []);
+  } finally {
+    await t.shutdown();
+  }
+});

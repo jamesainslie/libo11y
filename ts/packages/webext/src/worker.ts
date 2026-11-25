@@ -26,11 +26,11 @@ import {
   webPlatform,
 } from "@libo11y/web/internal";
 import { diag } from "@opentelemetry/api";
-import { type ChromeLike, getChrome, type RuntimeMessageListener } from "./chrome.ts";
-import { CONSENT_STORAGE_KEY, readStoredConsent, syncConsent } from "./consent-sync.ts";
-import { createTracedMessaging, sendTracedTabMessage } from "./messaging.ts";
-import type { WorkerSetupOptions, WorkerTelemetry } from "./options.ts";
-import { type ExportReply, isExportMessage, PROTOCOL_VERSION } from "./protocol.ts";
+import { type ChromeLike, getChrome, type MessageSenderLike, type RuntimeMessageListener } from "./chrome.ts";
+import { CONSENT_STORAGE_KEY, type ConsentSync, readStoredConsent, syncConsent } from "./consent-sync.ts";
+import { createTracedMessaging, sendTracedTabMessage, tracedListener } from "./messaging.ts";
+import type { TracedMessageListener, WorkerSetupOptions, WorkerTelemetry } from "./options.ts";
+import { type ExportReply, isExportMessage, isTracedMessage, PROTOCOL_VERSION } from "./protocol.ts";
 
 /** OTEL_* defaults for the worker, under the caller's env: short delays, because the worker can stop at any time. */
 export const WORKER_ENV_DEFAULTS: Readonly<Record<string, string>> = {
@@ -80,9 +80,13 @@ export function defaultWorkerDeps(): WorkerDeps {
  * left. Rejects like setup on a bad configuration.
  *
  * The export listener is registered before the first await, so the message that woke the worker
- * reaches it; batches that arrive before the telemetry is ready are answered once it is. When no
- * state is stored yet, a granted or denied initial state is stored for the content scripts to read.
- * The console sink defaults to off, as on the web.
+ * reaches it; batches that arrive before the telemetry is ready are answered once it is. Traced
+ * messages that arrive before the application can add its listener are held, and replayed one task
+ * after this resolves to the listeners added through the handle's onMessage by then, so add them
+ * right after the await. Each batch re-reads the stored consent before it is accepted, so a grant
+ * or revoke in another context counts before its storage.onChanged arrives. When no state is
+ * stored yet, a granted or denied initial state is stored for the content scripts to read. The
+ * console sink defaults to off, as on the web.
  */
 export function setupWorker(options: WorkerSetupOptions = {}): Promise<WorkerTelemetry> {
   return setupWorkerWith(options, defaultWorkerDeps());
@@ -93,6 +97,8 @@ interface Accepting {
   readonly gate: ConsentController;
   readonly queue: PersistentQueue;
   readonly delivery: Delivery;
+  /** Applies the stored consent now, so a grant or revoke elsewhere counts before onChanged. */
+  readonly refreshConsent: () => Promise<void>;
 }
 
 function refused(reason: string): ExportReply {
@@ -100,6 +106,7 @@ function refused(reason: string): ExportReply {
 }
 
 const ACCEPTED: ExportReply = { libo11y: PROTOCOL_VERSION, type: "export-reply", ok: true };
+const CONSENT_CLOSED = "consent is not granted";
 
 // isExportFrame is true for anything that claims to be an ExportMessage, well-formed or not, so a
 // malformed one gets a refusal rather than silence.
@@ -115,10 +122,50 @@ function isExportFrame(m: unknown): boolean {
 async function accept(message: unknown, target: Accepting | undefined): Promise<ExportReply> {
   if (target === undefined) return refused("the worker's telemetry is not set up");
   if (!isExportMessage(message)) return refused("malformed export message");
-  if (!target.gate.recording()) return refused("consent is not granted");
+  await target.refreshConsent();
+  if (!target.gate.recording()) return refused(CONSENT_CLOSED);
   const entry = await target.queue.put({ signal: message.signal, body: message.body });
   if (entry === undefined) return refused("the queue refused the batch");
+  if (!target.gate.recording()) {
+    // Revoked while the batch was being stored: the revoke's clear may have run before the put.
+    await target.queue.remove([entry.id]);
+    return refused(CONSENT_CLOSED);
+  }
   return ACCEPTED;
+}
+
+// answer accepts message, replies, and drains on acceptance. It never rejects: a failure is a
+// refusal, and a reply that cannot be sent (the sender went away) still leaves the batch drained.
+async function answer(
+  message: unknown,
+  target: Accepting | undefined,
+  sendResponse: (response?: unknown) => void,
+): Promise<void> {
+  let reply: ExportReply;
+  try {
+    reply = await accept(message, target);
+  } catch (err) {
+    diag.warn("o11y: webext worker failed to accept a batch", err);
+    reply = refused(
+      `the worker failed to store the batch: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  try {
+    sendResponse(reply);
+  } catch (err) {
+    diag.debug("o11y: webext worker could not answer an export", err);
+  }
+  if (reply.ok) void target?.delivery.drain();
+}
+
+/** How many early traced messages the worker holds at most; more are left to other contexts. */
+const MAX_HELD_TRACED = 100;
+
+/** A traced message that arrived before the application could add its traced listeners. */
+interface HeldTraced {
+  readonly message: unknown;
+  readonly sender: MessageSenderLike;
+  readonly sendResponse: (response?: unknown) => void;
 }
 
 async function cleanup(steps: readonly (() => unknown)[]): Promise<void> {
@@ -157,17 +204,52 @@ export async function setupWorkerWith(
   });
   const onExport: RuntimeMessageListener = (message, sender, sendResponse) => {
     if (!isExportFrame(message) || sender.id !== chrome.runtime.id) return undefined;
-    void ready.then(async (target) => {
-      const reply = await accept(message, target);
-      sendResponse(reply);
-      if (reply.ok) void target?.delivery.drain();
-    });
+    void ready.then((target) => answer(message, target, sendResponse));
     return true;
   };
   const acceptForwarded = options.acceptForwarded !== false;
   if (acceptForwarded) chrome.runtime.onMessage.addListener(onExport);
   const removeExportListener = (): void => {
     if (acceptForwarded) chrome.runtime.onMessage.removeListener(onExport);
+  };
+
+  // The application can add its traced listeners only once this resolves, after the browser has
+  // dispatched the message that woke the worker. So traced messages that no traced listener can
+  // take yet are held, and replayed one task after setup resolves to the listeners added by then.
+  // Held messages nobody takes are left unanswered, for another context's listener to answer.
+  const tracedListeners: RuntimeMessageListener[] = [];
+  const held: HeldTraced[] = [];
+  let holding = true;
+  const onEarlyTraced: RuntimeMessageListener = (message, sender, sendResponse) => {
+    if (!holding || tracedListeners.length > 0 || held.length >= MAX_HELD_TRACED) return undefined;
+    if (!isTracedMessage(message) || sender.id !== chrome.runtime.id) return undefined;
+    held.push({ message, sender, sendResponse });
+    return true;
+  };
+  chrome.runtime.onMessage.addListener(onEarlyTraced);
+  const releaseHeld = (): void => {
+    if (!holding) return;
+    holding = false;
+    chrome.runtime.onMessage.removeListener(onEarlyTraced);
+    for (const h of held.splice(0)) {
+      let answered = false;
+      const once = (response?: unknown): void => {
+        if (answered) return;
+        answered = true;
+        try {
+          h.sendResponse(response);
+        } catch (err) {
+          diag.debug("o11y: webext worker could not answer a held traced message", err);
+        }
+      };
+      for (const listener of [...tracedListeners]) {
+        try {
+          listener(h.message, h.sender, once);
+        } catch (err) {
+          diag.warn("o11y: webext traced listener failed on a held message", err);
+        }
+      }
+    }
   };
 
   const steps: (() => unknown)[] = [];
@@ -178,6 +260,7 @@ export async function setupWorkerWith(
     endpoints: SignalEndpoints;
   };
   let core: Awaited<ReturnType<typeof setupWith>>;
+  let sync: ConsentSync | undefined;
   try {
     const stored = await readStoredConsent(chrome);
     const initial = stored ?? options.consent?.initial;
@@ -191,7 +274,8 @@ export async function setupWorkerWith(
         diag.warn("o11y: storing the initial consent state", err);
       });
     }
-    steps.push(syncConsent(controller, chrome));
+    sync = syncConsent(controller, chrome);
+    steps.push(sync.stop);
 
     const queue = await deps.openQueue(queueOptions(options));
     steps.push(() => queue.close());
@@ -233,6 +317,7 @@ export async function setupWorkerWith(
     built = { controller, queue, delivery, endpoints };
   } catch (err) {
     removeExportListener();
+    releaseHeld();
     settle(undefined);
     await cleanup(steps);
     throw err;
@@ -251,7 +336,16 @@ export async function setupWorkerWith(
   const handle = telemetry as WorkerTelemetry;
   Object.defineProperty(handle, "consent", { value: controller.consent, enumerable: true });
   Object.assign(handle, {
-    onMessage: messaging.onMessage,
+    onMessage: (listener: TracedMessageListener): (() => void) => {
+      const onRuntimeMessage = tracedListener(telemetry.propagator, listener);
+      tracedListeners.push(onRuntimeMessage);
+      chrome.runtime.onMessage.addListener(onRuntimeMessage);
+      return () => {
+        const i = tracedListeners.indexOf(onRuntimeMessage);
+        if (i >= 0) tracedListeners.splice(i, 1);
+        chrome.runtime.onMessage.removeListener(onRuntimeMessage);
+      };
+    },
     sendMessage: messaging.sendMessage,
     sendTabMessage: <R>(tabId: number, payload: unknown): Promise<R> =>
       sendTracedTabMessage<R>(chrome, telemetry.propagator, tabId, payload),
@@ -261,6 +355,7 @@ export async function setupWorkerWith(
   handle.shutdown = (opts) => {
     shutdownPromise ??= (async () => {
       removeExportListener();
+      releaseHeld();
       const report = await coreShutdown(opts);
       await cleanup([
         ...uninstalls,
@@ -296,7 +391,8 @@ export async function setupWorkerWith(
     throw err;
   }
 
-  settle({ gate: controller, queue, delivery });
+  settle({ gate: controller, queue, delivery, refreshConsent: sync?.refresh ?? (async () => {}) });
+  setTimeout(releaseHeld, 0);
   void delivery.drain();
   return handle;
 }

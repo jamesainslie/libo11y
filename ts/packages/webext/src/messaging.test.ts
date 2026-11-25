@@ -185,3 +185,35 @@ test("sendTracedTabMessage rejects where tabs is unavailable", async () => {
   const { content } = rig();
   await assert.rejects(sendTracedTabMessage(content.chrome, telemetry.propagator, 7, 1), /tabs/);
 });
+
+test("an extension API that throws synchronously gives a rejection, not a throw", async () => {
+  // Chrome throws "Extension context invalidated." synchronously in a content script whose
+  // extension was reloaded or updated, and throws on a bad tabId before sending anything.
+  const { worker } = rig();
+  const invalidated = new Error("Extension context invalidated.");
+  const broken = {
+    ...worker.chrome,
+    runtime: {
+      ...worker.chrome.runtime,
+      sendMessage: (): Promise<unknown> => {
+        throw invalidated;
+      },
+    },
+    tabs: {
+      sendMessage: (): Promise<unknown> => {
+        throw new TypeError("No matching signature.");
+      },
+    },
+  };
+  const messaging = createTracedMessaging(broken, telemetry.propagator);
+  let sent: Promise<unknown> | undefined;
+  assert.doesNotThrow(() => {
+    sent = messaging.sendMessage(1);
+  });
+  await assert.rejects(sent as Promise<unknown>, invalidated);
+  let tab: Promise<unknown> | undefined;
+  assert.doesNotThrow(() => {
+    tab = sendTracedTabMessage(broken, telemetry.propagator, 7, 1);
+  });
+  await assert.rejects(tab as Promise<unknown>, TypeError);
+});

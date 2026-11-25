@@ -369,3 +369,67 @@ test("install replaces globalThis.fetch, a second install is a no-op, and uninst
     }
   });
 });
+
+test("after uninstall a patch still reached through a later wrapper passes straight through", async () => {
+  await withRec(async (rec) => {
+    const original = globalThis.fetch;
+    const fake = fakeFetch();
+    globalThis.fetch = fake.fetch;
+    try {
+      const uninstall = installFetchInstrumentation({ telemetry: rec.telemetry });
+      const ours = globalThis.fetch;
+      // Another library wraps fetch after us, so uninstall cannot put the original back.
+      const wrapper = ((input: string | URL | Request, init?: RequestInit) =>
+        ours(input, init)) as typeof fetch;
+      globalThis.fetch = wrapper;
+      uninstall();
+      assert.equal(globalThis.fetch, wrapper);
+      await globalThis.fetch("/after-uninstall");
+      assert.equal(clientSpans(rec).length, 0, "an uninstalled patch records nothing");
+      assert.equal(fake.calls[0]?.headers.has("traceparent"), false, "and injects nothing");
+
+      const reinstall = installFetchInstrumentation({ telemetry: rec.telemetry });
+      await globalThis.fetch("/reinstalled");
+      assert.equal(clientSpans(rec).length, 1, "a reinstall over the wrapper records one span, not two");
+      reinstall();
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+});
+
+test("data:, blob: and other non-HTTP URLs get no span and no context", async () => {
+  await withRec(async (rec) => {
+    const fake = fakeFetch();
+    const traced = instrumentFetch(fake.fetch, { telemetry: rec.telemetry, propagateTo: [/.*/] });
+    await traced(`data:text/plain;base64,${btoa("secret payload")}`);
+    await traced("blob:https://app.example.com/0b5c2a52-9f0e-4a43-9a43-7f6b1f7c5d10");
+    await traced("about:blank");
+    assert.equal(fake.calls.length, 3);
+    assert.equal(clientSpans(rec).length, 0);
+    assert.ok(fake.calls.every((c) => !c.headers.has("traceparent")));
+    assert.equal((await durationPoints(rec)).length, 0);
+  });
+});
+
+test("a Request from another realm is read as a Request, not stringified", async () => {
+  await withRec(async (rec) => {
+    const fake = fakeFetch();
+    const traced = instrumentFetch(fake.fetch, { telemetry: rec.telemetry });
+    // A Request from an iframe fails instanceof Request here; its brand is its toStringTag.
+    const foreign = {
+      url: "https://app.example.com/orders",
+      method: "POST",
+      headers: new Headers({ authorization: "Bearer t" }),
+      [Symbol.toStringTag]: "Request",
+    } as unknown as Request;
+    await traced(foreign);
+    const span = onlyClient(rec);
+    assert.equal(span.name, "POST");
+    assert.equal(span.attributes["url.full"], "https://app.example.com/orders");
+    assert.equal(fake.calls[0]?.input, foreign);
+    const sent = fake.calls[0]?.init?.headers as Headers;
+    assert.equal(sent.get("authorization"), "Bearer t", "the Request's own headers are kept");
+    assert.ok(sent.has("traceparent"));
+  });
+});

@@ -32,9 +32,11 @@ a set of new platforms under both products, not a third product.
 | Core (setup) | `go` | `@libo11y/server` | `@libo11y/web` | `@libo11y/webext` | `@libo11y/react-native` | `Libo11y` Swift package | `libo11y-android` |
 | RUM (experience) | gateway `go/o11yrum` | none | `@libo11y/rum` | `@libo11y/rum` | `@libo11y/rum-react-native` | `Libo11yRUM` | `libo11y-rum-android` |
 
-Two cells exist today: the Go core (`go`) and the Bun and Node core
-(`@libo11y/server`). Every other named cell is planned, including every
-package in the RUM row.
+Four cells exist today: the Go core (`go`), the Bun and Node core
+(`@libo11y/server`), the browser core (`@libo11y/web`) and the MV3
+extension core (`@libo11y/webext`). The two browser cores first ship in
+`ts/v0.2.0`. Every other named cell is planned, including every package in
+the RUM row.
 
 ## Data model
 

@@ -139,3 +139,17 @@ test("XHR_SETTER writes through setRequestHeader", () => {
   XHR_SETTER.set(xhr, "traceparent", "00-x");
   assert.deepEqual(set, [["traceparent", "00-x"]]);
 });
+
+test("url.full redacts the signature query values semconv names, leaving the rest as sent", () => {
+  const presigned =
+    "https://bucket.s3.amazonaws.com/k?X-Amz-Date=20261125&AWSAccessKeyId=AKIA123&Signature=abc%2Fdef&sig=s1&X-Goog-Signature=g1&q=a%20b&flag";
+  assert.equal(
+    urlAttributes(new URL(presigned))["url.full"],
+    "https://bucket.s3.amazonaws.com/k?X-Amz-Date=20261125&AWSAccessKeyId=REDACTED&Signature=REDACTED&sig=REDACTED&X-Goog-Signature=REDACTED&q=a%20b&flag",
+  );
+  assert.equal(
+    urlAttributes(new URL("https://a.example.com/x?signature=keep&q=1#f"))["url.full"],
+    "https://a.example.com/x?signature=keep&q=1#f",
+    "the keys match case-sensitively, as semconv lists them",
+  );
+});

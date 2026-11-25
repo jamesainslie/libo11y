@@ -4,11 +4,14 @@ import { ROOT_CONTEXT, SpanKind } from "@opentelemetry/api";
 import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
 import {
   AlwaysOnSampler,
+  type ReadableSpan,
   type Sampler,
   SamplingDecision,
+  type Span,
+  type SpanProcessor,
   TraceIdRatioBasedSampler,
 } from "@opentelemetry/sdk-trace";
-import { gatedLogRecordProcessor, gatedSampler, gateOpen } from "./gate.ts";
+import { gatedLogRecordProcessor, gatedSampler, gatedSpanProcessor, gateOpen } from "./gate.ts";
 import type { RecordingGate } from "./platform.ts";
 
 function gate(open: boolean): RecordingGate & { open: boolean } {
@@ -122,4 +125,37 @@ test("gatedLogRecordProcessor without inner.enabled is enabled while open", () =
   assert.equal(p.enabled?.(opts), true);
   g.open = false;
   assert.equal(p.enabled?.(opts), false);
+});
+
+test("gatedSpanProcessor drops spans that end while the gate is closed", async () => {
+  const g = gate(true);
+  const seen: string[] = [];
+  const inner: SpanProcessor = {
+    onStart: (span) => {
+      seen.push(`start ${(span as unknown as { name: string }).name}`);
+    },
+    onEnding: (span) => {
+      seen.push(`ending ${(span as unknown as { name: string }).name}`);
+    },
+    onEnd: (span) => {
+      seen.push(`end ${span.name}`);
+    },
+    forceFlush: async () => {
+      seen.push("flush");
+    },
+    shutdown: async () => {
+      seen.push("shutdown");
+    },
+  };
+  const p = gatedSpanProcessor(inner, g);
+  const span = (name: string) => ({ name }) as unknown as Span & ReadableSpan;
+  p.onStart(span("a"), ROOT_CONTEXT);
+  p.onEnd(span("a"));
+  p.onStart(span("b"), ROOT_CONTEXT);
+  g.open = false;
+  p.onEnding?.(span("b"));
+  p.onEnd(span("b"));
+  await p.forceFlush();
+  await p.shutdown();
+  assert.deepEqual(seen, ["start a", "end a", "start b", "ending b", "flush", "shutdown"]);
 });

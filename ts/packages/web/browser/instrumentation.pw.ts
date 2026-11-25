@@ -18,6 +18,8 @@ interface InstApi {
   fetchEcho(url: string): Promise<Echo>;
   xhrEcho(url: string): Promise<Echo>;
   xhrEchoSync(url: string): Promise<Echo>;
+  fetchFrameRequest(url: string): Promise<Echo & { body: string }>;
+  fetchData(): Promise<string>;
   grant(): string;
   spans(): Promise<SpanJson[]>;
   uninstall(): { fetch: boolean; open: boolean; send: boolean };
@@ -92,6 +94,29 @@ for (const kind of ["fetchEcho", "xhrEcho"] as const) {
     expect(allowed.headers.traceparent).toBe(`00-${span.traceId}-${span.spanId}-01`);
   });
 }
+
+test("a Request from an iframe keeps its method, headers and body, and gets the context", async ({
+  page,
+}) => {
+  await openHttp(page);
+  const echo = await page.evaluate(() =>
+    (globalThis as unknown as { __inst: InstApi }).__inst.fetchFrameRequest("/echo"),
+  );
+  const [span] = (await httpSpans(page)).filter((s) => s.kind === CLIENT) as [SpanJson];
+  expect(echo.method).toBe("POST");
+  expect(echo.headers["x-app"]).toBe("1");
+  expect(echo.body).toBe("payload");
+  expect(echo.headers.traceparent).toBe(`00-${span.traceId}-${span.spanId}-01`);
+  expect(span.name).toBe("POST");
+  expect(span.attributes["url.full"]).toBe(new URL("/echo", page.url()).href);
+});
+
+test("a data: URL fetch is passed through with no span", async ({ page }) => {
+  await openHttp(page);
+  const text = await page.evaluate(() => (globalThis as unknown as { __inst: InstApi }).__inst.fetchData());
+  expect(text).toBe("secret payload");
+  expect(await httpSpans(page)).toEqual([]);
+});
 
 test("pending consent sends no header and records no span, and a grant turns both on", async ({ page }) => {
   await openHttp(page, "?consent=pending");

@@ -26,8 +26,10 @@ function tracedMessage(propagator: TextMapPropagator, payload: unknown): TracedM
   return { libo11y: PROTOCOL_VERSION, type: "traced", carrier, payload };
 }
 
-async function unwrap<R>(reply: Promise<unknown>): Promise<R> {
-  const r = await reply;
+// unwrap sends and unwraps the TracedReply. It takes the send as a thunk, so an extension API that
+// throws synchronously (an invalidated extension context, a bad tabId) still gives a rejection.
+async function unwrap<R>(send: () => Promise<unknown>): Promise<R> {
+  const r = await send();
   if (!isReply(r) || r.type !== "traced-reply") {
     throw new Error("o11y: no traced reply: no traced listener answered the message");
   }
@@ -52,41 +54,51 @@ function failed(err: unknown): TracedReply {
 }
 
 /**
+ * The runtime.onMessage listener behind TracedMessaging.onMessage: it extracts the carrier, runs
+ * listener under context.with(extracted), answers with a TracedReply (awaiting a promise result,
+ * returning true), and ignores any message that is not a TracedMessage.
+ */
+export function tracedListener(
+  propagator: TextMapPropagator,
+  listener: TracedMessageListener,
+): RuntimeMessageListener {
+  return (message, sender, sendResponse) => {
+    if (!isTracedMessage(message)) return undefined;
+    const extracted = propagator.extract(ROOT_CONTEXT, message.carrier, defaultTextMapGetter);
+    let result: unknown;
+    try {
+      result = context.with(extracted, () => listener(message.payload, sender));
+    } catch (err) {
+      sendResponse(failed(err));
+      return undefined;
+    }
+    if (typeof (result as PromiseLike<unknown> | undefined)?.then !== "function") {
+      sendResponse(ok(result));
+      return undefined;
+    }
+    Promise.resolve(result).then(
+      (value) => sendResponse(ok(value)),
+      (err: unknown) => sendResponse(failed(err)),
+    );
+    return true;
+  };
+}
+
+/**
  * Traced messaging over chrome with propagator (the telemetry's, so the baggage egress filter
  * applies). sendMessage injects the active context into a TracedMessage and unwraps the
- * TracedReply. onMessage extracts the carrier and runs the listener under context.with(extracted),
- * answers with a TracedReply (awaiting a promise result, returning true from the chrome listener),
- * and ignores any message that is not a TracedMessage.
+ * TracedReply. onMessage adds a tracedListener.
  */
 export function createTracedMessaging(chrome: ChromeLike, propagator: TextMapPropagator): TracedMessaging {
   return {
     onMessage(listener: TracedMessageListener): () => void {
-      const onRuntimeMessage: RuntimeMessageListener = (message, sender, sendResponse) => {
-        if (!isTracedMessage(message)) return undefined;
-        const extracted = propagator.extract(ROOT_CONTEXT, message.carrier, defaultTextMapGetter);
-        let result: unknown;
-        try {
-          result = context.with(extracted, () => listener(message.payload, sender));
-        } catch (err) {
-          sendResponse(failed(err));
-          return undefined;
-        }
-        if (typeof (result as PromiseLike<unknown> | undefined)?.then !== "function") {
-          sendResponse(ok(result));
-          return undefined;
-        }
-        Promise.resolve(result).then(
-          (value) => sendResponse(ok(value)),
-          (err: unknown) => sendResponse(failed(err)),
-        );
-        return true;
-      };
+      const onRuntimeMessage = tracedListener(propagator, listener);
       chrome.runtime.onMessage.addListener(onRuntimeMessage);
       return () => chrome.runtime.onMessage.removeListener(onRuntimeMessage);
     },
     sendMessage<R = unknown>(payload: unknown): Promise<R> {
       const message = tracedMessage(propagator, payload);
-      return unwrap<R>(chrome.runtime.sendMessage(message));
+      return unwrap<R>(() => chrome.runtime.sendMessage(message));
     },
   };
 }
@@ -102,5 +114,6 @@ export function sendTracedTabMessage<R>(
     return Promise.reject(new Error("o11y: chrome.tabs is unavailable in this context"));
   }
   const message = tracedMessage(propagator, payload);
-  return unwrap<R>(chrome.tabs.sendMessage(tabId, message));
+  const tabs = chrome.tabs;
+  return unwrap<R>(() => tabs.sendMessage(tabId, message));
 }

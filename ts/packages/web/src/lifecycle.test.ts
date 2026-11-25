@@ -107,3 +107,28 @@ test("the returned function removes every listener", () => {
   assert.equal(c.calls(), 0);
   assert.doesNotThrow(remove);
 });
+
+test("a tab closed while hidden flushes what it recorded since the hide flush settled", async () => {
+  const doc = new FakeDocument();
+  const win = new EventTarget();
+  let release: (() => void) | undefined;
+  let n = 0;
+  const remove = installFlushOnHide(doc, win, () => {
+    n++;
+    return new Promise<void>((r) => {
+      release = r;
+    });
+  });
+  try {
+    doc.set("hidden");
+    win.dispatchEvent(new Event("pagehide"));
+    assert.equal(n, 1, "a pagehide while the hide flush runs adds none");
+    release?.();
+    await new Promise((r) => setTimeout(r, 0));
+    // The tab stays hidden in the background and records more, then is closed: pagehide only.
+    win.dispatchEvent(new Event("pagehide"));
+    assert.equal(n, 2);
+  } finally {
+    remove();
+  }
+});

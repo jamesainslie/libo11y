@@ -126,8 +126,12 @@ builds, checks the API reports, and runs every suite under Bun and Node.
   `make release-check` also runs `scripts/ts-release-check.sh` for
   `TS_RELEASE_VERSION`. It checks every package is at that version, builds and packs
   the packages, checks each tarball's `exports` and `bin` targets, and
-  installs the tarballs into a throwaway consumer that imports them under
-  Node and Bun and runs the `libo11y` bin. Like `RELEASE_VERSION`,
+  installs the tarballs into a throwaway consumer that imports the server
+  packages under Node and Bun and runs the `libo11y` bin. The consumer
+  then bundles every entry point of `@libo11y/web` and `@libo11y/webext`
+  with `bun build --target=browser` through
+  `scripts/ts-browser-bundle-check.sh`, which fails when the module graph
+  holds a Node builtin or a Bun polyfill for one. Like `RELEASE_VERSION`,
   `TS_RELEASE_VERSION` moves only in a release commit, together with the
   package versions.
 - To release TypeScript version X.Y.Z:
@@ -151,9 +155,12 @@ builds, checks the API reports, and runs every suite under Bun and Node.
   order with `npm publish --provenance` from a pinned npm 11.21.2,
   skipping a version the registry already has. A prerelease version
   publishes under the `next` dist-tag. A smoke job waits up to ten
-  minutes for the registry to serve the new versions, installs `@libo11y/server` and `@libo11y/test`
+  minutes for the registry to serve the new version of every package
+  under `ts/packages`. It installs `@libo11y/server` and `@libo11y/test`
   into fresh projects under Node and Bun, and runs the `libo11y` bin
-  under Node. Only after it passes is the GitHub Release created. The
+  under Node. It installs `@libo11y/web` and `@libo11y/webext` into
+  another fresh project and runs the same bundle check on them. Only
+  after it passes is the GitHub Release created. The
   release is titled `@libo11y vX.Y.Z`, takes its notes from
   `ts/CHANGELOG.md`, and is never marked Latest, so the Go main module
   keeps Latest. Publishing authenticates with npm trusted publishing
@@ -216,8 +223,10 @@ install that version locally. Keep the two in step when adding a gate.
 | `make test` | `go test -race` on every Go module (`GO_TEST_P` sets package parallelism), including the `testing/slogtest` handler contract, the OTLP wire tests, and the generator's golden test |
 | `make tidy-check` | each module's `go.mod` and `go.sum` tidy on its own (`GOWORK=off`) |
 | `make spec-check`, `make spec-drift` | registry policy checks and generated-artifact drift |
-| `make ts-check` | the TypeScript workspace: Biome, tsc, the build, the API reports, and every suite under Bun and Node |
-| `make release-check` | the Go release sequence, then packing and a consumer smoke test of the TypeScript packages (needs a clean tree) |
+| `make ts-check` | the TypeScript workspace: Biome, tsc, the build, the API reports, and every unit suite under Bun and Node |
+| `make ts-browser-test` | the `@libo11y/web` and `@libo11y/webext` browser suites under Playwright and headless Chromium. It needs Playwright's Chromium for the pinned version, which CI installs with `bun x --no-install playwright install --with-deps chromium` in `ts/`. CI runs it in the separate `ts-browser` job |
+| `make ts-browser-bundle-test` | `scripts/ts-browser-bundle-check.sh` against fixture packages (needs bun). CI runs it in the `ts` job after `make ts-check` |
+| `make release-check` | the Go release sequence, then packing and a consumer smoke test of the TypeScript packages, including the browser bundle check (needs a clean tree) |
 | `make release-notes-test`, `make release-tag-test` | the release workflow's scripts: changelog sections become release notes, and each release tag routes to its kind, module and version |
 | `make schema-published-test` | the schema URL check against a loopback HTTP server |
 | `make vuln` | `govulncheck` on every Go module; runs last because it depends on the advisory database and the toolchain's patch level |

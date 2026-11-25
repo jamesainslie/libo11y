@@ -147,6 +147,7 @@ export async function setupWithDeps(
   let delivery: Delivery | undefined;
   let endpoints: SignalEndpoints;
   let telemetry: Telemetry;
+  let built: Telemetry | undefined;
   try {
     endpoints = deps.resolveEndpoints(options, options.hermetic === true);
     const transport = deps.createHttpTransport(transportOptions(options, endpoints));
@@ -197,11 +198,14 @@ export async function setupWithDeps(
     telemetry = install
       ? await setupWith(coreOptions, platform)
       : await createTelemetryWith(coreOptions, platform);
+    built = telemetry;
 
     if (doc !== undefined) listeners.push(installFlushOnHide(doc, win, () => telemetry.forceFlush()));
   } catch (err) {
     const d = delivery;
-    await cleanup([...listeners, () => d?.shutdown(), () => queue?.close()]);
+    const t = built;
+    // Core first, so a failure after setupWith also releases its globals and ALREADY_SETUP guard.
+    await cleanup([() => t?.shutdown(), ...listeners, () => d?.shutdown(), () => queue?.close()]);
     throw err;
   }
 

@@ -153,11 +153,47 @@ export function serverAttributes(url: URL): Attributes {
   return { "server.address": host, "server.port": port };
 }
 
-/** server.address, server.port and url.full (credentials removed) of a request URL. */
+// The query keys whose values semconv says url.full SHOULD redact by default (presigned URLs).
+const REDACTED_QUERY_KEYS: ReadonlySet<string> = new Set([
+  "AWSAccessKeyId",
+  "Signature",
+  "sig",
+  "X-Goog-Signature",
+]);
+
+/** search with the value of each REDACTED_QUERY_KEYS parameter replaced by REDACTED, the rest as is. */
+function redactQuery(search: string): string {
+  if (search.length <= 1) return search;
+  const parts = search.slice(1).split("&");
+  let changed = false;
+  for (const [i, part] of parts.entries()) {
+    const eq = part.indexOf("=");
+    if (eq < 0) continue;
+    let key: string;
+    try {
+      key = decodeURIComponent(part.slice(0, eq).replaceAll("+", " "));
+    } catch {
+      continue;
+    }
+    if (REDACTED_QUERY_KEYS.has(key)) {
+      parts[i] = `${part.slice(0, eq)}=REDACTED`;
+      changed = true;
+    }
+  }
+  return changed ? `?${parts.join("&")}` : search;
+}
+
+/**
+ * server.address, server.port and url.full of a request URL: credentials removed, and the values
+ * of the presigned-URL query keys semconv names (AWSAccessKeyId, Signature, sig, X-Goog-Signature)
+ * replaced by REDACTED.
+ */
 export function urlAttributes(url: URL): Attributes {
   const full = new URL(url);
   full.username = "";
   full.password = "";
+  const search = redactQuery(full.search);
+  if (search !== full.search) full.search = search;
   return { ...serverAttributes(url), "url.full": full.href };
 }
 
@@ -188,6 +224,24 @@ export function callOnStart(
   } catch (err) {
     diag.warn(`libo11y: ${request.kind} instrumentation: onStart threw, ignored: ${String(err)}`);
   }
+}
+
+/**
+ * Whether url is an HTTP request: http: or https:. data:, blob:, about: and extension URLs never
+ * reach the network, and a data: URL's url.full would carry its whole payload.
+ */
+export function isHttpUrl(url: URL): boolean {
+  return url.protocol === "http:" || url.protocol === "https:";
+}
+
+/**
+ * input as a Request: one of this realm (instanceof), or one from another realm such as an iframe,
+ * which fetch also takes as a Request and which carries the Request brand as its toStringTag.
+ */
+export function asRequest(input: unknown): Request | undefined {
+  if (typeof input !== "object" || input === null) return undefined;
+  if (typeof Request === "function" && input instanceof Request) return input;
+  return Object.prototype.toString.call(input) === "[object Request]" ? (input as Request) : undefined;
 }
 
 /** The absolute URL of a request, resolved against base; undefined when it cannot be parsed. */

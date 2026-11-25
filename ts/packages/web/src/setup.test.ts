@@ -580,3 +580,24 @@ test("platform name is web and the exporters come from the delivery", async () =
     await web.shutdown();
   }
 });
+
+test("a failure after core set up shuts core down too, so the next setup is not ALREADY_SETUP", async () => {
+  // A document whose visibilitychange listener cannot be added fails setup after setupWith.
+  class RefusingDocument extends FakeDocument {
+    override addEventListener(...args: Parameters<EventTarget["addEventListener"]>): void {
+      if (args[0] === "visibilitychange") throw new Error("no listeners here");
+      super.addEventListener(...args);
+    }
+  }
+  const h = harness({ document: new RefusingDocument() });
+  const log: string[] = [];
+  await assert.rejects(
+    setupWithDeps({ ...BASE, spanProcessor: loggingProcessor(log) }, h.deps, true),
+    /no listeners here/,
+  );
+  assert.ok(log.includes("providers.shutdown"), "core's providers are shut down");
+  assert.ok(h.log.includes("delivery.shutdown"));
+  assert.ok(h.log.includes("queue.close"));
+  const next = await setupWithDeps(BASE, harness().deps, true);
+  await next.shutdown();
+});

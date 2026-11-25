@@ -361,3 +361,64 @@ test("uninstall restores the prototype, a second install is a no-op, and no XMLH
     none();
   });
 });
+
+test("after uninstall a patch still reached through a later wrapper passes straight through", async () => {
+  await withXhr(({ rec, install }) => {
+    const uninstall = install();
+    // Another library (zone.js, say) wraps open and send after us, so uninstall cannot restore them.
+    const ours = { open: FakeXhr.prototype.open, send: FakeXhr.prototype.send };
+    FakeXhr.prototype.open = function (this: FakeXhr, ...args: unknown[]) {
+      return Reflect.apply(ours.open, this, args);
+    } as typeof FakeXhr.prototype.open;
+    FakeXhr.prototype.send = function (this: FakeXhr, ...args: unknown[]) {
+      return Reflect.apply(ours.send, this, args);
+    } as typeof FakeXhr.prototype.send;
+    uninstall();
+    const xhr = new FakeXhr();
+    xhr.open("GET", "/after-uninstall");
+    xhr.send();
+    xhr.respond(200);
+    assert.equal(clientSpans(rec).length, 0, "an uninstalled patch records nothing");
+    assert.equal(xhr.header("traceparent"), undefined, "and injects nothing");
+
+    install();
+    const again = new FakeXhr();
+    again.open("GET", "/reinstalled");
+    again.send();
+    again.respond(200);
+    assert.equal(clientSpans(rec).length, 1, "a reinstall under the wrapper records one span, not two");
+  });
+});
+
+test("data:, blob: and other non-HTTP URLs get no span and no context", async () => {
+  await withXhr(({ rec, install }) => {
+    install({ propagateTo: [/.*/] });
+    for (const url of ["data:text/plain,secret", "blob:https://app.example.com/0b5c2a52", "about:blank"]) {
+      const xhr = new FakeXhr();
+      xhr.open("GET", url);
+      xhr.send();
+      xhr.respond(200);
+      assert.equal(xhr.header("traceparent"), undefined, url);
+    }
+    assert.equal(clientSpans(rec).length, 0);
+  });
+});
+
+test("a send the XHR refuses (in flight, or done without a reopen) records no span of its own", async () => {
+  await withXhr(({ rec, install }) => {
+    install();
+    const xhr = new FakeXhr();
+    xhr.open("GET", "/first");
+    xhr.send();
+    assert.throws(() => xhr.send(), { name: "InvalidStateError" });
+    assert.equal(clientSpans(rec).length, 0, "the refused send starts no span");
+    xhr.open("GET", "/second");
+    assert.equal(clientSpans(rec).length, 1, "reopening still ends the request in flight");
+    assert.equal(clientSpans(rec)[0]?.attributes["url.full"], "https://app.example.com/first");
+    assert.equal(clientSpans(rec)[0]?.attributes["error.type"], "abort");
+    xhr.send();
+    xhr.respond(200);
+    assert.throws(() => xhr.send(), { name: "InvalidStateError" });
+    assert.equal(clientSpans(rec).length, 2, "a send after loadend without a reopen starts no span");
+  });
+});

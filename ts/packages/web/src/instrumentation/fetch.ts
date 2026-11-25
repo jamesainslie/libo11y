@@ -5,11 +5,13 @@ import { type Attributes, context, ROOT_CONTEXT, SpanKind, SpanStatusCode, trace
 import type { HttpInstrumentationOptions } from "../options.ts";
 import {
   asException,
+  asRequest,
   callOnStart,
   consentAllows,
   errorName,
   HEADERS_SETTER,
   instrumentResolver,
+  isHttpUrl,
   methodAttributes,
   normalizeMethod,
   pageHref,
@@ -26,8 +28,9 @@ import { isIgnored, shouldPropagate } from "./origins.ts";
  * server's instrumentFetch does (name, attributes, http.client.request.duration with the span's
  * exemplar, status handling, never mutating the caller's Request or init). Differences: traceparent,
  * tracestate and baggage are injected only when shouldPropagate(url, opts.propagateTo) is true; an
- * ignored URL or a closed consent (state() !== "granted") gets no span and no injection; onStart is
- * called after the span starts.
+ * ignored URL, a URL that is not http: or https: (data:, blob:, ...) or a closed consent
+ * (state() !== "granted") gets no span and no injection; a Request from another realm, such as an
+ * iframe, is read as a Request; onStart is called after the span starts.
  */
 export function instrumentFetch(
   fetchImpl: typeof fetch = globalThis.fetch,
@@ -39,9 +42,9 @@ export function instrumentFetch(
   const ignoreUrls = opts.ignoreUrls ?? [];
 
   const traced = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
-    const request = typeof Request === "function" && input instanceof Request ? input : undefined;
+    const request = asRequest(input);
     const url = requestUrl(request?.url ?? (input as string | URL), pageHref());
-    if (url === undefined || isIgnored(url, ignoreUrls)) return base(input, init);
+    if (url === undefined || !isHttpUrl(url) || isIgnored(url, ignoreUrls)) return base(input, init);
     const { tracer, histogram, propagator, consent } = instruments();
     if (!consentAllows(consent)) return base(input, init);
 
@@ -107,16 +110,20 @@ let installed: typeof fetch | undefined;
 
 /**
  * Replaces globalThis.fetch with instrumentFetch(globalThis.fetch, opts). Returns a function that
- * restores the previous fetch if globalThis.fetch is still the instrumented one. Installing twice
- * without uninstalling is a no-op that returns a no-op.
+ * restores the previous fetch if globalThis.fetch is still the instrumented one; either way the
+ * instrumented one passes every later call straight to the previous fetch, so a wrapper another
+ * library put over it records nothing more. Installing twice without uninstalling is a no-op that
+ * returns a no-op.
  */
 export function installFetchInstrumentation(opts: HttpInstrumentationOptions = {}): () => void {
   if (installed !== undefined || typeof globalThis.fetch !== "function") return () => {};
   const previous = globalThis.fetch;
-  const patched = instrumentFetch(previous, opts);
+  const traced = instrumentFetch(previous, opts);
+  let done = false;
+  const patched = ((input: string | URL | Request, init?: RequestInit) =>
+    done ? previous(input, init) : traced(input, init)) as typeof fetch;
   installed = patched;
   globalThis.fetch = patched;
-  let done = false;
   return () => {
     if (done) return;
     done = true;
