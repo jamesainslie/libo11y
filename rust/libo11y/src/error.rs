@@ -5,7 +5,11 @@
 //! report the same failure the same way (the TypeScript port keeps them
 //! verbatim too). Match on the [`Error`] variant to tell the failures apart.
 
+use std::io;
+
 use libo11y_spec::go_quote;
+
+use crate::appregistry::{ParseError, Violation};
 
 /// A boxed error from a component libo11y builds on, such as an exporter.
 pub type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
@@ -52,6 +56,54 @@ pub enum Error {
     #[error("o11y: PIIHash requires WithPIIHashKey with a key of at least 32 bytes")]
     PiiHashKey,
 
+    /// An application registry file could not be read.
+    #[error("o11y: reading application registry: {}", go_read_error(path, source))]
+    ReadAppRegistry {
+        /// The file that could not be read.
+        path: String,
+        /// The read error.
+        #[source]
+        source: io::Error,
+    },
+
+    /// An application registry file is not a registry document.
+    #[error("o11y: {path}: {source}")]
+    ParseAppRegistry {
+        /// The registry's file name.
+        path: String,
+        /// Why the file did not decode.
+        #[source]
+        source: ParseError,
+    },
+
+    /// An application registry breaks one or more registry rules. Go's
+    /// `ErrInvalidAppRegistry`, wrapped with every violation.
+    #[error(
+        "o11y: invalid application registry: {path}: {}",
+        violations.iter().map(ToString::to_string).collect::<Vec<_>>().join("; ")
+    )]
+    InvalidAppRegistry {
+        /// The registry's file name.
+        path: String,
+        /// The rules the registry breaks, in the validator's order.
+        violations: Vec<Violation>,
+    },
+
+    /// Two application registries declare the same namespace. Go's
+    /// `ErrInvalidAppRegistry`, wrapped with both file names.
+    #[error(
+        "o11y: invalid application registry: {first} and {second} both declare namespace {}",
+        go_quote(namespace)
+    )]
+    DuplicateAppNamespace {
+        /// The registry that declared the namespace first.
+        first: String,
+        /// The registry that declared it again.
+        second: String,
+        /// The namespace both declare.
+        namespace: String,
+    },
+
     /// Serialized carrier text cannot be restored. Go's `ErrInvalidCarrier`,
     /// wrapped with the reason.
     #[error("o11y: invalid carrier: {detail}")]
@@ -75,6 +127,31 @@ pub enum Error {
     /// The log exporter could not be built.
     #[error("o11y: building log exporter: {0}")]
     BuildingLogExporter(#[source] BoxError),
+}
+
+impl Error {
+    /// Reports whether the error is one Go wraps in `ErrInvalidAppRegistry`:
+    /// a registry that breaks a rule, or two registries that declare one
+    /// namespace. A file that cannot be read or decoded is not, as in Go.
+    #[must_use]
+    pub fn is_invalid_app_registry(&self) -> bool {
+        matches!(
+            self,
+            Self::InvalidAppRegistry { .. } | Self::DuplicateAppNamespace { .. }
+        )
+    }
+}
+
+/// Renders a read error the way Go's `os.ReadFile` reports it, as the
+/// TypeScript port does: the operation, the path, and Go's text for the
+/// common errno values.
+fn go_read_error(path: &str, err: &io::Error) -> String {
+    match err.kind() {
+        io::ErrorKind::NotFound => format!("open {path}: no such file or directory"),
+        io::ErrorKind::PermissionDenied => format!("open {path}: permission denied"),
+        io::ErrorKind::IsADirectory => format!("read {path}: is a directory"),
+        _ => format!("open {path}: {err}"),
+    }
 }
 
 #[cfg(test)]
