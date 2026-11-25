@@ -40,14 +40,25 @@ Zig 0.17.1's package fetcher treats the root of the downloaded archive as the pa
 
 ## Decisions
 
-- **Z-D1. Own pipeline on upstream proto bindings.** libo11y implements tracer, meter, logger, processors, propagators and OTLP transports in Zig. It depends on upstream's `opentelemetry-proto` module and zig-protobuf, each pinned by commit hash.
+- **Z-D1. Own pipeline on upstream proto bindings.** libo11y implements tracer, meter, logger, processors, propagators and OTLP transports in Zig. It depends on upstream's `opentelemetry-proto` module and zig-protobuf, each pinned by commit hash. It uses the bindings for protobuf only, and writes its own OTLP/JSON encoder (see [Amendments after Z0](#amendments-after-z0)).
 - **Z-D2. Zig 0.17.1.** Development machines get it through home-manager with [mitchellh/zig-overlay](https://github.com/mitchellh/zig-overlay). CI installs it with `mlugg/setup-zig`, pinned by commit.
-- **Z-D3. Distribution through a root shim.** The repository root gains `build.zig` and `build.zig.zon`. The manifest's `.paths` lists only those two files and `zig/`, so the package hash covers nothing else. The root manifest declares `zig/` as a `.path` dependency, and the root `build.zig` re-exports its modules. Consumers run `zig fetch --save git+https://github.com/jamesainslie/libo11y#zig/vX.Y.Z`.
+- **Z-D3. Distribution through a root shim.** The repository root gains `build.zig` and `build.zig.zon`. The manifest's `.paths` lists only those two files, `LICENSE` and `zig/` without its tests and fixtures under `zig/test/`, so the package hash covers nothing else. The root manifest declares `zig/` as a `.path` dependency, and the root `build.zig` re-exports its modules. Consumers run `zig fetch --save git+https://github.com/jamesainslie/libo11y#zig/vX.Y.Z`.
 - **Z-D4. Explicit context.** Every libo11y API takes an `o11y.Context` value. The structured logger is the correlated front door. A `std.log` logFn exports every `std.log` record, and it correlates a record with a trace only inside an opt-in per-thread scope from `o11y.bindThread(ctx)`. The documentation states that the scope must not be held across an await under an evented Io.
 - **Z-D5. Explicit environment.** Setup takes the environment map that Zig 0.17 hands to `main`. Hermetic mode is the explicit value `.env = .hermetic`. libo11y never reads the process environment on its own.
 - **Z-D6. Full Go parity.** Everything in `go/v0.2.0` that applies to Zig is in scope, including detached work, child-process propagation, the redact types and the signal-driven shutdown helper.
-- **Z-D7. OTLP over HTTP and gRPC.** HTTP carries protobuf (the default) or JSON. gRPC uses a minimal HTTP/2 client that libo11y owns, because the Zig standard library has no HTTP/2.
+- **Z-D7. OTLP over HTTP and gRPC.** HTTP carries protobuf (the default) or JSON, which libo11y encodes itself because the bindings' JSON is not OTLP/JSON. gRPC uses a minimal HTTP/2 client that libo11y owns, because the Zig standard library has no HTTP/2.
 - **Z-D8. Integrations.** `o11yhttp` wraps `std.http` servers and clients. `o11yhttpz` wraps [http.zig](https://github.com/karlseguin/http.zig). `o11ypg` wraps [pg.zig](https://github.com/karlseguin/pg.zig). `o11ysqlite` wraps [zig-sqlite](https://github.com/vrischmann/zig-sqlite). There is no gRPC server or client instrumentation, because Zig has no mature gRPC library.
+
+## Amendments after Z0
+
+The Z0 spikes changed these points. The lines they affect above are updated in place.
+
+- **Root shim paths.** The root manifest's `.paths` adds `LICENSE`, as the Apache-2.0 license requires for redistribution, and leaves out `zig/test/`, which holds test code and fixtures that consumers do not need.
+- **TLS.** `std.crypto.tls` in 0.17.1 sends no ALPN extension and fails with `error.TlsUnexpectedMessage` when a server requests a client certificate. libo11y depends on [ianic/tls.zig](https://github.com/ianic/tls.zig) at commit `bd22bcb73f423389441a1de80bf031ef1b623cce` for OTLP/HTTP over TLS and gRPC over TLS. That commit builds on 0.17.1 and negotiated `h2` with a client certificate against a Go server. Its connection is not a `std.crypto.tls.Client`, so the OTLP/HTTP exporter speaks HTTP/1.1 over it itself instead of through `std.http.Client`.
+- **Lazy dependencies.** Zig fetches a lazy dependency whenever a build calls `b.lazyDependency`, so a call on every configure fetches it for every consumer. The integration modules `o11yhttpz`, `o11ypg` and `o11ysqlite` are therefore gated by the build options `httpz`, `pg` and `sqlite`, which the root shim forwards. A consumer that asks only for `o11y` fetches none of their libraries.
+- **YAML.** zig-yaml does not build on 0.17.1, and its 0.17 fork classifies 28 of the 46 registry cases even with an unmerged flow-map fix. libo11y has its own strict parser for the registry YAML subset.
+- **OTLP/JSON.** The bindings' JSON is proto3 canonical JSON. It writes ids as base64 and enums as names, and it decodes a hex trace id into the wrong bytes without an error. libo11y writes its own OTLP/JSON encoder, and `o11ytest` its own decoder.
+- **Upstream proto overhead.** Depending on opentelemetry-zig runs its build script, which makes every consumer fetch about 6 MB that libo11y does not use, including a prebuilt protoc binary. Z2 decides between accepting that and vendoring the generated bindings under `zig/src/` with their provenance recorded.
 
 ## Package layout
 
@@ -55,14 +66,14 @@ One Zig package, named `libo11y` in `zig/build.zig.zon`, exports these modules:
 
 | Module | Purpose | Third-party dependencies |
 |---|---|---|
-| `o11y` | The core: setup, configuration, identity, the policy, the three signals, logging, events, exemplars, shutdown, propagation, detached work (`o11y.detached`), child-process carriers (`o11y.proc`), the redact types (`o11y.redact`) and the generated specification (`o11y.spec`) | `opentelemetry-proto`, zig-protobuf, and a YAML parser if Z0 selects one |
+| `o11y` | The core: setup, configuration, identity, the policy, the three signals, logging, events, exemplars, shutdown, propagation, detached work (`o11y.detached`), child-process carriers (`o11y.proc`), the redact types (`o11y.redact`) and the generated specification (`o11y.spec`) | `opentelemetry-proto`, zig-protobuf and [tls.zig](https://github.com/ianic/tls.zig) |
 | `o11ytest` | The hermetic recorder, assertions and the in-process OTLP receivers | none beyond `o11y` |
 | `o11yhttp` | `std.http` server and client instrumentation | none |
-| `o11yhttpz` | http.zig middleware | http.zig, lazy |
-| `o11ypg` | pg.zig instrumentation | pg.zig, lazy |
-| `o11ysqlite` | zig-sqlite instrumentation | zig-sqlite, lazy |
+| `o11yhttpz` | http.zig middleware | http.zig, lazy, behind `-Dhttpz` |
+| `o11ypg` | pg.zig instrumentation | pg.zig, lazy, behind `-Dpg` |
+| `o11ysqlite` | zig-sqlite instrumentation | zig-sqlite, lazy, behind `-Dsqlite` |
 
-A dependency marked lazy is fetched only when a consumer's build asks for the module that needs it. `zig/src/pipeline/` holds the internal SDK and is not public API.
+A dependency marked lazy is fetched only when a consumer's build enables the module that needs it with a build option, for example `b.dependency("libo11y", .{ .httpz = true })`. The root shim declares the same options and forwards them. The option is needed because Zig fetches a lazy dependency whenever `b.lazyDependency` is called, and the shim's re-export needs every module to exist when the build is configured. `zig/src/pipeline/` holds the internal SDK and is not public API.
 
 ```mermaid
 flowchart LR
@@ -107,9 +118,9 @@ An application routes `std.log` into the pipeline with `pub const std_options = 
 
 ### Export
 
-Each signal has one exporter that keeps a persistent connection and dials on the first export. OTLP/HTTP sends protobuf or JSON. Both transports support gzip, per-signal endpoints, headers, timeouts and compression, and TLS with a CA bundle and client certificates from the standard `OTEL_EXPORTER_OTLP_*` variables. Retries use exponential backoff inside the export timeout and the shutdown deadline, and never run on a detached thread. The batch processors run as `io.concurrent` tasks with bounded queues, and a full queue drops the record and counts it.
+Each signal has one exporter that keeps a persistent connection and dials on the first export. OTLP/HTTP sends protobuf or JSON. Both transports support gzip, per-signal endpoints, headers, timeouts and compression, and TLS with a CA bundle and client certificates from the standard `OTEL_EXPORTER_OTLP_*` variables. TLS runs on tls.zig, because `std.crypto.tls` in 0.17.1 has neither ALPN nor client certificates. Retries use exponential backoff inside the export timeout and the shutdown deadline, and never run on a detached thread. The batch processors run as `io.concurrent` tasks with bounded queues, and a full queue drops the record and counts it.
 
-OTLP/gRPC uses a minimal HTTP/2 client. It sends unary calls only, over one reused connection per signal, in cleartext (h2c) or over TLS with ALPN `h2`. It encodes request headers as HPACK literals. It decodes HPACK fully, with Huffman coding and the dynamic table, so it can read `grpc-status` and `grpc-message` from the trailers. Retryable gRPC codes follow the OTLP specification.
+OTLP/gRPC uses a minimal HTTP/2 client. It sends unary calls only, over one reused connection per signal, in cleartext (h2c) or over TLS with ALPN `h2` through tls.zig. It encodes request headers as HPACK literals. It decodes HPACK fully, with Huffman coding and the dynamic table, so it can read `grpc-status` and `grpc-message` from the trailers. Retryable gRPC codes follow the OTLP specification.
 
 ### Shutdown
 
@@ -135,7 +146,7 @@ One key-based policy per SDK reads the generated specification tables and any ap
 
 ### Application registry
 
-`options.app_registry` names a directory and a path. Setup validates the registry with the rules and messages of the Go validator and classifies its keys like specification keys on every signal. Z0 tests [zig-yaml](https://github.com/kubkon/zig-yaml) against the shared registry cases. If zig-yaml cannot produce the parse-error kinds that `conformance/README.md` requires, libo11y gets a strict parser of its own for the subset of YAML the registry schema uses.
+`options.app_registry` names a directory and a path. Setup validates the registry with the rules and messages of the Go validator and classifies its keys like specification keys on every signal. libo11y has a strict parser of its own for the subset of YAML the registry schema uses. It produces the parse-error kinds that `conformance/README.md` requires, with Go-compatible escapes, merge keys with an alias limit, the core tags and error positions. Z0 ruled out [zig-yaml](https://github.com/kubkon/zig-yaml), which does not build on 0.17.1 and whose 0.17 fork classifies only 28 of the 46 registry cases.
 
 ### Events and wide events
 
@@ -177,7 +188,7 @@ Each step gets its own detailed plan, shown to the owner before it is built. Eve
 
 | Step | Contents |
 |---|---|
-| Z0 | The home-manager change for Zig 0.17.1, the CI install, the `zig/` skeleton, the root shim, `make zig-check`, and spikes that prove the proto bindings, zig-yaml, http.zig, pg.zig, zig-sqlite, lazy dependencies through the shim and ALPN in `std.crypto.tls` on 0.17.1 |
+| Z0 | The CI install, the `zig/` skeleton, the root shim, `make zig-check`, and spikes on the proto bindings, zig-yaml, http.zig, pg.zig, zig-sqlite, lazy dependencies through the shim and ALPN in `std.crypto.tls` on 0.17.1. The spikes' results are recorded in [Amendments after Z0](#amendments-after-z0). The home-manager change for Zig 0.17.1 landed separately in the owner's dotfiles |
 | Z1 | The Zig codegen target, the drift gate and the conformance vectors passing in Zig |
 | Z2 | The pipeline: context, ids, samplers, spans and the batch processor, metrics with exemplars, logs, propagators, and OTLP/HTTP |
 | Z2b | OTLP/gRPC over the HTTP/2 client |
@@ -213,8 +224,8 @@ Z0 comes first. Z1 and Z2 can run in parallel after it. Z2b and Z3 follow Z2. Z4
 ## Risks
 
 - **Zig churn.** Zig breaks its standard library between minor releases. libo11y pins 0.17.x, and a move to 0.18 is a deliberate change with its own release.
-- **Upstream bindings.** The `opentelemetry-proto` module and zig-protobuf have no tags. libo11y pins both by commit, and Z0 confirms that the generated bindings encode and decode every OTLP message libo11y sends, against payloads from the Go implementation.
+- **Upstream bindings.** The `opentelemetry-proto` module and zig-protobuf have no tags. libo11y pins both by commit. Z0 confirmed that the generated bindings round-trip every OTLP export request libo11y sends and decode requests that protoc encodes.
 - **Third-party integrations.** http.zig and pg.zig declare no minimum Zig version. If either does not build on 0.17.1 in Z0, its integration waits for an upstream fix and the owner decides whether to ship `zig/v0.1.0` without it.
 - **HTTP/2.** The gRPC client is the largest new component. Its scope stays at unary calls, and the fuzz targets and the in-process receiver test it.
-- **TLS.** If `std.crypto.tls` in 0.17.1 lacks client certificates or ALPN, Z0 reports the gap and the owner decides between documenting it and adding the missing piece.
+- **TLS.** `std.crypto.tls` in 0.17.1 lacks ALPN and client certificates. The owner chose to depend on tls.zig, pinned by commit, for OTLP/HTTP over TLS and gRPC over TLS. A move to Zig 0.18 then waits for its port too.
 - **Evented Io.** A `bindThread` scope held across an await under an evented Io attaches the wrong trace to `std.log` records. The structured logger has no such risk, and the README states the rule.
