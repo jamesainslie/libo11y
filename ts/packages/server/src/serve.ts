@@ -23,7 +23,7 @@ import {
   type Context,
   context,
   createContextKey,
-  diag,
+  type Histogram,
   isSpanContextValid,
   ROOT_CONTEXT,
   type Span,
@@ -36,10 +36,12 @@ import { matchesAny } from "./glob.ts";
 import {
   asException,
   errorConstructorName,
+  errorMessage,
   HEADERS_GETTER,
   instrumentResolver,
   methodName,
   normalizeMethod,
+  reportError,
   schemeOf,
   serverAttributes,
 } from "./http-common.ts";
@@ -52,6 +54,8 @@ export interface ServeOptions {
    * Resolves the route template of a request, such as "/projects/:id", for the span name,
    * http.route and the metric. A template that starts with a method and a space ("GET /x") names
    * the span verbatim, as a Go ServeMux pattern does. Without a route the span is named by method.
+   * A function that throws leaves the request unrouted, and is reported to the error handler by the
+   * class of what it threw, never with its message, which can quote the URL.
    */
   readonly route?: (req: Request) => string | undefined;
   /**
@@ -87,10 +91,26 @@ export interface ServeOptions {
    *
    * The default watches responses whose content type is text/html or text/event-stream, compared
    * case-insensitively without parameters: pages that stream as they render, and event streams.
-   * A predicate that throws watches nothing. Responses to HEAD requests and with status 101, 204, 205
-   * or 304 are never watched, since they carry no body.
+   * A predicate that throws watches nothing, and is reported to the error handler by the class of
+   * what it threw. Responses to HEAD requests and with status 101, 204, 205 or 304 are never
+   * watched, since they carry no body.
    */
   readonly watchBody?: (res: Response) => boolean;
+}
+
+/** What one request's telemetry needs once its span has started. */
+interface Begun {
+  readonly span: Span;
+  readonly histogram: Histogram;
+  readonly method: string;
+  readonly original: string | undefined;
+  readonly scheme: string;
+  /** The route ServeOptions.route resolved, without a leading method. */
+  readonly startRoute: string | undefined;
+  readonly routeSlot: RouteSlot;
+  /** The context the handler runs in, which is also the one the end is reported in. */
+  readonly handlerContext: Context;
+  readonly record: WideRecord | undefined;
 }
 
 /** How a request ended, for the span, the metric and the summary. */
@@ -108,6 +128,11 @@ interface Outcome {
  * is passed through a wrapper that ends the span when the body finishes; that wrapper is a stream,
  * so a body of known length is sent chunked. Any other response ends the span when the handler
  * returns and is passed on untouched.
+ *
+ * The telemetry never fails the request. A propagator that throws on extract leaves the request
+ * without the inbound context, a span that cannot start leaves it uninstrumented, and a span that
+ * cannot end changes nothing the caller sees. Each is reported to the error handler, and the handler
+ * runs exactly once either way. Only the handler's own error reaches the caller.
  */
 export function instrumentServe<A extends unknown[]>(
   handler: (req: Request, ...rest: A) => Response | Promise<Response>,
@@ -124,30 +149,46 @@ export function instrumentServe<A extends unknown[]>(
     try {
       return watch(res);
     } catch (err) {
-      diag.warn(`libo11y: instrumentServe: watchBody threw, the body is not watched: ${errorMessage(err)}`);
+      // By class only, as every report is: the predicate is handed the response, and its error
+      // can quote a header.
+      reportError(
+        opts.telemetry,
+        "instrumentServe: the watchBody option failed, the body is not watched",
+        err,
+      );
       return false;
     }
   };
   const summaryTelemetry = opts.canonicalLine === true ? opts.telemetry : undefined;
 
-  return async (req: Request, ...rest: A): Promise<Response> => {
+  // begin extracts the inbound context and starts the server span, or returns undefined for an
+  // ignored path. Whatever it throws comes from the telemetry, never from the handler.
+  const begin = (req: Request): Begun | undefined => {
     const url = new URL(req.url);
-    if (ignore.length > 0 && matchesAny(ignore, decodedPath(url.pathname))) return handler(req, ...rest);
-
-    const start = performance.now();
+    if (ignore.length > 0 && matchesAny(ignore, decodedPath(url.pathname))) return undefined;
     const { tracer, histogram, propagator } = instruments();
     const { method, original } = normalizeMethod(req.method);
     let resolved: string | undefined;
     try {
       resolved = opts.route?.(req);
     } catch (err) {
-      diag.warn(`libo11y: instrumentServe: route threw, the request is unrouted: ${errorMessage(err)}`);
+      // By class only: the function is handed the request, and its error can quote the URL.
+      reportError(opts.telemetry, "instrumentServe: the route option failed, the request is unrouted", err);
     }
     const route = resolved === "" ? undefined : resolved;
     const startRoute = route === undefined ? undefined : routeOnly(route);
     const scheme = schemeOf(url);
 
-    const extracted = propagator.extract(context.active(), req.headers, HEADERS_GETTER);
+    let extracted = context.active();
+    try {
+      extracted = propagator.extract(extracted, req.headers, HEADERS_GETTER);
+    } catch (err) {
+      reportError(
+        opts.telemetry,
+        "instrumentServe: extracting the inbound context failed, it is ignored",
+        err,
+      );
+    }
     const attributes: Attributes = {
       "http.request.method": method,
       ...(original === undefined ? {} : { "http.request.method_original": original }),
@@ -173,6 +214,58 @@ export function instrumentServe<A extends unknown[]>(
     if (summaryTelemetry !== undefined) {
       ({ context: handlerContext, record } = startRecord(handlerContext));
     }
+    return { span, histogram, method, original, scheme, startRoute, routeSlot, handlerContext, record };
+  };
+
+  // respond ends the request, or arranges for the response body to end it, and returns the response
+  // to send.
+  const respond = (req: Request, res: Response, span: Span, finish: (outcome: Outcome) => void): Response => {
+    // Headers first: Bun fills in the implicit content-type of a Blob, Bun.file, FormData or
+    // URLSearchParams body only when headers is read before body or bodyUsed.
+    const resHeaders = res.headers;
+    const status = res.status;
+    const timing =
+      opts.serverTiming === true && isHtml(resHeaders.get("content-type")) ? serverTiming(span) : undefined;
+    // A HEAD response or a bodiless status sends no body, and Bun neither reads nor cancels one it was
+    // given. An unwatched body is sent as it is, keeping its length and Bun's sendfile path. Either
+    // way the request ends now and the response goes out as the handler returned it.
+    if (
+      req.method.toUpperCase() === "HEAD" ||
+      BODILESS_STATUSES.has(status) ||
+      !shouldWatch(res) ||
+      res.bodyUsed ||
+      res.body === null
+    ) {
+      finish({ status });
+      return timing === undefined ? res : withServerTiming(res, resHeaders, timing);
+    }
+    let headers = resHeaders;
+    if (timing !== undefined) {
+      headers = new Headers(resHeaders);
+      headers.append("server-timing", timing);
+    }
+    const body = watchBody(res.body, (failure) =>
+      finish(failure === undefined ? { status } : { status, failure }),
+    );
+    return rebuild(res, body, headers);
+  };
+
+  return async (req: Request, ...rest: A): Promise<Response> => {
+    const start = performance.now();
+    let begun: Begun | undefined;
+    try {
+      begun = begin(req);
+    } catch (err) {
+      reportError(
+        opts.telemetry,
+        "instrumentServe: starting the request's telemetry failed, the request is not instrumented",
+        err,
+      );
+    }
+    // An ignored path, or telemetry that could not start: the handler runs as if unwrapped.
+    if (begun === undefined) return handler(req, ...rest);
+    const { span, histogram, method, original, scheme, startRoute, routeSlot, handlerContext, record } =
+      begun;
     // The context the end is reported in, captured now: the body may finish where none is active.
     const spanContext = handlerContext;
 
@@ -232,7 +325,7 @@ export function instrumentServe<A extends unknown[]>(
       try {
         end(outcome);
       } catch (err) {
-        diag.error(`libo11y: instrumentServe: ending the request threw: ${errorMessage(err)}`);
+        reportError(opts.telemetry, "instrumentServe: ending the request's telemetry failed", err);
       }
     };
 
@@ -249,36 +342,30 @@ export function instrumentServe<A extends unknown[]>(
       finish({ status: 101 });
       return res;
     }
-
-    // Headers first: Bun fills in the implicit content-type of a Blob, Bun.file, FormData or
-    // URLSearchParams body only when headers is read before body or bodyUsed.
-    const resHeaders = res.headers;
-    const status = res.status;
-    const timing =
-      opts.serverTiming === true && isHtml(resHeaders.get("content-type")) ? serverTiming(span) : undefined;
-    // A HEAD response or a bodiless status sends no body, and Bun neither reads nor cancels one it was
-    // given. An unwatched body is sent as it is, keeping its length and Bun's sendfile path. Either
-    // way the request ends now and the response goes out as the handler returned it.
-    if (
-      req.method.toUpperCase() === "HEAD" ||
-      BODILESS_STATUSES.has(status) ||
-      !shouldWatch(res) ||
-      res.bodyUsed ||
-      res.body === null
-    ) {
-      finish({ status });
-      return timing === undefined ? res : withServerTiming(res, resHeaders, timing);
+    try {
+      return respond(req, res, span, finish);
+    } catch (err) {
+      // Nothing of the handler's runs in respond, so this is the telemetry failing on a response it
+      // could not read, such as a value that is not a Response. The caller gets what the handler made.
+      reportError(
+        opts.telemetry,
+        "instrumentServe: reading the response failed, it is returned as the handler made it",
+        err,
+      );
+      finish({ status: statusOf(res) });
+      return res;
     }
-    let headers = resHeaders;
-    if (timing !== undefined) {
-      headers = new Headers(resHeaders);
-      headers.append("server-timing", timing);
-    }
-    const body = watchBody(res.body, (failure) =>
-      finish(failure === undefined ? { status } : { status, failure }),
-    );
-    return rebuild(res, body, headers);
   };
+}
+
+/** The status of whatever a handler resolved with, or 500 when it has none to read. */
+function statusOf(res: unknown): number {
+  try {
+    const status = (res as { status?: unknown } | null | undefined)?.status;
+    return typeof status === "number" ? status : 500;
+  } catch {
+    return 500;
+  }
 }
 
 // The statuses whose responses never carry a body: 101 has none, and the Fetch standard calls
@@ -355,10 +442,6 @@ function serverTiming(span: Span): string {
   const sc = span.spanContext();
   const flags = (sc.traceFlags & 0xff).toString(16).padStart(2, "0");
   return `traceparent;desc="00-${sc.traceId}-${sc.spanId}-${flags}"`;
-}
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }
 
 // rebuild makes a new Response: upstream responses, such as fetch's, have immutable headers.

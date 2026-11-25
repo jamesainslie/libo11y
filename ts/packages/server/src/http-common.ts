@@ -1,7 +1,8 @@
 /**
  * What instrumentServe and instrumentFetch share: the semantic-convention method set and its
  * normalization (Go o11yhttp's normalizeMethod), the duration histograms, the Headers carrier, URL
- * attributes, and resolving the tracer, meter and propagator from a Telemetry or the globals.
+ * attributes, resolving the tracer, meter and propagator from a Telemetry or the globals, and
+ * reporting a failure of the instrumentation itself.
  */
 import type { Telemetry } from "@libo11y/core";
 import {
@@ -17,6 +18,7 @@ import {
   type TracerProvider,
   trace,
 } from "@opentelemetry/api";
+import { globalErrorHandler } from "@opentelemetry/core";
 import { VERSION } from "./version.ts";
 
 /** The instrumentation scope of the HTTP spans and metrics. */
@@ -84,6 +86,68 @@ export function schemeOf(url: URL): string {
 /** The error.type of a thrown value: its constructor name for an Error, else "_OTHER". */
 export function errorConstructorName(err: unknown): string {
   return err instanceof Error ? err.constructor.name : METHOD_OTHER;
+}
+
+/** The message of a thrown value. It never throws, whatever was thrown. */
+export function errorMessage(err: unknown): string {
+  try {
+    return err instanceof Error ? err.message : String(err);
+  } catch {
+    return "unknown error";
+  }
+}
+
+const CLASS_NAME = /^[A-Za-z_$][\w$]{0,63}$/;
+
+/**
+ * The class of a thrown value, for a report: its constructor's name when that reads as a class
+ * name, "Error" for any other error, and the value's type for anything that is not an object. It
+ * never throws and never returns the value's own text.
+ */
+export function errorClass(thrown: unknown): string {
+  try {
+    if (thrown === null) return "null";
+    if (typeof thrown !== "object") return typeof thrown;
+    const name: unknown = (thrown as { constructor?: { name?: unknown } }).constructor?.name;
+    if (typeof name === "string" && CLASS_NAME.test(name)) return name;
+    return thrown instanceof Error ? "Error" : "object";
+  } catch {
+    return "unknown";
+  }
+}
+
+/**
+ * The key under which a telemetry handle from @libo11y/core carries its reporter: a function that
+ * writes one error through the handle's own rate-limited handler. A registered symbol, so it is
+ * found without importing core's internals, and on a handle made by another copy of core.
+ */
+const REPORT_KEY = Symbol.for("libo11y.report");
+
+/**
+ * Reports a failure of the instrumentation itself, which must never reach the request it wraps:
+ * a propagator that throws, a span that cannot start or end. It never throws.
+ *
+ * The report is an Error whose message is "o11y: <what>: <class of what was thrown>", with what
+ * was thrown on its cause. The message of what was thrown is left out: a propagator is handed the
+ * request's headers, and its error can quote them.
+ *
+ * With a telemetry the report goes through that handle's own handler, so it is written for a
+ * createTelemetry handle too, which installs nothing globally. Without one, or with something that
+ * is not a core handle, it goes to the OpenTelemetry global error handler, which setup makes
+ * libo11y's rate-limited one.
+ */
+export function reportError(telemetry: Telemetry | undefined, what: string, err: unknown): void {
+  const report = new Error(`o11y: ${what}: ${errorClass(err)}`, { cause: err });
+  try {
+    const own: unknown = (telemetry as { [REPORT_KEY]?: unknown } | undefined)?.[REPORT_KEY];
+    if (typeof own === "function") {
+      own.call(telemetry, report);
+      return;
+    }
+  } catch {
+    // A handle whose reporter fails leaves the global handler.
+  }
+  globalErrorHandler(report);
 }
 
 /** A thrown value as a span exception, for recordException. */

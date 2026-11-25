@@ -4,10 +4,12 @@
  */
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { createHmac } from "node:crypto";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { O11yError } from "@libo11y/core";
 import { type OtlpSink, startOtlpSink } from "@libo11y/test";
-import { createTelemetry } from "./setup.ts";
+import { createTelemetry, setup } from "./setup.ts";
 import { clearedOtelEnv } from "./test-support/env.ts";
 
 const IS_BUN = "Bun" in globalThis;
@@ -156,6 +158,81 @@ test("createTelemetry builds on the server platform without the canary or any gl
   try {
     assert.equal(telemetry.resource.attributes["process.runtime.name"], IS_BUN ? "bun" : "nodejs");
     assert.equal(telemetry.resource.attributes["service.name"], "create-test");
+  } finally {
+    await telemetry.shutdown();
+  }
+});
+
+// Third review: an option outside its closed set fails setup and createTelemetry with a typed
+// error, where it used to be accepted in silence.
+test("setup and createTelemetry reject an option value outside its closed set with INVALID_OPTION", async () => {
+  const base = { serviceName: "options-test", environment: "test", hermetic: true } as const;
+  for (const [options, message] of [
+    [
+      { logLevel: "verbose" },
+      'o11y: invalid option logLevel: "verbose" (allowed: trace, debug, info, warn, error, fatal)',
+    ],
+    [{ console: "pretty" }, 'o11y: invalid option console: "pretty" (allowed: json, text, false)'],
+    [{ piiMode: "bogus" }, 'o11y: invalid option piiMode: "bogus" (allowed: drop, hash, allow)'],
+    [
+      { exemplarFilter: "sometimes" },
+      'o11y: invalid option exemplarFilter: "sometimes" (allowed: trace_based, always_on, always_off)',
+    ],
+    [{ runtimeMetrics: "false" }, 'o11y: invalid option runtimeMetrics: "false" (allowed: true, false)'],
+  ] as const) {
+    const refused = (err: unknown): boolean => {
+      assert.ok(err instanceof O11yError, String(err));
+      assert.equal(err.code, "INVALID_OPTION");
+      assert.equal(err.message, message);
+      return true;
+    };
+    await assert.rejects(createTelemetry({ ...base, ...options } as never), refused);
+    await assert.rejects(setup({ ...base, ...options } as never), refused);
+  }
+  // Every refusal gave the setup guard back: a valid setup still works.
+  const telemetry = await setup({ ...base, console: false, runtimeMetrics: false });
+  await telemetry.shutdown();
+});
+
+// Fourth review, security: a key read from an environment variable is a string. It used to be
+// accepted, and every token was then HMAC-SHA256 under the empty key. On this platform the HMAC is
+// node:crypto's, which would take a string as a key, so the refusal has to come before it.
+test("setup and createTelemetry reject a PII hash key that is a string and accept the bytes it decodes to", async () => {
+  const base = {
+    serviceName: "key-test",
+    environment: "test",
+    hermetic: true,
+    console: false,
+    runtimeMetrics: false,
+  } as const;
+  const hex = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+  const refused = (err: unknown): boolean => {
+    assert.ok(err instanceof O11yError, String(err));
+    assert.equal(err.code, "PII_HASH_KEY");
+    assert.equal(
+      err.message,
+      "o11y: piiHashKey must be bytes: pass a Uint8Array of at least 32 bytes, not a string (decode a hex or base64 secret into bytes first)",
+    );
+    return true;
+  };
+  for (const mode of [{ piiMode: "hash" }, { piiMode: "drop" }, { piiMode: "allow" }, {}]) {
+    await assert.rejects(createTelemetry({ ...base, ...mode, piiHashKey: hex } as never), refused);
+    await assert.rejects(setup({ ...base, ...mode, piiHashKey: hex } as never), refused);
+  }
+
+  const key = Buffer.from(hex, "hex");
+  const want = (k: string | Uint8Array): string =>
+    `hmac-sha256:${createHmac("sha256", k).update("10.1.2.3").digest("hex").slice(0, 32)}`;
+  // Every refusal gave the setup guard back: setup with the decoded bytes works, and keys the token.
+  const telemetry = await setup({
+    ...base,
+    piiMode: "hash",
+    piiHashKey: key,
+    resourceAttributes: { "host.ip": "10.1.2.3" },
+  });
+  try {
+    assert.equal(telemetry.resource.attributes["host.ip"], want(key));
+    assert.notEqual(telemetry.resource.attributes["host.ip"], want(""), "not the empty key's token");
   } finally {
     await telemetry.shutdown();
   }
