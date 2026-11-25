@@ -1,0 +1,30 @@
+[package]
+name = "libo11y-redact"
+description = "Capture-time redaction for libo11y: Secret and Masked wrappers and the Redact trait, so sensitive values render protected on every Debug, Display, serde and tracing surface."
+readme = "README.md"
+keywords = ["observability", "redaction", "secrets", "logging", "libo11y"]
+categories = ["development-tools::debugging", "value-formatting"]
+include = ["src/**/*.rs", "README.md", "LICENSE"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[features]
+default = ["serde"]
+# serde::Serialize for Secret, Masked, Protected and every derived type,
+# rendering the protected form.
+serde = ["dep:serde"]
+
+[dependencies]
+serde = { workspace = true, optional = true }
+
+[dev-dependencies]
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true
