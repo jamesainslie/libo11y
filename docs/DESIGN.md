@@ -21,10 +21,16 @@ All three signals are first-class and OTLP-native:
   inbound sampling decisions, exemplar linkage into metrics.
 - **Metrics**: OTEL semantic conventions only (for example
   `http.server.request.duration` in seconds). No Prometheus-style
-  `_total`/`_seconds` hand-rolled naming, no registries, no scrape endpoints.
+  `_total`/`_seconds` hand-rolled naming, and no registries or scrape
+  endpoints of libo11y's own. One standard route to a scrape endpoint
+  remains in Go: exporter selection is delegated to OpenTelemetry's
+  autoexport, so `OTEL_METRICS_EXPORTER=prometheus` starts upstream's
+  Prometheus exporter. TypeScript rejects that value.
   Runtime metrics on by default.
 - **Logs**: the language's standard structured-logging facade is the front
   door (Go: `slog`; Rust: `tracing`; Java: SLF4J; Zig: `std.log` wrapping).
+  TypeScript has no such facade, so there the front door is the libo11y
+  logger, and an option routes `console` calls into it.
   Records flow to both a console stream and the OTLP pipeline, both carrying
   the active trace and span identifiers.
 
@@ -35,7 +41,8 @@ Logs read it at emission, spans carry it natively, and outgoing requests
 inject it as W3C `traceparent`/`tracestate`. Implementations must not maintain
 parallel trace-ID state, and propagation helpers must not depend on process
 globals: extraction and injection behave identically whether or not global
-propagators are installed.
+propagators are installed. The released libraries do not meet this rule
+everywhere yet, and [PARITY.md](PARITY.md) lists where.
 
 ## Three-way reconciliation (logs, traces, metrics)
 
@@ -100,20 +107,26 @@ ever classifies, observes, and counts.
 
 An implementation MUST refuse to start telemetry without a usable
 `service.name` and a valid `deployment.environment.name`, and MUST derive
-`service.instance.id` when absent. The full tiered taxonomy and the
-SDK-versus-collector division of labor are normative in the specification.
+`service.instance.id` when absent. The one exception is the migration
+switch the specification allows (section 2), which an application sets in
+code and which counts each unmet requirement instead of refusing. The full
+tiered taxonomy and the SDK-versus-collector division of labor are
+normative in the specification.
 
 ## Configuration
 
 Precedence, strictly: explicit code option, then standard `OTEL_*` environment
-variable, then library default.
+variable, then library default. TypeScript has one exception: the kill
+switch `OTEL_SDK_DISABLED=true` also turns off exporters injected in code.
 
 libo11y honors the standard OpenTelemetry environment surface
 (`OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_EXPORTER_OTLP_*`,
 `OTEL_TRACES_SAMPLER`, `OTEL_{TRACES,METRICS,LOGS}_EXPORTER`, and so on) and
 never invents a parallel variable for anything OTEL already specifies.
 Language implementations delegate env parsing to their OTEL SDK or contrib
-packages rather than reimplementing it.
+packages rather than reimplementing it, where the SDK offers a way to.
+[PARITY.md](PARITY.md) lists the standard variables an implementation does
+not honor yet, such as `OTEL_PROPAGATORS`.
 
 The one exception is explicit and opt-in: a hermetic mode (Go:
 `WithoutOTELEnv`, which the test harness uses) in which no `OTEL_*`
@@ -129,8 +142,10 @@ environment resource.
 Service identity: `service.name` must resolve from option or environment;
 implementations refuse to start production telemetry as `unknown_service`.
 Resources are composed from detectors (host, process, environment) with
-explicit attributes taking highest precedence, under a single pinned semantic
-convention version per release.
+explicit attributes taking highest precedence. libo11y's own attributes and
+generated constants follow a single pinned semantic convention version per
+release. Upstream instrumentation and detectors emit the attributes of the
+semconv release they were built against, which can be newer than the pin.
 
 ## Redaction
 
@@ -140,8 +155,11 @@ Three complementary layers, all language-idiomatic:
    wherever they are logged (Go: `slog.LogValuer`; Rust: derive with
    `Display`-only output; Java: annotation processor or wrapper types).
    Protections: `mask` (same-length X string), `redact` (literal `REDACTED`),
-   `omit` (field absent). Strictest wins through nesting. The spec's
-   vocabulary maps onto them: `confidential` masks and `secret` redacts.
+   `omit` (field absent). Strictest wins through nesting. Two more tag
+   values are accepted as synonyms: `confidential` masks and `secret`
+   redacts. Of the specification's sensitivity classes only `secret` is a
+   tag value. `public`, `internal` and `pii` are not, and an unknown tag
+   fails closed to `redact`.
 2. **Emit-time replacer**: an attribute-replacer hook applied to every log
    record on every sink of the language's logging facade (Go: every slog
    sink; records from other log bridges do not pass through it), as a
@@ -172,22 +190,36 @@ of map-valued span and metric attributes, attributes a span processor
 reads at span start, and baggage are outside the policy; each
 implementation documents these gaps with its per-signal guarantees (see
 [SPEC.md](SPEC.md), section 5). Baggage egress passes through a filter
-seam on every propagator whose default allows every key.
+seam on every propagator. Its predicate allows every key, and no public
+option changes it yet.
 
 ## Testability
 
 Each implementation ships a hermetic test harness built on the OTEL SDK's
-in-memory exporters. The harness never mutates process globals, runs in the
-hermetic mode above so ambient `OTEL_*` configuration does not change its
-behavior, is safe under parallel tests,
+in-memory recorders and readers. The harness never mutates process globals,
+runs in the hermetic mode above so ambient `OTEL_*` configuration does not
+change its behavior, is safe under parallel tests,
 and lets consumers assert emitted spans, metrics, and log records,
 including correlation between them and conformance to the specification,
-in ordinary unit tests.
+in ordinary unit tests. One global is unavoidable in TypeScript:
+OpenTelemetry JS keeps one context manager per process, so the recorder
+installs one when none is registered and removes it when the last recorder
+shuts down.
 
-## Conformance (future)
+## Conformance
 
-Cross-language conformance runs each implementation's example app against a
-shared OTLP capture harness and diffs normalized payloads: resource attributes,
-metric names against the pinned semconv, trace/log identity equality, histogram
-bucket agreement. Golden payloads live under `conformance/` and are regenerated
+Two kinds of cross-language conformance exist, and only the first is built.
+
+Shared cases and vectors live under `conformance/` today. They fix the
+outputs every implementation must reproduce exactly: the application
+registry check, the instance ID derivation, the PII token and endpoint
+sanitizing. The registry cases are hand-written, and Go generates the JSON
+vectors. The TypeScript suite tests against all of them, and so does the
+Go suite on `main`. Those Go tests are not in `go/v0.2.0`.
+
+The OTLP payload corpus is future work. It will run each implementation's
+example app against a shared OTLP capture harness and diff normalized
+payloads: resource attributes, metric names against the pinned semconv,
+trace/log identity equality, histogram bucket agreement. Its golden
+payloads will also live under `conformance/` and be regenerated
 deliberately when the semconv pin moves.
