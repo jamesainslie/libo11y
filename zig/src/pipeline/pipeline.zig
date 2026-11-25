@@ -4,6 +4,7 @@
 
 pub const attribute = @import("attribute.zig");
 pub const baggage = @import("baggage.zig");
+pub const batch = @import("batch.zig");
 pub const deadline = @import("deadline.zig");
 pub const ids = @import("ids.zig");
 pub const propagation = @import("propagation.zig");
