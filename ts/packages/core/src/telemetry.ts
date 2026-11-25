@@ -38,13 +38,14 @@ import { type ResolvedConfig, resolveConfig } from "./config.ts";
 import { captureConsole } from "./console-capture.ts";
 import { ConsoleSink, formatTextLine } from "./console-sink.ts";
 import { alreadySetupError, canaryRejectedError, piiHashKeyError } from "./errors.ts";
-import { emitEvent } from "./events.ts";
+import { emitEvent, eventAttributes } from "./events.ts";
 import { ExemplarStore } from "./exemplars.ts";
+import { gatedLogRecordProcessor, gatedSampler } from "./gate.ts";
 import { buildResource } from "./identity.ts";
 import { seams } from "./internal/seams.ts";
 import { registerExemplarStore } from "./internal/stores.ts";
 import type { LogAttributes } from "./log-values.ts";
-import { CoreLogger, type Logger, LogPipeline } from "./logger.ts";
+import { CoreLogger, forceEmit, type Logger, LogPipeline } from "./logger.ts";
 import { RedactingLogRecordProcessor } from "./logs-processor.ts";
 import { PolicyMeterProvider } from "./metrics.ts";
 import type { TelemetryOptions } from "./options.ts";
@@ -237,6 +238,8 @@ class TelemetryHandle implements Telemetry {
   readonly resource: Resource;
   readonly parts: Parts;
   installed: Installed | undefined;
+  /** Stops waiting for the gate's first open, while the canary's OTLP leg is deferred. */
+  stopDeferredCanary: (() => void) | undefined;
   private shutdownPromise: Promise<SignalReport> | undefined;
 
   constructor(parts: Parts) {
@@ -312,6 +315,12 @@ class TelemetryHandle implements Telemetry {
   }
 
   private async runShutdown(timeoutMillis: number): Promise<SignalReport> {
+    try {
+      this.stopDeferredCanary?.();
+    } catch {
+      // Unsubscribing from the gate is best effort.
+    }
+    this.stopDeferredCanary = undefined;
     try {
       this.parts.restoreConsole?.();
     } catch {
@@ -455,7 +464,7 @@ async function build(options: TelemetryOptions, platform: Platform): Promise<Par
   const violations = new ViolationRecorder(sdkMeterProvider);
   policy = policy.withRecorder(violations);
   for (const [rule, n] of built.violations) violations.add("resource", rule, n);
-  const meterProvider = new PolicyMeterProvider(sdkMeterProvider, policy, exemplars);
+  const meterProvider = new PolicyMeterProvider(sdkMeterProvider, policy, exemplars, platform.gate);
 
   let runtime: RuntimeMetrics | undefined;
   let tracerProvider: TracerProvider | undefined;
@@ -483,7 +492,12 @@ async function build(options: TelemetryOptions, platform: Platform): Promise<Par
         }),
       );
     }
-    tracerProvider = new TracerProvider({ resource, sampler: config.sampler.instance, spanProcessors });
+    // A gate wraps the configured sampler; the summary still names the configured one.
+    const sampler =
+      platform.gate === undefined
+        ? config.sampler.instance
+        : gatedSampler(config.sampler.instance, platform.gate);
+    tracerProvider = new TracerProvider({ resource, sampler, spanProcessors });
 
     if (exporters.logExporter !== undefined || exporters.logProcessor !== undefined) {
       const processors: LogRecordProcessor[] = [new RedactingLogRecordProcessor(policy)];
@@ -493,7 +507,11 @@ async function build(options: TelemetryOptions, platform: Platform): Promise<Par
           new BatchLogRecordProcessor({ exporter: exporters.logExporter, ...config.batch.logs }),
         );
       }
-      loggerProvider = new LoggerProvider({ resource, processors });
+      const gate = platform.gate;
+      loggerProvider = new LoggerProvider({
+        resource,
+        processors: gate === undefined ? processors : processors.map((p) => gatedLogRecordProcessor(p, gate)),
+      });
     }
     const pipeline = new LogPipeline({
       level: config.logLevel,
@@ -503,6 +521,7 @@ async function build(options: TelemetryOptions, platform: Platform): Promise<Par
         ? {}
         : { console: new ConsoleSink(config.console, (line) => platform.writeConsoleLine(line)) }),
       ...(loggerProvider === undefined ? {} : { otlp: loggerProvider.getLogger(CORE_SCOPE, VERSION) }),
+      ...(platform.gate === undefined ? {} : { gate: platform.gate }),
     });
     const logger = new CoreLogger(pipeline);
     if (options.captureConsole === true && platform.console !== undefined) {
@@ -547,6 +566,35 @@ async function build(options: TelemetryOptions, platform: Platform): Promise<Par
   }
 }
 
+// deferCanary sends the canary's OTLP leg on the gate's first open, once, when a closed gate
+// skipped it at setup. The console leg was written at setup, so the deferred record is OTLP only.
+function deferCanary(handle: TelemetryHandle): void {
+  const { parts } = handle;
+  const gate = parts.platform.gate;
+  if (gate === undefined || parts.loggerProvider === undefined || gate.recording()) return;
+  let sent = false;
+  const unsubscribe = gate.subscribe((recording) => {
+    if (!recording || sent) return;
+    sent = true;
+    handle.stopDeferredCanary?.();
+    handle.stopDeferredCanary = undefined;
+    try {
+      parts.pipeline.emit(
+        "info",
+        EVENT_TELEMETRY_CONFIGURED,
+        eventAttributes(EVENT_TELEMETRY_CONFIGURED, parts.summaryAttributes),
+        {
+          ctx: forceEmit(ROOT_CONTEXT),
+          otlpOnly: true,
+        },
+      );
+    } catch {
+      // Not strict: the deferred leg is best effort.
+    }
+  });
+  handle.stopDeferredCanary = unsubscribe;
+}
+
 function takeGuard(): void {
   const g = globalThis as unknown as Record<symbol, unknown>;
   if (g[GUARD] === true) throw alreadySetupError();
@@ -584,6 +632,7 @@ export async function setupWith(options: TelemetryOptions, platform: Platform): 
       releaseGuard();
       throw canaryRejectedError(err);
     }
+    deferCanary(handle);
   }
 
   const handler = rateLimitedErrorHandler(platform);

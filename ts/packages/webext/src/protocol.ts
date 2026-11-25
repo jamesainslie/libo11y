@@ -5,7 +5,7 @@
  * Every libo11y message is a plain JSON object with `libo11y: 1`, so it survives Chrome's JSON
  * serialization of runtime messages and other listeners can tell it apart.
  */
-import type { OtlpSignal } from "@libo11y/web/internal";
+import { OTLP_SIGNALS, type OtlpSignal } from "@libo11y/web/internal";
 
 /** The protocol version every message carries. A listener ignores any other value. */
 export const PROTOCOL_VERSION = 1;
@@ -53,20 +53,49 @@ export interface TracedReply {
 /** Every libo11y message. */
 export type Libo11yMessage = ExportMessage | ExportReply | TracedMessage | TracedReply;
 
+type Fields = Readonly<Record<string, unknown>>;
+
+// libo11y reads m as a libo11y message of the given type: a non-array object with libo11y 1.
+function framed(m: unknown, type: Libo11yMessage["type"]): m is Fields {
+  return (
+    typeof m === "object" &&
+    m !== null &&
+    !Array.isArray(m) &&
+    (m as Fields).libo11y === PROTOCOL_VERSION &&
+    (m as Fields).type === type
+  );
+}
+
+function isCarrier(c: unknown): c is Readonly<Record<string, string>> {
+  return (
+    typeof c === "object" &&
+    c !== null &&
+    !Array.isArray(c) &&
+    Object.values(c).every((v) => typeof v === "string")
+  );
+}
+
 /** True for a well-formed ExportMessage: libo11y 1, a known signal and a string body. */
 export function isExportMessage(m: unknown): m is ExportMessage {
-  void m;
-  throw new Error("not implemented");
+  return (
+    framed(m, "export") &&
+    (OTLP_SIGNALS as readonly unknown[]).includes(m.signal) &&
+    typeof m.body === "string"
+  );
 }
 
 /** True for a well-formed TracedMessage: libo11y 1 and a carrier of string values. */
 export function isTracedMessage(m: unknown): m is TracedMessage {
-  void m;
-  throw new Error("not implemented");
+  return framed(m, "traced") && isCarrier(m.carrier);
 }
 
 /** True for an ExportReply or TracedReply. */
 export function isReply(m: unknown): m is ExportReply | TracedReply {
-  void m;
-  throw new Error("not implemented");
+  if (framed(m, "export-reply")) {
+    return typeof m.ok === "boolean" && (m.reason === undefined || typeof m.reason === "string");
+  }
+  if (framed(m, "traced-reply")) {
+    return typeof m.ok === "boolean" && (m.error === undefined || typeof m.error === "string");
+  }
+  return false;
 }

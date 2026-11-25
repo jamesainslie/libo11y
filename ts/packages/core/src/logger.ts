@@ -24,10 +24,12 @@ import {
   trace,
 } from "@opentelemetry/api";
 import { type ConsoleSink, LEVEL_TEXT } from "./console-sink.ts";
+import { gateOpen } from "./gate.ts";
 import { isError } from "./is-error.ts";
 import type { LogAttributes, LogLevel, LogValue } from "./log-values.ts";
 import { markClassified } from "./logs-processor.ts";
 import type { AttrReplacer } from "./options.ts";
+import type { RecordingGate } from "./platform.ts";
 import type { SensitivityPolicy } from "./policy.ts";
 
 /** The libo11y logger. fatal logs at FATAL and returns; it never exits. */
@@ -173,6 +175,8 @@ export interface LogPipelineOptions {
   readonly console?: ConsoleSink;
   /** The OTLP leg: a logs API Logger from the libo11y LoggerProvider, absent when logs are off. */
   readonly otlp?: LogsApiLogger;
+  /** The platform's recording gate. While it is closed the OTLP leg is skipped; the console still writes. */
+  readonly gate?: RecordingGate;
   /** The clock. Default: new Date(). */
   readonly now?: () => Date;
 }
@@ -189,6 +193,8 @@ export interface EmitOptions {
   readonly strict?: boolean;
   /** Write to the console sink only, as o11y.telemetry.dropped does at shutdown. */
   readonly consoleOnly?: boolean;
+  /** Write to the OTLP leg only, as the deferred startup canary does when the gate first opens. */
+  readonly otlpOnly?: boolean;
 }
 
 /** The fan-out behind every libo11y logger. */
@@ -198,6 +204,7 @@ export class LogPipeline {
   private readonly replacer: AttrReplacer | undefined;
   private readonly console: ConsoleSink | undefined;
   private readonly otlp: LogsApiLogger | undefined;
+  private readonly gate: RecordingGate | undefined;
   private readonly now: () => Date;
 
   constructor(opts: LogPipelineOptions) {
@@ -206,6 +213,7 @@ export class LogPipeline {
     this.replacer = opts.replacer;
     this.console = opts.console;
     this.otlp = opts.otlp;
+    this.gate = opts.gate;
     this.now = opts.now ?? (() => new Date());
   }
 
@@ -225,7 +233,7 @@ export class LogPipeline {
     const time = this.now();
     const failures: unknown[] = [];
 
-    if (this.console !== undefined) {
+    if (this.console !== undefined && opts.otlpOnly !== true) {
       try {
         const sc = trace.getSpanContext(ctx);
         const ids =
@@ -235,7 +243,7 @@ export class LogPipeline {
         failures.push(err);
       }
     }
-    if (this.otlp !== undefined && opts.consoleOnly !== true) {
+    if (this.otlp !== undefined && opts.consoleOnly !== true && gateOpen(this.gate)) {
       try {
         this.otlp.emit({
           timestamp: time,

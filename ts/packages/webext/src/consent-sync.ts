@@ -2,24 +2,79 @@
  * WP5 (webext). One consent state for the whole extension, in chrome.storage.local.
  */
 import type { ConsentController, ConsentState } from "@libo11y/web/internal";
-import type { ChromeLike } from "./chrome.ts";
+import { diag } from "@opentelemetry/api";
+import type { ChromeLike, StorageChangeLike } from "./chrome.ts";
 
 /** The chrome.storage.local key. */
 export const CONSENT_STORAGE_KEY = "libo11y.consent";
 
+function isConsentState(v: unknown): v is ConsentState {
+  return v === "pending" || v === "granted" || v === "denied";
+}
+
 /** The stored state, or undefined when none is stored, storage is unavailable or the value is malformed. */
-export function readStoredConsent(chrome: ChromeLike): Promise<ConsentState | undefined> {
-  void chrome;
-  throw new Error("not implemented");
+export async function readStoredConsent(chrome: ChromeLike): Promise<ConsentState | undefined> {
+  if (chrome.storage === undefined) return undefined;
+  try {
+    const items = await chrome.storage.local.get(CONSENT_STORAGE_KEY);
+    const value = items[CONSENT_STORAGE_KEY];
+    return isConsentState(value) ? value : undefined;
+  } catch (err) {
+    diag.warn("o11y: reading the stored consent", err);
+    return undefined;
+  }
 }
 
 /**
  * Keeps controller and storage in step: every controller change is written, and a storage change
  * from another context is applied with grant() or revoke() when it differs (so a revoke anywhere
  * clears this context's queues). Returns a function that stops syncing.
+ *
+ * A storage change is a signal to re-read the stored state rather than a value to apply, because
+ * storage operations run in order: the echo of an earlier write of this context can arrive after a
+ * later change here, and the re-read then returns the later state. "pending" is never applied,
+ * because consent has no way back to it. The stored state is also read once at the start, to
+ * catch a change between readStoredConsent and this call.
  */
 export function syncConsent(controller: ConsentController, chrome: ChromeLike): () => void {
-  void controller;
-  void chrome;
-  throw new Error("not implemented");
+  const storage = chrome.storage;
+  if (storage === undefined) return () => {};
+  let stopped = false;
+  let applying = false;
+
+  const apply = (stored: ConsentState | undefined): void => {
+    if (stopped || stored === undefined || stored === "pending") return;
+    const consent = controller.consent;
+    if (stored === consent.state()) return;
+    applying = true;
+    try {
+      if (stored === "granted") consent.grant();
+      else void consent.revoke();
+    } finally {
+      applying = false;
+    }
+  };
+  const reconcile = (): void => {
+    void readStoredConsent(chrome).then(apply);
+  };
+
+  const unsubscribe = controller.consent.subscribe((state) => {
+    if (stopped || applying) return;
+    storage.local.set({ [CONSENT_STORAGE_KEY]: state }).catch((err: unknown) => {
+      diag.warn("o11y: storing the consent state", err);
+    });
+  });
+  const onChanged = (changes: Record<string, StorageChangeLike>, areaName: string): void => {
+    if (areaName !== "local" || !Object.hasOwn(changes, CONSENT_STORAGE_KEY)) return;
+    reconcile();
+  };
+  storage.onChanged.addListener(onChanged);
+  reconcile();
+
+  return () => {
+    if (stopped) return;
+    stopped = true;
+    unsubscribe();
+    storage.onChanged.removeListener(onChanged);
+  };
 }

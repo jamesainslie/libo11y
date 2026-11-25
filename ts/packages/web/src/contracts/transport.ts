@@ -34,7 +34,10 @@ export type SendResult =
    * send refused by the keepalive or beacon budget. retryAfterMillis is the parsed Retry-After.
    */
   | { readonly kind: "retry"; readonly reason: string; readonly retryAfterMillis?: number }
-  /** Never worth retrying: any other status, or a body larger than the mode allows. */
+  /**
+   * Never worth retrying: any other status, or a signal without a URL. An unload body that does not
+   * fit is a retry ("unload budget"), so a later normal-mode drain sends it.
+   */
   | { readonly kind: "fatal"; readonly reason: string; readonly status?: number };
 
 /** Makes single send attempts. Never rejects. */
