@@ -50,6 +50,19 @@ export interface RuntimeMetrics {
   stop(): void;
 }
 
+/**
+ * A switch over recording, such as the web consent gate. While recording() is false, no span is
+ * sampled, no measurement is kept and no log record reaches the OTLP leg; the console sink still
+ * writes. Core reads recording() on every span start, measurement and log record, so it must be
+ * cheap.
+ */
+export interface RecordingGate {
+  /** True while telemetry may be recorded. */
+  recording(): boolean;
+  /** Calls listener after every change of recording(). Returns a function that unsubscribes. */
+  subscribe(listener: (recording: boolean) => void): () => void;
+}
+
 /** Everything runtime-specific core needs. */
 export interface Platform {
   /** The platform's name: "server", later "web" and "webext". */
@@ -76,4 +89,9 @@ export interface Platform {
   startRuntimeMetrics?(meterProvider: MeterProvider): RuntimeMetrics;
   /** The console object captureConsole patches. */
   console?: PlatformConsole;
+  /**
+   * The recording gate, when the platform has one. Without it core always records. The web and
+   * webext platforms pass their consent gate.
+   */
+  readonly gate?: RecordingGate;
 }

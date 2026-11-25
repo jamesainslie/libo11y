@@ -8,6 +8,9 @@
  * Each synchronous measurement is also offered to the ExemplarStore with its context. Observable
  * instruments are created on the SDK meter and their callbacks get a classifying ObservableResult;
  * they offer no exemplars, as they carry no measurement context.
+ *
+ * With a recording gate, a measurement taken while the gate is closed is neither recorded nor
+ * offered as an exemplar, and observable callbacks are not called.
  */
 import {
   type Attributes,
@@ -29,6 +32,8 @@ import {
   ValueType,
 } from "@opentelemetry/api";
 import { type ExemplarKind, type ExemplarStore, scopeKey } from "./exemplars.ts";
+import { gateOpen } from "./gate.ts";
+import type { RecordingGate } from "./platform.ts";
 import type { SensitivityPolicy } from "./policy.ts";
 
 /** Maps each wrapper observable to the SDK observable it fronts. */
@@ -56,6 +61,7 @@ class PolicyMeter implements Meter {
   private readonly policy: SensitivityPolicy;
   private readonly store: ExemplarStore;
   private readonly observables: ObservableMap;
+  private readonly gate: RecordingGate | undefined;
   private readonly batchCallbacks = new WeakMap<BatchObservableCallback, BatchObservableCallback>();
 
   constructor(
@@ -64,12 +70,14 @@ class PolicyMeter implements Meter {
     policy: SensitivityPolicy,
     store: ExemplarStore,
     observables: ObservableMap,
+    gate?: RecordingGate,
   ) {
     this.sdk = sdk;
     this.scope = scope;
     this.policy = policy;
     this.store = store;
     this.observables = observables;
+    this.gate = gate;
   }
 
   private classify(attrs: Attributes | undefined): Attributes {
@@ -86,6 +94,7 @@ class PolicyMeter implements Meter {
     nonNegative: boolean,
   ): (value: number, attrs?: Attributes, ctx?: Context) => void {
     return (value, attrs, ctx) => {
+      if (!gateOpen(this.gate)) return;
       const classified = this.classify(attrs);
       const active = ctx ?? context.active();
       record(value, classified, active);
@@ -156,6 +165,7 @@ class PolicyMeter implements Meter {
     let inner = this.batchCallbacks.get(callback);
     if (inner === undefined) {
       inner = (result: BatchObservableResult) => {
+        if (!gateOpen(this.gate)) return;
         const wrapped: BatchObservableResult = {
           observe: (metric, value, attrs) =>
             result.observe(this.observables.get(metric) ?? metric, value, this.classify(attrs)),
@@ -172,8 +182,10 @@ class PolicyMeter implements Meter {
     const front = (callback: ObservableCallback): ObservableCallback => {
       let inner = callbacks.get(callback);
       if (inner === undefined) {
-        inner = (result: ObservableResult) =>
-          callback({ observe: (value, attrs) => result.observe(value, this.classify(attrs)) });
+        inner = (result: ObservableResult) => {
+          if (!gateOpen(this.gate)) return;
+          return callback({ observe: (value, attrs) => result.observe(value, this.classify(attrs)) });
+        };
         callbacks.set(callback, inner);
       }
       return inner;
@@ -196,12 +208,17 @@ export class PolicyMeterProvider implements MeterProvider {
   private readonly policy: SensitivityPolicy;
   private readonly store: ExemplarStore;
   private readonly observables: ObservableMap = new WeakMap();
+  private readonly gate: RecordingGate | undefined;
 
-  /** Wraps the SDK provider sdk. Classifies with policy and offers measurements to exemplars. */
-  constructor(sdk: MeterProvider, policy: SensitivityPolicy, exemplars: ExemplarStore) {
+  /**
+   * Wraps the SDK provider sdk. Classifies with policy and offers measurements to exemplars. With
+   * gate, measurements and observable callbacks are skipped while it is closed.
+   */
+  constructor(sdk: MeterProvider, policy: SensitivityPolicy, exemplars: ExemplarStore, gate?: RecordingGate) {
     this.sdk = sdk;
     this.policy = policy;
     this.store = exemplars;
+    this.gate = gate;
   }
 
   getMeter(name: string, version?: string, options?: MeterOptions): Meter {
@@ -211,6 +228,7 @@ export class PolicyMeterProvider implements MeterProvider {
       this.policy,
       this.store,
       this.observables,
+      this.gate,
     );
   }
 }

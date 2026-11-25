@@ -1,5 +1,12 @@
 {
   "extends": "./tsconfig.base.json",
   "compilerOptions": { "types": ["bun"] },
-  "include": ["packages/*/src", "examples", "scripts"]
+  "include": [
+    "packages/spec/src",
+    "packages/core/src",
+    "packages/server/src",
+    "packages/test/src",
+    "examples",
+    "scripts"
+  ]
 }

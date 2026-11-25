@@ -1,13 +1,55 @@
 # Changelog
 
 All notable changes to the libo11y TypeScript packages are documented
-here: `@libo11y/spec`, `@libo11y/core`, `@libo11y/server` and
-`@libo11y/test`, which release together at one version from a `ts/vX.Y.Z`
+here: `@libo11y/spec`, `@libo11y/core`, `@libo11y/server`,
+`@libo11y/test`, `@libo11y/web` and `@libo11y/webext`, which release together at one version from a `ts/vX.Y.Z`
 tag. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the packages
 adhere to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+
+## [0.2.0] - 2026-11-25
+
+### Added
+
+- `@libo11y/web`, the browser platform. `setup` and `createTelemetry` run
+  the OpenTelemetry JS providers with a pluggable context manager
+  (`StackContextManager` by default) and a browser resource of
+  `browser.*` attributes. `user_agent.original` is recorded only with
+  `userAgent: true`. The console sink defaults to off.
+- `@libo11y/web`: an OTLP/HTTP JSON transport. Endpoints come from
+  options or from an `env` map of `OTEL_*` variables. Normal sends are
+  gzip-compressed through `CompressionStream`. Sends while the page is
+  hidden go by `fetch` keepalive or `sendBeacon`, at most 64 KiB per body.
+  Retryable failures wait in an IndexedDB queue shared by the origin's
+  tabs, with leases, bounds, backoff with full jitter, `Retry-After` on
+  `429` and `503`, and a drain on the `online` event and on the next page
+  load.
+- `@libo11y/web`: the consent gate, `telemetry.consent`, with the states
+  `pending`, `granted` and `denied`. It starts `pending`, so nothing is
+  recorded until `grant()`. `revoke()` stops recording and clears every
+  queue. The gate can respect Do Not Track and Global Privacy Control.
+- `@libo11y/web`: `fetch` and XHR client spans that inject trace context
+  only into same-origin requests and a `propagateTo` allow-list, and the
+  `documentLoad` span, which adopts the navigation's
+  `Server-Timing: traceparent` as its parent.
+- `@libo11y/webext`, the Manifest V3 extension platform. `setupWorker`
+  stores every batch in IndexedDB before it sends it and drains the queue
+  on every wake. `setupContentScript` forwards the batches of content
+  scripts and extension pages to the worker by runtime messaging. Consent
+  is one state for the extension, kept in `chrome.storage.local`.
+  `sendMessage`, `onMessage` and `sendTabMessage` carry trace context
+  across runtime messages.
+- `@libo11y/core`: `RecordingGate` and `Platform.gate`. While a platform's
+  gate is closed, no span is sampled, a span that ends is dropped, no
+  measurement is kept, observable
+  callbacks are not called, and no log record reaches the OTLP leg. The
+  console sink still writes. The startup canary's OTLP leg is sent on the
+  gate's first open. The server platform has no gate and is unchanged.
+- The release check and the release workflow's smoke job bundle
+  `@libo11y/web` and `@libo11y/webext` for the browser and fail on any
+  Node builtin.
 
 ### Changed
 
@@ -98,7 +140,8 @@ adhere to [Semantic Versioning](https://semver.org/).
   protobuf. `decodeOtlpProtobuf` and `normalizeOtlp` decode and compare
   bodies directly.
 
-[Unreleased]: https://github.com/jamesainslie/libo11y/compare/ts/v0.1.2...HEAD
+[Unreleased]: https://github.com/jamesainslie/libo11y/compare/ts/v0.2.0...HEAD
+[0.2.0]: https://github.com/jamesainslie/libo11y/compare/ts/v0.1.2...ts/v0.2.0
 [0.1.2]: https://github.com/jamesainslie/libo11y/compare/ts/v0.1.1...ts/v0.1.2
 [0.1.1]: https://github.com/jamesainslie/libo11y/compare/ts/v0.1.0...ts/v0.1.1
 [0.1.0]: https://github.com/jamesainslie/libo11y/releases/tag/ts/v0.1.0

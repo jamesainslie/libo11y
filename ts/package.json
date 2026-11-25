@@ -9,17 +9,19 @@
   ],
   "scripts": {
     "lint": "biome check .",
-    "typecheck": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json && tsc -p packages/web/tsconfig.json && tsc -p packages/webext/tsconfig.json && tsc -p tsconfig.browser.json",
     "build": "bun run --filter './packages/*' build",
     "api": "bun run --filter './packages/*' api",
     "api:check": "bun run --filter './packages/*' api:check",
     "test": "bun run test:bun && bun run test:node",
     "test:bun": "bun test",
-    "test:node": "node --test --test-concurrency=8 \"packages/*/src/**/*.test.ts\" \"examples/*/*.test.ts\" \"scripts/**/*.test.ts\""
+    "test:node": "node --test --test-concurrency=8 \"packages/*/src/**/*.test.ts\" \"examples/*/*.test.ts\" \"scripts/**/*.test.ts\"",
+    "test:browser": "playwright test --workers=2"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.8",
     "@microsoft/api-extractor": "7.60.1",
+    "@playwright/test": "1.64.1",
     "@types/bun": "1.4.4",
     "@types/node": "24.19.2",
     "typescript": "7.0.2"

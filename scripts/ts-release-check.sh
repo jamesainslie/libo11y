@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # ts-release-check.sh: build and pack the @libo11y/* packages the way a
 # release would, then install the tarballs into a throwaway consumer
-# outside the repository and import them under Node and under Bun.
+# outside the repository, import the server packages under Node and under
+# Bun, and bundle the browser packages for the browser with
+# scripts/ts-browser-bundle-check.sh.
 #
-# Usage: ts-release-check.sh [VERSION]   (default v0.1.2; `make
+# Usage: ts-release-check.sh [VERSION]   (default v0.2.0; `make
 # release-check` passes TS_RELEASE_VERSION). Every package must already
 # be at VERSION. The packages stay at 0.0.0 until a release commit moves
 # them, here and TS_RELEASE_VERSION in the Makefile, together.
@@ -11,7 +13,7 @@
 # registry for the packages' third-party dependencies.
 set -euo pipefail
 
-version="${1:-v0.1.2}"
+version="${1:-v0.2.0}"
 plain="${version#v}"
 
 repo_root="$(git rev-parse --show-toplevel)"
@@ -112,6 +114,13 @@ printf '{ "name": "libo11y-consumer", "private": true, "type": "module" }\n' >"$
 	[[ "$(node --input-type=module -e "$serve_smoke")" == up ]] || fail "node could not run instrumentServe and instrumentFetch"
 	[[ "$(bun -e "$serve_smoke")" == up ]] || fail "bun could not run instrumentServe and instrumentFetch"
 	echo "ts-release-check: instrumentServe and instrumentFetch ok under node and bun"
+
+	# The browser packages run in neither Node nor Bun. They must bundle
+	# for the browser with no Node builtin, from every entry point. The
+	# release workflow's npm-smoke job runs the same check on the
+	# published versions.
+	"$repo_root/scripts/ts-browser-bundle-check.sh" "$consumer" @libo11y/web=setup @libo11y/webext
+	echo "ts-release-check: @libo11y/web and @libo11y/webext bundle for the browser"
 
 	# The published declarations must typecheck for a nodenext consumer.
 	cat >check.ts <<'TS'

@@ -313,6 +313,7 @@ export interface Platform {
     contextManager(): ContextManager;
     detectResource(hermetic: boolean): Promise<ResourceLayers>;
     env(): Readonly<Record<string, string | undefined>>;
+    readonly gate?: RecordingGate;
     hmacSha256?(key: Uint8Array, data: Uint8Array): Uint8Array;
     readonly name: string;
     randomUUID(): string;
@@ -336,6 +337,12 @@ export interface PlatformConsole {
     trace(...args: unknown[]): void;
     // (undocumented)
     warn(...args: unknown[]): void;
+}
+
+// @public
+export interface RecordingGate {
+    recording(): boolean;
+    subscribe(listener: (recording: boolean) => void): () => void;
 }
 
 // @public

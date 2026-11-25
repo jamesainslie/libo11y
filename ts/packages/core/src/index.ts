@@ -39,6 +39,7 @@ export type {
   ExporterSet,
   Platform,
   PlatformConsole,
+  RecordingGate,
   ResourceLayers,
   RuntimeMetrics,
 } from "./platform.ts";

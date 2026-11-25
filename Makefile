@@ -8,7 +8,7 @@ GO_TEST_P ?= 4
 # gate runs on each module separately.
 GO_MODULES := go go/o11ygin go/o11yconnect go/o11ysql
 
-.PHONY: spec-check spec-generate spec-drift test lint vet tidy-check vuln release-check schema-published schema-published-test release-notes-test release-tag-test ts-install ts-check ci
+.PHONY: spec-check spec-generate spec-drift test lint vet tidy-check vuln release-check schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-install ts-check ts-browser-test ci
 
 # Validate the spec registry against the libo11y policy suite (naming,
 # ownership, sensitivity, cardinality, events, units).
@@ -40,6 +40,13 @@ ts-install:
 ts-check: ts-install
 	cd ts && bun run lint && bun run typecheck && bun run build && bun run api:check && bun run test:bun && bun run test:node
 
+# Browser suites for @libo11y/web and @libo11y/webext under Playwright and
+# headless Chromium. Needs Playwright's Chromium for the pinned version:
+# CI installs it with `bun x --no-install playwright install --with-deps
+# chromium` in ts/.
+ts-browser-test: ts-install
+	cd ts && bun run test:browser
+
 vet:
 	@set -e; for m in $(GO_MODULES); do echo "go vet: $$m"; (cd $$m && go vet ./...); done
 
@@ -66,13 +73,14 @@ RELEASE_VERSION ?= v0.2.0
 # validates. Like RELEASE_VERSION, it moves only in a release commit,
 # together with the packages' versions (bun scripts/release.ts version).
 # The packages stay at 0.0.0 until the first TypeScript release.
-TS_RELEASE_VERSION ?= v0.1.2
+TS_RELEASE_VERSION ?= v0.2.0
 
 # Validate the release sequence (go/RELEASE_VERSION and
 # go/<sub>/RELEASE_VERSION for every Go submodule, o11ygin, o11yconnect
 # and o11ysql, on HEAD) against a throwaway local remote. Then build and
-# pack the TypeScript packages at TS_RELEASE_VERSION and install the
-# tarballs into a throwaway consumer under Node and Bun.
+# pack the TypeScript packages at TS_RELEASE_VERSION, install the
+# tarballs into a throwaway consumer under Node and Bun, and bundle the
+# browser packages for the browser.
 # Needs a clean working tree.
 release-check:
 	scripts/release-check.sh $(RELEASE_VERSION)
@@ -97,6 +105,12 @@ release-notes-test:
 release-tag-test:
 	scripts/release-tag_test.sh
 
+# Test ts-browser-bundle-check.sh, which the release check and the release
+# workflow use to bundle the browser packages, against fixture packages
+# (needs bun).
+ts-browser-bundle-test:
+	scripts/ts-browser-bundle-check_test.sh
+
 # vuln runs last: it depends on the advisory database and the toolchain's
 # patch level, so local runs exercise every other gate first.
-ci: lint vet test tidy-check spec-check spec-drift ts-check schema-published-test release-notes-test release-tag-test release-check vuln
+ci: lint vet test tidy-check spec-check spec-drift ts-check ts-browser-test schema-published-test release-notes-test release-tag-test ts-browser-bundle-test release-check vuln

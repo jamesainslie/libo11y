@@ -1,0 +1,38 @@
+{
+  "name": "@libo11y/web",
+  "version": "0.2.0",
+  "private": true,
+  "description": "The libo11y browser platform for TypeScript: setup over the OpenTelemetry JS 3.x providers with a pluggable context manager, the browser resource, an OTLP/HTTP JSON transport with gzip, beacons and an IndexedDB retry queue, the consent gate, and fetch, XHR and document-load spans.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts",
+    "./internal": "./src/internal/index.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jamesainslie/libo11y.git",
+    "directory": "ts/packages/web"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "api": "api-extractor run --local",
+    "api:check": "api-extractor run"
+  },
+  "dependencies": {
+    "@libo11y/core": "workspace:*",
+    "@libo11y/spec": "workspace:*",
+    "@opentelemetry/api": "1.10.0",
+    "@opentelemetry/core": "3.1.1",
+    "@opentelemetry/otlp-transformer": "0.301.1",
+    "@opentelemetry/resources": "3.1.1",
+    "@opentelemetry/sdk-logs": "3.1.1",
+    "@opentelemetry/sdk-metrics": "3.1.1",
+    "@opentelemetry/sdk-trace": "3.1.1"
+  },
+  "devDependencies": {
+    "@libo11y/test": "workspace:*",
+    "fake-indexeddb": "6.2.7"
+  }
+}

@@ -7,8 +7,10 @@
 # A ts/vX.Y.Z tag publishes every @libo11y/* package to npm at X.Y.Z with
 # provenance. It authenticates through npm trusted publishing: each package
 # trusts this workflow file in this repository, and no npm token is stored.
-# The smoke job waits for the registry to serve the new versions, installs
-# them under Node and Bun, and only then is the GitHub Release created.
+# The smoke job waits for the registry to serve the new versions of every
+# package under ts/packages, installs the server packages under Node and
+# Bun, bundles the browser packages for the browser, and only then is the
+# GitHub Release created.
 # Rerunning is safe for packages already on the registry, which are
 # skipped.
 #
@@ -46,6 +48,8 @@ jobs:
       module: ${{ steps.tag.outputs.module }}
       version: ${{ steps.tag.outputs.version }}
       prerelease: ${{ steps.tag.outputs.prerelease }}
+      # The ts branch only: every package name, space separated.
+      packages: ${{ steps.packages.outputs.names }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -106,17 +110,22 @@ jobs:
       # The TypeScript branch. The release commit moved every package to the
       # tag's version (bun scripts/release.ts version X.Y.Z).
       - name: Require every package at the tag's version
+        id: packages
         if: steps.tag.outputs.kind == 'ts'
         env:
           VERSION: ${{ steps.tag.outputs.version }}
         run: |
+          # The smoke job waits for each of these names on the registry.
+          names=""
           for manifest in ts/packages/*/package.json; do
             got="$(jq -r .version "$manifest")"
             if [[ "$got" != "$VERSION" ]]; then
               echo "::error::$manifest is at version $got, not $VERSION; the release commit runs bun scripts/release.ts version $VERSION"
               exit 1
             fi
+            names="${names:+$names }$(jq -r .name "$manifest")"
           done
+          echo "names=$names" >>"$GITHUB_OUTPUT"
       - name: Check the TypeScript changelog has release notes
         if: steps.tag.outputs.kind == 'ts'
         env:
@@ -334,10 +343,16 @@ jobs:
     timeout-minutes: 20
     env:
       VERSION: ${{ needs.verify.outputs.version }}
+      PACKAGES: ${{ needs.verify.outputs.packages }}
       # Resolve like an external consumer: the public registry, no workspace.
       NPM_CONFIG_REGISTRY: https://registry.npmjs.org
     steps:
-      # No checkout and no cache: every package comes from the registry.
+      # No cache, and only scripts/ checked out: every package comes from
+      # the registry, into consumers outside the checkout.
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts
       - uses: actions/setup-node@v7
         with:
           node-version: "24.x"
@@ -347,13 +362,18 @@ jobs:
       - name: Wait for the published version on the registry
         working-directory: ${{ runner.temp }}
         run: |
+          if [[ -z "$PACKAGES" ]]; then
+            echo "::error::the verify job listed no packages"
+            exit 1
+          fi
           # 20 checks 30 seconds apart: time for the registry to serve the
           # new versions.
           for attempt in $(seq 1 20); do
             missing=""
-            for pkg in spec core server test; do
-              if [[ "$(npm view "@libo11y/$pkg@$VERSION" version 2>/dev/null || true)" != "$VERSION" ]]; then
-                missing="$missing @libo11y/$pkg"
+            # PACKAGES splits on spaces: npm package names have none.
+            for pkg in $PACKAGES; do
+              if [[ "$(npm view "$pkg@$VERSION" version 2>/dev/null || true)" != "$VERSION" ]]; then
+                missing="$missing $pkg"
               fi
             done
             if [[ -z "$missing" ]]; then
@@ -411,3 +431,12 @@ jobs:
             echo "::error::bun recorded the spans '$got', not one GET span"
             exit 1
           fi
+      # The browser packages run in neither Node nor Bun. Bundle each entry
+      # point for the browser and fail on any Node builtin, as
+      # scripts/ts-release-check.sh does with the packed tarballs.
+      - name: Install and bundle the browser packages
+        run: |
+          consumer="$(mktemp -d)"
+          printf '{ "name": "libo11y-browser-smoke", "private": true, "type": "module" }\n' >"$consumer/package.json"
+          (cd "$consumer" && npm install --no-audit --no-fund --ignore-scripts "@libo11y/web@$VERSION" "@libo11y/webext@$VERSION")
+          scripts/ts-browser-bundle-check.sh "$consumer" @libo11y/web=setup @libo11y/webext
