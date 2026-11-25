@@ -11,6 +11,18 @@
  *
  * With a recording gate, a measurement taken while the gate is closed is neither recorded nor
  * offered as an exemplar, and observable callbacks are not called.
+ *
+ * No measurement throws into the code that makes it. The attributes are read once, into an object
+ * the library owns, in the same pass that classifies them: an attribute that cannot be read is
+ * dropped and reported, and the measurement is recorded with the rest. The SDK and the exemplar
+ * store then see that one reading, so a getter cannot answer them differently and a change the
+ * caller makes afterwards does not reach the data point. A report goes to the telemetry's own
+ * handler, and never repeats the message of what was thrown (internal/report.ts).
+ *
+ * The cost on the hot path is one small object per measurement, with one property write per
+ * attribute kept. The keys were already listed once and each classified once, and still are, and
+ * each value is read once where it used to be read by the SDK. Nothing is walked: an array value is
+ * copied one level deep, and any other value is taken as it is.
  */
 import {
   type Attributes,
@@ -31,10 +43,14 @@ import {
   type UpDownCounter,
   ValueType,
 } from "@opentelemetry/api";
+import { globalErrorHandler } from "@opentelemetry/core";
 import { type ExemplarKind, type ExemplarStore, scopeKey } from "./exemplars.ts";
 import { gateOpen } from "./gate.ts";
+import { type AttributeNoun, failure, type Report, unreadable } from "./internal/report.ts";
 import type { RecordingGate } from "./platform.ts";
 import type { SensitivityPolicy } from "./policy.ts";
+
+const METRIC: AttributeNoun = { one: "metric attribute", all: "metric attributes" };
 
 /** Maps each wrapper observable to the SDK observable it fronts. */
 type ObservableMap = WeakMap<Observable, Observable>;
@@ -61,6 +77,7 @@ class PolicyMeter implements Meter {
   private readonly policy: SensitivityPolicy;
   private readonly store: ExemplarStore;
   private readonly observables: ObservableMap;
+  private readonly report: Report;
   private readonly gate: RecordingGate | undefined;
   private readonly batchCallbacks = new WeakMap<BatchObservableCallback, BatchObservableCallback>();
 
@@ -70,6 +87,7 @@ class PolicyMeter implements Meter {
     policy: SensitivityPolicy,
     store: ExemplarStore,
     observables: ObservableMap,
+    report: Report,
     gate?: RecordingGate,
   ) {
     this.sdk = sdk;
@@ -77,15 +95,56 @@ class PolicyMeter implements Meter {
     this.policy = policy;
     this.store = store;
     this.observables = observables;
+    this.report = report;
     this.gate = gate;
   }
 
+  // classify reads a measurement's attributes once, into an object this meter owns, and keeps the
+  // ones the policy keeps. A key the policy drops is never read. A value that cannot be read is
+  // dropped and reported, and the loop goes on with the next key, so no value is read twice. It
+  // never throws, whatever attrs is.
   private classify(attrs: Attributes | undefined): Attributes {
-    return this.policy.metricAttributes(attrs ?? {});
+    const out: Record<string, unknown> = {};
+    if (attrs === undefined || attrs === null) return out as Attributes;
+    let keys: string[];
+    try {
+      keys = Object.keys(attrs);
+    } catch (err) {
+      this.report(failure(`o11y: ${METRIC.all} cannot be read and are dropped`, err));
+      return out as Attributes;
+    }
+    const source = attrs as Record<string, unknown>;
+    let i = 0;
+    while (i < keys.length) {
+      // One try for the whole set: entering it again costs something only after a failure.
+      try {
+        for (; i < keys.length; i++) {
+          const k = keys[i] as string;
+          if (!this.policy.keepsMetricKey(k)) continue;
+          const v = source[k];
+          // An array is the one attribute value that can change under the SDK after the call.
+          out[k] = typeof v === "object" && v !== null && Array.isArray(v) ? v.slice() : v;
+        }
+      } catch (err) {
+        this.report(unreadable(METRIC, [], keys[i] as string, err));
+        i++;
+      }
+    }
+    return out as Attributes;
+  }
+
+  // guarded runs one step of a measurement the application made. Whatever it throws is reported,
+  // and the application's call returns as if nothing happened.
+  private guarded(what: string, step: () => void): void {
+    try {
+      step();
+    } catch (err) {
+      this.report(failure(`o11y: ${what} failed, the measurement is dropped`, err));
+    }
   }
 
   // measure classifies one synchronous measurement, records it on the SDK instrument with the
-  // given or active context, and offers it as an exemplar.
+  // given or active context, and offers it as an exemplar. The function it returns never throws.
   private measure(
     record: (value: number, attrs: Attributes, ctx: Context) => void,
     name: string,
@@ -93,21 +152,26 @@ class PolicyMeter implements Meter {
     options: MetricOptions | undefined,
     nonNegative: boolean,
   ): (value: number, attrs?: Attributes, ctx?: Context) => void {
+    const what = `recording on ${JSON.stringify(name)}`;
     return (value, attrs, ctx) => {
       if (!gateOpen(this.gate)) return;
-      const classified = this.classify(attrs);
-      const active = ctx ?? context.active();
-      record(value, classified, active);
-      const v = recordedValue(value, options?.valueType, nonNegative);
-      if (v === undefined) return;
-      this.store.offer({
-        scope: this.scope,
-        instrument: name,
-        kind,
-        value: v,
-        attributes: classified,
-        context: active,
-      });
+      try {
+        const classified = this.classify(attrs);
+        const active = ctx ?? context.active();
+        record(value, classified, active);
+        const v = recordedValue(value, options?.valueType, nonNegative);
+        if (v === undefined) return;
+        this.store.offer({
+          scope: this.scope,
+          instrument: name,
+          kind,
+          value: v,
+          attributes: classified,
+          context: active,
+        });
+      } catch (err) {
+        this.report(failure(`o11y: ${what} failed, the measurement is dropped`, err));
+      }
     };
   }
 
@@ -168,7 +232,9 @@ class PolicyMeter implements Meter {
         if (!gateOpen(this.gate)) return;
         const wrapped: BatchObservableResult = {
           observe: (metric, value, attrs) =>
-            result.observe(this.observables.get(metric) ?? metric, value, this.classify(attrs)),
+            this.guarded("observing a metric", () =>
+              result.observe(this.observables.get(metric) ?? metric, value, this.classify(attrs)),
+            ),
         };
         return callback(wrapped);
       };
@@ -184,7 +250,10 @@ class PolicyMeter implements Meter {
       if (inner === undefined) {
         inner = (result: ObservableResult) => {
           if (!gateOpen(this.gate)) return;
-          return callback({ observe: (value, attrs) => result.observe(value, this.classify(attrs)) });
+          return callback({
+            observe: (value, attrs) =>
+              this.guarded("observing a metric", () => result.observe(value, this.classify(attrs))),
+          });
         };
         callbacks.set(callback, inner);
       }
@@ -208,17 +277,34 @@ export class PolicyMeterProvider implements MeterProvider {
   private readonly policy: SensitivityPolicy;
   private readonly store: ExemplarStore;
   private readonly observables: ObservableMap = new WeakMap();
+  private readonly report: Report;
   private readonly gate: RecordingGate | undefined;
 
   /**
-   * Wraps the SDK provider sdk. Classifies with policy and offers measurements to exemplars. With
-   * gate, measurements and observable callbacks are skipped while it is closed.
+   * Wraps the SDK provider sdk. Classifies with policy and offers measurements to exemplars. What a
+   * measurement drops is reported to report: the telemetry's own handler, or without one the
+   * OpenTelemetry global error handler. With gate, measurements and observable callbacks are
+   * skipped while it is closed.
    */
-  constructor(sdk: MeterProvider, policy: SensitivityPolicy, exemplars: ExemplarStore, gate?: RecordingGate) {
+  constructor(
+    sdk: MeterProvider,
+    policy: SensitivityPolicy,
+    exemplars: ExemplarStore,
+    report?: (err: unknown) => void,
+    gate?: RecordingGate,
+  ) {
     this.sdk = sdk;
     this.policy = policy;
     this.store = exemplars;
     this.gate = gate;
+    const to = report ?? globalErrorHandler;
+    this.report = (err) => {
+      try {
+        to(err);
+      } catch {
+        // The handler is the last resort; nothing is left to report to.
+      }
+    };
   }
 
   getMeter(name: string, version?: string, options?: MeterOptions): Meter {
@@ -228,6 +314,7 @@ export class PolicyMeterProvider implements MeterProvider {
       this.policy,
       this.store,
       this.observables,
+      this.report,
       this.gate,
     );
   }

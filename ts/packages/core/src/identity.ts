@@ -6,7 +6,6 @@
 import { ENVIRONMENT_VALUES, SCHEMA_URL } from "@libo11y/spec";
 import type { Attributes } from "@opentelemetry/api";
 import { type Resource, resourceFromAttributes } from "@opentelemetry/resources";
-import { renderCanonicalAttribute } from "./canonical.ts";
 import { invalidEnvironmentError, noEnvironmentError, noServiceNameError } from "./errors.ts";
 import { instanceIdFor } from "./instance-id.ts";
 import type { TelemetryOptions } from "./options.ts";
@@ -103,7 +102,12 @@ export async function buildResource(
     const action = policy.actionFor(key);
     if (action !== "keep") count(ruleFor(policy.classOf(key)));
     if (action === "keep") kept[key] = value;
-    else if (action === "rewrite") kept[key] = policy.token(renderCanonicalAttribute(value));
+    // The same bounded rendering as a log record's and a span's, so the token joins across signals.
+    else if (action === "rewrite") {
+      // No token means the policy holds no usable key: the value is dropped.
+      const token = policy.tokenOf(value);
+      if (token !== undefined) kept[key] = token;
+    }
   }
   return {
     resource: resourceFromAttributes(kept, { schemaUrl: SCHEMA_URL }),

@@ -496,3 +496,38 @@ test("a real series-cap overflow warns once", () => {
     d.restore();
   }
 });
+
+// Third review: tokens are rendered with bounds, and a series key is not. Two attribute sets that
+// differ only past the 2048-node budget are two series, each with its own exemplars.
+test("attribute sets that differ only past the token's bounds stay separate series", () => {
+  const s = store("always_on");
+  const long = Array.from({ length: 3000 }, (_, i) => `v${i}`);
+  const other = [...long];
+  other[2999] = "different";
+  for (const [attributes, value] of [
+    [{ tags: long }, 1],
+    [{ tags: other }, 2],
+  ] as const) {
+    s.offer({
+      scope: KEY,
+      instrument: "jobs",
+      kind: "sum",
+      value,
+      attributes,
+      context: ROOT_CONTEXT,
+      time: at(10),
+    });
+  }
+  const out = s.attach(
+    rmOf(
+      sumMetric("jobs", [
+        { attrs: { tags: long }, end: 20 },
+        { attrs: { tags: other }, end: 20 },
+      ]),
+    ),
+  );
+  assert.deepEqual(
+    pointsOf(out).map((p) => exemplarsOf(p).map((e) => e.value)),
+    [[1], [2]],
+  );
+});

@@ -3,6 +3,12 @@
  * It reproduces Go's: scalars as text, floats in strconv's shortest 'g' form, bytes as base64, and
  * composites as JSON of their members' canonical forms, with map keys in UTF-8 byte order and strings
  * escaped as Go's encoding/json escapes them. The walk is bounded by depth, a node budget and cycles.
+ *
+ * There is one rendering for every signal. A token is computed over renderCanonical whether the
+ * value is on a log record, a span, a span event, a span link or the resource, so one value has
+ * one token wherever it travels. The budget counts the root value as one node and each array
+ * element or map member as one more, so a top-level array keeps its first 2047 elements and each
+ * further one renders as "truncated".
  */
 
 import { isError } from "./is-error.ts";
@@ -167,17 +173,22 @@ function render(value: unknown, bounded: boolean): string {
 }
 
 /**
- * Renders value canonically, bounded as Go bounds a log value: past depth 16, on a cycle, or once
- * 2048 nodes are spent, the rest renders as "truncated".
+ * Renders value canonically, the form every PII token is computed over, on every signal. It is
+ * bounded as Go bounds it: past depth 16, on a cycle, or once 2048 nodes are spent, the rest
+ * renders as "truncated".
  */
 export function renderCanonical(value: unknown): string {
   return render(value, true);
 }
 
 /**
- * Renders an attribute value canonically without the depth and budget bounds, as Go renders an OTel
- * attribute value. Cycles, which an OTel attribute cannot hold, still render as "truncated".
+ * Renders value in the canonical form without the depth and budget bounds, so two values that
+ * differ anywhere render differently. It is for keys that must tell values apart, which is what
+ * the exemplar store builds from a measurement's attribute set: with the bounds, two attribute
+ * sets that differ only past the budget would share a series. It is never the input to a token: a
+ * token uses renderCanonical, whose bounds are part of the specification. A cycle still renders as
+ * "truncated", since it has no end to render.
  */
-export function renderCanonicalAttribute(value: unknown): string {
+export function renderUnbounded(value: unknown): string {
   return render(value, false);
 }

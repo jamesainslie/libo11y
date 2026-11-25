@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { context, ROOT_CONTEXT } from "@opentelemetry/api";
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
+import { loggingErrorHandler, setGlobalErrorHandler } from "@opentelemetry/core";
 import type { LogAttributes } from "./log-values.ts";
 import { currentRecord, startRecord } from "./record.ts";
 
@@ -96,4 +97,165 @@ test("a record from another copy of core is found through the shared brand", () 
     (currentRecord(own) as unknown as Record<symbol, unknown>)[Symbol.for("libo11y.wide-record")],
     true,
   );
+});
+
+// Third review: a wide record's mutators and emitEvent are called from application code, in a
+// request handler, and must never throw into it. They get the logger's treatment: each attribute is
+// read once, what cannot be read is dropped and reported, and the report never carries the message
+// of what was thrown.
+const MARKER = "sk_live_MARKER_wide";
+
+function revoked(): never {
+  const { proxy, revoke } = Proxy.revocable({}, {});
+  revoke();
+  return proxy as never;
+}
+
+/** Captures what reaches the OpenTelemetry global error handler while fn runs. */
+function capturingGlobal(fn: () => void): Error[] {
+  const reports: Error[] = [];
+  setGlobalErrorHandler((err) => {
+    reports.push(err as Error);
+  });
+  try {
+    fn();
+  } finally {
+    setGlobalErrorHandler(loggingErrorHandler());
+  }
+  return reports;
+}
+
+test("set never throws: an attribute that cannot be read is dropped and reported, and the rest is kept", () => {
+  const { record } = startRecord(ROOT_CONTEXT);
+  let reads = 0;
+  const thrown = new RangeError(`no row for ${MARKER}`);
+  const reports = capturingGlobal(() => {
+    assert.doesNotThrow(() =>
+      record.set({
+        before: 1,
+        get bad(): string {
+          throw thrown;
+        },
+        get counted(): number {
+          reads++;
+          return reads;
+        },
+        after: 2,
+      }),
+    );
+    assert.doesNotThrow(() => record.set(revoked()));
+    assert.doesNotThrow(() => record.set(null as never));
+    assert.doesNotThrow(() => record.set(undefined as never));
+  });
+  assert.deepEqual(record.snapshot(), { before: 1, counted: 1, after: 2 });
+  assert.equal(reads, 1, "each attribute is read once");
+  assert.deepEqual(
+    reports.map((r) => r.message),
+    [
+      'o11y: wide record attribute "bad" cannot be read and is dropped: RangeError',
+      "o11y: wide record attributes cannot be read and are dropped: TypeError",
+    ],
+  );
+  assert.equal(reports[0]?.cause, thrown);
+  for (const r of reports) assert.ok(!`${r.message}${r.stack}`.includes("MARKER"));
+});
+
+test("add and max never throw, and leave the value as it was when they cannot compute", () => {
+  const { record } = startRecord(ROOT_CONTEXT);
+  record.set({ n: 2, m: 2 });
+  const hostile = {
+    valueOf(): number {
+      throw new Error(MARKER);
+    },
+  };
+  const key = {
+    toString(): string {
+      throw new Error(MARKER);
+    },
+  };
+  const reports = capturingGlobal(() => {
+    assert.doesNotThrow(() => record.add("n", hostile as never));
+    assert.doesNotThrow(() => record.max("m", hostile as never));
+    assert.doesNotThrow(() => record.add(key as never, 1));
+    assert.doesNotThrow(() => record.max(key as never, 1));
+  });
+  assert.deepEqual(record.snapshot(), { n: 2, m: 2 });
+  assert.deepEqual(
+    reports.map((r) => r.message),
+    [
+      "o11y: wide record add failed, the value is unchanged: Error",
+      "o11y: wide record max failed, the value is unchanged: Error",
+      "o11y: wide record add failed, the value is unchanged: Error",
+      "o11y: wide record max failed, the value is unchanged: Error",
+    ],
+  );
+  record.add("n", 3);
+  record.max("m", 7);
+  assert.deepEqual(record.snapshot(), { n: 5, m: 7 });
+});
+
+test("emitEvent never throws: unreadable extra attributes are dropped, and the event still goes out", () => {
+  const { record } = startRecord(ROOT_CONTEXT);
+  record.set({ a: 1 });
+  const calls: [string, LogAttributes | undefined][] = [];
+  const viaHandle: string[] = [];
+  const telemetry = {
+    event: (name: string, attrs?: LogAttributes) => void calls.push([name, attrs]),
+    [Symbol.for("libo11y.report")]: (err: unknown) => void viaHandle.push((err as Error).message),
+  };
+  const viaGlobal = capturingGlobal(() => {
+    assert.doesNotThrow(() => record.emitEvent(telemetry, "e1", revoked()));
+    assert.doesNotThrow(() =>
+      record.emitEvent(telemetry, "e2", {
+        b: 2,
+        get bad(): string {
+          throw new Error(MARKER);
+        },
+      }),
+    );
+  });
+  assert.deepEqual(calls, [
+    ["e1", { a: 1 }],
+    ["e2", { a: 1, b: 2 }],
+  ]);
+  assert.deepEqual(viaHandle, [
+    "o11y: wide record attributes cannot be read and are dropped: TypeError",
+    'o11y: wide record attribute "bad" cannot be read and is dropped: Error',
+  ]);
+  assert.deepEqual(viaGlobal, [], "a telemetry that carries a reporter gets the reports");
+});
+
+test("emitEvent contains an emitter that throws or is not one, and reports to the global handler without a handle", () => {
+  const { record } = startRecord(ROOT_CONTEXT);
+  const reports = capturingGlobal(() => {
+    assert.doesNotThrow(() =>
+      record.emitEvent(
+        {
+          event: () => {
+            throw new Error(MARKER);
+          },
+        },
+        "e",
+      ),
+    );
+    assert.doesNotThrow(() => record.emitEvent(undefined as never, "e"));
+    assert.doesNotThrow(() => record.emitEvent({ event: () => {} }, "e", revoked()));
+  });
+  assert.deepEqual(
+    reports.map((r) => r.message),
+    [
+      "o11y: emitting a wide record's event failed: Error",
+      "o11y: emitting a wide record's event failed: TypeError",
+      "o11y: wide record attributes cannot be read and are dropped: TypeError",
+    ],
+  );
+});
+
+test("a detached record takes the same calls without throwing", () => {
+  const detached = currentRecord(ROOT_CONTEXT);
+  const reports = capturingGlobal(() => {
+    assert.doesNotThrow(() => detached.set(revoked()));
+    assert.doesNotThrow(() => detached.emitEvent({ event: () => {} }, "e", revoked()));
+  });
+  assert.equal(reports.length, 2);
 });

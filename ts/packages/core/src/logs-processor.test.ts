@@ -9,7 +9,12 @@ import {
   type ReadWriteLogRecord,
   SimpleLogRecordProcessor,
 } from "@opentelemetry/sdk-logs";
-import { isClassified, markClassified, RedactingLogRecordProcessor } from "./logs-processor.ts";
+import {
+  CoalescingLogRecordProcessor,
+  isClassified,
+  markClassified,
+  RedactingLogRecordProcessor,
+} from "./logs-processor.ts";
 import { SensitivityPolicy, type ViolationSink } from "./policy.ts";
 
 // The probe: sdk-logs 3.1.1 has no API to remove an attribute, so redaction deletes the key from
@@ -154,4 +159,45 @@ test("forceFlush and shutdown resolve", async () => {
   const p = new RedactingLogRecordProcessor(SensitivityPolicy.create({ pii: "drop", registries: [] }));
   await p.forceFlush();
   await p.shutdown();
+});
+
+// Fourth review: the wrapper that keeps a processor's flushes from overlapping changes nothing else.
+test("the coalescing processor hands records, the enabled question and shutdown to the processor it wraps", async () => {
+  const calls: string[] = [];
+  const inner: LogRecordProcessor = {
+    onEmit: (record, ctx) => void calls.push(`emit ${String(record.body)} ${ctx === ROOT_CONTEXT}`),
+    forceFlush: async () => void calls.push("flush"),
+    shutdown: async () => void calls.push("shutdown"),
+  };
+  const wrapped = new CoalescingLogRecordProcessor(inner);
+  wrapped.onEmit({ body: "b" } as never, ROOT_CONTEXT);
+  await wrapped.forceFlush();
+  await wrapped.shutdown();
+  assert.deepEqual(calls, ["emit b true", "flush", "shutdown"]);
+
+  // The provider reads a processor with no enabled method as enabled, and asks one that has it.
+  const question = { context: ROOT_CONTEXT, instrumentationScope: { name: "s" } };
+  assert.equal(wrapped.enabled(question), true);
+  for (const answer of [true, false]) {
+    const asked: unknown[] = [];
+    const deciding = new CoalescingLogRecordProcessor({
+      ...inner,
+      enabled: (options) => {
+        asked.push(options);
+        return answer;
+      },
+    });
+    assert.equal(deciding.enabled(question), answer);
+    assert.deepEqual(asked, [question]);
+  }
+});
+
+test("the coalescing processor passes a failed flush and a failed shutdown on", async () => {
+  const failing = new CoalescingLogRecordProcessor({
+    onEmit: () => undefined,
+    forceFlush: () => Promise.reject(new Error("flush broke")),
+    shutdown: () => Promise.reject(new Error("shutdown broke")),
+  });
+  await assert.rejects(failing.forceFlush(), /flush broke/);
+  await assert.rejects(failing.shutdown(), /shutdown broke/);
 });

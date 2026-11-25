@@ -14,6 +14,8 @@ export type O11yErrorCode =
   | "INVALID_APP_REGISTRY"
   | "CANARY_REJECTED"
   | "UNSUPPORTED_PROTOCOL"
+  | "UNSUPPORTED_PROPAGATOR"
+  | "INVALID_OPTION"
   | "EXPORTER";
 
 /** An error from libo11y setup or configuration. */
@@ -73,6 +75,43 @@ export function piiHashKeyError(): O11yError {
   );
 }
 
+// kindOfKey names what was given as a key by its kind alone. It never reads the value's content,
+// length or text, and runs none of its code: a key, or anything mistaken for one, is a secret.
+function kindOfKey(value: unknown): string {
+  switch (typeof value) {
+    case "string":
+      return "a string (decode a hex or base64 secret into bytes first)";
+    case "number":
+      return "a number";
+    case "bigint":
+      return "a bigint";
+    case "boolean":
+      return "a boolean";
+    case "symbol":
+      return "a symbol";
+    case "function":
+      return "a function";
+    case "undefined":
+      return "undefined";
+  }
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "an array";
+  if (ArrayBuffer.isView(value)) return "a view of another type";
+  return value instanceof ArrayBuffer ? "an ArrayBuffer" : "an object";
+}
+
+/**
+ * A piiHashKey that is not a Uint8Array, such as a string read from an environment variable. Go's
+ * key is typed []byte, so this has no Go counterpart and the message is this implementation's own.
+ * The message names the kind of value given and never the value, any part of it, or its length.
+ */
+export function piiHashKeyTypeError(key: unknown): O11yError {
+  return new O11yError(
+    "PII_HASH_KEY",
+    `o11y: piiHashKey must be bytes: pass a Uint8Array of at least 32 bytes, not ${kindOfKey(key)}`,
+  );
+}
+
 /** Go ErrInvalidAppRegistry for a registry that breaks rules, each violation in Violation.String form. */
 export function invalidAppRegistryError(source: string, violations: readonly string[]): O11yError {
   return new O11yError(
@@ -105,6 +144,84 @@ export function unsupportedProtocolError(protocol: string, signal: "traces" | "m
   return new O11yError(
     "UNSUPPORTED_PROTOCOL",
     `o11y: unsupported OTLP protocol ${goQuote(protocol)} for ${signal}: use http/protobuf or http/json`,
+  );
+}
+
+/**
+ * A name in OTEL_PROPAGATORS that libo11y does not ship, such as b3, or does not know. Go resolves
+ * more names than this through a contrib registry, so the message is this implementation's own.
+ */
+export function unsupportedPropagatorError(name: string): O11yError {
+  return new O11yError(
+    "UNSUPPORTED_PROPAGATOR",
+    `o11y: unsupported propagator ${goQuote(name)} in OTEL_PROPAGATORS: use tracecontext, baggage or none, or pass the propagators option`,
+  );
+}
+
+/** The most characters of a rejected value a message repeats. */
+const MAX_ECHOED_CHARACTERS = 64;
+
+// The number of characters (code points) in s, counted without building anything.
+function characters(s: string): number {
+  let count = s.length;
+  for (let i = 0; i + 1 < s.length; i++) {
+    const unit = s.charCodeAt(i);
+    if (unit < 0xd800 || unit > 0xdbff) continue;
+    const next = s.charCodeAt(i + 1);
+    if (next >= 0xdc00 && next <= 0xdfff) {
+      count--;
+      i++;
+    }
+  }
+  return count;
+}
+
+// echoed renders text for a message: whole when it is short, otherwise its first 64 characters and
+// a note that says so. A value read from the environment or a file can be any length and hold
+// anything, and the message of a setup error is logged wherever it is caught. A character outside
+// the basic plane is kept or left out whole.
+function echoed(text: string, render: (s: string) => string): string {
+  if (text.length <= MAX_ECHOED_CHARACTERS) return render(text);
+  const total = characters(text);
+  if (total <= MAX_ECHOED_CHARACTERS) return render(text);
+  const head = Array.from(text.slice(0, MAX_ECHOED_CHARACTERS * 2)).slice(0, MAX_ECHOED_CHARACTERS);
+  return `${render(head.join(""))} (the first ${MAX_ECHOED_CHARACTERS} of ${total} characters)`;
+}
+
+// describeValue names a rejected option value: a string quoted as Go quotes it, a number, boolean or
+// bigint as it prints, each shortened past 64 characters, and anything else by its kind. An object
+// is never converted to text, which could throw or print more than a message should carry.
+function describeValue(value: unknown): string {
+  switch (typeof value) {
+    case "string":
+      return echoed(value, goQuote);
+    case "number":
+    case "boolean":
+    case "bigint":
+      return echoed(String(value), (s) => s);
+    case "function":
+      return "a function";
+    case "symbol":
+      return "a symbol";
+    case "undefined":
+      return "undefined";
+  }
+  if (value === null) return "null";
+  return Array.isArray(value) ? "an array" : "an object";
+}
+
+/**
+ * An option whose value is outside the closed set it takes, such as logLevel "verbose". Go's
+ * options are typed, so this has no Go counterpart and the message is this implementation's own.
+ */
+export function invalidOptionError(
+  option: string,
+  value: unknown,
+  allowed: readonly (string | boolean)[],
+): O11yError {
+  return new O11yError(
+    "INVALID_OPTION",
+    `o11y: invalid option ${option}: ${describeValue(value)} (allowed: ${allowed.join(", ")})`,
   );
 }
 

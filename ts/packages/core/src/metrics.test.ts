@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { type Context, ROOT_CONTEXT, TraceFlags, trace, ValueType } from "@opentelemetry/api";
+import { loggingErrorHandler, setGlobalErrorHandler } from "@opentelemetry/core";
 import {
   AggregationTemporality,
   AggregationType,
@@ -206,4 +207,245 @@ test("review W4: a view's histogram boundaries get one exemplar per bucket", asy
     [0.05, 0.15, 0.25, 0.35, 0.45],
   );
   await sdk.shutdown();
+});
+
+// Third review: an instrument call is application code's call, on its hot path, and must never
+// throw into it. The attributes are read once into an object the library owns: what cannot be read
+// is dropped and reported, and the measurement is still recorded.
+const MARKER = "sk_live_MARKER_metric";
+
+function revoked(): never {
+  const { proxy, revoke } = Proxy.revocable({}, {});
+  revoke();
+  return proxy as never;
+}
+
+function reporting(opts: { pii?: "drop" | "allow" } = {}) {
+  const exporter = new InMemoryMetricExporter(AggregationTemporality.CUMULATIVE);
+  const store = new ExemplarStore({ filter: "always_on" });
+  const reader = new PeriodicExportingMetricReader({
+    exporter: exemplarMetricExporter(exporter, store),
+    exportIntervalMillis: 3_600_000,
+  });
+  const sdk = new MeterProvider({ readers: [reader] });
+  const policy = SensitivityPolicy.create({ pii: opts.pii ?? "drop", registries: [] });
+  const reports: Error[] = [];
+  const mp = new PolicyMeterProvider(sdk, policy, store, (err) => reports.push(err as Error));
+  const collect = async (): Promise<MetricData[]> => {
+    await reader.forceFlush();
+    const all = exporter.getMetrics();
+    return all[all.length - 1]?.scopeMetrics.flatMap((sm) => sm.metrics) ?? [];
+  };
+  return { mp, sdk, collect, reports };
+}
+
+function attributesOf(metrics: MetricData[], name: string): unknown[] {
+  return (find(metrics, name).dataPoints as DataPoint<unknown>[]).map((p) => p.attributes);
+}
+
+test("no synchronous instrument throws on attributes it cannot read: they are dropped, and the measurement is kept", async () => {
+  const { mp, sdk, collect, reports } = reporting();
+  const meter = mp.getMeter("svc");
+  const thrown = new RangeError(`no row for ${MARKER}`);
+  const attrs = {
+    route: "/a",
+    get bad(): string {
+      throw thrown;
+    },
+    "host.ip": "10.0.0.1",
+    after: 2,
+  };
+  try {
+    const counter = meter.createCounter("c");
+    const upDown = meter.createUpDownCounter("u");
+    const histogram = meter.createHistogram("h");
+    const gauge = meter.createGauge("g");
+    assert.doesNotThrow(() => counter.add(1, attrs));
+    assert.doesNotThrow(() => upDown.add(-1, attrs));
+    assert.doesNotThrow(() => histogram.record(0.5, attrs));
+    assert.doesNotThrow(() => gauge.record(7, attrs));
+    assert.doesNotThrow(() => counter.add(1, revoked()));
+    assert.doesNotThrow(() => histogram.record(0.5, { tags: revoked() } as never));
+    assert.doesNotThrow(() => counter.add(1, null as never));
+
+    const metrics = await collect();
+    // What comes after the attribute that cannot be read is still kept.
+    const kept = { route: "/a", after: 2 };
+    for (const name of ["u", "g"]) assert.deepEqual(attributesOf(metrics, name), [kept], name);
+    assert.deepEqual(attributesOf(metrics, "c"), [kept, {}]);
+    assert.deepEqual(attributesOf(metrics, "h"), [kept, {}]);
+    assert.deepEqual(
+      reports.map((r) => r.message),
+      [
+        ...Array.from(
+          { length: 4 },
+          () => 'o11y: metric attribute "bad" cannot be read and is dropped: RangeError',
+        ),
+        "o11y: metric attributes cannot be read and are dropped: TypeError",
+        'o11y: metric attribute "tags" cannot be read and is dropped: TypeError',
+      ],
+    );
+    assert.equal(reports[0]?.cause, thrown);
+    for (const r of reports) assert.ok(!`${r.message}${r.stack}`.includes("MARKER"));
+  } finally {
+    await sdk.shutdown();
+  }
+});
+
+test("observable callbacks can observe attributes that cannot be read without the callback failing", async () => {
+  const { mp, sdk, collect, reports } = reporting();
+  const meter = mp.getMeter("svc");
+  let finished = 0;
+  try {
+    const single = meter.createObservableGauge("single");
+    single.addCallback((result) => {
+      result.observe(1, revoked());
+      result.observe(2, {
+        route: "/a",
+        get bad(): string {
+          throw new Error(MARKER);
+        },
+      });
+      finished++;
+    });
+    const batched = meter.createObservableCounter("batched");
+    meter.addBatchObservableCallback(
+      (result) => {
+        result.observe(batched, 3, revoked());
+        finished++;
+      },
+      [batched],
+    );
+    const metrics = await collect();
+    assert.equal(finished, 2, "neither callback was cut short");
+    assert.deepEqual(attributesOf(metrics, "single"), [{}, { route: "/a" }]);
+    assert.deepEqual(attributesOf(metrics, "batched"), [{}]);
+    assert.deepEqual(
+      reports.map((r) => r.message),
+      [
+        "o11y: metric attributes cannot be read and are dropped: TypeError",
+        'o11y: metric attribute "bad" cannot be read and is dropped: Error',
+        "o11y: metric attributes cannot be read and are dropped: TypeError",
+      ],
+    );
+  } finally {
+    await sdk.shutdown();
+  }
+});
+
+test("a measurement's attributes are read once and owned: a later change by the caller does not reach the point", async () => {
+  const { mp, sdk, collect, reports } = reporting();
+  const meter = mp.getMeter("svc");
+  let reads = 0;
+  const tags = ["a", "b"];
+  const attrs: Record<string, unknown> = {
+    route: "/a",
+    tags,
+    get counted(): number {
+      reads++;
+      return reads;
+    },
+  };
+  try {
+    meter.createCounter("c").add(1, attrs as never, sampled());
+    assert.equal(reads, 1, "the getter ran once, not once for the SDK and again for the exemplar store");
+    attrs.route = "/changed";
+    tags.push("c");
+    const metrics = await collect();
+    assert.deepEqual(attributesOf(metrics, "c"), [{ route: "/a", tags: ["a", "b"], counted: 1 }]);
+    assert.deepEqual(reports, []);
+  } finally {
+    await sdk.shutdown();
+  }
+});
+
+test("an instrument the SDK cannot record on is reported, never thrown", () => {
+  const policy = SensitivityPolicy.create({ pii: "drop", registries: [] });
+  const reports: Error[] = [];
+  const broken = {
+    getMeter: () => ({
+      createCounter: () => ({
+        add: () => {
+          throw new Error(MARKER);
+        },
+      }),
+    }),
+  };
+  const mp = new PolicyMeterProvider(
+    broken as never,
+    policy,
+    new ExemplarStore({ filter: "always_off" }),
+    (err) => reports.push(err as Error),
+  );
+  assert.doesNotThrow(() => mp.getMeter("svc").createCounter("jobs").add(1, { route: "/a" }));
+  assert.deepEqual(
+    reports.map((r) => r.message),
+    ['o11y: recording on "jobs" failed, the measurement is dropped: Error'],
+  );
+});
+
+test("without a reporter of its own the meter provider reports to the global error handler", () => {
+  const policy = SensitivityPolicy.create({ pii: "drop", registries: [] });
+  const sdk = new MeterProvider();
+  const mp = new PolicyMeterProvider(sdk, policy, new ExemplarStore({ filter: "always_off" }));
+  const reports: string[] = [];
+  setGlobalErrorHandler((err) => {
+    reports.push((err as Error).message);
+  });
+  try {
+    assert.doesNotThrow(() => mp.getMeter("svc").createCounter("c").add(1, revoked()));
+  } finally {
+    setGlobalErrorHandler(loggingErrorHandler());
+  }
+  assert.deepEqual(reports, ["o11y: metric attributes cannot be read and are dropped: TypeError"]);
+});
+
+// What a measurement costs the caller's object, counted: one listing of the keys and one read of
+// each kept value. The SDK and the exemplar store work on the library's copy. This also guards the
+// hot path: a second listing or a second read would show here.
+test("a measurement lists the caller's keys once and reads each kept value once, and never reads a dropped one", async () => {
+  const { mp, sdk, collect, reports } = reporting();
+  const traps: string[] = [];
+  const target = {
+    "http.request.method": "GET",
+    "http.route": "/items/:id",
+    "http.response.status_code": 200,
+    "url.scheme": "https",
+    "server.port": 443,
+    "http.request.header.authorization": "Bearer secret",
+  };
+  const counted = new Proxy(target, {
+    ownKeys(t) {
+      traps.push("ownKeys");
+      return Reflect.ownKeys(t);
+    },
+    get(t, key, receiver) {
+      traps.push(`get ${String(key)}`);
+      return Reflect.get(t, key, receiver);
+    },
+  });
+  try {
+    mp.getMeter("svc").createHistogram("h").record(0.25, counted, sampled());
+    assert.deepEqual(traps, [
+      "ownKeys",
+      "get http.request.method",
+      "get http.route",
+      "get http.response.status_code",
+      "get url.scheme",
+      "get server.port",
+    ]);
+    const [point] = find(await collect(), "h").dataPoints as DataPoint<unknown>[];
+    assert.deepEqual(point?.attributes, {
+      "http.request.method": "GET",
+      "http.route": "/items/:id",
+      "http.response.status_code": 200,
+      "url.scheme": "https",
+      "server.port": 443,
+    });
+    assert.equal(exemplarsOf(point as DataPoint<unknown>).length, 1, "the exemplar joined the owned copy");
+    assert.equal(traps.length, 6, "collecting and attaching read nothing more from the caller's object");
+    assert.deepEqual(reports, []);
+  } finally {
+    await sdk.shutdown();
+  }
 });

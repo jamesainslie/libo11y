@@ -9,7 +9,14 @@ import {
   type Sampler,
   TraceIdRatioBasedSampler,
 } from "@opentelemetry/sdk-trace";
-import { type ExporterKind, exporterError, unsupportedProtocolError } from "./errors.ts";
+import {
+  type ExporterKind,
+  exporterError,
+  invalidOptionError,
+  piiHashKeyTypeError,
+  unsupportedProtocolError,
+} from "./errors.ts";
+import { isBytes } from "./internal/bytes.ts";
 import type { LogLevel } from "./log-values.ts";
 import type { TelemetryOptions } from "./options.ts";
 import { sanitizeEndpoint } from "./sanitize-endpoint.ts";
@@ -64,12 +71,14 @@ export const KNOWN_SAMPLERS: ReadonlySet<string> = new Set([
 export const SUPPORTED_PROTOCOLS: ReadonlySet<string> = new Set(["http/protobuf", "http/json"]);
 
 /**
- * The export timeout when no variable sets one: the default shutdown deadline. Upstream's batch
- * processors and periodic reader arm an export timer that is not unref'd, so with a hung exporter
- * the process stays alive until it fires, even after shutdown has resolved. sdk-node's 30000 ms
- * default would hold an exiting process for 30 s; 5000 ms bounds it to the shutdown deadline. An
- * explicit OTEL_BSP_EXPORT_TIMEOUT, OTEL_BLRP_EXPORT_TIMEOUT or OTEL_METRIC_EXPORT_TIMEOUT still
- * wins, and then a hung exporter can hold the process for that long.
+ * The export timeout when no variable sets one: the default shutdown deadline, where sdk-node uses
+ * 30000 ms. A flush against an exporter that does not answer then gives up when the default
+ * shutdown deadline does. An explicit OTEL_BSP_EXPORT_TIMEOUT, OTEL_BLRP_EXPORT_TIMEOUT or
+ * OTEL_METRIC_EXPORT_TIMEOUT still wins.
+ *
+ * Upstream's batch processors and periodic reader arm an export timer that is not unref'd. It no
+ * longer holds an exiting process: shutdown fails the exports still in flight when it settles,
+ * which clears the timer (export-watch.ts).
  */
 export const DEFAULT_EXPORT_TIMEOUT_MILLIS = 5000;
 
@@ -246,4 +255,72 @@ export function resolveConfig(options: TelemetryOptions, ambient: Env): Resolved
     runtimeMetrics,
     startupSummary: options.startupSummary ?? true,
   };
+}
+
+/** The values each option with a closed set accepts, in the order options.ts declares the options. */
+const CLOSED_OPTIONS: readonly (readonly [keyof TelemetryOptions, readonly (string | boolean)[]])[] = [
+  ["strictIdentity", [true, false]],
+  ["piiMode", ["drop", "hash", "allow"]],
+  ["logLevel", ["trace", "debug", "info", "warn", "error", "fatal"]],
+  ["console", ["json", "text", false]],
+  ["captureConsole", [true, false]],
+  ["logExport", [true, false]],
+  ["exemplarFilter", ["trace_based", "always_on", "always_off"]],
+  ["runtimeMetrics", [true, false]],
+  ["startupSummary", [true, false]],
+  ["hermetic", [true, false]],
+];
+
+/**
+ * Checks every option that takes a closed set of values, and throws INVALID_OPTION for the first
+ * one, in declaration order, whose value is outside its set. An option that is undefined or null
+ * is not given and takes its default. A boolean option must be a boolean: the string "false" is
+ * not false, and reading it as true would do the opposite of what was asked.
+ *
+ * Without this, a JavaScript caller or a value read from configuration was accepted in silence:
+ * logLevel "verbose" dropped every record, and console "pretty" wrote text. The variables of the
+ * environment are not checked here. Each has its own rule in resolveConfig.
+ *
+ * The propagators option is checked last: it must be an array, and each member a propagator.
+ *
+ * The PII hash key is checked first, in every PII mode: a key that is given and is not a
+ * Uint8Array throws PII_HASH_KEY. A string from an environment variable is the usual case, and
+ * converting it would key every token with nothing.
+ */
+export function validateOptions(options: TelemetryOptions): void {
+  const key: unknown = options.piiHashKey;
+  if (key !== undefined && key !== null && !isBytes(key)) throw piiHashKeyTypeError(key);
+  for (const [option, allowed] of CLOSED_OPTIONS) {
+    const value: unknown = options[option];
+    if (value === undefined || value === null) continue;
+    if (!allowed.includes(value as string | boolean)) throw invalidOptionError(option, value, allowed);
+  }
+  validatePropagators(options.propagators);
+}
+
+// Whether value can be used as a propagator. It reads the three members and calls none of them.
+function isPropagator(value: unknown): boolean {
+  try {
+    if ((typeof value !== "object" && typeof value !== "function") || value === null) return false;
+    const p = value as { inject?: unknown; extract?: unknown; fields?: unknown };
+    return (
+      typeof p.inject === "function" && typeof p.extract === "function" && typeof p.fields === "function"
+    );
+  } catch {
+    return false;
+  }
+}
+
+// The propagators option is an array of propagators. A single propagator has no length, so it used
+// to read as "not given" and the default was used in silence, and a name such as "tracecontext"
+// failed later with a TypeError from inside the SDK.
+function validatePropagators(given: unknown): void {
+  if (given === undefined || given === null) return;
+  if (!Array.isArray(given)) throw invalidOptionError("propagators", given, ["an array of propagators"]);
+  for (let i = 0; i < given.length; i++) {
+    const member: unknown = given[i];
+    if (!isPropagator(member)) {
+      throw invalidOptionError(`propagators[${i}]`, member, ["a propagator with inject, extract and fields"]);
+    }
+  }
 }

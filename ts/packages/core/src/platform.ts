@@ -23,12 +23,19 @@ export interface ExporterRequest {
   readonly config: ResolvedConfig;
   /**
    * The exemplar store. A platform that builds a periodic metric reader wraps its exporter with
-   * exemplarMetricExporter(exporter, exemplars), so exported points carry exemplars.
+   * exemplarMetricExporter(exporter, exemplars), so exported points carry exemplars. The wrapper is
+   * also where core watches the reader's exports: a failed one reaches the shutdown report, and
+   * shutdown stops the exporter.
    */
   readonly exemplars: ExemplarStore;
 }
 
-/** The exporters a platform built, one per signal the configuration routes to otlp or console. */
+/**
+ * The exporters a platform built, one per signal the configuration routes to otlp or console. An
+ * exporter's shutdown() should stop it without waiting for the collector, ending what is in flight
+ * and releasing what it holds: core calls it once every export has reported its result, or when
+ * the shutdown deadline has passed.
+ */
 export interface ExporterSet {
   readonly spanExporter?: SpanExporter;
   readonly metricReader?: IMetricReader;

@@ -2,6 +2,7 @@
  * SHA-256 (FIPS 180-4) and HMAC-SHA256 (RFC 2104) in plain TypeScript, so the PII token is the same
  * on every runtime, synchronously. A platform with a native HMAC passes it as Platform.hmacSha256.
  */
+import { isBytes } from "./internal/bytes.ts";
 
 const K = Uint32Array.from([
   0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98,
@@ -82,8 +83,14 @@ export function sha256(data: Uint8Array): Uint8Array {
 
 const BLOCK = 64;
 
-/** Returns HMAC-SHA256 of data under key. */
+/**
+ * Returns HMAC-SHA256 of data under key. Throws TypeError for a key or data that is not a
+ * Uint8Array: `k.set("1234")` would key with the digits 1, 2, 3, 4 and `k.set(32)` with nothing,
+ * and neither throws by itself. The message names the argument and never its value.
+ */
 export function hmacSha256(key: Uint8Array, data: Uint8Array): Uint8Array {
+  if (!isBytes(key)) throw new TypeError("hmacSha256: the key must be a Uint8Array");
+  if (!isBytes(data)) throw new TypeError("hmacSha256: the data must be a Uint8Array");
   const k = new Uint8Array(BLOCK);
   k.set(key.length > BLOCK ? sha256(key) : key);
   const inner = new Uint8Array(BLOCK + data.length);
