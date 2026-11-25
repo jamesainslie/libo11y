@@ -5,9 +5,9 @@ Opinionated, elegant observability libraries built purely on OpenTelemetry.
 libo11y gives applications one-call telemetry setup with unified configuration,
 W3C context propagation, and log/trace/metric correlation, in the native idiom
 of each target language. It wraps OpenTelemetry *setup*, not instrumentation,
-with one exception in Go (see principle 3 below). After initialization your
-code uses the standard OTEL APIs and your language's native logging facade,
-and everything is correlated and exported over OTLP.
+with the exceptions that principle 3 lists. After initialization your code
+uses the standard OTEL APIs and your language's native logging facade, and
+everything is correlated and exported over OTLP.
 
 ## Languages
 
@@ -23,7 +23,10 @@ and everything is correlated and exported over OTLP.
 
 1. **Pure OTEL.** Traces, metrics, and logs over OTLP. Standard `OTEL_*`
    environment variables are honored, never shadowed by a parallel namespace
-   (an explicit, opt-in mode ignores them for hermetic tests). Stable
+   (an explicit, opt-in mode ignores them for hermetic tests). The released
+   libraries do not honor every standard variable yet. `OTEL_PROPAGATORS` is
+   the main one, so propagators are set in code, and
+   [`docs/PARITY.md`](docs/PARITY.md) lists the gaps. Stable
    semantic conventions by default for the instrumentation libo11y wires
    (HTTP spans and metrics, database client spans and
    `db.client.operation.duration`). Not everything emitted is stable: gRPC
@@ -39,19 +42,34 @@ and everything is correlated and exported over OTLP.
 3. **Wrap setup, not instrumentation.** One call builds and wires the
    providers; afterwards users call the vanilla OTEL API and their language's
    standard logging interface. libo11y exports no span or metric wrapper types.
-   The Go `o11ysql` package is the one place libo11y writes its own
-   instrumentation, and [its README](go/o11ysql/README.md) explains why.
+   It writes its own instrumentation only where OpenTelemetry has none to
+   wrap. In Go that is the `o11ysql` package, and
+   [its README](go/o11ysql/README.md) explains why. In TypeScript it is
+   `instrumentServe` and `instrumentFetch`, because upstream's HTTP
+   instrumentation does not reach Bun's fetch or fetch-style servers.
+   TypeScript also has no standard structured logger, so there the front
+   door is the libo11y logger, and `captureConsole` routes `console` calls
+   into it.
 4. **Owned lifecycle.** Initialization returns a handle with an idempotent,
    bounded `Shutdown` that reports per-signal errors. The library never
    panics, never calls exit, and never blocks startup on collector
-   connectivity.
-5. **Locally testable.** The library's guarantees can be asserted in a
-   consumer's own test suite with the bundled hermetic test harness. One
-   exception: secret attributes on metric measurements are dropped without
-   being counted, so the conformance assertion cannot report them (inspect
-   the recorded metrics instead). No global state is mutated in tests.
-6. **Safe in the dark.** With no configuration at all, applications run
-   normally: telemetry degrades gracefully instead of crashing the host.
+   connectivity. [`docs/PARITY.md`](docs/PARITY.md) lists the known defects
+   of the current releases against this rule.
+5. **Locally testable.** The guarantees a test can observe, which are
+   specification conformance, log-to-trace correlation and exemplars, can
+   be asserted in a consumer's own test suite with the bundled hermetic
+   test harness. One exception: secret attributes on metric measurements
+   are dropped without being counted, so the conformance assertion cannot
+   report them (inspect the recorded metrics instead). No global state is
+   mutated in tests, with one exception in TypeScript. OpenTelemetry JS
+   keeps one context manager per process, so when none is registered the
+   recorder installs one and removes it when the last recorder shuts down.
+6. **Safe in the dark.** With no collector to reach and no `OTEL_*`
+   configuration, applications run normally: telemetry degrades instead of
+   crashing the host. Setup requires one thing, the service identity, which
+   is a service name and a deployment environment. Without it setup returns
+   a typed error and installs nothing, and the application decides whether
+   to carry on without telemetry.
 
 ## The specification
 
@@ -93,9 +111,13 @@ go get github.com/jamesainslie/libo11y/go/o11ysql@v0.2.0       # only for databa
 The Gin, Connect, and database/sql integrations (`go/o11ygin`,
 `go/o11yconnect`, `go/o11ysql`) are separate modules released alongside
 the main module at the same version. The modules require Go 1.26.0 or
-later. Build with go1.26.9 or later on the 1.26 line
-(or go1.27.2 or later on the 1.27 line) to pick up the standard-library
-security fixes.
+later. Build with the latest patch release of the 1.26 or 1.27 line to
+pick up the standard-library security fixes.
+
+The latest Go release, `go/v0.2.0`, implements spec 1.1.0 and stamps that
+version's schema URL on every resource. Spec 1.2.0 support is on `main`
+and ships in the next Go release. The TypeScript packages implement spec
+1.2.0.
 
 ## Quick start (Go)
 
@@ -103,31 +125,33 @@ security fixes.
 package main
 
 import (
-    "context"
-    "log"
-    "log/slog"
+	"context"
+	"log"
+	"log/slog"
 
-    "go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel"
 
-    o11y "github.com/jamesainslie/libo11y/go"
-    "github.com/jamesainslie/libo11y/go/spec"
+	o11y "github.com/jamesainslie/libo11y/go"
+	"github.com/jamesainslie/libo11y/go/spec"
 )
 
 func main() {
-    ctx := context.Background()
-    sdk, err := o11y.Setup(ctx,
-        o11y.WithServiceName("checkout"),
-        o11y.WithEnvironment(spec.EnvironmentProduction),
-    )
-    if err != nil {
-        log.Fatal(err)
-    }
-    defer sdk.Shutdown(context.Background())
+	ctx := context.Background()
+	sdk, err := o11y.Setup(ctx,
+		o11y.WithServiceName("checkout"),
+		o11y.WithEnvironment(spec.EnvironmentProduction),
+	)
+	if err != nil {
+		// Setup installed nothing. The service runs without telemetry.
+		log.Printf("telemetry disabled: %v", err)
+	} else {
+		defer sdk.Shutdown(context.Background())
+	}
 
-    // Vanilla OTEL and log/slog from here on.
-    ctx, span := otel.Tracer("checkout").Start(ctx, "startup")
-    defer span.End()
-    slog.InfoContext(ctx, "ready") // correlated with the span, exported
+	// Vanilla OTEL and log/slog from here on.
+	ctx, span := otel.Tracer("checkout").Start(ctx, "startup")
+	defer span.End()
+	slog.InfoContext(ctx, "ready") // correlated with the span, exported
 }
 ```
 
@@ -135,6 +159,12 @@ A deployment environment is required. Set it with `WithEnvironment` or
 `OTEL_RESOURCE_ATTRIBUTES=deployment.environment.name=production`; the option
 wins over the variable. Allowed values: production, staging, development,
 test (extend with `WithEnvironmentValues`).
+
+When the service name or the environment is missing or invalid, `Setup`
+returns a typed error and installs nothing. The quick start logs that
+error and carries on, because the vanilla OTEL API and `log/slog` still
+work without an SDK. A service that would rather not start without
+telemetry returns or exits on the error instead.
 
 See [`go/README.md`](go/README.md) for the full Go documentation and
 [`go/examples/httpserver`](go/examples/httpserver) for a complete,
@@ -177,7 +207,13 @@ await shutdownOnSignals(telemetry, { beforeShutdown: () => server.stop() });
 `setup` reads the rest of its configuration from `OTEL_*`, as Go's
 `Setup` does, and installs the providers globally, so code that uses the
 vanilla `@opentelemetry/api` is exported too. `telemetry.shutdown()` is
-the same bounded, idempotent shutdown that `shutdownOnSignals` calls. See
+the same bounded, idempotent shutdown that `shutdownOnSignals` calls.
+
+`setup` rejects with an `O11yError` when the service name or the
+environment is missing, and when a standard variable selects something the
+packages do not support, such as the `grpc` protocol. A top-level `await`
+then ends the process, so catch the error if the service should start
+without telemetry. See
 [`ts/README.md`](ts/README.md) for the packages and
 [`ts/packages/server`](ts/packages/server) for the server documentation.
 
