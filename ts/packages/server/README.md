@@ -45,9 +45,22 @@ if (!report.ok) process.exitCode = 1;
 and installs the context manager, providers, propagator and error handler
 globally. A second call fails with `O11yError` code `ALREADY_SETUP` until
 the first telemetry shuts down. `createTelemetry` is Go's `New`. It
-touches no global and emits no canary. Pass its `telemetry` to
-`instrumentServe` and `instrumentFetch`, and its providers and propagator
-to other code that needs them.
+installs nothing in the OpenTelemetry globals and emits no canary. Pass
+its `telemetry` to `instrumentServe` and `instrumentFetch`, and its
+providers and propagator to other code that needs them.
+
+Two options still reach outside a `createTelemetry` handle:
+
+- `runtimeMetrics`, on by default, installs upstream's
+  require-in-the-middle hook on `Module.prototype.require`, and the hook
+  stays for the life of the process, after `shutdown` too. Pass
+  `runtimeMetrics: false` to avoid it.
+- `captureConsole: true` patches `globalThis.console` until `shutdown`.
+  It is off by default. Leave it off to avoid it.
+
+An option outside the closed set of values it takes, such as
+`logLevel: "verbose"` or `console: "pretty"`, rejects `setup` and
+`createTelemetry` with `O11yError` code `INVALID_OPTION`.
 
 Both take the `TelemetryOptions` that the
 [core README](https://github.com/jamesainslie/libo11y/tree/main/ts/packages/core#options) lists. `OTEL_SDK_DISABLED=true`
@@ -75,6 +88,26 @@ handler runs inside the span's context, so the spans and logs it makes are
 children of it. A thrown error marks the span failed, records the
 exception and a 500, and is thrown again.
 
+The telemetry never fails the request. The handler runs exactly once, and
+only its own error reaches the caller:
+
+- A propagator that throws on extract leaves the request without the
+  inbound context.
+- A span that cannot start leaves the request uninstrumented. So does a
+  request the instrumentation cannot read, such as a value that is not a
+  `Request`: the handler is called with it as if it were not wrapped.
+- A span that cannot end changes nothing the caller sees.
+- A handler that resolves with something that is not a `Response` gets
+  that value returned unchanged.
+
+Each of these is reported as one `o11y: telemetry error` line on stderr.
+With the `telemetry` option the line goes through that telemetry's own
+rate-limited handler, so it is written for a `createTelemetry` handle too.
+Without it the report goes to the OpenTelemetry global error handler,
+which `setup` makes libo11y's. A report names the step that failed and
+the class of the error, and never the error's message, because a
+propagator is handed the request's headers and its error can quote them.
+
 | Option           | Effect                                                                                                                                                                                                                                 |
 | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `telemetry`      | the telemetry whose providers and propagator to use. Default: the globals `setup` installs                                                                                                                                             |
@@ -101,6 +134,14 @@ headers arrive. A 4xx or 5xx response or a failed request marks it failed.
 The trace context goes into a copy of the request headers, and the caller's
 `Request` and `init` are never changed.
 
+The telemetry never fails the request here either. A propagator that
+throws on inject is reported and the request is sent with its own headers.
+A span that cannot start leaves the request uninstrumented. A span that
+cannot end replaces neither the response nor fetch's own error. A
+`fetchImpl` that resolves with something that is not a `Response` gets
+that value returned unchanged. The reports are written as
+`instrumentServe`'s are.
+
 | Option        | Effect                                                                                                                  |
 | ------------- | ----------------------------------------------------------------------------------------------------------------------- |
 | `telemetry`   | the telemetry whose providers and propagator to use. Default: the globals `setup` installs                              |
@@ -126,10 +167,18 @@ report. Each signal gets one `process.once` listener. The first signal
 removes the others, so a second signal gets the runtime's default handling
 and ends the process. It never exits the process itself.
 
+`beforeShutdown` and the telemetry shutdown share one deadline, and
+together they never take longer than `timeoutMillis`. `beforeShutdown` may
+use nine tenths of it. The shutdown gets what is left of the whole, which
+is then never less than a tenth, so buffered telemetry has a chance to
+leave even when `beforeShutdown` used all it was allowed. A
+`beforeShutdown` still running after nine tenths of the deadline is
+reported as a `lifecycle` error, and the shutdown starts without it.
+
 | Option           | Effect                                                                                                                                              |
 | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `signals`        | the signal names to wait for. Default `["SIGINT", "SIGTERM"]`                                                                                       |
-| `timeoutMillis`  | the shutdown deadline. Default 5000 ms, shutdown's own                                                                                              |
+| `timeoutMillis`  | the one deadline for `beforeShutdown` and the telemetry shutdown together. Default 5000 ms. Read as `shutdown` reads its own: see the core README   |
 | `beforeShutdown` | runs after the signal and before telemetry shutdown. Stop the HTTP server here, so in-flight requests finish while their telemetry can still export |
 
 ## Runtime metrics
@@ -157,23 +206,92 @@ protocol is `http/protobuf` by default, or `http/json`, from
 `OTEL_EXPORTER_OTLP_PROTOCOL` and its per-signal forms. `grpc` fails with
 `UNSUPPORTED_PROTOCOL`.
 
-Traces and logs use the upstream OTLP exporters. Metrics use upstream's
-OTLP transport with libo11y's serializers, which write exemplars:
+Each OTLP exporter is upstream's exporter base, export delegate and
+configuration over libo11y's own HTTP transport. Traces and logs use
+upstream's serializers. Metrics use libo11y's, which write exemplars:
 `OtlpProtobufMetricsSerializer` from this package, and core's
 `OtlpJsonMetricsSerializer`. Upstream reads every other
-`OTEL_EXPORTER_OTLP_*` variable, such as the endpoints, headers,
-certificates, compression and
-`OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE`. An
+`OTEL_EXPORTER_OTLP_*` variable, shared and per signal: the endpoints,
+headers, certificates, client key and certificate, compression, timeout
+and `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE`. An
 `OTEL_METRIC_EXPORT_TIMEOUT` above `OTEL_METRIC_EXPORT_INTERVAL` is
 clamped to the interval, as sdk-node does.
 
+### The transport
+
+Upstream does not export its HTTP transport or its retrying transport, and
+neither can be stopped, so libo11y has its own. It follows upstream's in
+everything a collector or a diag logger sees, apart from the six
+differences below: the request and its framing, gzip, the `User-Agent`,
+the statuses (429, 502, 503, 504) and network
+errors that are retried, at most five retries, the backoff from one second
+by half each time to five seconds with a fifth of jitter, `Retry-After` in
+seconds or as an HTTP date, the time a retry is given, the 4 MiB cap on a
+response body, and the diag messages about retries. The tests pin each of
+these, and fail when the upstream files the transport follows change.
+
+It differs from upstream's transport in six ways, and in no other:
+
+1. **The timeout covers the whole attempt.** `OTEL_EXPORTER_OTLP_TIMEOUT`
+   bounds connecting, sending and reading the response together. Upstream's
+   timeout is an idle timeout that starts only once the socket has
+   connected. Two things follow. A connection that never completes, to an
+   unroutable address or a host that drops packets, now fails at the
+   timeout, where under Node it used to last as long as the operating
+   system kept trying. And a response that trickles in for longer than the
+   timeout now fails, where upstream let it run as long as bytes kept
+   arriving.
+2. **Shutdown ends what is in flight.** Stopping an exporter destroys its
+   requests in flight, cancels its wait between two retries, and fails
+   every later export at once. Upstream's transport does nothing when it is
+   shut down.
+3. **Shutdown destroys the agent**, which closes its idle keep-alive
+   connections to the collector.
+4. **Exports that start together share one agent.** Upstream builds an
+   agent for each export that starts before the first agent exists, and
+   keeps the last.
+5. **A wait that is too long for a timer is clamped.** A `Retry-After`
+   beyond 2147483647 ms, about 24.8 days, waits that long. Upstream's
+   timer fires after a millisecond. A timeout that large is clamped the
+   same way, which is also what upstream's amounts to.
+6. **Under Bun a gzip body carries a `Content-Length`.** Upstream streams
+   the compressed body, which Bun frames as chunked. This transport
+   compresses the body in one call and then sends it, so Bun sends its
+   length. Under Node both send a gzip body chunked, though the same bytes
+   can be split into chunks differently. A body that is not compressed is
+   framed the same by both on each runtime. A collector reads either
+   framing.
+
+Once `shutdown()` has resolved, the telemetry holds nothing that keeps
+the process alive, with one exception. Under Node a name lookup in
+progress cannot be cancelled. When the collector's host name does not
+resolve and the resolver does not answer either, the export still fails on
+time and `shutdown()` still resolves at its deadline, but the process
+stays alive until the resolver gives up. That took 10 s in the review that
+found it, and it depends on the resolver's own timeouts.
+
+When the shutdown deadline passes with an export still in flight, the
+export is abandoned and that signal is in the report. Its error is
+`deadline exceeded`, unless another export of the same signal had already
+failed, in which case the report carries that earlier error.
+
 The export timeout defaults to 5000 ms for spans, logs and metrics, where
-sdk-node uses 30000 ms. Upstream's batch processors and periodic reader
-arm an export timer that does not let the process exit, so a hung exporter
-keeps an exiting process alive until the timer fires, even after shutdown
-has resolved. The 5000 ms default matches the shutdown deadline. An
-explicit `OTEL_BSP_EXPORT_TIMEOUT`, `OTEL_BLRP_EXPORT_TIMEOUT` or
+sdk-node uses 30000 ms, so a flush against a collector that does not
+answer gives up when the default shutdown deadline does. An explicit
+`OTEL_BSP_EXPORT_TIMEOUT`, `OTEL_BLRP_EXPORT_TIMEOUT` or
 `OTEL_METRIC_EXPORT_TIMEOUT` still wins.
+
+## Propagators
+
+`OTEL_PROPAGATORS` selects the propagators when the `propagators` option
+is not given: `tracecontext`, `baggage` and `none`, as a comma-separated
+list applied in order. Unset or empty, it leaves the default,
+`tracecontext,baggage`. Any other name, such as `b3` or `jaeger`, rejects
+`setup` and `createTelemetry` with `O11yError` code
+`UNSUPPORTED_PROPAGATOR`. Pass a propagator for it through the
+`propagators` option. The
+[core README](https://github.com/jamesainslie/libo11y/tree/main/ts/packages/core#options)
+has the details.
 
 ## Resource
 
@@ -223,9 +341,14 @@ Node 24 keeps the context in both of the last two cases.
 ## Known limitations
 
 - Upstream's `RuntimeNodeInstrumentation` installs a require-in-the-middle
-  hook on `Module.prototype.require`. The hook stays for the life of the
-  process, even after `shutdown()`. Pass `runtimeMetrics: false` to avoid
-  it.
+  hook on `Module.prototype.require`, for `setup` and for `createTelemetry`
+  alike. It installs the hook when it is constructed, although it patches
+  no module. The hook stays for the life of the process, even after
+  `shutdown()`. Pass `runtimeMetrics: false` to avoid it.
+- A span's attributes are read by upstream's tracer. An attributes object
+  that cannot be read, such as a revoked `Proxy`, throws from `startSpan`
+  or `setAttributes`. The logger, wide records and metric instruments do
+  not throw this way.
 - OTLP over gRPC is not supported.
 
 ## Parity

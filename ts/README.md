@@ -6,7 +6,8 @@ The TypeScript implementation of libo11y, as a Bun workspace of six
 and Manifest V3 extensions. `@libo11y/spec` and `@libo11y/core` run in
 both. The packages are built on
 OpenTelemetry JS 3.x (`@opentelemetry/api` 1.10.0, the SDK packages at
-3.1.1 and the OTLP exporters at 0.301.1). They release together at one
+3.1.1, and upstream's OTLP exporter base and serializers at 0.301.1 over
+libo11y's own HTTP transport). They release together at one
 version from a `ts/vX.Y.Z` tag, and [CHANGELOG.md](CHANGELOG.md) lists
 each release.
 
