@@ -18,7 +18,7 @@ import { activeConsent } from "../consent/active.ts";
 import type { Consent } from "../contracts/consent.ts";
 import type { DocumentLoadOptions } from "../options.ts";
 import { VERSION } from "../version.ts";
-import { consentAllows, consentOf, SCOPE } from "./http-common.ts";
+import { consentAllows, consentOf, isHttpUrl, SCOPE, urlAttributes } from "./http-common.ts";
 import {
   remoteParentFromTraceparent,
   type ServerTimingLike,
@@ -93,6 +93,24 @@ function documentAttributes(href: string): Attributes {
 }
 
 /**
+ * The HTTP client attributes of the document's request, for an http: or https: document: GET (the
+ * navigation entry does not say the method), server.address, server.port, and url.full sanitized
+ * as on fetch spans, with the query and fragment also left out, as on every document attribute.
+ */
+function documentFetchAttributes(href: string): Attributes {
+  let url: URL;
+  try {
+    url = new URL(href);
+  } catch {
+    return {};
+  }
+  if (!isHttpUrl(url)) return {};
+  url.search = "";
+  url.hash = "";
+  return { "http.request.method": "GET", ...urlAttributes(url) };
+}
+
+/**
  * Records the documentLoad span and its documentFetch child from a navigation entry, with times
  * relative to timeOrigin (epoch milliseconds). Internal: the pure builder recordDocumentLoad uses.
  */
@@ -125,6 +143,7 @@ export function recordNavigationSpans(tracer: Tracer, entry: NavigationTimingLik
       startTime: at(entry.fetchStart),
       attributes: {
         ...attributes,
+        ...documentFetchAttributes(entry.name),
         ...(typeof status === "number" && status > 0 ? { "http.response.status_code": status } : {}),
       },
     },
@@ -249,7 +268,9 @@ export async function recordDocumentLoadWith(opts: DocumentLoadOptions, env: Doc
  * entry's startTime to loadEventEnd, with a child CLIENT span "documentFetch" from fetchStart to
  * responseEnd. The documentLoad span's parent is the remote context of the entry's Server-Timing
  * traceparent when there is one (traceparentFromServerTiming), else none. Attributes: url.path and
- * url.scheme of the document (never the query or fragment), and on documentFetch
+ * url.scheme of the document (never the query or fragment), and on documentFetch the HTTP client
+ * attributes of an http: or https: document (http.request.method GET, server.address, server.port
+ * and url.full, sanitized as on fetch spans and without the query or fragment) and
  * http.response.status_code from responseStatus when the browser exposes it. The navigation
  * timing marks (fetchStart, domainLookupStart, ..., loadEventEnd) are span events at their times.
  *

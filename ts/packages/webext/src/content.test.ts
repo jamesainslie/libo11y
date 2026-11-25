@@ -151,6 +151,13 @@ test("batches go to the worker as ExportMessages over a memory queue", async () 
   });
 });
 
+test("the delivery counts itself online, because messaging the worker needs no network", async () => {
+  const r = rig({ stored: "granted" });
+  await withContent(r, BASE, async () => {
+    assert.equal(r.seen.delivery?.options.isOnline?.(), true);
+  });
+});
+
 test("the platform is webext with every signal pointed at the worker", async () => {
   const r = rig();
   await withContent(r, { ...BASE, env: { OTEL_TRACES_SAMPLER: "always_on" }, userAgent: true }, async () => {

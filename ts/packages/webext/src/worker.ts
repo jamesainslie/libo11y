@@ -72,7 +72,8 @@ export function defaultWorkerDeps(): WorkerDeps {
  * Builds and installs the worker's telemetry. Call it at the top level of the worker script on
  * every wake. In order: the consent controller with the stored state beating options.consent
  * (readStoredConsent) and syncConsent; openQueue (IndexedDB at the extension origin); the HTTP
- * transport with sendBeacon undefined; a delivery with persistFirst true and mode always "normal";
+ * transport with sendBeacon undefined; a delivery with persistFirst true, mode always "normal" and a
+ * lease of three times transport.timeoutMillis when that is longer than the default;
  * webPlatform with name "webext" and WORKER_ENV_DEFAULTS; setupWith; serviceVersion defaulting to
  * the manifest version. Then: the runtime.onMessage listener for ExportMessages from this
  * extension's own contexts (sender.id === runtime.id), which puts each accepted batch in the queue,
@@ -83,13 +84,32 @@ export function defaultWorkerDeps(): WorkerDeps {
  * reaches it; batches that arrive before the telemetry is ready are answered once it is. Traced
  * messages that arrive before the application can add its listener are held, and replayed one task
  * after this resolves to the listeners added through the handle's onMessage by then, so add them
- * right after the await. Each batch re-reads the stored consent before it is accepted, so a grant
+ * in the first callback on the returned promise. A service worker cannot use a top-level await, so
+ * the pattern is:
+ *
+ * ```ts
+ * setupWorker(options).then((t) => t.onMessage(handle));
+ * ```
+ *
+ * Each batch re-reads the stored consent before it is accepted, so a grant
  * or revoke in another context counts before its storage.onChanged arrives. When no state is
  * stored yet, a granted or denied initial state is stored for the content scripts to read. The
+ * worker's consent options decide the privacy signals for the whole extension: a stored grant
+ * that a respected DNT or GPC signal refuses, from a content script or an earlier wake, is
+ * replaced in storage by "denied", so every context denies (syncConsent). The
  * console sink defaults to off, as on the web.
  */
 export function setupWorker(options: WorkerSetupOptions = {}): Promise<WorkerTelemetry> {
   return setupWorkerWith(options, defaultWorkerDeps());
+}
+
+/**
+ * The delivery lease for a transport timeout: three times it, never less than the delivery's
+ * 30-second default. As leaseForTimeout in @libo11y/web, whose internal entry point does not
+ * export it.
+ */
+function leaseForTimeout(timeoutMillis: number): number {
+  return Math.max(30_000, 3 * timeoutMillis);
 }
 
 /** What the export listener needs once the telemetry is up. */
@@ -296,6 +316,8 @@ export async function setupWorkerWith(
       mode: () => "normal",
       ...(t.initialBackoffMillis === undefined ? {} : { initialBackoffMillis: t.initialBackoffMillis }),
       ...(t.maxBackoffMillis === undefined ? {} : { maxBackoffMillis: t.maxBackoffMillis }),
+      // A lease shorter than a send could let the next drain claim the entry mid-send and resend it.
+      ...(t.timeoutMillis === undefined ? {} : { leaseMillis: leaseForTimeout(t.timeoutMillis) }),
     });
     steps.unshift(() => delivery.shutdown());
     const platform = deps.webPlatform({

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { createConsentController } from "@libo11y/web/internal";
 import type { ChromeLike } from "./chrome.ts";
 import { CONSENT_STORAGE_KEY, readStoredConsent, syncConsent } from "./consent-sync.ts";
 import { createFakeExtension } from "./test-support/fake-chrome.ts";
@@ -217,4 +218,41 @@ test("refresh applies the stored state before it resolves, without writing it ba
   ext.stored.set(CONSENT_STORAGE_KEY, "granted");
   await sync.refresh();
   assert.equal(here.consent.state(), "denied");
+});
+
+test("a grant elsewhere that a privacy signal here refuses is undone for every context", async () => {
+  const ext = createFakeExtension();
+  // The worker respects GPC and the browser sends it; the content script has no privacy options.
+  const worker = createConsentController({
+    respectGlobalPrivacyControl: true,
+    navigator: { globalPrivacyControl: true },
+  });
+  const content = createFakeConsentController("pending");
+  let cleared = 0;
+  content.onRevoke(() => {
+    cleared++;
+  });
+  syncConsent(worker, ext.context().chrome);
+  syncConsent(content, ext.context({ tabId: 3 }).chrome);
+  await ext.settle();
+  content.consent.grant();
+  await ext.settle();
+  assert.equal(worker.consent.state(), "denied");
+  assert.equal(ext.stored.get(CONSENT_STORAGE_KEY), "denied");
+  assert.equal(content.consent.state(), "denied");
+  assert.equal(cleared, 1, "the content script's buffers are cleared");
+});
+
+test("a stored grant that a privacy signal here refuses is replaced by denied at the start", async () => {
+  const ext = createFakeExtension();
+  ext.stored.set(CONSENT_STORAGE_KEY, "granted");
+  const worker = createConsentController({
+    initial: "granted",
+    respectDoNotTrack: true,
+    navigator: { doNotTrack: "1" },
+  });
+  syncConsent(worker, ext.context().chrome);
+  await ext.settle();
+  assert.equal(worker.consent.state(), "denied");
+  assert.equal(ext.stored.get(CONSENT_STORAGE_KEY), "denied");
 });

@@ -136,6 +136,10 @@ instead of the delay the collector asked for.
 The `fetch` and XHR spans inject `traceparent`, `tracestate` and `baggage`
 only into requests to the page's own origin and to origins on the
 `propagateTo` allow-list. Every other request gets the span and no headers.
+A `traceparent` the caller set on a `fetch` is replaced by the span's, as
+`@libo11y/server` does. An XHR whose caller set `traceparent` (in any case)
+gets no injected headers, because `setRequestHeader` appends to a header
+already set. Its span is still recorded.
 
 - A string entry is an origin, such as `"https://api.example.com"`. It is
   normalized through `new URL(entry).origin` and compared exactly.
@@ -179,8 +183,12 @@ diag and ignored.
 `recordDocumentLoad` records, once per page, an `INTERNAL` span
 `documentLoad` from the navigation entry's start to `loadEventEnd`. Its
 `CLIENT` child `documentFetch` runs from `fetchStart` to `responseEnd`. The
-navigation timing marks become span events. The span carries `url.path` and
-`url.scheme`, never the query or the fragment. When the navigation response
+navigation timing marks become span events. Both spans carry `url.path` and
+`url.scheme`, never the query or the fragment. For an `http:` or `https:`
+document, `documentFetch` also carries the HTTP client attributes:
+`http.request.method` `GET`, `server.address`, `server.port`, `url.full`
+without credentials, query or fragment, and `http.response.status_code`
+when the browser exposes it. When the navigation response
 has a `Server-Timing: traceparent;desc="00-..."` entry, the span adopts that
 remote parent, which joins the page load to the backend trace.
 `@libo11y/server` sends it with `instrumentServe`'s `serverTiming: true`.
@@ -256,7 +264,9 @@ is granted there.
   batch evicts expired batches first, then the oldest until it fits. A
   batch larger than `maxQueueBytes` on its own is not stored.
 - A drain claims due batches with a 30-second lease in one transaction, so
-  two tabs never send the same batch. A tab that closes mid-send loses
+  two tabs never send the same batch. A `timeoutMillis` above 10 seconds
+  stretches the lease to three times the timeout, so a lease never runs out
+  while its request is on the wire. A tab that closes mid-send loses
   nothing, because its lease runs out and another context claims the batch.
 - When the browser reports `QuotaExceededError`, the queue evicts the
   oldest quarter and tries once more.

@@ -139,6 +139,18 @@ test("a same-origin request gets a CLIENT span named by method, parented by the 
   });
 });
 
+test("a traceparent the caller set is replaced by the client span's, as on the server", async () => {
+  await withRec(async (rec) => {
+    const fake = fakeFetch();
+    const traced = instrumentFetch(fake.fetch, { telemetry: rec.telemetry });
+    const callerParent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+    await traced("/api/items", { headers: { TraceParent: callerParent } });
+    const { traceId, spanId } = onlyClient(rec).spanContext();
+    // Headers.set replaces, so exactly one traceparent leaves, naming the client span.
+    assert.equal(fake.calls[0]?.headers.get("traceparent"), `00-${traceId}-${spanId}-01`);
+  });
+});
+
 test("a cross-origin request gets a span but no context, unless propagateTo allows its origin", async () => {
   await withRec(async (rec) => {
     const fake = fakeFetch();

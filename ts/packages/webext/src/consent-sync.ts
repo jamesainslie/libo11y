@@ -46,6 +46,12 @@ export interface ConsentSync {
  * later change here, and the re-read then returns the later state. "pending" is never applied,
  * because consent has no way back to it. The stored state is also read once at the start, to
  * catch a change between readStoredConsent and this call.
+ *
+ * Privacy signals deny everywhere: when a stored "granted" cannot be applied because this
+ * controller respects a privacy signal (DNT or GPC) that is set, "denied" is written back, and
+ * every other context then revokes. So a grant in a content script, whose controller reads no
+ * signals, is undone extension-wide when the worker's signals refuse it, as is a stored grant the
+ * worker finds when it wakes.
  */
 export function syncConsent(controller: ConsentController, chrome: ChromeLike): ConsentSync {
   const storage = chrome.storage;
@@ -53,6 +59,11 @@ export function syncConsent(controller: ConsentController, chrome: ChromeLike): 
   let stopped = false;
   let applying = false;
 
+  const write = (state: ConsentState): void => {
+    storage.local.set({ [CONSENT_STORAGE_KEY]: state }).catch((err: unknown) => {
+      diag.warn("o11y: storing the consent state", err);
+    });
+  };
   const apply = (stored: ConsentState | undefined): void => {
     if (stopped || stored === undefined || stored === "pending") return;
     const consent = controller.consent;
@@ -64,6 +75,8 @@ export function syncConsent(controller: ConsentController, chrome: ChromeLike): 
     } finally {
       applying = false;
     }
+    // A respected privacy signal refused the grant: store the refusal, so every context denies.
+    if (stored === "granted" && consent.state() !== "granted") write(consent.state());
   };
   const refresh = (): Promise<void> =>
     readStoredConsent(chrome)
@@ -77,9 +90,7 @@ export function syncConsent(controller: ConsentController, chrome: ChromeLike): 
 
   const unsubscribe = controller.consent.subscribe((state) => {
     if (stopped || applying) return;
-    storage.local.set({ [CONSENT_STORAGE_KEY]: state }).catch((err: unknown) => {
-      diag.warn("o11y: storing the consent state", err);
-    });
+    write(state);
   });
   const onChanged = (changes: Record<string, StorageChangeLike>, areaName: string): void => {
     if (areaName !== "local" || !Object.hasOwn(changes, CONSENT_STORAGE_KEY)) return;

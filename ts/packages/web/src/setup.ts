@@ -29,7 +29,7 @@ import type {
 } from "./options.ts";
 import { type WebPlatformOptions, webPlatformWith } from "./platform.ts";
 import { openQueue } from "./queue/open.ts";
-import { createDelivery } from "./transport/delivery.ts";
+import { createDelivery, leaseForTimeout } from "./transport/delivery.ts";
 import { resolveEndpoints, type SignalEndpoints } from "./transport/endpoints.ts";
 import { createExporterSet } from "./transport/exporters.ts";
 import { createHttpTransport, type HttpTransportOptions } from "./transport/http.ts";
@@ -81,7 +81,8 @@ export function defaultSetupDeps(): SetupDeps {
  * consent as the active consent, patches fetch and XMLHttpRequest and records the documentLoad span
  * as options.instrumentations says, and flushes on hide. In order: the consent controller, the
  * queue (openQueue, unless transport.offlineQueue is false), the endpoints, the HTTP transport, the
- * delivery (mode from document visibility), webPlatform, setupWith with console defaulting to
+ * delivery (mode from document visibility, and a lease of three times transport.timeoutMillis when
+ * that is longer than the default lease), webPlatform, setupWith with console defaulting to
  * false, then the handle. consent.onRevoke flushes every provider into the closed gate, then clears
  * the delivery. After setup the queue is drained once.
  *
@@ -181,6 +182,8 @@ export async function setupWithDeps(
       mode,
       ...(t.initialBackoffMillis === undefined ? {} : { initialBackoffMillis: t.initialBackoffMillis }),
       ...(t.maxBackoffMillis === undefined ? {} : { maxBackoffMillis: t.maxBackoffMillis }),
+      // A lease shorter than a send could let another tab claim the entry mid-send and send it twice.
+      ...(t.timeoutMillis === undefined ? {} : { leaseMillis: leaseForTimeout(t.timeoutMillis) }),
     });
 
     const platformOptions: WebPlatformOptions = {

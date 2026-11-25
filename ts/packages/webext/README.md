@@ -168,6 +168,11 @@ whole extension. A revoke anywhere clears the worker's IndexedDB queue and
 each context's buffers, as `revoke()` does on a page. A stored state never
 moves back to `pending`.
 
+The worker's `consent` options decide the privacy signals for the whole
+extension. When a respected DNT or GPC signal refuses a stored grant, from
+a content script or an earlier wake, the worker stores `denied` in its
+place. Every context then revokes, so the signals deny everywhere.
+
 ## Traced messaging
 
 Both handles have `sendMessage(payload)` and `onMessage(listener)`.
@@ -202,16 +207,14 @@ other listeners in the extension keep working. Do not send messages with a
   browser is tested.
 - A content script's retry queue is in memory. Batches it could not hand
   to the worker are lost when the page closes.
-- A content script checks `navigator.onLine` before it messages the
-  worker. While the browser reports offline, the content script holds its
-  batches in memory until the `online` event, although messaging the
-  worker needs no network.
 - Only the worker reads DNT and GPC, through its `consent` options. A
-  content script that grants while the worker refuses keeps recording, and
-  the worker refuses its batches.
+  content script's `grant()` returns `"granted"` even when the worker's
+  signals will refuse it. It records until the worker's refusal comes back
+  through storage, and the worker refuses those batches.
 - Delivery from the worker's queue is at least once. A worker stopped after
   its request reached the collector, but before it removed the batch, sends
-  the batch again on a later wake once its 30-second lease runs out.
+  the batch again on a later wake once its lease runs out. The lease is 30
+  seconds, or three times `transport.timeoutMillis` when that is longer.
 - `onMessage` needs the handle, so a traced listener is added only after
   `setupContentScript` resolves. A traced message that reaches a content
   script before then is not answered by it. The worker holds up to 100

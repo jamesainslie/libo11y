@@ -101,11 +101,16 @@ export function defaultContentDeps(): ContentDeps {
 /**
  * Builds and installs telemetry whose exporters forward to the worker. In order: the consent
  * controller from readStoredConsent (default "pending") and syncConsent; a memory queue; the
- * messaging transport; a delivery (mode "normal"); webPlatform with name "webext" and endpoints
+ * messaging transport; a delivery (mode "normal", always online, because messaging the worker
+ * needs no network and the worker handles being offline); webPlatform with name "webext" and endpoints
  * set for all three signals to the marker "libo11y-webext:worker" (the batches never leave by
  * HTTP from here); setupWith with console defaulting to false; the instrumentations; flush on hide
  * when there is a document. Records cross to the worker as ExportMessages, and the application's
  * own messages carry context through the handle's sendMessage and onMessage.
+ *
+ * This context reads no privacy signals; the worker's consent options decide them for the whole
+ * extension. A grant here that the worker's respected DNT or GPC signal refuses is undone: the
+ * worker stores "denied", and this context revokes, clearing its buffers.
  */
 export function setupContentScript(options: ContentScriptSetupOptions = {}): Promise<ContentScriptTelemetry> {
   return setupContentScriptWith(options, defaultContentDeps());
@@ -140,6 +145,8 @@ export async function setupContentScriptWith(
     queue,
     gate: controller,
     mode: () => "normal",
+    // Messaging the worker needs no network; the worker queues while the browser is offline.
+    isOnline: () => true,
   });
   steps.unshift(() => delivery.shutdown());
 

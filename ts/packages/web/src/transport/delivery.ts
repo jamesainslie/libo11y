@@ -17,6 +17,19 @@ const SENT: DeliveryResult = { outcome: "sent" };
 const QUEUED: DeliveryResult = { outcome: "queued" };
 const GATE_DROP: DeliveryResult = { outcome: "dropped" };
 
+/** DeliveryOptions.leaseMillis when none is given. */
+export const DEFAULT_LEASE_MILLIS = 30_000;
+
+/**
+ * The lease for a transport whose attempts give up after timeoutMillis: three times it, and never
+ * less than DEFAULT_LEASE_MILLIS. A drain sends an entry only while at least half its lease is
+ * left, so a lease of more than twice the timeout cannot run out (and let another tab claim the
+ * entry and send it again) while the attempt is still on the wire.
+ */
+export function leaseForTimeout(timeoutMillis: number): number {
+  return Math.max(DEFAULT_LEASE_MILLIS, 3 * timeoutMillis);
+}
+
 function navigatorOnline(): boolean {
   return (globalThis as { navigator?: { onLine?: boolean } }).navigator?.onLine !== false;
 }
@@ -78,7 +91,7 @@ export function createDelivery(opts: DeliveryOptions): Delivery {
   const initialBackoffMillis = opts.initialBackoffMillis ?? 1000;
   const maxBackoffMillis = opts.maxBackoffMillis ?? 300_000;
   const maxRetryAfterMillis = opts.maxRetryAfterMillis ?? 3_600_000;
-  const leaseMillis = opts.leaseMillis ?? 30_000;
+  const leaseMillis = opts.leaseMillis ?? DEFAULT_LEASE_MILLIS;
   const drainBatch = opts.drainBatch ?? 10;
   const now = opts.now ?? Date.now;
   const random = opts.random ?? Math.random;

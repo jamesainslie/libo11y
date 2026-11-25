@@ -104,10 +104,42 @@ test("the attributes are the document's url.path and url.scheme, never the query
     assert.deepEqual(fetchSpan.attributes, {
       "url.path": "/shop/cart",
       "url.scheme": "https",
+      "http.request.method": "GET",
+      "server.address": "app.example.com",
+      "server.port": 443,
+      "url.full": "https://app.example.com/shop/cart",
       "http.response.status_code": 200,
     });
     for (const span of [load, fetchSpan]) {
       assert.ok(!JSON.stringify(span.attributes).includes("secret"));
+    }
+  });
+});
+
+test("documentFetch carries the HTTP client attributes, sanitized as on fetch spans", async () => {
+  await withRec((rec) => {
+    const tracer = rec.telemetry.tracerProvider.getTracer(SCOPE);
+    recordNavigationSpans(
+      tracer,
+      entry({ name: "http://user:pass@[::1]:8080/a?X-Goog-Signature=s#f" }),
+      ORIGIN,
+    );
+    const fetchSpan = byName(rec, DOCUMENT_FETCH_SPAN);
+    assert.equal(fetchSpan.attributes["http.request.method"], "GET");
+    assert.equal(fetchSpan.attributes["server.address"], "::1");
+    assert.equal(fetchSpan.attributes["server.port"], 8080);
+    assert.equal(fetchSpan.attributes["url.full"], "http://[::1]:8080/a");
+    assert.ok(!JSON.stringify(fetchSpan.attributes).includes("pass"));
+  });
+});
+
+test("a document that is not http: or https: gets no HTTP client attributes", async () => {
+  await withRec((rec) => {
+    const tracer = rec.telemetry.tracerProvider.getTracer(SCOPE);
+    recordNavigationSpans(tracer, entry({ name: "chrome-extension://abc/popup.html" }), ORIGIN);
+    const attrs = byName(rec, DOCUMENT_FETCH_SPAN).attributes;
+    for (const key of ["http.request.method", "server.address", "server.port", "url.full"]) {
+      assert.equal(attrs[key], undefined, key);
     }
   });
 });

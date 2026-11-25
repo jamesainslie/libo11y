@@ -30,6 +30,8 @@ const FAILURE_EVENTS = ["abort", "timeout", "error"] as const;
 interface Opened {
   readonly method: string;
   readonly url: URL | undefined;
+  /** Whether the caller set traceparent (in any case) since open; then nothing is injected. */
+  callerTraceparent?: boolean;
   /** Ends the in-flight span; set by send, cleared when the span ends. */
   finish?: ((outcome: Outcome) => void) | undefined;
 }
@@ -117,8 +119,10 @@ const DONE = 4;
 
 /**
  * Patches XMLHttpRequest.prototype.open and send: open records the method and URL (resolved
- * against the page), send starts a CLIENT span with the fetch span's name and attributes, injects
- * context by setRequestHeader under the same propagate rule, and the span ends on loadend with
+ * against the page), setRequestHeader notes a traceparent the caller sets, send starts a CLIENT
+ * span with the fetch span's name and attributes and injects context by setRequestHeader under the
+ * same propagate rule, unless the caller set traceparent (in any case) since open: XHR appends to
+ * a header already set, so injecting would send two. The span ends on loadend with
  * http.response.status_code from status (status 0 is a failure with error.type from the event:
  * "abort", "timeout" or "error"). Synchronous XHR is instrumented the same way. A URL that is not
  * http: or https:, and a send the XHR refuses, get no span. Returns a function that restores the
@@ -131,6 +135,7 @@ export function installXhrInstrumentation(opts: HttpInstrumentationOptions = {})
   const proto = Xhr.prototype;
   const originalOpen = proto.open;
   const originalSend = proto.send;
+  const originalSetRequestHeader = proto.setRequestHeader;
   const instruments = instrumentResolver(opts.telemetry);
   const propagateTo = opts.propagateTo ?? [];
   const ignoreUrls = opts.ignoreUrls ?? [];
@@ -177,7 +182,11 @@ export function installXhrInstrumentation(opts: HttpInstrumentationOptions = {})
     callOnStart(opts.onStart, span, { kind: "xhr", url, method: opened.method });
     const spanContext = trace.setSpan(context.active(), span);
     try {
-      if (shouldPropagate(url, propagateTo)) resolved.propagator.inject(spanContext, this, XHR_SETTER);
+      // setRequestHeader appends to a header already set, so a caller's traceparent would be sent
+      // twice; the caller's context wins, and the span is still recorded.
+      if (opened.callerTraceparent !== true && shouldPropagate(url, propagateTo)) {
+        resolved.propagator.inject(spanContext, this, XHR_SETTER);
+      }
       context.with(spanContext, () => Reflect.apply(originalSend, this, args));
     } catch (err) {
       end({ kind: "threw", error: err });
@@ -187,14 +196,29 @@ export function installXhrInstrumentation(opts: HttpInstrumentationOptions = {})
     if (this.readyState === DONE) end({ kind: "loadend" });
   };
 
+  const setRequestHeader = function (this: XMLHttpRequest, ...args: unknown[]): void {
+    const opened = done ? undefined : requests.get(this);
+    Reflect.apply(originalSetRequestHeader, this, args);
+    // Recorded once the XHR took it, and only before send: injection's own calls come after.
+    if (
+      opened !== undefined &&
+      opened.finish === undefined &&
+      String(args[0]).toLowerCase() === "traceparent"
+    ) {
+      opened.callerTraceparent = true;
+    }
+  };
+
   proto.open = open as typeof proto.open;
   proto.send = send as typeof proto.send;
+  proto.setRequestHeader = setRequestHeader as typeof proto.setRequestHeader;
   installed = true;
   return () => {
     if (done) return;
     done = true;
     if (proto.open === open) proto.open = originalOpen;
     if (proto.send === send) proto.send = originalSend;
+    if (proto.setRequestHeader === setRequestHeader) proto.setRequestHeader = originalSetRequestHeader;
     installed = false;
   };
 }

@@ -300,6 +300,26 @@ test("transport options reach the queue, the HTTP transport and the delivery", a
   }
 });
 
+test("a transport timeout gets a delivery lease of at least twice it, the default lease otherwise", async () => {
+  const leaseFor = async (transport: WebSetupOptions["transport"]): Promise<DeliveryOptions | undefined> => {
+    const h = harness();
+    const web = await setupWithDeps(
+      { ...BASE, ...(transport === undefined ? {} : { transport }) },
+      h.deps,
+      true,
+    );
+    await web.shutdown();
+    return h.deliveryOptions[0];
+  };
+  // The default timeout keeps the delivery's default lease.
+  assert.equal((await leaseFor(undefined))?.leaseMillis, undefined);
+  // A short timeout never shortens the lease below the default.
+  assert.equal((await leaseFor({ timeoutMillis: 2000 }))?.leaseMillis ?? 30_000, 30_000);
+  // A long one stretches it, so a lease never runs out while its send is on the wire.
+  const long = (await leaseFor({ timeoutMillis: 20_000 }))?.leaseMillis ?? 30_000;
+  assert.ok(long >= 2 * 20_000, `lease ${long} for a 20000 ms timeout`);
+});
+
 test("offlineQueue false opens no queue and gives the delivery none", async () => {
   const h = harness();
   const web = await setupWithDeps({ ...BASE, transport: { offlineQueue: false } }, h.deps, true);

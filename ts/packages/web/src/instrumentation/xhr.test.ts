@@ -107,7 +107,7 @@ async function withXhr(fn: (p: Patched) => Promise<void> | void): Promise<void> 
   const g = globalThis as { XMLHttpRequest?: unknown; location?: unknown };
   const beforeXhr = Object.getOwnPropertyDescriptor(globalThis, "XMLHttpRequest");
   const beforeLocation = Object.getOwnPropertyDescriptor(globalThis, "location");
-  const { open, send } = FakeXhr.prototype;
+  const { open, send, setRequestHeader } = FakeXhr.prototype;
   const uninstalls: (() => void)[] = [];
   Object.defineProperty(globalThis, "XMLHttpRequest", { value: FakeXhr, configurable: true, writable: true });
   Object.defineProperty(globalThis, "location", {
@@ -128,6 +128,7 @@ async function withXhr(fn: (p: Patched) => Promise<void> | void): Promise<void> 
     for (const u of uninstalls) u();
     FakeXhr.prototype.open = open;
     FakeXhr.prototype.send = send;
+    FakeXhr.prototype.setRequestHeader = setRequestHeader;
     if (beforeXhr !== undefined) Object.defineProperty(globalThis, "XMLHttpRequest", beforeXhr);
     else delete g.XMLHttpRequest;
     if (beforeLocation !== undefined) Object.defineProperty(globalThis, "location", beforeLocation);
@@ -185,6 +186,48 @@ test("an async same-origin request gets a CLIENT span ended on loadend, with con
       "server.port": 443,
       "http.response.status_code": 200,
     });
+  });
+});
+
+test("a traceparent the caller set is kept, not doubled, and the request still gets its span", async () => {
+  await withXhr(async ({ rec, install }) => {
+    install();
+    const callerParent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+    const xhr = new FakeXhr();
+    inParent(rec, () => {
+      xhr.open("GET", "/api/items");
+      xhr.setRequestHeader("TraceParent", callerParent);
+      xhr.send();
+    });
+    xhr.respond(200);
+    const traceparents = xhr.headers.filter(([k]) => k.toLowerCase() === "traceparent");
+    assert.deepEqual(traceparents, [["TraceParent", callerParent]]);
+    assert.deepEqual(
+      xhr.headers.filter(([k]) => ["tracestate", "baggage"].includes(k.toLowerCase())),
+      [],
+      "the caller's context is not mixed with this one",
+    );
+    const [span] = clientSpans(rec);
+    assert.ok(span);
+    assert.equal(span.attributes["http.response.status_code"], 200);
+  });
+});
+
+test("a caller's traceparent counts only until the next open", async () => {
+  await withXhr(async ({ rec, install }) => {
+    install();
+    const xhr = new FakeXhr();
+    xhr.open("GET", "/api/a");
+    xhr.setRequestHeader("traceparent", "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01");
+    xhr.send();
+    xhr.respond(200);
+    xhr.open("GET", "/api/b");
+    xhr.send();
+    xhr.respond(200);
+    const second = clientSpans(rec)[1];
+    assert.ok(second);
+    const { traceId, spanId } = second.spanContext();
+    assert.equal(xhr.header("traceparent"), `00-${traceId}-${spanId}-01`);
   });
 });
 

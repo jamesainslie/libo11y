@@ -124,6 +124,18 @@ test("the worker is wired for a worker: persist first, no beacon, mode normal, s
   );
 });
 
+test("a transport timeout gets a delivery lease of at least twice it, the default lease otherwise", async () => {
+  const r = rig();
+  await withWorker(r, BASE, async () => {
+    assert.equal(r.seen.delivery?.options.leaseMillis, undefined);
+  });
+  const r2 = rig();
+  await withWorker(r2, { ...BASE, transport: { timeoutMillis: 20_000 } }, async () => {
+    const lease = r2.seen.delivery?.options.leaseMillis ?? 30_000;
+    assert.ok(lease >= 2 * 20_000, `lease ${lease} for a 20000 ms timeout`);
+  });
+});
+
 test("service.version defaults to the manifest version", async () => {
   const r = rig();
   await withWorker(r, BASE, async (h) => {
