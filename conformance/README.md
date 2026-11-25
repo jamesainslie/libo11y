@@ -38,7 +38,9 @@ Three Go behaviours are part of the contract:
   toolchain that generated the specification artifacts (Unicode 15.0.0
   for Go 1.26), not the Unicode version of another runtime. specgen
   writes the printable ranges for TypeScript to
-  `ts/packages/spec/src/generated/goprint.ts`.
+  `ts/packages/spec/src/generated/goprint.ts`, for Rust to
+  `rust/libo11y-spec/src/generated/goprint.rs` and for Zig to
+  `zig/src/spec/generated/goprint.zig`.
 - **Whitespace.** "Whitespace" in `libo11y_enum_value_whitespace` is
   Go's `strings.TrimSpace`, the Unicode White_Space property. It includes
   U+0085 and excludes U+FEFF. JavaScript's `trim()` differs on both.
@@ -48,7 +50,10 @@ Three Go behaviours are part of the contract:
   `libo11y_app_enum_values_missing`.
 
 The cases are hand-written. The Go test is
-`go/internal/appregistry/conformance_test.go`.
+`go/internal/appregistry/conformance_test.go`. The Zig suite,
+`zig/src/conformance_test.zig`, checks these cases and the vectors below.
+`zig build test` reads them from `-Dconformance-dir`, which defaults to
+this directory.
 
 ## `vectors/`
 

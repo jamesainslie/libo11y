@@ -5,9 +5,18 @@
 const std = @import("std");
 
 pub fn build(b: *std.Build) !void {
+    // The package's conformance suite reads the repository's conformance/
+    // directory by default. The option is forwarded so it can be pointed
+    // elsewhere from the repository root too.
+    const conformance_dir = b.option(
+        []const u8,
+        "conformance-dir",
+        "The directory of shared conformance cases (default: the repository's conformance/)",
+    );
     const libo11y = b.dependency("libo11y", .{
         .target = b.standardTargetOptions(.{}),
         .optimize = b.standardOptimizeOption(.{}),
+        .@"conformance-dir" = conformance_dir,
     });
 
     var modules = libo11y.builder.modules.iterator();

@@ -252,4 +252,7 @@ install that version locally. Keep the two in step when adding a gate.
   `std.debug.print` (also through an alias of `std.debug`), and `catch` or
   `orelse` followed by `unreachable`, outside test blocks and test-only
   files (files under `zig/test/` and files named `*_test.zig`). Every
-  switch on an error set the public API returns is exhaustive.
+  switch on an error set the public API returns is exhaustive. The tests
+  include the shared conformance suite, which reads `conformance/` at run
+  time from `-Dconformance-dir`. It defaults to the repository's
+  directory, and the published package leaves it out.
