@@ -9,8 +9,9 @@ with `@libo11y/rum` in `ts/v0.3.0`.
 
 ## Charter
 
-RUM is libo11y's second product. libo11y core wraps OpenTelemetry setup and
-never instruments. RUM is an opinionated real-user-monitoring data model.
+RUM is libo11y's second product. libo11y core wraps OpenTelemetry setup,
+and it writes instrumentation only where OpenTelemetry has none to wrap.
+RUM is an opinionated real-user-monitoring data model.
 It emits pure OTLP through the standard OpenTelemetry API, so any OTLP
 backend can store what it records. Its conventions are part of the libo11y
 specification. Every RUM platform follows them.
@@ -30,6 +31,10 @@ a set of new platforms under both products, not a third product.
 |---|---|---|---|---|---|---|---|
 | Core (setup) | `go` | `@libo11y/server` | `@libo11y/web` | `@libo11y/webext` | `@libo11y/react-native` | `Libo11y` Swift package | `libo11y-android` |
 | RUM (experience) | gateway `go/o11yrum` | none | `@libo11y/rum` | `@libo11y/rum` | `@libo11y/rum-react-native` | `Libo11yRUM` | `libo11y-rum-android` |
+
+Two cells exist today: the Go core (`go`) and the Bun and Node core
+(`@libo11y/server`). Every other named cell is planned, including every
+package in the RUM row.
 
 ## Data model
 
@@ -52,16 +57,22 @@ mobile. A view holds actions, resources, errors and vitals. An action is a
 user interaction, and it links to the requests and the route change it
 caused. A resource is a request the view made, and it carries
 `traceparent` to the backend so the backend trace joins the view. Every
-record carries `session.id` and the view's span context, so the gateway
-and the Grafana session explorer can rebuild the timeline of a session.
+RUM span and event carries `session.id`. Every span shape and the error
+and frustration events also carry `o11y.rum.view.id`, and the session
+start and end events do not. With those two attributes the planned gateway
+and Grafana session explorer can rebuild the timeline of a session.
+Metrics carry neither attribute, because both are unbounded. The registry
+defines span shapes for views, actions and app loads. It defines none for
+resources yet.
 
 ## Conventions
 
 Every name libo11y RUM mints is under `o11y.rum.*`. RUM references the
 upstream semconv attributes it uses, such as `session.id`, and never
-redefines them. The generator turns the conventions into typed constants
-in Go (`go/spec`, for example `spec.RUMViewNameKey` and `spec.RUMViewKind`)
-and in TypeScript (`@libo11y/spec`, for example `ATTR_RUM_VIEW_NAME`).
+redefines them. The generator turns the conventions into typed keys and
+enums in Go (`go/spec`, for example the key `spec.RUMViewNameKey` and the
+enum type `spec.RUMViewKind`) and in TypeScript (`@libo11y/spec`, for
+example `ATTR_RUM_VIEW_NAME`).
 
 ### Attributes
 
@@ -114,7 +125,10 @@ group's `o11y.rum.span` annotation names the shape. It must be `view`,
 `action` or `app_load`, and it must equal the suffix of the group ID.
 `make spec-check` enforces both with the rule `libo11y_rum_span_kind`. The
 generator writes the required attributes of each shape to
-`RUMSpanRequired` in Go and `RUM_SPAN_REQUIRED` in TypeScript.
+`RUMSpanRequired` in Go and `RUM_SPAN_REQUIRED` in TypeScript. The Go table
+is in the internal package `go/internal/spectables`, which the library and
+its test harness use and applications cannot import. The TypeScript table
+is exported from `@libo11y/spec`.
 
 | Shape | Records | Required attributes | Conditionally required |
 |---|---|---|---|
