@@ -32,7 +32,7 @@ var reservedNamespaces = map[string]bool{
 	"onc_rpc": true, "openai": true, "openshift": true, "opentracing": true, "oracle": true, "oracle_cloud": true,
 	"oracledb": true, "os": true, "peer": true, "pool": true, "pprof": true, "process": true,
 	"profile": true, "rpc": true, "security_rule": true, "server": true, "service": true,
-	"session": true, "signalr": true, "source": true, "system": true, "telemetry": true, "test": true,
+	"session": true, "signalr": true, "source": true, "state": true, "system": true, "telemetry": true, "test": true,
 	"thread": true, "tls": true, "url": true, "user": true, "user_agent": true, "v8js": true,
 	"vcs": true, "webengine": true, "zos": true,
 }
