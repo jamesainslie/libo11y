@@ -2,9 +2,9 @@
 
 The Zig files under this directory are the OTLP protobuf bindings that
 [open-telemetry/opentelemetry-zig](https://github.com/open-telemetry/opentelemetry-zig)
-generates and commits. They are copied unchanged from its
-`opentelemetry-proto/src/` directory at commit
-`64627959e72480505bdb46dc25764a211ab498bc` (2026-11-23).
+generates and commits. They are copied from its `opentelemetry-proto/src/` directory at commit
+`64627959e72480505bdb46dc25764a211ab498bc` (2026-11-23), unchanged except
+for one rename described below.
 
 - **Origin and license.** The files come from opentelemetry-zig under the
   Apache License 2.0. Its license text is in [LICENSE](LICENSE). The
@@ -25,6 +25,17 @@ generates and commits. They are copied unchanged from its
   fetch about 6 MB, including a prebuilt protoc binary, to use these few
   files. libo11y uses nothing else from that package.
 
+## The one change: `logs` becomes `log`
+
+Upstream keeps the logs bindings in directories named `logs`
+(`opentelemetry/proto/logs/` and `opentelemetry/proto/collector/logs/`).
+Common global gitignore files ignore every directory named `logs`, which
+silently left those files out of a commit. Here the two directories are
+named `log`, and the three imports that name them are changed to match:
+two in `root.zig` and one in `opentelemetry/proto/collector/log/v1.pb.zig`.
+The module names (`logs_v1`, `collector_logs_v1`) and the file contents
+are otherwise as generated.
+
 ## Regenerating
 
 Regenerate only to move to a newer opentelemetry-zig commit or OTLP
@@ -43,8 +54,21 @@ release, and update the commits above in the same change.
    cp <opentelemetry-zig>/LICENSE zig/src/proto/LICENSE
    ```
 
-4. Run `make zig-check` from the repository root.
+4. Rename the two `logs` directories to `log` and fix the three imports,
+   as described above:
 
-Do not edit the generated files by hand. The one change allowed is the
-`@import("protobuf")` path, should the runtime module ever need another
-name.
+   ```sh
+   cd zig/src/proto
+   mv opentelemetry/proto/logs opentelemetry/proto/log
+   mv opentelemetry/proto/collector/logs opentelemetry/proto/collector/log
+   sed -i.bak -e 's|proto/collector/logs/|proto/collector/log/|' -e 's|proto/logs/|proto/log/|' root.zig
+   sed -i.bak 's|"../../logs/v1.pb.zig"|"../../log/v1.pb.zig"|' opentelemetry/proto/collector/log/v1.pb.zig
+   rm root.zig.bak opentelemetry/proto/collector/log/v1.pb.zig.bak
+   ```
+
+5. Check that `git status` lists every generated file, then run
+   `make zig-check` from the repository root.
+
+Do not edit the generated files by hand beyond the rename above. The
+only other change allowed is the `@import("protobuf")` path, should the
+runtime module ever need another name.
