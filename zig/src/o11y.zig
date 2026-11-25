@@ -25,5 +25,13 @@ test {
     _ = @import("identity.zig");
     _ = @import("pii.zig");
     _ = @import("endpoint.zig");
+    _ = @import("goquote.zig");
+    _ = @import("yaml/reader.zig");
+    _ = @import("yaml/scanner.zig");
+    _ = @import("yaml/parser.zig");
+    _ = @import("yaml/resolve.zig");
+    _ = @import("yaml/compose.zig");
+    _ = @import("appregistry/decode.zig");
+    _ = @import("appregistry/appregistry.zig");
     _ = spec;
 }
