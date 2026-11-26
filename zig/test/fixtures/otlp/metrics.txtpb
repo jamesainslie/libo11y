@@ -1,0 +1,49 @@
+# opentelemetry.proto.collector.metrics.v1.ExportMetricsServiceRequest
+resource_metrics {
+  resource {
+    attributes { key: "service.name" value { string_value: "checkout" } }
+  }
+  scope_metrics {
+    scope { name: "github.com/jamesainslie/libo11y/zig" }
+    metrics {
+      name: "http.server.request.duration"
+      unit: "s"
+      histogram {
+        aggregation_temporality: AGGREGATION_TEMPORALITY_CUMULATIVE
+        data_points {
+          attributes { key: "http.route" value { string_value: "/orders/{id}" } }
+          start_time_unix_nano: 1764000000000000000
+          time_unix_nano: 1764000000025000000
+          count: 6
+          sum: 1.375
+          bucket_counts: [1, 2, 0, 3]
+          explicit_bounds: [0.005, 0.1, 1]
+          min: 0.001
+          max: 1.25
+          exemplars {
+            time_unix_nano: 1764000000000000500
+            as_double: 1.25
+            span_id: "\x00\xf0\x67\xaa\x0b\xa9\x02\xb7"
+            trace_id: "\x4b\xf9\x2f\x35\x77\xb3\x4d\xa6\xa3\xce\x92\x9d\x0e\x0e\x47\x36"
+          }
+        }
+      }
+    }
+    metrics {
+      name: "o11y.schema.violations"
+      unit: "{violation}"
+      sum {
+        aggregation_temporality: AGGREGATION_TEMPORALITY_DELTA
+        is_monotonic: true
+        data_points { time_unix_nano: 1764000000025000000 as_int: 42 }
+      }
+    }
+    metrics {
+      name: "process.memory.usage"
+      unit: "By"
+      gauge {
+        data_points { time_unix_nano: 1764000000025000000 as_double: -3.5 }
+      }
+    }
+  }
+}

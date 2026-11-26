@@ -1,0 +1,24 @@
+[package]
+name = "libo11y-macros"
+description = "The #[derive(Redact)] procedural macro for libo11y-redact: capture-time redaction of struct and enum fields through o11y attributes."
+readme = "README.md"
+keywords = ["observability", "redaction", "derive", "secrets", "libo11y"]
+categories = ["development-tools::procedural-macro-helpers", "value-formatting"]
+include = ["src/**/*.rs", "README.md", "LICENSE"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2.workspace = true
+quote.workspace = true
+syn.workspace = true
+
+[lints]
+workspace = true

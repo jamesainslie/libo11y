@@ -7,6 +7,8 @@ No crate has been published yet.
 | Crate | Status |
 |-------|--------|
 | [`libo11y`](libo11y/) | The core: builder, identity and resource, sensitivity policy, application registries, propagation |
+| [`libo11y-macros`](libo11y-macros/) | The `#[derive(Redact)]` procedural macro, re-exported by `libo11y-redact` |
+| [`libo11y-redact`](libo11y-redact/) | Capture-time redaction: `Secret`, `Masked`, the `Redact` trait and its derive |
 | [`libo11y-spec`](libo11y-spec/) | The attribute keys, enums and tables, generated from `spec/registry` |
 
 The design it implements is in [docs/DESIGN.md](../docs/DESIGN.md), the
