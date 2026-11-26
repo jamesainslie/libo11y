@@ -1,6 +1,7 @@
 //! The hook that applies the sensitivity policy to span, event and link
-//! attributes when a span ends, and to log record attributes when a
-//! record is emitted. The pipeline calls it; the core plugs the real
+//! attributes when a span ends, to metric measurement attributes when
+//! they are recorded, and to log record attributes when a record is
+//! emitted. The pipeline calls it; the core plugs the real
 //! policy in. Until then the no-op policy keeps every attribute.
 
 const std = @import("std");
@@ -8,7 +9,18 @@ const attribute = @import("attribute.zig");
 const log_record = @import("log_record.zig");
 
 /// Which attribute set a policy call covers.
-pub const Target = enum { span, event, link };
+pub const Target = enum {
+    span,
+    event,
+    link,
+    /// The attributes of one metric measurement or observation, after
+    /// they are canonicalized and before any view filters them, so every
+    /// stream and exemplar sees the classified set. A policy must drop a
+    /// PII attribute here even in hash mode, because a token per value
+    /// would multiply the series (Go's `metricKeep`). It must keep the
+    /// list's order, dropping or rewriting entries only.
+    metric,
+};
 
 /// A policy over attribute lists.
 pub const AttributePolicy = struct {
