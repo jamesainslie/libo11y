@@ -44,6 +44,7 @@
 //!   endpoint is `scheme://host` with no path, and the default port is 4317.
 
 const std = @import("std");
+const grpc = @import("grpc.zig");
 const transport = @import("transport.zig");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -94,6 +95,20 @@ pub const EnvOptions = struct {
         return .{
             .endpoint = e.endpoint,
             .content_type = e.protocol.contentType(),
+            .headers = e.headers,
+            .compression = e.compression,
+            .timeout = e.timeout,
+            .tls = e.tls,
+        };
+    }
+
+    /// The gRPC transport options these settings describe. The slices point
+    /// into `e`, which must outlive the result until `grpc.Transport.create`
+    /// has copied them.
+    pub fn grpcOptions(e: *const EnvOptions, method: []const u8) grpc.Options {
+        return .{
+            .endpoint = e.endpoint,
+            .method = method,
             .headers = e.headers,
             .compression = e.compression,
             .timeout = e.timeout,
