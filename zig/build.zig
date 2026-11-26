@@ -1,8 +1,10 @@
 //! Build script for the libo11y Zig package.
 //!
-//! It exports the `o11y`, `o11ytest`, and `o11yhttp` modules. The repository
-//! root's build.zig re-exports every module this script adds with `b.addModule`,
-//! so consumers that fetch the repository get the same names.
+//! It exports the `o11y`, `o11ytest`, and `o11yhttp` modules by default, plus
+//! the optional option-gated integration modules `o11yhttpz` (`-Dhttpz`),
+//! `o11ypg` (`-Dpg`), and `o11ysqlite` (`-Dsqlite`). The repository root's
+//! build.zig re-exports every module this script adds with `b.addModule`, so
+//! consumers that fetch the repository get the same names.
 
 const std = @import("std");
 
@@ -132,12 +134,39 @@ pub fn build(b: *std.Build) !void {
         },
     });
 
+    // Private SQL sanitizer and database telemetry module shared by `o11ypg`
+    // and `o11ysqlite`. Created with `createModule`, never added, so consumers
+    // cannot import it.
+    const o11y_db = b.createModule(.{
+        .root_source_file = b.path("src/db/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "o11y", .module = o11y },
+        },
+    });
+
     const tests = b.addTest(.{ .root_module = o11y });
     const test_step = b.step("test", "Run the libo11y tests");
     test_step.dependOn(&b.addRunArtifact(tests).step);
 
     const wire_tests = b.addTest(.{ .root_module = o11y_wire });
     test_step.dependOn(&b.addRunArtifact(wire_tests).step);
+
+    const db_tests = b.addTest(.{ .root_module = o11y_db });
+    test_step.dependOn(&b.addRunArtifact(db_tests).step);
+
+    const db_telemetry_tests = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("src/db/telemetry_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "o11y", .module = o11y },
+            .{ .name = "o11y_db", .module = o11y_db },
+            .{ .name = "o11ytest", .module = o11ytest },
+        },
+    }) });
+    test_step.dependOn(&b.addRunArtifact(db_telemetry_tests).step);
 
     const o11ytest_tests = b.addTest(.{ .root_module = o11ytest });
     test_step.dependOn(&b.addRunArtifact(o11ytest_tests).step);
@@ -156,6 +185,131 @@ pub fn build(b: *std.Build) !void {
         },
     }) });
     test_step.dependOn(&b.addRunArtifact(o11yhttp_integration_tests).step);
+
+    // Optional integration modules gated behind explicit build options so
+    // `b.lazyDependency` is never invoked unless a consumer asks for them.
+    const httpz_enabled = b.option(
+        bool,
+        "httpz",
+        "Enable the o11yhttpz module (fetches http.zig)",
+    ) orelse false;
+    if (httpz_enabled) {
+        if (b.lazyDependency("httpz", .{
+            .target = target,
+            .optimize = optimize,
+        })) |httpz_dep| {
+            const httpz_mod = httpz_dep.module("httpz");
+            const o11yhttpz = b.addModule("o11yhttpz", .{
+                .root_source_file = b.path("src/o11yhttpz/o11yhttpz.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "o11y", .module = o11y },
+                    .{ .name = "o11yhttp", .module = o11yhttp },
+                    .{ .name = "httpz", .module = httpz_mod },
+                },
+            });
+            const o11yhttpz_tests = b.addTest(.{ .root_module = o11yhttpz });
+            test_step.dependOn(&b.addRunArtifact(o11yhttpz_tests).step);
+
+            const o11yhttpz_integration_tests = b.addTest(.{ .root_module = b.createModule(.{
+                .root_source_file = b.path("src/o11yhttpz/integration_test.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "o11y", .module = o11y },
+                    .{ .name = "o11yhttp", .module = o11yhttp },
+                    .{ .name = "o11yhttpz", .module = o11yhttpz },
+                    .{ .name = "o11ytest", .module = o11ytest },
+                    .{ .name = "httpz", .module = httpz_mod },
+                },
+            }) });
+            test_step.dependOn(&b.addRunArtifact(o11yhttpz_integration_tests).step);
+        }
+    }
+
+    const pg_enabled = b.option(
+        bool,
+        "pg",
+        "Enable the o11ypg module (fetches pg.zig)",
+    ) orelse false;
+    if (pg_enabled) {
+        if (b.lazyDependency("pg", .{
+            .target = target,
+            .optimize = optimize,
+        })) |pg_dep| {
+            const pg_mod = pg_dep.module("pg");
+            const o11ypg = b.addModule("o11ypg", .{
+                .root_source_file = b.path("src/o11ypg/o11ypg.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "o11y", .module = o11y },
+                    .{ .name = "o11y_db", .module = o11y_db },
+                    .{ .name = "pg", .module = pg_mod },
+                },
+            });
+            const o11ypg_tests = b.addTest(.{ .root_module = o11ypg });
+            test_step.dependOn(&b.addRunArtifact(o11ypg_tests).step);
+
+            const o11ypg_integration_tests = b.addTest(.{ .root_module = b.createModule(.{
+                .root_source_file = b.path("src/o11ypg/integration_test.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "o11y", .module = o11y },
+                    .{ .name = "o11y_db", .module = o11y_db },
+                    .{ .name = "o11ypg", .module = o11ypg },
+                    .{ .name = "o11ytest", .module = o11ytest },
+                    .{ .name = "pg", .module = pg_mod },
+                },
+            }) });
+            const o11ypg_run = b.addRunArtifact(o11ypg_integration_tests);
+            // Reads O11YPG_TEST_DSN at run time so live PG tests re-run when env changes.
+            o11ypg_run.has_side_effects = true;
+            test_step.dependOn(&o11ypg_run.step);
+        }
+    }
+
+    const sqlite_enabled = b.option(
+        bool,
+        "sqlite",
+        "Enable the o11ysqlite module (fetches zig-sqlite)",
+    ) orelse false;
+    if (sqlite_enabled) {
+        if (b.lazyDependency("sqlite", .{
+            .target = target,
+            .optimize = optimize,
+        })) |sqlite_dep| {
+            const sqlite_mod = sqlite_dep.module("sqlite");
+            const o11ysqlite = b.addModule("o11ysqlite", .{
+                .root_source_file = b.path("src/o11ysqlite/o11ysqlite.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "o11y", .module = o11y },
+                    .{ .name = "o11y_db", .module = o11y_db },
+                    .{ .name = "sqlite", .module = sqlite_mod },
+                },
+            });
+            const o11ysqlite_tests = b.addTest(.{ .root_module = o11ysqlite });
+            test_step.dependOn(&b.addRunArtifact(o11ysqlite_tests).step);
+
+            const o11ysqlite_integration_tests = b.addTest(.{ .root_module = b.createModule(.{
+                .root_source_file = b.path("src/o11ysqlite/integration_test.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "o11y", .module = o11y },
+                    .{ .name = "o11y_db", .module = o11y_db },
+                    .{ .name = "o11ysqlite", .module = o11ysqlite },
+                    .{ .name = "o11ytest", .module = o11ytest },
+                    .{ .name = "sqlite", .module = sqlite_mod },
+                },
+            }) });
+            test_step.dependOn(&b.addRunArtifact(o11ysqlite_integration_tests).step);
+        }
+    }
 
     // Tests that read fixtures under test/, which the published package
     // leaves out. They build only when the test step runs.

@@ -18,6 +18,23 @@
             .url = "git+https://github.com/ianic/tls.zig#bd22bcb73f423389441a1de80bf031ef1b623cce",
             .hash = "tls-0.1.0-ER2e0l6qBgDEYo6RBkVZw5UrxOqtI6-OqLwyFJvEr3RK",
         },
+        // Optional integrations (lazy: fetched only when enabled via -Dhttpz,
+        // -Dpg, or -Dsqlite).
+        .httpz = .{
+            .url = "git+https://github.com/karlseguin/http.zig#7f059bdb7b9d95710a6acf831d8e8567e711b3ce",
+            .hash = "httpz-0.0.0-PNVzrHlxCQDpdlQobWLcKyzsE8D7wXMe1FirBoyXiB97",
+            .lazy = true,
+        },
+        .pg = .{
+            .url = "git+https://github.com/karlseguin/pg.zig#59e71ce87238b29a67b897e553d2b97db2cea75c",
+            .hash = "pg-0.0.0-Wp_7ge14BwBOMOyvr9KuSEvtpuV_NcASU5B3t-zxVa0G",
+            .lazy = true,
+        },
+        .sqlite = .{
+            .url = "git+https://github.com/vrischmann/zig-sqlite#1eba1e490629897e71dc3a23aad6fe9a319e0c82",
+            .hash = "sqlite-3.48.0-F2R_azOoDgB4eu7BHE5c8WtBnKufFQnhD1xqD5TgTxg4",
+            .lazy = true,
+        },
     },
     .paths = .{
         "build.zig",
