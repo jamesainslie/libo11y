@@ -10,6 +10,7 @@ const kv = attribute.kv;
 const deadline = @import("../deadline.zig");
 const ids = @import("../ids.zig");
 const InMemoryExporter = @import("../memory_exporter.zig").InMemoryExporter;
+const metric_mod = @import("../metric/metric.zig");
 const processor = @import("../processor.zig");
 const tracer_mod = @import("../tracer.zig");
 const encode = @import("encode.zig");
@@ -124,4 +125,98 @@ test "utf8 replaces each invalid sequence" {
     try testing.expectEqual(@as([*]const u8, ok.ptr), (try encode.utf8(a, ok)).ptr);
     try testing.expectEqualStrings("\u{fffd}x\u{fffd}", try encode.utf8(a, "\xc3x\xff"));
     try testing.expectEqualStrings("é\u{fffd}", try encode.utf8(a, "é\xe2\x82"));
+}
+
+test "metrics encode sums, gauges, histograms and exemplars and decode back" {
+    var reader: metric_mod.reader.ManualReader = .init(io, .{ .temporality = .delta });
+    const res_attrs = [_]attribute.KeyValue{ kv("service.name", "billing"), kv("deployment.environment.name", "test") };
+    const provider = try metric_mod.meter.MeterProvider.create(testing.allocator, io, .{
+        .resource = .{ .attributes = &res_attrs, .schema_url = "https://schemas.o11y.ing/1.1.0" },
+        .readers = &.{reader.reader()},
+        .views = &.{
+            .{ .instrument_name = "latency", .attribute_keys = &.{"route"}, .aggregation = .{ .explicit_bucket_histogram = .{ .boundaries = &.{ 1, 10, 100 } } } },
+        },
+    });
+    defer provider.destroy();
+    defer provider.shutdown(deadline.after(io, .fromSeconds(1))) catch {};
+
+    // An empty collection encodes to an empty request.
+    {
+        var empty_rm = try reader.collect(testing.allocator);
+        defer empty_rm.deinit();
+        var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+        defer arena.deinit();
+        const empty_req = try encode.metricsRequest(arena.allocator(), &empty_rm);
+        try testing.expectEqual(@as(usize, 0), empty_req.resource_metrics.items.len);
+    }
+
+    const m = provider.meter(.{ .name = "billing.meter", .version = "2.0.0", .schema_url = "https://example/m" });
+    const ctx = Context.background.withSpanContext(remote_parent);
+    m.counter(i64, "requests", .{ .unit = "{req}", .description = "Total requests." }).add(ctx, 5, &.{kv("method", "POST")});
+    m.upDownCounter(f64, "queue.delta", .{}).add(.background, -2.5, &.{});
+    m.gauge(f64, "temp", .{ .unit = "Cel" }).record(.background, 21.5, &.{});
+    m.histogram(f64, "latency", .{ .unit = "ms" }).record(ctx, 42.5, &.{ kv("route", "/pay"), kv("user.id", "u-9") });
+
+    var rm = try reader.collect(testing.allocator);
+    defer rm.deinit();
+
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const request = try encode.metricsRequest(arena.allocator(), &rm);
+
+    var bytes: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer bytes.deinit();
+    try request.encode(&bytes.writer, testing.allocator);
+    var wire: std.Io.Reader = .fixed(bytes.written());
+    var decoded = try proto.collector_metrics_v1.ExportMetricsServiceRequest.decode(&wire, testing.allocator);
+    defer decoded.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), decoded.resource_metrics.items.len);
+    const drm = decoded.resource_metrics.items[0];
+    try testing.expectEqualStrings("https://schemas.o11y.ing/1.1.0", drm.schema_url);
+    try testing.expectEqualStrings("billing", drm.resource.?.attributes.items[0].value.?.value.?.string_value);
+    try testing.expectEqual(@as(usize, 1), drm.scope_metrics.items.len);
+    const sm = drm.scope_metrics.items[0];
+    try testing.expectEqualStrings("billing.meter", sm.scope.?.name);
+    try testing.expectEqualStrings("2.0.0", sm.scope.?.version);
+    try testing.expectEqualStrings("https://example/m", sm.schema_url);
+    try testing.expectEqual(@as(usize, 4), sm.metrics.items.len);
+
+    // Counter: delta monotonic i64 sum with exemplar.
+    const c_m = sm.metrics.items[0];
+    try testing.expectEqualStrings("requests", c_m.name);
+    try testing.expectEqualStrings("{req}", c_m.unit);
+    try testing.expectEqualStrings("Total requests.", c_m.description);
+    const c_sum = c_m.data.?.sum;
+    try testing.expect(c_sum.is_monotonic);
+    try testing.expectEqual(proto.metrics_v1.AggregationTemporality.AGGREGATION_TEMPORALITY_DELTA, c_sum.aggregation_temporality);
+    try testing.expectEqual(@as(i64, 5), c_sum.data_points.items[0].value.?.as_int);
+    try testing.expectEqualSlices(u8, &remote_parent.trace_id.bytes, c_sum.data_points.items[0].exemplars.items[0].trace_id);
+
+    // UpDownCounter: cumulative non-monotonic f64 sum.
+    const u_sum = sm.metrics.items[1].data.?.sum;
+    try testing.expect(!u_sum.is_monotonic);
+    try testing.expectEqual(proto.metrics_v1.AggregationTemporality.AGGREGATION_TEMPORALITY_CUMULATIVE, u_sum.aggregation_temporality);
+    try testing.expectEqual(@as(f64, -2.5), u_sum.data_points.items[0].value.?.as_double);
+
+    // Gauge: f64.
+    const g = sm.metrics.items[2].data.?.gauge;
+    try testing.expectEqual(@as(f64, 21.5), g.data_points.items[0].value.?.as_double);
+
+    // Histogram: delta, explicit bounds, bucket counts, min/max/sum/count, exemplar with filtered attrs.
+    const h = sm.metrics.items[3].data.?.histogram;
+    try testing.expectEqual(proto.metrics_v1.AggregationTemporality.AGGREGATION_TEMPORALITY_DELTA, h.aggregation_temporality);
+    const hp = h.data_points.items[0];
+    try testing.expectEqual(@as(u64, 1), hp.count);
+    try testing.expectEqual(@as(f64, 42.5), hp.sum.?);
+    try testing.expectEqual(@as(f64, 42.5), hp.min.?);
+    try testing.expectEqual(@as(f64, 42.5), hp.max.?);
+    try testing.expectEqualSlices(f64, &.{ 1, 10, 100 }, hp.explicit_bounds.items);
+    try testing.expectEqualSlices(u64, &.{ 0, 0, 1, 0 }, hp.bucket_counts.items);
+    const ex = hp.exemplars.items[0];
+    try testing.expectEqualSlices(u8, &remote_parent.trace_id.bytes, ex.trace_id);
+    try testing.expectEqualSlices(u8, &remote_parent.span_id.bytes, ex.span_id);
+    try testing.expectEqual(@as(f64, 42.5), ex.value.?.as_double);
+    try testing.expectEqualStrings("user.id", ex.filtered_attributes.items[0].key);
+    try testing.expectEqualStrings("u-9", ex.filtered_attributes.items[0].value.?.value.?.string_value);
 }

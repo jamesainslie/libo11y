@@ -15,8 +15,11 @@ const common = proto.common_v1;
 const resource_v1 = proto.resource_v1;
 const trace_v1 = proto.trace_v1;
 const collector_trace = proto.collector_trace_v1;
+const metrics_v1 = proto.metrics_v1;
+const collector_metrics = proto.collector_metrics_v1;
 const attribute = @import("../attribute.zig");
 const ids = @import("../ids.zig");
+const metric_data = @import("../metric/data.zig");
 const resource_mod = @import("../resource.zig");
 const span_mod = @import("../span.zig");
 const SpanData = span_mod.SpanData;
@@ -180,6 +183,116 @@ fn indexOf(comptime T: type, items: []const *const T, item: *const T) ?usize {
         if (x == item) return i;
     }
     return null;
+}
+
+/// Builds the export request for one collected `ResourceMetrics`.
+/// Returns an empty request when there are no scope metrics.
+pub fn metricsRequest(arena: Allocator, rm: *const metric_data.ResourceMetrics) Allocator.Error!collector_metrics.ExportMetricsServiceRequest {
+    var request: collector_metrics.ExportMetricsServiceRequest = .{};
+    if (rm.scope_metrics.len == 0) return request;
+    var scope_metrics: std.ArrayList(metrics_v1.ScopeMetrics) = try .initCapacity(arena, rm.scope_metrics.len);
+    for (rm.scope_metrics) |*sm| {
+        var metrics: std.ArrayList(metrics_v1.Metric) = try .initCapacity(arena, sm.metrics.len);
+        for (sm.metrics) |*m| metrics.appendAssumeCapacity(try encodeMetric(arena, m));
+        scope_metrics.appendAssumeCapacity(.{
+            .scope = try scope(arena, &sm.scope),
+            .schema_url = try utf8(arena, sm.scope.schema_url),
+            .metrics = metrics,
+        });
+    }
+    try request.resource_metrics.append(arena, .{
+        .resource = try resource(arena, &rm.resource),
+        .schema_url = try utf8(arena, rm.resource.schema_url),
+        .scope_metrics = scope_metrics,
+    });
+    return request;
+}
+
+fn encodeMetric(arena: Allocator, m: *const metric_data.Metric) Allocator.Error!metrics_v1.Metric {
+    const d: metrics_v1.Metric.data_union = switch (m.data) {
+        .sum => |s| .{ .sum = .{
+            .aggregation_temporality = temporality(s.temporality),
+            .is_monotonic = s.is_monotonic,
+            .data_points = try numberPoints(arena, s.data_points),
+        } },
+        .gauge => |g| .{ .gauge = .{
+            .data_points = try numberPoints(arena, g.data_points),
+        } },
+        .histogram => |h| .{ .histogram = .{
+            .aggregation_temporality = temporality(h.temporality),
+            .data_points = try histogramPoints(arena, h.data_points),
+        } },
+    };
+    return .{
+        .name = try utf8(arena, m.name),
+        .description = try utf8(arena, m.description),
+        .unit = try utf8(arena, m.unit),
+        .data = d,
+    };
+}
+
+fn temporality(t: metric_data.Temporality) metrics_v1.AggregationTemporality {
+    return switch (t) {
+        .cumulative => .AGGREGATION_TEMPORALITY_CUMULATIVE,
+        .delta => .AGGREGATION_TEMPORALITY_DELTA,
+    };
+}
+
+fn numberPoints(arena: Allocator, points: []const metric_data.NumberDataPoint) Allocator.Error!std.ArrayList(metrics_v1.NumberDataPoint) {
+    var out: std.ArrayList(metrics_v1.NumberDataPoint) = try .initCapacity(arena, points.len);
+    for (points) |*p| {
+        out.appendAssumeCapacity(.{
+            .attributes = try keyValues(arena, p.attributes),
+            .start_time_unix_nano = p.start_time_unix_nano,
+            .time_unix_nano = p.time_unix_nano,
+            .value = switch (p.value) {
+                .int => |v| .{ .as_int = v },
+                .double => |v| .{ .as_double = v },
+            },
+            .exemplars = try metricExemplars(arena, p.exemplars),
+        });
+    }
+    return out;
+}
+
+fn histogramPoints(arena: Allocator, points: []const metric_data.HistogramDataPoint) Allocator.Error!std.ArrayList(metrics_v1.HistogramDataPoint) {
+    var out: std.ArrayList(metrics_v1.HistogramDataPoint) = try .initCapacity(arena, points.len);
+    for (points) |*p| {
+        var bucket_counts: std.ArrayList(u64) = try .initCapacity(arena, p.bucket_counts.len);
+        bucket_counts.appendSliceAssumeCapacity(p.bucket_counts);
+        var explicit_bounds: std.ArrayList(f64) = try .initCapacity(arena, p.bounds.len);
+        explicit_bounds.appendSliceAssumeCapacity(p.bounds);
+        out.appendAssumeCapacity(.{
+            .attributes = try keyValues(arena, p.attributes),
+            .start_time_unix_nano = p.start_time_unix_nano,
+            .time_unix_nano = p.time_unix_nano,
+            .count = p.count,
+            .sum = if (p.sum) |s| s.toDouble() else null,
+            .min = if (p.min) |mn| mn.toDouble() else null,
+            .max = if (p.max) |mx| mx.toDouble() else null,
+            .bucket_counts = bucket_counts,
+            .explicit_bounds = explicit_bounds,
+            .exemplars = try metricExemplars(arena, p.exemplars),
+        });
+    }
+    return out;
+}
+
+fn metricExemplars(arena: Allocator, list: []const metric_data.Exemplar) Allocator.Error!std.ArrayList(metrics_v1.Exemplar) {
+    var out: std.ArrayList(metrics_v1.Exemplar) = try .initCapacity(arena, list.len);
+    for (list) |*e| {
+        out.appendAssumeCapacity(.{
+            .filtered_attributes = try keyValues(arena, e.filtered_attributes),
+            .time_unix_nano = e.time_unix_nano,
+            .trace_id = if (e.trace_id.isValid()) try arena.dupe(u8, &e.trace_id.bytes) else &.{},
+            .span_id = if (e.span_id.isValid()) try arena.dupe(u8, &e.span_id.bytes) else &.{},
+            .value = switch (e.value) {
+                .int => |v| .{ .as_int = v },
+                .double => |v| .{ .as_double = v },
+            },
+        });
+    }
+    return out;
 }
 
 test {
