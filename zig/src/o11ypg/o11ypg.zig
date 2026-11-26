@@ -269,9 +269,11 @@ pub const Pool = struct {
     }
 
     /// Unregisters pool metrics and closes the underlying pool if owned.
+    /// Idempotent.
     pub fn deinit(self: *Pool) void {
         self.pool_metrics.deinit();
         if (self.owns_pool) {
+            self.owns_pool = false;
             self.pool.deinit();
         }
         if (self.owned_database) |d| self.gpa.free(d);
@@ -312,7 +314,12 @@ pub const Pool = struct {
         };
         defer self.pool.release(conn);
 
-        const affected = conn.execOpts(sql, values, opts) catch |err| {
+        // Always keep release_conn=false inside pg.Conn so conn stays owned
+        // until pgErrorCode runs and the single defer releases it.
+        var inner_opts = opts;
+        inner_opts.release_conn = false;
+
+        const affected = conn.execOpts(sql, values, inner_opts) catch |err| {
             op.finish(ctx, err, pgErrorCode(conn, err));
             return err;
         };
@@ -324,12 +331,23 @@ pub const Pool = struct {
         return self.queryOpts(ctx, sql, values, .{});
     }
 
-    pub fn queryOpts(self: *Pool, ctx: o11y.Context, sql: []const u8, values: anytype, opts_: pg.Conn.QueryOpts) !*pg.Result {
+    pub fn queryOpts(self: *Pool, ctx: o11y.Context, sql: []const u8, values: anytype, opts: pg.Conn.QueryOpts) !*pg.Result {
         const op = self.ins.beginQuery(sql);
-        const result = self.pool.queryOpts(sql, values, opts_) catch |err| {
+        var conn = self.pool.acquire() catch |err| {
             op.finish(ctx, err, null);
             return err;
         };
+
+        var inner_opts = opts;
+        inner_opts.release_conn = false;
+
+        const result = conn.queryOpts(sql, values, inner_opts) catch |err| {
+            op.finish(ctx, err, pgErrorCode(conn, err));
+            self.pool.release(conn);
+            return err;
+        };
+        // Transfer pool ownership to Result.deinit() (matches pg.Pool.queryOpts).
+        result._release_conn = true;
         op.finish(ctx, null, null);
         return result;
     }
@@ -338,14 +356,31 @@ pub const Pool = struct {
         return self.rowOpts(ctx, sql, values, .{});
     }
 
-    pub fn rowOpts(self: *Pool, ctx: o11y.Context, sql: []const u8, values: anytype, opts_: pg.Conn.QueryOpts) !?pg.QueryRow {
+    pub fn rowOpts(self: *Pool, ctx: o11y.Context, sql: []const u8, values: anytype, opts: pg.Conn.QueryOpts) !?pg.QueryRow {
         const op = self.ins.beginQuery(sql);
-        const qr = self.pool.rowOpts(sql, values, opts_) catch |err| {
+        var conn = self.pool.acquire() catch |err| {
             op.finish(ctx, err, null);
             return err;
         };
+
+        var inner_opts = opts;
+        inner_opts.release_conn = false;
+
+        const qr_opt = conn.rowOpts(sql, values, inner_opts) catch |err| {
+            op.finish(ctx, err, pgErrorCode(conn, err));
+            self.pool.release(conn);
+            return err;
+        };
+        if (qr_opt) |qr| {
+            // Transfer pool ownership to QueryRow.deinit() -> Result.deinit().
+            qr.result._release_conn = true;
+        } else {
+            // No row returned: conn.rowOpts already finalized Result with
+            // _release_conn=false, so release the connection back now.
+            self.pool.release(conn);
+        }
         op.finish(ctx, null, null);
-        return qr;
+        return qr_opt;
     }
 };
 
@@ -390,11 +425,16 @@ pub const Conn = struct {
 
     pub fn execOpts(self: *Conn, ctx: o11y.Context, sql: []const u8, values: anytype, opts: pg.Conn.QueryOpts) !?i64 {
         const op = self.ins.beginQuery(sql);
-        const affected = self.conn.execOpts(sql, values, opts) catch |err| {
+        var inner_opts = opts;
+        inner_opts.release_conn = false;
+
+        const affected = self.conn.execOpts(sql, values, inner_opts) catch |err| {
             op.finish(ctx, err, pgErrorCode(self.conn, err));
+            if (opts.release_conn) self.conn.release();
             return err;
         };
         op.finish(ctx, null, null);
+        if (opts.release_conn) self.conn.release();
         return affected;
     }
 
@@ -404,10 +444,15 @@ pub const Conn = struct {
 
     pub fn queryOpts(self: *Conn, ctx: o11y.Context, sql: []const u8, values: anytype, opts: pg.Conn.QueryOpts) !*pg.Result {
         const op = self.ins.beginQuery(sql);
-        const result = self.conn.queryOpts(sql, values, opts) catch |err| {
+        var inner_opts = opts;
+        inner_opts.release_conn = false;
+
+        const result = self.conn.queryOpts(sql, values, inner_opts) catch |err| {
             op.finish(ctx, err, pgErrorCode(self.conn, err));
+            if (opts.release_conn) self.conn.release();
             return err;
         };
+        if (opts.release_conn) result._release_conn = true;
         op.finish(ctx, null, null);
         return result;
     }
@@ -418,12 +463,21 @@ pub const Conn = struct {
 
     pub fn rowOpts(self: *Conn, ctx: o11y.Context, sql: []const u8, values: anytype, opts: pg.Conn.QueryOpts) !?pg.QueryRow {
         const op = self.ins.beginQuery(sql);
-        const qr = self.conn.rowOpts(sql, values, opts) catch |err| {
+        var inner_opts = opts;
+        inner_opts.release_conn = false;
+
+        const qr_opt = self.conn.rowOpts(sql, values, inner_opts) catch |err| {
             op.finish(ctx, err, pgErrorCode(self.conn, err));
+            if (opts.release_conn) self.conn.release();
             return err;
         };
+        if (qr_opt) |qr| {
+            if (opts.release_conn) qr.result._release_conn = true;
+        } else {
+            if (opts.release_conn) self.conn.release();
+        }
         op.finish(ctx, null, null);
-        return qr;
+        return qr_opt;
     }
 
     pub fn begin(self: *Conn, ctx: o11y.Context) !void {

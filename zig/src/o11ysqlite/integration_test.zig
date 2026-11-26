@@ -162,3 +162,57 @@ test "o11ysqlite live: query_text=false omits db.query.text and Db.wrap preserve
     const sp = try rec.expectSpan("CREATE items");
     try testing.expectEqual(@as(?o11y.AttributeValue, null), findAttr(sp.attributes.items, "db.query.text"));
 }
+
+test "o11ysqlite live: non-SQLite errors omit db.response.status_code and statements survive Db moves" {
+    const rec = try o11ytest.start(testing.allocator, testing.io, .{});
+    defer rec.deinit();
+
+    var moved_db = try o11ysqlite.Db.init(.{
+        .mode = .Memory,
+        .open_flags = .{ .write = true, .create = true },
+    }, .{
+        .telemetry = rec.telemetry(),
+        .database = "move-test",
+    });
+
+    // Prepare statements, then move `Db` by value and overwrite the original stack slot.
+    var stmt = try moved_db.prepare("SELECT 1");
+    defer stmt.deinit();
+    var dyn = try moved_db.prepareDynamic("SELECT 2");
+    defer dyn.deinit();
+
+    var db = moved_db;
+    moved_db = undefined;
+    defer db.deinit();
+
+    var parent = rec.tracer("handler").start(.background, "handler", .{});
+    defer parent.end();
+    const pctx = o11y.Context.background.withSpan(&parent);
+
+    // Executing statements after Db was moved must work without dangling pointers.
+    try testing.expectEqual(@as(?i64, 1), try stmt.one(pctx, i64, .{}, .{}));
+    try testing.expectEqual(@as(?i64, 2), try dyn.one(pctx, i64, .{}, .{}));
+
+    // Seed a SQLite error first, then trigger non-SQLite errors (ExecReturnedData
+    // and EmptyQuery) to prove neither attaches 100 (SQLITE_ROW) nor a stale code.
+    try testing.expectError(error.SQLiteError, db.execDynamic(pctx, "SELECT * FROM no_such_tbl", .{}, .{}));
+    try testing.expectError(error.ExecReturnedData, db.execDynamic(pctx, "SELECT 42", .{}, .{}));
+    try testing.expectError(error.EmptyQuery, db.execDynamic(pctx, "", .{}, .{}));
+
+    parent.end();
+
+    var saw_exec_returned_data = false;
+    var saw_empty_query = false;
+    for (rec.spans()) |sp| {
+        const et = findAttr(sp.attributes.items, "error.type") orelse continue;
+        if (std.mem.eql(u8, et.string, "ExecReturnedData")) {
+            saw_exec_returned_data = true;
+            try testing.expectEqual(@as(?o11y.AttributeValue, null), findAttr(sp.attributes.items, "db.response.status_code"));
+        } else if (std.mem.eql(u8, et.string, "EmptyQuery")) {
+            saw_empty_query = true;
+            try testing.expectEqual(@as(?o11y.AttributeValue, null), findAttr(sp.attributes.items, "db.response.status_code"));
+        }
+    }
+    try testing.expect(saw_exec_returned_data);
+    try testing.expect(saw_empty_query);
+}

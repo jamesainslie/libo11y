@@ -178,3 +178,89 @@ test "o11ypg live: queries, transactions, error SQLSTATE, parent-span gating, an
 
     try rec.expectConforms();
 }
+
+test "o11ypg live: Pool.query/row SQLSTATE, release_conn=true safety, and idempotent Pool.deinit" {
+    const dsn = (try testDsn(testing.allocator)) orelse return error.SkipZigTest;
+    defer testing.allocator.free(dsn);
+
+    const rec = try o11ytest.start(testing.allocator, testing.io, .{});
+    defer rec.deinit();
+
+    const uri = try std.Uri.parse(dsn);
+    var pool = try o11ypg.Pool.initUri(testing.allocator, testing.io, uri, .{
+        .size = 2,
+        .connect_on_init_count = 1,
+    }, .{
+        .telemetry = rec.telemetry(),
+        .pool_name = "release-conn-pool",
+    });
+    defer pool.deinit();
+
+    var parent = rec.tracer("handler").start(.background, "GET /pool-checks", .{});
+    defer parent.end();
+    const pctx = o11y.Context.background.withSpan(&parent);
+
+    // 1. Failing pool.query and pool.row must record SQLSTATE 42P01 and release conn cleanly.
+    try testing.expectError(error.PG, pool.query(pctx, "SELECT * FROM o11ypg_missing_pool_q", .{}));
+    try testing.expectError(error.PG, pool.row(pctx, "SELECT * FROM o11ypg_missing_pool_r", .{}));
+
+    // 2. pool.row returning null must release conn back to the pool.
+    try testing.expectEqual(@as(?pg.QueryRow, null), try pool.row(pctx, "SELECT 1 WHERE false", .{}));
+
+    // 3. pool.execOpts with release_conn=true must NOT double-release (both success and error).
+    _ = try pool.execOpts(pctx, "SELECT $1::int", .{@as(i32, 7)}, .{ .release_conn = true });
+    try testing.expectError(error.PG, pool.execOpts(pctx, "SELECT * FROM o11ypg_missing_exec_rc", .{}, .{ .release_conn = true }));
+
+    // 4. Conn.*Opts with release_conn=true on success, null row, and error.PG (must record 42P01
+    //    before releasing and never UAF or leak a pool slot).
+    {
+        var c = try pool.acquire();
+        var res = try c.queryOpts(pctx, "SELECT 1 AS n", .{}, .{ .release_conn = true });
+        defer res.deinit();
+        const r = (try res.next()) orelse return error.TestUnexpectedResult;
+        try testing.expectEqual(@as(i32, 1), try r.get(i32, 0));
+    }
+    {
+        var c = try pool.acquire();
+        try testing.expectError(error.PG, c.queryOpts(pctx, "SELECT * FROM o11ypg_missing_conn_q", .{}, .{ .release_conn = true }));
+    }
+    {
+        var c = try pool.acquire();
+        try testing.expectEqual(@as(?pg.QueryRow, null), try c.rowOpts(pctx, "SELECT 1 WHERE false", .{}, .{ .release_conn = true }));
+    }
+    {
+        var c = try pool.acquire();
+        try testing.expectError(error.PG, c.rowOpts(pctx, "SELECT * FROM o11ypg_missing_conn_r", .{}, .{ .release_conn = true }));
+    }
+    {
+        var c = try pool.acquire();
+        _ = try c.execOpts(pctx, "SELECT 1", .{}, .{ .release_conn = true });
+    }
+    {
+        var c = try pool.acquire();
+        try testing.expectError(error.PG, c.execOpts(pctx, "SELECT * FROM o11ypg_missing_conn_e", .{}, .{ .release_conn = true }));
+    }
+
+    // All pool slots must be cleanly returned (in_use == 0).
+    try testing.expectEqual(@as(usize, 0), pool.stats().in_use);
+
+    parent.end();
+
+    for ([_][]const u8{
+        "SELECT o11ypg_missing_pool_q",
+        "SELECT o11ypg_missing_pool_r",
+        "SELECT o11ypg_missing_exec_rc",
+        "SELECT o11ypg_missing_conn_q",
+        "SELECT o11ypg_missing_conn_r",
+        "SELECT o11ypg_missing_conn_e",
+    }) |name| {
+        const sp = try rec.expectSpan(name);
+        try testing.expectEqual(o11y.StatusCode.@"error", sp.status.code);
+        try testing.expectEqualStrings("", sp.status.description);
+        try testing.expectEqualStrings("PG", findAttr(sp.attributes.items, "error.type").?.string);
+        try testing.expectEqualStrings("42P01", findAttr(sp.attributes.items, "db.response.status_code").?.string);
+    }
+
+    // Pool.deinit must be idempotent (defer pool.deinit() runs a second time).
+    pool.deinit();
+}

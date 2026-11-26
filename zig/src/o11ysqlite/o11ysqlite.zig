@@ -125,7 +125,7 @@ pub const Db = struct {
         const op = self.ins.beginQuery(query);
         self.inner.exec(query, options, values) catch |err| {
             var code_buf: [16]u8 = undefined;
-            op.finish(ctx, err, sqliteErrorCode(self.inner.db, &code_buf));
+            op.finish(ctx, err, sqliteErrorCode(self.inner.db, err, &code_buf));
             return err;
         };
         op.finish(ctx, null, null);
@@ -136,7 +136,7 @@ pub const Db = struct {
         const op = self.ins.beginQuery(query);
         self.inner.execDynamic(query, options, values) catch |err| {
             var code_buf: [16]u8 = undefined;
-            op.finish(ctx, err, sqliteErrorCode(self.inner.db, &code_buf));
+            op.finish(ctx, err, sqliteErrorCode(self.inner.db, err, &code_buf));
             return err;
         };
         op.finish(ctx, null, null);
@@ -147,7 +147,7 @@ pub const Db = struct {
         const op = self.ins.beginQuery(query);
         self.inner.execAlloc(allocator, query, options, values) catch |err| {
             var code_buf: [16]u8 = undefined;
-            op.finish(ctx, err, sqliteErrorCode(self.inner.db, &code_buf));
+            op.finish(ctx, err, sqliteErrorCode(self.inner.db, err, &code_buf));
             return err;
         };
         op.finish(ctx, null, null);
@@ -158,7 +158,7 @@ pub const Db = struct {
         const op = self.ins.beginQuery(query);
         self.inner.execMulti(query, options) catch |err| {
             var code_buf: [16]u8 = undefined;
-            op.finish(ctx, err, sqliteErrorCode(self.inner.db, &code_buf));
+            op.finish(ctx, err, sqliteErrorCode(self.inner.db, err, &code_buf));
             return err;
         };
         op.finish(ctx, null, null);
@@ -169,7 +169,7 @@ pub const Db = struct {
         const op = self.ins.beginQuery(query);
         const res = self.inner.one(Type, query, options, values) catch |err| {
             var code_buf: [16]u8 = undefined;
-            op.finish(ctx, err, sqliteErrorCode(self.inner.db, &code_buf));
+            op.finish(ctx, err, sqliteErrorCode(self.inner.db, err, &code_buf));
             return err;
         };
         op.finish(ctx, null, null);
@@ -181,7 +181,7 @@ pub const Db = struct {
         const op = self.ins.beginQuery(query);
         const res = self.inner.oneDynamic(Type, query, options, values) catch |err| {
             var code_buf: [16]u8 = undefined;
-            op.finish(ctx, err, sqliteErrorCode(self.inner.db, &code_buf));
+            op.finish(ctx, err, sqliteErrorCode(self.inner.db, err, &code_buf));
             return err;
         };
         op.finish(ctx, null, null);
@@ -193,7 +193,7 @@ pub const Db = struct {
         const op = self.ins.beginQuery(query);
         const res = self.inner.oneAlloc(Type, allocator, query, options, values) catch |err| {
             var code_buf: [16]u8 = undefined;
-            op.finish(ctx, err, sqliteErrorCode(self.inner.db, &code_buf));
+            op.finish(ctx, err, sqliteErrorCode(self.inner.db, err, &code_buf));
             return err;
         };
         op.finish(ctx, null, null);
@@ -205,7 +205,7 @@ pub const Db = struct {
         const op = self.ins.beginQuery(query);
         const res = self.inner.oneDynamicAlloc(Type, allocator, query, options, values) catch |err| {
             var code_buf: [16]u8 = undefined;
-            op.finish(ctx, err, sqliteErrorCode(self.inner.db, &code_buf));
+            op.finish(ctx, err, sqliteErrorCode(self.inner.db, err, &code_buf));
             return err;
         };
         op.finish(ctx, null, null);
@@ -217,13 +217,13 @@ pub const Db = struct {
         const op = self.ins.beginQuery(query);
         var stmt = self.inner.prepareWithDiags(query, options) catch |err| {
             var code_buf: [16]u8 = undefined;
-            op.finish(ctx, err, sqliteErrorCode(self.inner.db, &code_buf));
+            op.finish(ctx, err, sqliteErrorCode(self.inner.db, err, &code_buf));
             return err;
         };
         defer stmt.deinit();
         const rows = stmt.all(Type, allocator, options, values) catch |err| {
             var code_buf: [16]u8 = undefined;
-            op.finish(ctx, err, sqliteErrorCode(self.inner.db, &code_buf));
+            op.finish(ctx, err, sqliteErrorCode(self.inner.db, err, &code_buf));
             return err;
         };
         op.finish(ctx, null, null);
@@ -235,13 +235,13 @@ pub const Db = struct {
         const op = self.ins.beginQuery(query);
         var stmt = self.inner.prepareDynamicWithDiags(query, options) catch |err| {
             var code_buf: [16]u8 = undefined;
-            op.finish(ctx, err, sqliteErrorCode(self.inner.db, &code_buf));
+            op.finish(ctx, err, sqliteErrorCode(self.inner.db, err, &code_buf));
             return err;
         };
         defer stmt.deinit();
         const rows = stmt.all(Type, allocator, options, values) catch |err| {
             var code_buf: [16]u8 = undefined;
-            op.finish(ctx, err, sqliteErrorCode(self.inner.db, &code_buf));
+            op.finish(ctx, err, sqliteErrorCode(self.inner.db, err, &code_buf));
             return err;
         };
         op.finish(ctx, null, null);
@@ -260,7 +260,7 @@ pub const Db = struct {
         return .{
             .stmt = stmt,
             .db_handle = self.inner.db,
-            .ins = &self.ins,
+            .ins = self.ins,
         };
     }
 
@@ -277,7 +277,7 @@ pub const Db = struct {
         return .{
             .stmt = stmt,
             .db_handle = self.inner.db,
-            .ins = &self.ins,
+            .ins = self.ins,
             .sql = sql_copy,
         };
     }
@@ -292,7 +292,7 @@ pub fn Statement(comptime query: []const u8) type {
 
         stmt: Inner,
         db_handle: *sqlite.c.sqlite3,
-        ins: *const db.telemetry.Instrumenter,
+        ins: db.telemetry.Instrumenter,
 
         pub fn deinit(self: *Self) void {
             self.stmt.deinit();
@@ -306,7 +306,7 @@ pub fn Statement(comptime query: []const u8) type {
             const op = self.ins.beginQuery(query);
             self.stmt.exec(options, values) catch |err| {
                 var code_buf: [16]u8 = undefined;
-                op.finish(ctx, err, sqliteErrorCode(self.db_handle, &code_buf));
+                op.finish(ctx, err, sqliteErrorCode(self.db_handle, err, &code_buf));
                 return err;
             };
             op.finish(ctx, null, null);
@@ -316,7 +316,7 @@ pub fn Statement(comptime query: []const u8) type {
             const op = self.ins.beginQuery(query);
             const res = self.stmt.one(Type, options, values) catch |err| {
                 var code_buf: [16]u8 = undefined;
-                op.finish(ctx, err, sqliteErrorCode(self.db_handle, &code_buf));
+                op.finish(ctx, err, sqliteErrorCode(self.db_handle, err, &code_buf));
                 return err;
             };
             op.finish(ctx, null, null);
@@ -327,7 +327,7 @@ pub fn Statement(comptime query: []const u8) type {
             const op = self.ins.beginQuery(query);
             const res = self.stmt.oneAlloc(Type, allocator, options, values) catch |err| {
                 var code_buf: [16]u8 = undefined;
-                op.finish(ctx, err, sqliteErrorCode(self.db_handle, &code_buf));
+                op.finish(ctx, err, sqliteErrorCode(self.db_handle, err, &code_buf));
                 return err;
             };
             op.finish(ctx, null, null);
@@ -338,7 +338,7 @@ pub fn Statement(comptime query: []const u8) type {
             const op = self.ins.beginQuery(query);
             const rows = self.stmt.all(Type, allocator, options, values) catch |err| {
                 var code_buf: [16]u8 = undefined;
-                op.finish(ctx, err, sqliteErrorCode(self.db_handle, &code_buf));
+                op.finish(ctx, err, sqliteErrorCode(self.db_handle, err, &code_buf));
                 return err;
             };
             op.finish(ctx, null, null);
@@ -351,7 +351,7 @@ pub fn Statement(comptime query: []const u8) type {
 pub const DynamicStatement = struct {
     stmt: sqlite.DynamicStatement,
     db_handle: *sqlite.c.sqlite3,
-    ins: *const db.telemetry.Instrumenter,
+    ins: db.telemetry.Instrumenter,
     sql: []u8,
 
     pub fn deinit(self: *DynamicStatement) void {
@@ -367,7 +367,7 @@ pub const DynamicStatement = struct {
         const op = self.ins.beginQuery(self.sql);
         self.stmt.exec(options, values) catch |err| {
             var code_buf: [16]u8 = undefined;
-            op.finish(ctx, err, sqliteErrorCode(self.db_handle, &code_buf));
+            op.finish(ctx, err, sqliteErrorCode(self.db_handle, err, &code_buf));
             return err;
         };
         op.finish(ctx, null, null);
@@ -377,7 +377,7 @@ pub const DynamicStatement = struct {
         const op = self.ins.beginQuery(self.sql);
         const res = self.stmt.one(Type, options, values) catch |err| {
             var code_buf: [16]u8 = undefined;
-            op.finish(ctx, err, sqliteErrorCode(self.db_handle, &code_buf));
+            op.finish(ctx, err, sqliteErrorCode(self.db_handle, err, &code_buf));
             return err;
         };
         op.finish(ctx, null, null);
@@ -388,7 +388,7 @@ pub const DynamicStatement = struct {
         const op = self.ins.beginQuery(self.sql);
         const res = self.stmt.oneAlloc(Type, allocator, options, values) catch |err| {
             var code_buf: [16]u8 = undefined;
-            op.finish(ctx, err, sqliteErrorCode(self.db_handle, &code_buf));
+            op.finish(ctx, err, sqliteErrorCode(self.db_handle, err, &code_buf));
             return err;
         };
         op.finish(ctx, null, null);
@@ -399,7 +399,7 @@ pub const DynamicStatement = struct {
         const op = self.ins.beginQuery(self.sql);
         const rows = self.stmt.all(Type, allocator, options, values) catch |err| {
             var code_buf: [16]u8 = undefined;
-            op.finish(ctx, err, sqliteErrorCode(self.db_handle, &code_buf));
+            op.finish(ctx, err, sqliteErrorCode(self.db_handle, err, &code_buf));
             return err;
         };
         op.finish(ctx, null, null);
@@ -407,13 +407,28 @@ pub const DynamicStatement = struct {
     }
 };
 
-fn sqliteErrorCode(handle: *sqlite.c.sqlite3, buf: *[16]u8) ?[]const u8 {
+fn isSqliteError(err: anyerror) bool {
+    inline for (@typeInfo(sqlite.Error).error_set.error_names.?) |name| {
+        if (err == @field(sqlite.Error, name)) return true;
+    }
+    return false;
+}
+
+fn sqliteErrorCode(handle: *sqlite.c.sqlite3, err: anyerror, buf: *[16]u8) ?[]const u8 {
+    if (!isSqliteError(err)) return null;
     const code = sqlite.c.sqlite3_extended_errcode(handle);
-    if (code == 0 or code == sqlite.c.SQLITE_OK) return null;
+    if (code == 0 or code == sqlite.c.SQLITE_OK or code == sqlite.c.SQLITE_ROW or code == sqlite.c.SQLITE_DONE) {
+        return null;
+    }
     return std.fmt.bufPrint(buf, "{d}", .{code}) catch null;
 }
 
-test "o11ysqlite exposes stable scope name and duration buckets" {
+test "o11ysqlite exposes stable scope name, duration buckets, and filters non-SQLite error codes" {
     try std.testing.expectEqualStrings("sqlite", system_name);
     try std.testing.expectEqual(@as(usize, 9), duration_buckets.len);
+    try std.testing.expect(isSqliteError(error.SQLiteError));
+    try std.testing.expect(isSqliteError(error.SQLiteConstraint));
+    try std.testing.expect(!isSqliteError(error.ExecReturnedData));
+    try std.testing.expect(!isSqliteError(error.EmptyQuery));
+    try std.testing.expect(!isSqliteError(error.OutOfMemory));
 }
