@@ -79,8 +79,8 @@ pub const LoggerProvider = struct {
     shutdown_done: Io.Event = .unset,
     shutdown_result: ?processor.ExportError = null,
 
-    // Emits in progress, so shutdown waits for them before it shuts the
-    // processors down, as Go's provider does.
+    // Emits and flushes in progress, so shutdown waits for them before it
+    // shuts the processors down, as Go's provider does.
     ops_mutex: Io.Mutex = .init,
     ops_idle: Io.Condition = .init,
     ops_active: usize = 0,
@@ -174,7 +174,8 @@ pub const LoggerProvider = struct {
     /// Flushes every processor in order, under one deadline, and returns
     /// the first error. After shutdown it does nothing, as in Go.
     pub fn forceFlush(p: *LoggerProvider, deadline: Deadline) processor.ExportError!void {
-        if (p.is_shutdown.load(.acquire)) return;
+        if (!p.beginOperation()) return;
+        defer p.endOperation();
         var first: ?processor.ExportError = null;
         for (p.processors) |lp| {
             lp.forceFlush(deadline) catch |err| {
@@ -184,10 +185,12 @@ pub const LoggerProvider = struct {
         if (first) |err| return err;
     }
 
-    /// Stops new emits, waits for the emits in progress, then shuts every
-    /// processor down in order, all under one deadline. Later emits are
-    /// dropped. Concurrent and later calls wait for the first shutdown to
-    /// finish and return its result.
+    /// Stops new emits and flushes, waits for the ones in progress, then
+    /// shuts every processor down in order, all under one deadline. Even
+    /// if waiting times out, every processor is still shut down so workers
+    /// and exporters are released. Later emits are dropped. Concurrent and
+    /// later calls wait for the first shutdown to finish and return its
+    /// result.
     pub fn shutdown(p: *LoggerProvider, deadline: Deadline) processor.ExportError!void {
         if (p.is_shutdown.swap(true, .acq_rel)) {
             p.shutdown_done.waitTimeout(p.io, deadline_mod.timeout(deadline)) catch |err| switch (err) {
@@ -197,21 +200,21 @@ pub const LoggerProvider = struct {
             if (p.shutdown_result) |err| return err;
             return;
         }
-        const drained = p.waitForEmits(deadline);
         var first: ?processor.ExportError = null;
-        if (drained) |_| {
-            for (p.processors) |lp| {
-                lp.shutdown(deadline) catch |err| {
-                    if (first == null) first = err;
-                };
-            }
-        } else |err| first = err;
+        p.waitForOperations(deadline) catch |err| {
+            first = err;
+        };
+        for (p.processors) |lp| {
+            lp.shutdown(deadline) catch |err| {
+                if (first == null) first = err;
+            };
+        }
         p.shutdown_result = first;
         p.shutdown_done.set(p.io);
         if (first) |err| return err;
     }
 
-    fn waitForEmits(p: *LoggerProvider, deadline: Deadline) processor.ExportError!void {
+    fn waitForOperations(p: *LoggerProvider, deadline: Deadline) processor.ExportError!void {
         p.ops_mutex.lockUncancelable(p.io);
         defer p.ops_mutex.unlock(p.io);
         p.ops_stopped = true;

@@ -191,3 +191,64 @@ test "an allocation failure returns null without leaking" {
     }
     try testing.expect(i > 0);
 }
+
+test "cyclic and overly deep values in body and attributes fail closed" {
+    // Multi-branch self-referential array cycle.
+    var cyclic_arr = [_]Value{ .empty, .empty };
+    cyclic_arr[0] = .{ .array = &cyclic_arr };
+    cyclic_arr[1] = .{ .array = &cyclic_arr };
+    // Self-referential map cycle.
+    var cyclic_map = [_]KeyValue{ .{ .key = "self", .value = .empty }, kv("ok", 1) };
+    cyclic_map[0].value = .{ .map = &cyclic_map };
+
+    const body_cycle = try create(.{ .body = .{ .array = &cyclic_arr } }, .{});
+    defer body_cycle.release();
+    try testing.expectEqual(@as(usize, 2), body_cycle.body.array.len);
+    try testing.expect(body_cycle.body.array[0] == .empty);
+    try testing.expect(body_cycle.body.array[1] == .empty);
+
+    const attr_cycle = try create(.{ .attributes = &.{
+        .{ .key = "arr", .value = .{ .array = &cyclic_arr } },
+        .{ .key = "map", .value = .{ .map = &cyclic_map } },
+    } }, .{ .attribute_value_depth = null });
+    defer attr_cycle.release();
+    try testing.expect(attr_cycle.attributes[0].value.array[0] == .empty);
+    try testing.expect(attr_cycle.attributes[1].value.map[0].value == .empty);
+    try testing.expectEqual(@as(i64, 1), attr_cycle.attributes[1].value.map[1].value.int);
+
+    // Non-cyclic exponential DAG (2^30 paths without a node budget).
+    var dag: [31][2]Value = undefined;
+    dag[0] = .{ .{ .int = 1 }, .{ .int = 2 } };
+    for (1..dag.len) |idx| {
+        const prev: Value = .{ .array = &dag[idx - 1] };
+        dag[idx] = .{ prev, prev };
+    }
+    const dag_val: Value = .{ .array = &dag[dag.len - 1] };
+    const dag_body = try create(.{ .body = dag_val }, .{});
+    defer dag_body.release();
+    const dag_attr = try create(.{ .attributes = &.{.{ .key = "dag", .value = dag_val }} }, .{ .attribute_value_depth = null });
+    defer dag_attr.release();
+
+    // Non-cyclic nesting deeper than max_value_depth (64).
+    const depth = log_record.max_value_depth + 10;
+    var chain: [depth][1]Value = undefined;
+    chain[0] = .{.{ .int = 42 }};
+    for (1..depth) |idx| chain[idx] = .{.{ .array = &chain[idx - 1] }};
+    const deep_val: Value = .{ .array = &chain[depth - 1] };
+
+    const deep_body = try create(.{ .body = deep_val }, .{});
+    defer deep_body.release();
+    var cur = deep_body.body;
+    var levels: u32 = 0;
+    while (cur == .array and cur.array.len > 0) : (levels += 1) cur = cur.array[0];
+    try testing.expectEqual(log_record.max_value_depth, levels);
+    try testing.expect(cur == .empty);
+
+    const deep_attr = try create(.{ .attributes = &.{.{ .key = "deep", .value = deep_val }} }, .{ .attribute_value_depth = null });
+    defer deep_attr.release();
+    cur = deep_attr.attributes[0].value;
+    levels = 0;
+    while (cur == .array and cur.array.len > 0) : (levels += 1) cur = cur.array[0];
+    try testing.expectEqual(log_record.max_value_depth, levels);
+    try testing.expect(cur == .empty);
+}

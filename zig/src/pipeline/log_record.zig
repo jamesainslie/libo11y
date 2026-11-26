@@ -141,7 +141,17 @@ pub const Record = struct {
     event_name: []const u8 = "",
 };
 
-/// Log record limits. A null limit is unlimited. The defaults are the
+/// Hard upper bound on nesting depth when copying any `Value` (body or
+/// attribute), preventing stack overflow on deep or cyclic graphs.
+pub const max_value_depth: u32 = 64;
+
+/// Hard upper bound on the total number of `Value` nodes visited while
+/// copying a record's body or its attributes, preventing exponential work
+/// on shared or cyclic graphs.
+pub const max_value_nodes: usize = 2048;
+
+/// Log record limits. A null limit is unlimited (subject to the safety
+/// caps `max_value_depth` and `max_value_nodes`). The defaults are the
 /// OTel Go SDK defaults.
 pub const Limits = struct {
     /// The most attributes a record keeps. Attributes past the limit are
@@ -155,8 +165,9 @@ pub const Limits = struct {
     /// The deepest an attribute value nests. The attribute's own value is
     /// at depth one, and each step into an array element or a map value
     /// adds one. An array or map past the limit is replaced by an empty
-    /// value. The body is not limited.
-    attribute_value_depth: ?u32 = 64,
+    /// value. The body is not limited by this setting, only by the safety
+    /// cap `max_value_depth`.
+    attribute_value_depth: ?u32 = max_value_depth,
 };
 
 /// The record of one emitted log. `Logger.emit` creates it, and it is
@@ -229,7 +240,8 @@ pub const LogData = struct {
         const arena = data.arena.allocator();
         data.severity_text = try arena.dupe(u8, record.severity_text);
         data.event_name = try arena.dupe(u8, record.event_name);
-        data.body = try copyValue(arena, record.body, .{});
+        var body_state: CopyState = .{};
+        data.body = try copyValue(arena, record.body, .{ .remaining_depth = max_value_depth }, &body_state);
         const copied = try copyAttributes(arena, record.attributes, limits);
         data.attributes = copied.attributes;
         data.dropped_attributes_count = copied.dropped;
@@ -258,10 +270,28 @@ pub const LogData = struct {
 
 /// How deep values are cut and how long their strings may be.
 const CopyRules = struct {
-    /// Arrays and maps at this many more levels down become empty. Null
-    /// is unlimited.
-    remaining_depth: ?u32 = null,
+    /// Arrays and maps at this many more levels down become empty. Always
+    /// capped at `max_value_depth`.
+    remaining_depth: u32 = max_value_depth,
     max_len: ?usize = null,
+};
+
+const Ancestor = struct {
+    is_map: bool,
+    addr: usize,
+};
+
+const CopyState = struct {
+    remaining_nodes: usize = max_value_nodes,
+    ancestors: [max_value_depth]Ancestor = undefined,
+    ancestor_len: usize = 0,
+
+    fn contains(s: *const CopyState, is_map: bool, addr: usize) bool {
+        for (s.ancestors[0..s.ancestor_len]) |a| {
+            if (a.is_map == is_map and a.addr == addr) return true;
+        }
+        return false;
+    }
 };
 
 const Copied = struct { attributes: []KeyValue, dropped: u32 };
@@ -275,7 +305,7 @@ fn indexOfKey(pairs: []const KeyValue, key: []const u8) ?usize {
 
 /// Copies the attributes: drop empty keys, deduplicate with the last
 /// value winning, cut to the count limit, then copy each value under the
-/// depth and length limits.
+/// depth, length and node-budget limits.
 fn copyAttributes(arena: Allocator, attrs: []const KeyValue, limits: Limits) Allocator.Error!Copied {
     var unique: std.ArrayList(KeyValue) = try .initCapacity(arena, attrs.len);
     for (attrs) |a| {
@@ -291,46 +321,66 @@ fn copyAttributes(arena: Allocator, attrs: []const KeyValue, limits: Limits) All
         dropped = std.math.cast(u32, unique.items.len - max) orelse std.math.maxInt(u32);
         unique.shrinkRetainingCapacity(max);
     };
-    const rules: CopyRules = .{ .remaining_depth = limits.attribute_value_depth, .max_len = limits.attribute_value_length };
+    const depth = if (limits.attribute_value_depth) |d| @min(d, max_value_depth) else max_value_depth;
+    const rules: CopyRules = .{ .remaining_depth = depth, .max_len = limits.attribute_value_length };
+    var state: CopyState = .{};
     for (unique.items) |*a| a.* = .{
         .key = try arena.dupe(u8, a.key),
-        .value = try copyValue(arena, a.value, rules),
+        .value = try copyValue(arena, a.value, rules, &state),
     };
     return .{ .attributes = unique.items, .dropped = dropped };
 }
 
 /// Copies a value into `arena` with its maps deduplicated, applying the
-/// depth and length rules.
-fn copyValue(arena: Allocator, value: Value, rules: CopyRules) Allocator.Error!Value {
+/// depth, length, cycle and node-budget rules.
+fn copyValue(arena: Allocator, value: Value, rules: CopyRules, state: *CopyState) Allocator.Error!Value {
+    if (state.remaining_nodes == 0) return .empty;
+    state.remaining_nodes -= 1;
     switch (value) {
         .empty, .bool, .int, .double => return value,
         .string => |s| return .{ .string = try truncateChars(arena, s, rules.max_len) },
         .bytes => |b| return .{ .bytes = try arena.dupe(u8, if (rules.max_len) |max| b[0..@min(b.len, max)] else b) },
         .array, .map => {},
     }
+    if (rules.remaining_depth == 0) return .empty;
     var inner = rules;
-    if (rules.remaining_depth) |depth| {
-        if (depth == 0) return .empty;
-        inner.remaining_depth = depth - 1;
-    }
+    inner.remaining_depth = rules.remaining_depth - 1;
     switch (value) {
         .array => |items| {
-            const out = try arena.alloc(Value, items.len);
-            for (out, items) |*o, item| o.* = try copyValue(arena, item, inner);
-            return .{ .array = out };
+            if (items.len == 0) return .{ .array = &.{} };
+            const addr = @intFromPtr(items.ptr);
+            if (state.contains(false, addr) or state.ancestor_len >= state.ancestors.len) return .empty;
+            state.ancestors[state.ancestor_len] = .{ .is_map = false, .addr = addr };
+            state.ancestor_len += 1;
+            defer state.ancestor_len -= 1;
+
+            const cap = @min(items.len, state.remaining_nodes);
+            var out: std.ArrayList(Value) = try .initCapacity(arena, cap);
+            for (items[0..cap]) |item| {
+                if (state.remaining_nodes == 0) break;
+                out.appendAssumeCapacity(try copyValue(arena, item, inner, state));
+            }
+            return .{ .array = out.items };
         },
         .map => |pairs| {
-            var unique: std.ArrayList(KeyValue) = try .initCapacity(arena, pairs.len);
+            if (pairs.len == 0) return .{ .map = &.{} };
+            const addr = @intFromPtr(pairs.ptr);
+            if (state.contains(true, addr) or state.ancestor_len >= state.ancestors.len) return .empty;
+            state.ancestors[state.ancestor_len] = .{ .is_map = true, .addr = addr };
+            state.ancestor_len += 1;
+            defer state.ancestor_len -= 1;
+
+            var unique: std.ArrayList(KeyValue) = try .initCapacity(arena, @min(pairs.len, state.remaining_nodes));
             for (pairs) |p| {
                 if (indexOfKey(unique.items, p.key)) |i| {
                     unique.items[i].value = p.value;
-                } else {
+                } else if (unique.items.len < unique.capacity) {
                     unique.appendAssumeCapacity(p);
                 }
             }
             for (unique.items) |*p| p.* = .{
                 .key = try arena.dupe(u8, p.key),
-                .value = try copyValue(arena, p.value, inner),
+                .value = try copyValue(arena, p.value, inner, state),
             };
             return .{ .map = unique.items };
         },

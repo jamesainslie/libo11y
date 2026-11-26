@@ -339,3 +339,27 @@ test "env.fromEnv(.logs) configures the log exporter end to end" {
     defer arena.deinit();
     try expectEmitted(try json.decode(collector_logs.ExportLogsServiceRequest, arena.allocator(), req.body), sc);
 }
+
+test "invalid UTF-8 in resource and scope schema URLs is sanitized on encode" {
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const res: @import("../resource.zig").Resource = .{ .schema_url = "https://example.com/\xff/res" };
+    const scope: @import("../resource.zig").InstrumentationScope = .{ .name = "t", .schema_url = "https://example.com/\xfe/scope" };
+    const data = log_record.LogData.create(gpa, .{ .severity = .info }, &res, &scope, .{}) orelse return error.OutOfMemory;
+    defer data.release();
+
+    var pb_buf: Io.Writer.Allocating = .init(a);
+    try LogExporter.encodeRequest(.http_protobuf, a, &.{data}, &pb_buf.writer);
+    var pb_reader: Io.Reader = .fixed(pb_buf.written());
+    var pb_decoded = try collector_logs.ExportLogsServiceRequest.decode(&pb_reader, gpa);
+    defer pb_decoded.deinit(gpa);
+    try testing.expectEqualStrings("https://example.com/\u{fffd}/res", pb_decoded.resource_logs.items[0].schema_url);
+    try testing.expectEqualStrings("https://example.com/\u{fffd}/scope", pb_decoded.resource_logs.items[0].scope_logs.items[0].schema_url);
+
+    var json_buf: Io.Writer.Allocating = .init(a);
+    try LogExporter.encodeRequest(.http_json, a, &.{data}, &json_buf.writer);
+    const json_decoded = try json.decode(collector_logs.ExportLogsServiceRequest, a, json_buf.written());
+    try testing.expectEqualStrings("https://example.com/\u{fffd}/res", json_decoded.resource_logs.items[0].schema_url);
+    try testing.expectEqualStrings("https://example.com/\u{fffd}/scope", json_decoded.resource_logs.items[0].scope_logs.items[0].schema_url);
+}

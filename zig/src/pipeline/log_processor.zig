@@ -91,7 +91,10 @@ pub const SimpleLogProcessor = struct {
     export_timeout: Io.Duration,
     on_error: proc_mod.ErrorHandler,
     mutex: Io.Mutex = .init,
+    idle: Io.Condition = .init,
+    exporting: bool = false,
     is_shutdown: bool = false,
+    shutdown_done: Io.Event = .unset,
 
     pub const Options = struct {
         /// Bounds each export.
@@ -111,8 +114,21 @@ pub const SimpleLogProcessor = struct {
     fn onEmit(ptr: *anyopaque, _: Context, record: *const LogData) void {
         const s: *SimpleLogProcessor = @ptrCast(@alignCast(ptr));
         s.mutex.lockUncancelable(s.io);
-        defer s.mutex.unlock(s.io);
-        if (s.is_shutdown) return;
+        while (s.exporting and !s.is_shutdown) {
+            s.idle.waitUncancelable(s.io, &s.mutex);
+        }
+        if (s.is_shutdown) {
+            s.mutex.unlock(s.io);
+            return;
+        }
+        s.exporting = true;
+        s.mutex.unlock(s.io);
+        defer {
+            s.mutex.lockUncancelable(s.io);
+            s.exporting = false;
+            s.mutex.unlock(s.io);
+            s.idle.broadcast(s.io);
+        }
         s.exporter.exportLogs(&.{record}, deadline_mod.after(s.io, s.export_timeout)) catch |err| {
             s.on_error.handle("simple log processor", err, "exporting a log record failed");
         };
@@ -120,19 +136,50 @@ pub const SimpleLogProcessor = struct {
 
     fn forceFlush(ptr: *anyopaque, deadline: Deadline) ExportError!void {
         const s: *SimpleLogProcessor = @ptrCast(@alignCast(ptr));
-        s.mutex.lockUncancelable(s.io);
-        defer s.mutex.unlock(s.io);
-        if (s.is_shutdown) return;
+        {
+            s.mutex.lock(s.io) catch return error.Canceled;
+            defer s.mutex.unlock(s.io);
+            while (s.exporting and !s.is_shutdown) {
+                s.idle.waitTimeout(s.io, &s.mutex, deadline_mod.timeout(deadline)) catch |err| switch (err) {
+                    error.Timeout => return error.Timeout,
+                    error.Canceled => return error.Canceled,
+                };
+            }
+            if (s.is_shutdown) return;
+        }
         return s.exporter.forceFlush(deadline);
     }
 
     fn shutdown(ptr: *anyopaque, deadline: Deadline) ExportError!void {
         const s: *SimpleLogProcessor = @ptrCast(@alignCast(ptr));
         s.mutex.lockUncancelable(s.io);
-        defer s.mutex.unlock(s.io);
-        if (s.is_shutdown) return;
+        const first = !s.is_shutdown;
         s.is_shutdown = true;
-        return flushAndShutdown(s.exporter, deadline);
+        s.mutex.unlock(s.io);
+        if (!first) {
+            s.shutdown_done.waitTimeout(s.io, deadline_mod.timeout(deadline)) catch |err| switch (err) {
+                error.Timeout => return error.Timeout,
+                error.Canceled => return error.Canceled,
+            };
+            return;
+        }
+        s.idle.broadcast(s.io);
+        defer s.shutdown_done.set(s.io);
+        const closed = flushAndShutdown(s.exporter, deadline);
+        const drained = s.waitForExport(deadline);
+        try closed;
+        try drained;
+    }
+
+    fn waitForExport(s: *SimpleLogProcessor, deadline: Deadline) ExportError!void {
+        s.mutex.lock(s.io) catch return error.Canceled;
+        defer s.mutex.unlock(s.io);
+        while (s.exporting) {
+            s.idle.waitTimeout(s.io, &s.mutex, deadline_mod.timeout(deadline)) catch |err| switch (err) {
+                error.Timeout => return error.Timeout,
+                error.Canceled => return error.Canceled,
+            };
+        }
     }
 };
 

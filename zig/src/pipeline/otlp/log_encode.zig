@@ -74,7 +74,7 @@ pub fn logsRequest(arena: Allocator, records: []const *const LogData) Allocator.
             try scopes.append(arena, .empty);
             try request.resource_logs.append(arena, .{
                 .resource = try encode.resource(arena, d.resource),
-                .schema_url = d.resource.schema_url,
+                .schema_url = try encode.utf8(arena, d.resource.schema_url),
             });
             break :blk resources.items.len - 1;
         };
@@ -84,7 +84,7 @@ pub fn logsRequest(arena: Allocator, records: []const *const LogData) Allocator.
             try scope_list.append(arena, d.scope);
             try rl.scope_logs.append(arena, .{
                 .scope = try encode.scope(arena, d.scope),
-                .schema_url = d.scope.schema_url,
+                .schema_url = try encode.utf8(arena, d.scope.schema_url),
             });
             break :blk scope_list.items.len - 1;
         };

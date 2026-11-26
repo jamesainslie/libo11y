@@ -511,3 +511,129 @@ test "concurrent batch log processor shutdown callers wait for the first to fini
     try testing.expect(blocking.inner.is_shutdown);
     try testing.expectEqual(@as(usize, 1), blocking.inner.count());
 }
+
+test "shutdown still shuts down processors when waiting for an emit times out" {
+    const HangingEmitProc = struct {
+        entered: Io.Event = .unset,
+        release: Io.Event = .unset,
+        shutdown_called: std.atomic.Value(bool) = .init(false),
+
+        fn onEmit(ptr: *anyopaque, _: Context, _: *const LogData) void {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            self.entered.set(io);
+            self.release.wait(io) catch {};
+        }
+        fn forceFlush(_: *anyopaque, _: Deadline) processor.ExportError!void {}
+        fn shutdown(ptr: *anyopaque, _: Deadline) processor.ExportError!void {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            self.shutdown_called.store(true, .release);
+        }
+    };
+    var hanging: HangingEmitProc = .{};
+    var exporter: InMemoryLogExporter = .init(gpa, io);
+    defer exporter.deinit();
+    var simple: log_processor.SimpleLogProcessor = .init(io, exporter.exporter(), .{});
+    const lp1: log_processor.LogProcessor = .{ .ptr = &hanging, .vtable = &.{
+        .onEmit = HangingEmitProc.onEmit,
+        .forceFlush = HangingEmitProc.forceFlush,
+        .shutdown = HangingEmitProc.shutdown,
+    } };
+    const provider = try LoggerProvider.create(gpa, io, .{ .processors = &.{ lp1, simple.processor() } });
+    defer provider.destroy();
+
+    const Emitter = struct {
+        fn run(l: *const logger_mod.Logger) void {
+            l.emit(.background, .{ .body = .from("hung") });
+        }
+    };
+    var emit_future = try io.concurrent(Emitter.run, .{provider.logger(.{ .name = "t" })});
+    try hanging.entered.wait(io);
+
+    try testing.expectError(error.Timeout, provider.shutdown(deadline.after(io, .fromMilliseconds(50))));
+    try testing.expect(hanging.shutdown_called.load(.acquire));
+    try testing.expect(exporter.is_shutdown);
+
+    hanging.release.set(io);
+    emit_future.await(io);
+}
+
+test "shutdown waits for an in-flight forceFlush before shutting down processors" {
+    const BlockingFlushProc = struct {
+        entered_flush: Io.Event = .unset,
+        release_flush: Io.Event = .unset,
+        flush_done: std.atomic.Value(bool) = .init(false),
+        shutdown_saw_flush_done: std.atomic.Value(bool) = .init(false),
+
+        fn onEmit(_: *anyopaque, _: Context, _: *const LogData) void {}
+        fn forceFlush(ptr: *anyopaque, _: Deadline) processor.ExportError!void {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            self.entered_flush.set(io);
+            self.release_flush.wait(io) catch return error.Canceled;
+            self.flush_done.store(true, .release);
+        }
+        fn shutdown(ptr: *anyopaque, _: Deadline) processor.ExportError!void {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            self.shutdown_saw_flush_done.store(self.flush_done.load(.acquire), .release);
+        }
+    };
+    var proc: BlockingFlushProc = .{};
+    const lp: log_processor.LogProcessor = .{ .ptr = &proc, .vtable = &.{
+        .onEmit = BlockingFlushProc.onEmit,
+        .forceFlush = BlockingFlushProc.forceFlush,
+        .shutdown = BlockingFlushProc.shutdown,
+    } };
+    const provider = try LoggerProvider.create(gpa, io, .{ .processors = &.{lp} });
+    defer provider.destroy();
+
+    const Flusher = struct {
+        fn run(p: *LoggerProvider) processor.ExportError!void {
+            return p.forceFlush(deadline.after(io, .fromSeconds(5)));
+        }
+    };
+    const Shutdowner = struct {
+        fn run(p: *LoggerProvider) processor.ExportError!void {
+            return p.shutdown(deadline.after(io, .fromSeconds(5)));
+        }
+    };
+    var flush_future = try io.concurrent(Flusher.run, .{provider});
+    try proc.entered_flush.wait(io);
+    var shutdown_future = try io.concurrent(Shutdowner.run, .{provider});
+    try io.sleep(.fromMilliseconds(20), .awake);
+    try testing.expect(!proc.shutdown_saw_flush_done.load(.acquire));
+    proc.release_flush.set(io);
+    try flush_future.await(io);
+    try shutdown_future.await(io);
+    try testing.expect(proc.shutdown_saw_flush_done.load(.acquire));
+}
+
+test "SimpleLogProcessor forceFlush and shutdown respect deadlines during a slow export" {
+    var blocking: BlockingExporter = .{ .inner = .init(gpa, io), .block = true };
+    defer blocking.inner.deinit();
+    var simple: log_processor.SimpleLogProcessor = .init(io, blocking.exporter(), .{});
+    const lp = simple.processor();
+    const provider = try LoggerProvider.create(gpa, io, .{ .processors = &.{lp} });
+    defer provider.destroy();
+
+    const Emitter = struct {
+        fn run(l: *const logger_mod.Logger) void {
+            l.emit(.background, .{ .body = .from("slow") });
+        }
+    };
+    var emit_future = try io.concurrent(Emitter.run, .{provider.logger(.{ .name = "t" })});
+    try blocking.entered.wait(io);
+
+    const flush_start = deadline.after(io, .zero);
+    try testing.expectError(error.Timeout, lp.forceFlush(deadline.after(io, .fromMilliseconds(100))));
+    const flush_ms = -deadline.remaining(io, flush_start).toMilliseconds();
+    try testing.expect(flush_ms >= 80 and flush_ms < 2000);
+
+    const shut_start = deadline.after(io, .zero);
+    try testing.expectError(error.Timeout, lp.shutdown(deadline.after(io, .fromMilliseconds(100))));
+    const shut_ms = -deadline.remaining(io, shut_start).toMilliseconds();
+    try testing.expect(shut_ms >= 80 and shut_ms < 2000);
+    try testing.expect(blocking.inner.is_shutdown);
+
+    blocking.unblock.set(io);
+    emit_future.await(io);
+    try provider.shutdown(deadline.after(io, .fromSeconds(5)));
+}
