@@ -50,10 +50,11 @@ pub const Problems = struct {
 
 pub const Error = error{ Syntax, OutOfMemory };
 
-/// How deep decoding may recurse. Go has no limit, but only a chain of
-/// merges and aliases recurses deeper than a few levels, and yaml.v3's
-/// alias budget stops any such chain in an ordinary file long before this.
-const max_depth = 2000;
+/// How deep decoding may recurse. Go has no limit. Nested inline merges
+/// recurse once per level and the scanner allows 10000 flow levels, so the
+/// limit sits above that. Only a chain of aliases padded past yaml.v3's
+/// alias budget could go deeper, and that is refused as a syntax error.
+const max_depth = 10_100;
 
 /// Decodes root, the content of one document, into a Registry. A syntax
 /// error leaves its reason in diag.
@@ -92,6 +93,12 @@ const Decoder = struct {
     expanding: std.AutoHashMapUnmanaged(*const Node, void) = .empty,
     /// yaml.v3's mergedFields: the keys a merge must not overwrite.
     merged: ?*StringSet = null,
+    /// What each scalar resolved to, and whether each mapping repeats a
+    /// key. yaml.v3 works both out again on every visit through an alias.
+    /// The answers never change, and keeping them stops a file that aliases
+    /// one node many times from growing the arena with each visit.
+    scalars: std.AutoHashMapUnmanaged(*const Node, Scalar) = .empty,
+    duplicates: std.AutoHashMapUnmanaged(*const Node, bool) = .empty,
 
     fn fail(d: *Decoder, n: *const Node, message: []const u8) Error {
         d.diag.* = .{ .message = message, .mark = n.mark };
@@ -170,22 +177,48 @@ const Decoder = struct {
         return true;
     }
 
-    fn scalar(d: *Decoder, n: *Node, t: Target) Error!bool {
-        var kind: resolve.Kind = .string;
-        var text = n.value;
-        var tag: []const u8 = resolve.str;
+    const Scalar = struct { kind: resolve.Kind, tag: []const u8, text: []const u8 };
+
+    /// What a scalar decodes to: its resolved kind and tag, and its text,
+    /// decoded from base64 for !!binary.
+    fn resolveScalar(d: *Decoder, n: *Node) Error!Scalar {
+        if (d.scalars.get(n)) |r| return r;
+        var r: Scalar = .{ .kind = .string, .tag = resolve.str, .text = n.value };
         if (!n.indicatedString()) {
-            const r = resolve.resolve(d.arena, n.tag, n.value) catch |err| switch (err) {
+            const res = resolve.resolve(d.arena, n.tag, n.value) catch |err| switch (err) {
                 error.Mismatch => return d.fail(n, "cannot decode the value as its tag says"),
                 error.OutOfMemory => |e| return e,
             };
-            kind = r.kind;
-            tag = r.tag;
-            if (std.mem.eql(u8, tag, resolve.binary_tag)) {
-                text = try decodeBase64(d.arena, n.value) orelse
+            r.kind = res.kind;
+            r.tag = res.tag;
+            if (std.mem.eql(u8, r.tag, resolve.binary_tag)) {
+                r.text = try decodeBase64(d.arena, n.value) orelse
                     return d.fail(n, "!!binary value contains invalid base64 data");
             }
         }
+        try d.scalars.put(d.arena, n, r);
+        return r;
+    }
+
+    /// yaml.v3's Node.ShortTag, with scalars resolved through the cache.
+    fn shortTag(d: *Decoder, n: *Node) Error![]const u8 {
+        if (n.indicatedString()) return resolve.str;
+        if (n.tag.len == 0 or std.mem.eql(u8, n.tag, "!")) {
+            return switch (n.kind) {
+                .mapping => resolve.map_tag,
+                .sequence => resolve.seq_tag,
+                .alias => if (n.target) |t| d.shortTag(t) else "",
+                .scalar => (try d.resolveScalar(n)).tag,
+            };
+        }
+        return resolve.shortTag(n.tag);
+    }
+
+    fn scalar(d: *Decoder, n: *Node, t: Target) Error!bool {
+        const r = try d.resolveScalar(n);
+        const kind = r.kind;
+        const text = r.text;
+        const tag = r.tag;
         if (kind == .null) return d.decodeNull(t);
         switch (t) {
             .string => |p| {
@@ -231,16 +264,7 @@ const Decoder = struct {
     fn mapping(d: *Decoder, n: *Node, t: Target) Error!bool {
         // yaml.v3 compares every pair of keys by kind and text first, and
         // decodes nothing in a mapping that repeats a key.
-        var seen: std.StringHashMapUnmanaged(void) = .empty;
-        var dup = false;
-        var i: usize = 0;
-        while (i + 1 < n.children.items.len) : (i += 2) {
-            const key = n.children.items[i];
-            const id = try std.mem.concat(d.arena, u8, &.{ @tagName(key.kind), ":", key.value });
-            const got = try seen.getOrPut(d.arena, id);
-            if (got.found_existing) dup = true;
-        }
-        if (dup) {
+        if (try d.repeatsKey(n)) {
             d.problems.duplicate_key = true;
             return false;
         }
@@ -255,6 +279,37 @@ const Decoder = struct {
                 return false;
             },
         }
+    }
+
+    const KeyId = struct { kind: compose.Kind, value: []const u8 };
+
+    const KeyIdContext = struct {
+        pub fn hash(_: KeyIdContext, k: KeyId) u64 {
+            var h: std.hash.Wyhash = .init(@backingInt(k.kind));
+            h.update(k.value);
+            return h.final();
+        }
+        pub fn eql(_: KeyIdContext, a: KeyId, b: KeyId) bool {
+            return a.kind == b.kind and std.mem.eql(u8, a.value, b.value);
+        }
+    };
+
+    /// Whether two of the mapping's keys have the same kind and text.
+    fn repeatsKey(d: *Decoder, n: *Node) Error!bool {
+        if (d.duplicates.get(n)) |dup| return dup;
+        var seen: std.HashMapUnmanaged(KeyId, void, KeyIdContext, std.hash_map.default_max_load_percentage) = .empty;
+        var dup = false;
+        var i: usize = 0;
+        while (i + 1 < n.children.items.len) : (i += 2) {
+            const key = n.children.items[i];
+            const got = try seen.getOrPut(d.arena, .{ .kind = key.kind, .value = key.value });
+            if (got.found_existing) {
+                dup = true;
+                break;
+            }
+        }
+        try d.duplicates.put(d.arena, n, dup);
+        return dup;
     }
 
     const Struct = union(enum) { registry: *Registry, attribute: *Attribute };
@@ -343,7 +398,7 @@ const Decoder = struct {
             // A null value still declares the attribute, unless it would
             // replace one an earlier decode into this map set.
             if (p.*) |*map| {
-                const is_null = std.mem.eql(u8, try value.shortTag(d.arena), resolve.null_tag);
+                const is_null = std.mem.eql(u8, try d.shortTag(value), resolve.null_tag);
                 if (ok or (is_null and (is_new or !map.contains(name)))) try map.put(d.arena, name, attr);
             }
         }

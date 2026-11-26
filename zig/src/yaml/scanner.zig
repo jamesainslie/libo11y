@@ -284,8 +284,12 @@ pub const Scanner = struct {
     /// at. yaml.v3 appends a token whose number the parser has already
     /// passed, which a simple key can have once its flow collection closed.
     fn insertToken(s: *Scanner, number: ?usize, token: Token) Error!void {
-        if (s.tokens_head > 0 and s.tokens_head == s.tokens.items.len) {
-            s.tokens.clearRetainingCapacity();
+        // Drop the tokens the parser has consumed once they fill half the
+        // queue, so a long document does not keep every token it has had.
+        if (s.tokens_head > 0 and s.tokens_head * 2 >= s.tokens.items.len) {
+            const rest = s.tokens.items[s.tokens_head..];
+            std.mem.copyForwards(Token, s.tokens.items[0..rest.len], rest);
+            s.tokens.shrinkRetainingCapacity(rest.len);
             s.tokens_head = 0;
         }
         if (number) |n| {

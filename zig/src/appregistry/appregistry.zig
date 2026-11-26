@@ -491,3 +491,50 @@ fn fuzzCheck(_: void, smith: *std.testing.Smith) anyerror!void {
 test "fuzz the registry parser" {
     try std.testing.fuzz({}, fuzzCheck, .{ .corpus = &fuzz_corpus });
 }
+
+test "inline merges nest as deep as flow collections may" {
+    const depth = 9000;
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(std.testing.allocator);
+    try src.appendSlice(std.testing.allocator, "schema: libo11y.app-registry/v1\nnamespace: shop\nattributes:\n  shop.x: ");
+    for (0..depth) |_| try src.appendSlice(std.testing.allocator, "{<<: ");
+    try src.appendSlice(std.testing.allocator, "{type: string, sensitivity: public, cardinality: low}");
+    for (0..depth) |_| try src.append(std.testing.allocator, '}');
+    try src.append(std.testing.allocator, '\n');
+    try expectOutcome(src.items, "libo11y_cardinality_unknown: attribute shop.x: cardinality \"low\"");
+}
+
+test "an aliased node is resolved once, however often it is visited" {
+    const gpa = std.testing.allocator;
+    // A scalar that needs a scratch copy to resolve, used by 5000
+    // attributes through an alias, costs no more than a plain scalar each
+    // would.
+    var capacity: [2]usize = undefined;
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(gpa);
+    for ([_][]const u8{ "b", "*a" }, &capacity) |brief, *cap| {
+        src.clearRetainingCapacity();
+        try src.appendSlice(gpa, "schema: libo11y.app-registry/v1\nnamespace: shop\nattributes:\n  shop.a: {type: int, sensitivity: public, cardinality: bounded, brief: &a ");
+        for (0..2000) |_| try src.appendSlice(gpa, "1_");
+        try src.appendSlice(gpa, "1}\n");
+        for (0..5000) |i| {
+            try src.print(gpa, "  shop.x{d}: {{type: string, sensitivity: public, cardinality: bounded, brief: {s}}}\n", .{ i, brief });
+        }
+        var r = try check(gpa, src.items, .{});
+        defer r.deinit();
+        try std.testing.expect(r.outcome == .valid);
+        cap.* = r.arena.queryCapacity();
+    }
+    try std.testing.expect(capacity[1] <= capacity[0] + capacity[0] / 10);
+    // A mapping that repeats a key, aliased 20000 times.
+    src.clearRetainingCapacity();
+    try src.appendSlice(gpa, "schema: libo11y.app-registry/v1\nnamespace: shop\nattributes: {shop.x: {brief: &m {");
+    for (0..2000) |i| try src.print(gpa, "k{d}: 0, ", .{i});
+    try src.appendSlice(gpa, "k0: 0}, values: [");
+    for (0..20000) |i| try src.appendSlice(gpa, if (i == 0) "*m" else ", *m");
+    try src.appendSlice(gpa, "]}}\n");
+    var r = try check(gpa, src.items, .{});
+    defer r.deinit();
+    try std.testing.expect(r.arena.queryCapacity() < 16 * 1024 * 1024);
+    try std.testing.expectEqual(ParseKind.duplicate_key, r.outcome.parse_error.kind);
+}
