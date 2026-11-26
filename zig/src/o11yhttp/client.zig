@@ -5,6 +5,11 @@
 //! - a `.client` span named `"{METHOD}"` (or `"HTTP"` for unknown methods);
 //! - W3C `traceparent`/`tracestate`/`baggage` header injection via the SDK's
 //!   propagator (respecting the baggage egress filter and optional `propagate_fn`);
+//! - redirect handling that strips propagated trace/baggage headers and
+//!   privileged headers on cross-origin redirects or when `propagate_fn`
+//!   declines the redirect target (Zig 0.17.1's `std.http.Client.Request.sendHead`
+//!   does not serialize `privileged_headers`, so `o11yhttp.Client` manages
+//!   redirect hops explicitly and writes active headers through `extra_headers`);
 //! - stable HTTP client semconv attributes (`http.request.method`, sanitized
 //!   `url.full` without credentials, `server.address`, `server.port`,
 //!   `http.response.status_code`, `error.type`, optional `peer.service`);
@@ -57,9 +62,10 @@ pub const Client = struct {
         };
     }
 
-    /// Performs a one-shot instrumented HTTP request via `std.http.Client.fetch`,
-    /// injecting W3C trace context & egress-filtered baggage headers and
-    /// recording the client span and `http.client.request.duration` metric.
+    /// Performs a one-shot instrumented HTTP request matching
+    /// `std.http.Client.fetch`, injecting W3C trace context and egress-filtered
+    /// baggage headers (stripped on cross-origin redirects) and recording the
+    /// client span and `http.client.request.duration` metric.
     pub fn fetch(
         self: *const Client,
         ctx: o11y.Context,
@@ -72,26 +78,72 @@ pub const Client = struct {
         const method: std.http.Method = options.method orelse
             if (options.payload != null) .POST else .GET;
 
-        var arena_state: std.heap.ArenaAllocator = .init(self.http_client.allocator);
-        defer arena_state.deinit();
-        const a = arena_state.allocator();
+        const redirect_behavior: std.http.Client.Request.RedirectBehavior = options.redirect_behavior orelse
+            if (options.payload == null) std.http.Client.Request.RedirectBehavior.init(3) else .unhandled;
 
-        const start_time = Io.Clock.awake.now(self.http_client.io);
-        const info = self.startSpan(a, ctx, method, uri);
-        var span = info.span;
-        const span_ctx = ctx.withSpan(&span);
+        var req = try self.request(ctx, method, uri, .{
+            .redirect_behavior = redirect_behavior,
+            .headers = options.headers,
+            .extra_headers = options.extra_headers,
+            .privileged_headers = options.privileged_headers,
+            .keep_alive = options.keep_alive,
+        });
+        defer req.deinit();
 
-        var patched = options;
-        patched.location = .{ .uri = uri };
-        patched.method = method;
-        patched.extra_headers = self.buildHeaders(a, span_ctx, uri, options.extra_headers);
+        if (options.payload) |payload| {
+            req.raw.transfer_encoding = .{ .content_length = payload.len };
+            var body = req.raw.sendBodyUnflushed(&.{}) catch |err| {
+                req.recordFailure(err);
+                return err;
+            };
+            body.writer.writeAll(payload) catch |err| {
+                req.recordFailure(err);
+                return err;
+            };
+            body.end() catch |err| {
+                req.recordFailure(err);
+                return err;
+            };
+            req.raw.connection.?.flush() catch |err| {
+                req.recordFailure(err);
+                return err;
+            };
+        } else {
+            try req.sendBodiless();
+        }
 
-        const res = self.http_client.fetch(patched) catch |err| {
-            self.finishError(&span, ctx, info, start_time, err);
-            return err;
+        const redirect_buffer: []u8 = if (redirect_behavior == .unhandled) &.{} else options.redirect_buffer orelse
+            try self.http_client.allocator.alloc(u8, 8 * 1024);
+        defer if (options.redirect_buffer == null) self.http_client.allocator.free(redirect_buffer);
+
+        var response = try req.receiveHead(redirect_buffer);
+
+        const response_writer = options.response_writer orelse {
+            const reader = response.reader(&.{});
+            _ = reader.discardRemaining() catch |err| switch (err) {
+                error.ReadFailed => return response.bodyErr().?,
+            };
+            return .{ .status = response.head.status };
         };
-        self.finishStatus(&span, ctx, info, start_time, res.status);
-        return res;
+
+        const decompress_buffer: []u8 = switch (response.head.content_encoding) {
+            .identity => &.{},
+            .zstd => options.decompress_buffer orelse try self.http_client.allocator.alloc(u8, std.compress.zstd.default_window_len),
+            .deflate, .gzip => options.decompress_buffer orelse try self.http_client.allocator.alloc(u8, std.compress.flate.max_window_len),
+            .compress => return error.UnsupportedCompressionMethod,
+        };
+        defer if (options.decompress_buffer == null) self.http_client.allocator.free(decompress_buffer);
+
+        var transfer_buffer: [64]u8 = undefined;
+        var decompress: std.http.Decompress = undefined;
+        const reader = response.readerDecompressing(&transfer_buffer, &decompress, decompress_buffer);
+
+        _ = reader.streamRemaining(response_writer) catch |err| switch (err) {
+            error.ReadFailed => return response.bodyErr().?,
+            else => |e| return e,
+        };
+
+        return .{ .status = response.head.status };
     }
 
     /// Opens an instrumented `ClientRequest` wrapping `std.http.Client.request`
@@ -115,8 +167,18 @@ pub const Client = struct {
         var span = info.span;
         const span_ctx = ctx.withSpan(&span);
 
+        const orig_extra = try dupeHeaders(a, options.extra_headers);
+        const orig_priv = try dupeHeaders(a, options.privileged_headers);
+
+        const header_set = self.buildHopHeaders(a, span_ctx, uri, orig_extra, orig_priv, true);
+
         var patched = options;
-        patched.extra_headers = self.buildHeaders(a, span_ctx, uri, options.extra_headers);
+        // Handle redirects inside ClientRequest.receiveHead so propagated
+        // headers are stripped on cross-origin redirects (Zig 0.17.1's
+        // std.http.Client.Request.sendHead does not write privileged_headers).
+        patched.redirect_behavior = .unhandled;
+        patched.extra_headers = header_set.wire_headers;
+        patched.privileged_headers = header_set.privileged_headers;
 
         const raw = self.http_client.request(method, uri, patched) catch |err| {
             self.finishError(&span, ctx, info, start_time, err);
@@ -126,12 +188,24 @@ pub const Client = struct {
         return .{
             .client = self,
             .raw = raw,
+            .has_raw = true,
             .arena = arena_state,
             .parent_ctx = ctx,
             .span = span,
             .info = info,
             .start_time = start_time,
+            .redirect_behavior = options.redirect_behavior,
+            .orig_extra_headers = orig_extra,
+            .orig_privileged_headers = orig_priv,
+            .initial_uri = uri,
         };
+    }
+
+    fn shouldPropagate(self: *const Client, uri: std.Uri) bool {
+        if (self.options.propagate_fn) |pred| {
+            return pred(uri);
+        }
+        return true;
     }
 
     fn startSpan(
@@ -186,36 +260,73 @@ pub const Client = struct {
         };
     }
 
-    fn buildHeaders(
+    const HopHeaders = struct {
+        /// Headers actually serialized by Zig 0.17.1 `std.http.Client.Request.sendHead`.
+        wire_headers: []const std.http.Header,
+        /// Non-shadowed privileged headers retained for same-origin hops.
+        privileged_headers: []const std.http.Header,
+    };
+
+    /// Builds the header slices for one HTTP hop.
+    ///
+    /// When `same_origin` is true and `propagate_fn(uri)` allows propagation:
+    /// injects trace/baggage headers, deduplicates shadowed header names from
+    /// BOTH `extra` and `privileged`, and appends the injected headers to
+    /// `wire_headers` (and keeps non-shadowed `privileged` headers on
+    /// `privileged_headers` plus serialized into `wire_headers` so caller
+    /// privileged headers are also preserved on same-origin hops).
+    ///
+    /// When `same_origin` is false (cross-origin redirect) or `propagate_fn`
+    /// returns false: omits injected propagation headers AND strips any
+    /// propagator field names (e.g. `traceparent`, `tracestate`, `baggage`)
+    /// and caller `privileged` headers on cross-origin hops.
+    fn buildHopHeaders(
         self: *const Client,
         arena: Allocator,
         span_ctx: o11y.Context,
         uri: std.Uri,
-        existing: []const std.http.Header,
-    ) []const std.http.Header {
-        if (self.options.propagate_fn) |pred| {
-            if (!pred(uri)) return existing;
-        }
-        var inj: HeaderInjectCarrier = .{ .arena = arena };
-        self.options.telemetry.propagator().inject(span_ctx, arena, inj.carrier());
-        if (inj.headers.items.len == 0) return existing;
+        extra: []const std.http.Header,
+        privileged: []const std.http.Header,
+        same_origin: bool,
+    ) HopHeaders {
+        const prop = self.options.telemetry.propagator();
+        const allow_prop = same_origin and self.shouldPropagate(uri);
 
-        const out = arena.alloc(std.http.Header, existing.len + inj.headers.items.len) catch return existing;
-        var n: usize = 0;
-        for (existing) |h| {
-            const shadowed = for (inj.headers.items) |ih| {
-                if (std.ascii.eqlIgnoreCase(h.name, ih.name)) break true;
-            } else false;
+        var inj: HeaderInjectCarrier = .{ .arena = arena };
+        if (allow_prop) {
+            prop.inject(span_ctx, arena, inj.carrier());
+        }
+
+        const prop_fields = prop.fields();
+        const keep_priv = same_origin;
+
+        var wire: std.ArrayList(std.http.Header) = .empty;
+        var priv_out: std.ArrayList(std.http.Header) = .empty;
+
+        for (extra) |h| {
+            const shadowed = headerInList(h.name, inj.headers.items) or
+                (!same_origin and nameInSlice(h.name, prop_fields));
             if (!shadowed) {
-                out[n] = h;
-                n += 1;
+                wire.append(arena, h) catch return .{ .wire_headers = extra, .privileged_headers = if (keep_priv) privileged else &.{} };
+            }
+        }
+        if (keep_priv) {
+            for (privileged) |h| {
+                if (!headerInList(h.name, inj.headers.items)) {
+                    priv_out.append(arena, h) catch return .{ .wire_headers = extra, .privileged_headers = privileged };
+                    wire.append(arena, h) catch return .{ .wire_headers = extra, .privileged_headers = privileged };
+                }
             }
         }
         for (inj.headers.items) |ih| {
-            out[n] = ih;
-            n += 1;
+            wire.append(arena, ih) catch return .{ .wire_headers = extra, .privileged_headers = priv_out.items };
+            priv_out.append(arena, ih) catch return .{ .wire_headers = wire.items, .privileged_headers = priv_out.items };
         }
-        return out[0..n];
+
+        return .{
+            .wire_headers = wire.items,
+            .privileged_headers = priv_out.items,
+        };
     }
 
     fn finishStatus(
@@ -300,11 +411,16 @@ const SpanInfo = struct {
 pub const ClientRequest = struct {
     client: *const Client,
     raw: std.http.Client.Request,
+    has_raw: bool = true,
     arena: std.heap.ArenaAllocator,
     parent_ctx: o11y.Context,
     span: o11y.Span,
     info: SpanInfo,
     start_time: Io.Timestamp,
+    redirect_behavior: std.http.Client.Request.RedirectBehavior,
+    orig_extra_headers: []const std.http.Header,
+    orig_privileged_headers: []const std.http.Header,
+    initial_uri: std.Uri,
     finished: bool = false,
 
     /// Sends a bodiless HTTP request. Marks the client span as error on failure.
@@ -331,21 +447,119 @@ pub const ClientRequest = struct {
         };
     }
 
-    /// Receives response headers, recording HTTP status, client duration metric
-    /// with exemplar, and ending the client span.
+    /// Receives response headers, following redirects hop-by-hop (stripping
+    /// propagated trace/baggage and privileged headers on cross-origin hops),
+    /// recording HTTP status and client duration metric with exemplar, and
+    /// ending the client span.
     pub fn receiveHead(
         self: *ClientRequest,
         redirect_buffer: []u8,
     ) std.http.Client.Request.ReceiveHeadError!std.http.Client.Response {
-        const resp = self.raw.receiveHead(redirect_buffer) catch |err| {
-            self.recordFailure(err);
-            return err;
-        };
-        if (!self.finished) {
-            self.finished = true;
-            self.client.finishStatus(&self.span, self.parent_ctx, self.info, self.start_time, resp.head.status);
+        var aux_buf = redirect_buffer;
+        while (true) {
+            var resp = self.raw.receiveHead(&.{}) catch |err| {
+                self.recordFailure(err);
+                return err;
+            };
+            const head = &resp.head;
+            if (head.status.class() == .redirect and self.redirect_behavior != .unhandled) {
+                if (self.redirect_behavior == .not_allowed) {
+                    const body_r = resp.reader(&.{});
+                    _ = body_r.discardRemaining() catch {};
+                    self.recordFailure(error.TooManyHttpRedirects);
+                    return error.TooManyHttpRedirects;
+                }
+                const loc_raw = head.location orelse {
+                    self.recordFailure(error.HttpRedirectLocationMissing);
+                    return error.HttpRedirectLocationMissing;
+                };
+                if (loc_raw.len > aux_buf.len) {
+                    self.recordFailure(error.HttpRedirectLocationOversize);
+                    return error.HttpRedirectLocationOversize;
+                }
+                @memcpy(aux_buf[0..loc_raw.len], loc_raw);
+                const loc_len = loc_raw.len;
+                const status = head.status;
+                // Discard the redirect response body so the connection can be reused.
+                {
+                    const body_r = resp.reader(&.{});
+                    _ = body_r.discardRemaining() catch {};
+                }
+                const new_uri = self.raw.uri.resolveInPlace(loc_len, &aux_buf) catch |err| {
+                    const mapped: std.http.Client.Request.ReceiveHeadError = switch (err) {
+                        error.UnexpectedCharacter,
+                        error.InvalidFormat,
+                        error.InvalidPort,
+                        error.InvalidHostName,
+                        => error.HttpRedirectLocationInvalid,
+                        error.NoSpaceLeft => error.HttpRedirectLocationOversize,
+                    };
+                    self.recordFailure(mapped);
+                    return mapped;
+                };
+
+                var next_method = self.raw.method;
+                var next_headers = self.raw.headers;
+                const switch_to_get = switch (status) {
+                    .see_other => true,
+                    .moved_permanently, .found => self.raw.method == .POST,
+                    else => false,
+                };
+                if (switch_to_get) {
+                    next_method = .GET;
+                    next_headers.content_type = .omit;
+                } else if (self.raw.transfer_encoding != .none) {
+                    self.recordFailure(error.RedirectRequiresResend);
+                    return error.RedirectRequiresResend;
+                }
+
+                const a = self.arena.allocator();
+                const same_origin = common.sameOrigin(a, self.initial_uri, new_uri);
+                const span_ctx = self.parent_ctx.withSpan(&self.span);
+                const header_set = self.client.buildHopHeaders(
+                    a,
+                    span_ctx,
+                    new_uri,
+                    self.orig_extra_headers,
+                    self.orig_privileged_headers,
+                    same_origin,
+                );
+
+                const version = self.raw.version;
+                const keep_alive = self.raw.keep_alive;
+                const handle_continue = self.raw.handle_continue;
+
+                self.redirect_behavior.subtractOne();
+                self.raw.deinit();
+                self.has_raw = false;
+
+                const next_raw = self.client.http_client.request(next_method, new_uri, .{
+                    .version = version,
+                    .keep_alive = keep_alive,
+                    .handle_continue = handle_continue,
+                    .redirect_behavior = .unhandled,
+                    .headers = next_headers,
+                    .extra_headers = header_set.wire_headers,
+                    .privileged_headers = header_set.privileged_headers,
+                }) catch |err| {
+                    self.recordFailure(err);
+                    return err;
+                };
+                self.raw = next_raw;
+                self.has_raw = true;
+                self.raw.sendBodiless() catch |err| {
+                    self.recordFailure(err);
+                    return err;
+                };
+                continue;
+            }
+
+            if (!self.finished) {
+                self.finished = true;
+                self.client.finishStatus(&self.span, self.parent_ctx, self.info, self.start_time, resp.head.status);
+            }
+            return resp;
         }
-        return resp;
     }
 
     /// Releases the underlying `std.http.Client.Request`, ends the span if not
@@ -355,7 +569,10 @@ pub const ClientRequest = struct {
             self.finished = true;
             self.span.end();
         }
-        self.raw.deinit();
+        if (self.has_raw) {
+            self.raw.deinit();
+            self.has_raw = false;
+        }
         self.arena.deinit();
     }
 
@@ -365,6 +582,32 @@ pub const ClientRequest = struct {
         self.client.finishError(&self.span, self.parent_ctx, self.info, self.start_time, err);
     }
 };
+
+fn dupeHeaders(arena: Allocator, headers: []const std.http.Header) Allocator.Error![]const std.http.Header {
+    if (headers.len == 0) return &.{};
+    const out = try arena.alloc(std.http.Header, headers.len);
+    for (out, headers) |*dst, src| {
+        dst.* = .{
+            .name = try arena.dupe(u8, src.name),
+            .value = try arena.dupe(u8, src.value),
+        };
+    }
+    return out;
+}
+
+fn headerInList(name: []const u8, list: []const std.http.Header) bool {
+    for (list) |h| {
+        if (std.ascii.eqlIgnoreCase(name, h.name)) return true;
+    }
+    return false;
+}
+
+fn nameInSlice(name: []const u8, names: []const []const u8) bool {
+    for (names) |n| {
+        if (std.ascii.eqlIgnoreCase(name, n)) return true;
+    }
+    return false;
+}
 
 const HeaderInjectCarrier = struct {
     arena: Allocator,
@@ -395,3 +638,74 @@ const HeaderInjectCarrier = struct {
         self.headers.append(self.arena, .{ .name = key_copy, .value = val_copy }) catch {};
     }
 };
+
+const testing = std.testing;
+
+test "buildHopHeaders deduplicates shadowed headers from both extra and privileged and strips on cross-origin" {
+    const sdk = try o11y.init(testing.allocator, testing.io, .{
+        .service_name = "client-hdr-test",
+        .environment = "test",
+        .console_enabled = false,
+        .runtime_metrics = false,
+        .sampler = .always_on,
+    });
+    defer sdk.deinit();
+
+    var std_client: std.http.Client = .{ .allocator = testing.allocator, .io = testing.io };
+    defer std_client.deinit();
+    const c = Client.init(&std_client, .{ .telemetry = sdk });
+
+    var sp = sdk.tracer("test").start(.background, "out", .{});
+    defer sp.end();
+    const bag: o11y.Baggage = .{ .members = &.{.{ .key = "tenant", .value = "acme" }} };
+    const ctx = o11y.Context.background.withSpan(&sp).withBaggage(&bag);
+    const uri = try std.Uri.parse("http://127.0.0.1:8080/api");
+
+    const extra = [_]std.http.Header{
+        .{ .name = "X-Custom", .value = "1" },
+        .{ .name = "TraceParent", .value = "00-stale-stale-00" },
+    };
+    const priv = [_]std.http.Header{
+        .{ .name = "X-Secret-Token", .value = "tok" },
+        .{ .name = "Baggage", .value = "stale=1" },
+    };
+
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Same-origin hop: propagated headers land in both privileged_headers and
+    // wire_headers, shadowing stale duplicates from extra and privileged.
+    const same = c.buildHopHeaders(a, ctx, uri, &extra, &priv, true);
+    var tp_count: usize = 0;
+    var bag_count: usize = 0;
+    var saw_custom = false;
+    var saw_priv_tok = false;
+    for (same.wire_headers) |h| {
+        if (std.ascii.eqlIgnoreCase(h.name, "traceparent")) {
+            tp_count += 1;
+            try testing.expect(!std.mem.eql(u8, h.value, "00-stale-stale-00"));
+        } else if (std.ascii.eqlIgnoreCase(h.name, "baggage")) {
+            bag_count += 1;
+            try testing.expectEqualStrings("tenant=acme", h.value);
+        } else if (std.mem.eql(u8, h.name, "X-Custom")) {
+            saw_custom = true;
+        } else if (std.mem.eql(u8, h.name, "X-Secret-Token")) {
+            saw_priv_tok = true;
+        }
+    }
+    try testing.expectEqual(@as(usize, 1), tp_count);
+    try testing.expectEqual(@as(usize, 1), bag_count);
+    try testing.expect(saw_custom);
+    try testing.expect(saw_priv_tok);
+    try testing.expect(headerInList("traceparent", same.privileged_headers));
+    try testing.expect(headerInList("baggage", same.privileged_headers));
+
+    // Cross-origin hop: propagation headers and privileged headers are stripped.
+    const cross = c.buildHopHeaders(a, ctx, uri, &extra, &priv, false);
+    try testing.expectEqual(@as(usize, 0), cross.privileged_headers.len);
+    try testing.expect(!headerInList("traceparent", cross.wire_headers));
+    try testing.expect(!headerInList("baggage", cross.wire_headers));
+    try testing.expect(!headerInList("X-Secret-Token", cross.wire_headers));
+    try testing.expect(headerInList("X-Custom", cross.wire_headers));
+}

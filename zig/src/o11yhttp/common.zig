@@ -195,6 +195,17 @@ pub fn serverAddressFromUri(arena: Allocator, uri: std.Uri) Allocator.Error!Host
     return .{ .address = stripped, .port = port };
 }
 
+/// Reports whether two URIs share the same origin (case-insensitive scheme and
+/// host, plus identical effective TCP port). Used to prevent leaking propagated
+/// trace/baggage headers across cross-origin redirects.
+pub fn sameOrigin(arena: Allocator, a: std.Uri, b: std.Uri) bool {
+    if (!std.ascii.eqlIgnoreCase(a.scheme, b.scheme)) return false;
+    const hp_a = serverAddressFromUri(arena, a) catch return false;
+    const hp_b = serverAddressFromUri(arena, b) catch return false;
+    if (hp_a.port != hp_b.port) return false;
+    return std.ascii.eqlIgnoreCase(hp_a.address, hp_b.address);
+}
+
 /// Formats `uri` as `url.full` with `user` and `password` stripped so
 /// credentials embedded in URLs never leak into spans.
 pub fn sanitizeUrlFull(arena: Allocator, uri: std.Uri) Allocator.Error![]const u8 {

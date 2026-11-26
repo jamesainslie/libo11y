@@ -120,7 +120,10 @@ pub const Carrier = struct {
         var sc = propagation.TraceContext.parseTraceparent(raw_tp) orelse return error.InvalidCarrier;
         if (parsed.tracestate) |raw_ts| {
             if (raw_ts.len > 0) {
-                sc.trace_state = TraceState.parse(scratch, raw_ts) catch .empty;
+                sc.trace_state = TraceState.parse(scratch, raw_ts) catch |err| switch (err) {
+                    error.InvalidTraceState => .empty,
+                    error.OutOfMemory => return error.OutOfMemory,
+                };
             }
         }
         const cleaned_bag = if (parsed.baggage) |raw_bag|
@@ -242,6 +245,11 @@ pub fn startLinkedWithTracer(
         }
     }
 
+    var start_ctx = result.base_ctx;
+    if (result.merged_baggage) |*bag| {
+        start_ctx = start_ctx.withBaggage(bag);
+    }
+
     var start_opts = options;
     start_opts.new_root = true;
 
@@ -250,7 +258,7 @@ pub fn startLinkedWithTracer(
         if (options.links.len == 0) {
             const single = [_]span_mod.Link{.{ .span_context = remote_sc }};
             start_opts.links = &single;
-            result.span = tr.start(result.base_ctx, name, start_opts);
+            result.span = tr.start(start_ctx, name, start_opts);
             return result;
         }
         var stack_links: [16]span_mod.Link = undefined;
@@ -259,7 +267,7 @@ pub fn startLinkedWithTracer(
             stack_links[0] = .{ .span_context = remote_sc };
             @memcpy(stack_links[1..total], options.links);
             start_opts.links = stack_links[0..total];
-            result.span = tr.start(result.base_ctx, name, start_opts);
+            result.span = tr.start(start_ctx, name, start_opts);
             return result;
         }
         if (gpa.alloc(span_mod.Link, total)) |heap_links| {
@@ -267,18 +275,18 @@ pub fn startLinkedWithTracer(
             heap_links[0] = .{ .span_context = remote_sc };
             @memcpy(heap_links[1..], options.links);
             start_opts.links = heap_links;
-            result.span = tr.start(result.base_ctx, name, start_opts);
+            result.span = tr.start(start_ctx, name, start_opts);
             return result;
         } else |_| {
             // Fall back to keeping the detached link if extra links cannot allocate.
             const single = [_]span_mod.Link{.{ .span_context = remote_sc }};
             start_opts.links = &single;
-            result.span = tr.start(result.base_ctx, name, start_opts);
+            result.span = tr.start(start_ctx, name, start_opts);
             return result;
         }
     }
 
-    result.span = tr.start(result.base_ctx, name, start_opts);
+    result.span = tr.start(start_ctx, name, start_opts);
     return result;
 }
 
@@ -877,4 +885,81 @@ test "Carrier drops invalid baggage, keeps valid members in order, and enforces 
         try testing.expectEqual(@as(?*const Baggage, null), job.context().baggage);
         job.end();
     }
+}
+
+test "startLinked passes merged baggage to samplers and onStart span processors" {
+    const processor_mod = @import("pipeline/processor.zig");
+    const sampler_mod = @import("pipeline/sampler.zig");
+
+    const BaggageObserver = struct {
+        sampler_saw_tenant: bool = false,
+        sampler_saw_worker: bool = false,
+        on_start_saw_tenant: bool = false,
+        on_start_saw_worker: bool = false,
+        on_start_parent_invalid: bool = false,
+
+        fn sampler(self: *@This()) sampler_mod.Sampler {
+            return .{ .custom = .{ .ptr = self, .vtable = &.{ .shouldSample = shouldSample, .writeDescription = writeDesc } } };
+        }
+
+        fn shouldSample(ptr: ?*const anyopaque, params: sampler_mod.Parameters) sampler_mod.Result {
+            const self: *@This() = @ptrCast(@alignCast(@constCast(ptr.?)));
+            if (params.parent.baggage) |bag| {
+                if (bag.member("tenant")) |m| self.sampler_saw_tenant = std.mem.eql(u8, m.value, "acme");
+                if (bag.member("worker")) |m| self.sampler_saw_worker = std.mem.eql(u8, m.value, "w-1");
+            }
+            return .{ .decision = .record_and_sample };
+        }
+
+        fn writeDesc(_: ?*const anyopaque, w: *Io.Writer) Io.Writer.Error!void {
+            try w.writeAll("BaggageObserverSampler");
+        }
+
+        fn spanProcessor(self: *@This()) processor_mod.SpanProcessor {
+            return .{ .ptr = self, .vtable = &.{
+                .onStart = onStart,
+                .onEnd = onEnd,
+                .forceFlush = noopFlush,
+                .shutdown = noopFlush,
+            } };
+        }
+
+        fn onStart(ptr: *anyopaque, parent_ctx: Context, _: *span_mod.SpanData) void {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            self.on_start_parent_invalid = !parent_ctx.span_context.isValid();
+            if (parent_ctx.baggage) |bag| {
+                if (bag.member("tenant")) |m| self.on_start_saw_tenant = std.mem.eql(u8, m.value, "acme");
+                if (bag.member("worker")) |m| self.on_start_saw_worker = std.mem.eql(u8, m.value, "w-1");
+            }
+        }
+
+        fn onEnd(_: *anyopaque, _: *const span_mod.SpanData) void {}
+        fn noopFlush(_: *anyopaque, _: @import("pipeline/deadline.zig").Deadline) processor_mod.ExportError!void {}
+    };
+
+    var obs: BaggageObserver = .{};
+    const sdk = try telemetry_mod.init(testing.allocator, testing.io, .{
+        .service_name = "detached-obs",
+        .environment = "test",
+        .console_enabled = false,
+        .runtime_metrics = false,
+        .sampler = obs.sampler(),
+        .span_processor = obs.spanProcessor(),
+    });
+    defer sdk.deinit();
+
+    const r = makeRemoteCtx("");
+    const origin_bag: Baggage = .{ .members = &.{.{ .key = "tenant", .value = "acme" }} };
+    var carrier = try captureFrom(testing.allocator, sdk, r.ctx.withBaggage(&origin_bag));
+    defer carrier.deinit(testing.allocator);
+
+    const worker_bag: Baggage = .{ .members = &.{.{ .key = "worker", .value = "w-1" }} };
+    var job = startLinked(testing.allocator, sdk, Context.background.withBaggage(&worker_bag), carrier, "job", .{});
+    job.end();
+
+    try testing.expect(obs.sampler_saw_tenant);
+    try testing.expect(obs.sampler_saw_worker);
+    try testing.expect(obs.on_start_saw_tenant);
+    try testing.expect(obs.on_start_saw_worker);
+    try testing.expect(obs.on_start_parent_invalid);
 }

@@ -647,3 +647,158 @@ test "o11yhttp client: strips credentials from url.full, honors propagate_fn, an
     try testing.expectEqual(@as(usize, 1), err_span.events.items.len);
     try testing.expectEqualStrings("exception", err_span.events.items[0].name);
 }
+
+test "o11yhttp loopback: cross-origin redirect strips propagated trace and baggage headers, same-origin keeps them" {
+    const rec = try o11ytest.start(testing.allocator, testing.io, .{});
+    defer rec.deinit();
+
+    const LandingState = struct {
+        saw_traceparent: bool = false,
+        saw_baggage: bool = false,
+        saw_custom: bool = false,
+        saw_priv: bool = false,
+    };
+    var cross_state: LandingState = .{};
+
+    const LandingHandler = struct {
+        fn run(st: *LandingState, sreq: *o11yhttp.ServerRequest) !void {
+            st.saw_traceparent = sreq.header("traceparent") != null;
+            st.saw_baggage = sreq.header("baggage") != null;
+            st.saw_custom = sreq.header("x-custom") != null;
+            st.saw_priv = sreq.header("x-secret") != null;
+            try sreq.respond("landed", .{ .status = .ok });
+        }
+    };
+
+    const target_srv = try LoopbackServer(*LandingState, LandingHandler.run).start(testing.allocator, testing.io, .{
+        .telemetry = rec.telemetry(),
+        .operation = "cross-target",
+    }, &cross_state);
+    defer target_srv.deinit();
+
+    const RedirectCtx = struct {
+        cross_target_url: []const u8,
+        same_origin_saw_tp: bool = false,
+    };
+    const cross_url = try target_srv.url(testing.allocator, "/cross");
+    defer testing.allocator.free(cross_url);
+    var rctx: RedirectCtx = .{ .cross_target_url = cross_url };
+
+    const OriginHandler = struct {
+        fn run(rc: *RedirectCtx, sreq: *o11yhttp.ServerRequest) !void {
+            if (std.mem.eql(u8, sreq.path(), "/go-cross")) {
+                try sreq.respond("", .{
+                    .status = .found,
+                    .extra_headers = &.{.{ .name = "location", .value = rc.cross_target_url }},
+                });
+                return;
+            }
+            if (std.mem.eql(u8, sreq.path(), "/go-same")) {
+                try sreq.respond("", .{
+                    .status = .found,
+                    .extra_headers = &.{.{ .name = "location", .value = "/same-landing" }},
+                });
+                return;
+            }
+            rc.same_origin_saw_tp = sreq.header("traceparent") != null;
+            try sreq.respond("same-ok", .{ .status = .ok });
+        }
+    };
+
+    const origin_srv = try LoopbackServer(*RedirectCtx, OriginHandler.run).start(testing.allocator, testing.io, .{
+        .telemetry = rec.telemetry(),
+        .operation = "origin",
+    }, &rctx);
+    defer origin_srv.deinit();
+
+    var std_client: std.http.Client = .{ .allocator = testing.allocator, .io = testing.io };
+    defer std_client.deinit();
+    const client = o11yhttp.Client.init(&std_client, .{ .telemetry = rec.telemetry() });
+
+    const bag: o11y.Baggage = .{ .members = &.{.{ .key = "tenant", .value = "acme" }} };
+    const ctx = o11y.Context.background.withBaggage(&bag);
+
+    // 1. Cross-origin redirect (different port -> different origin): traceparent,
+    // baggage, and privileged headers must NOT leak; normal extra headers stay.
+    {
+        const u = try origin_srv.url(testing.allocator, "/go-cross");
+        defer testing.allocator.free(u);
+        var body: Io.Writer.Allocating = .init(testing.allocator);
+        defer body.deinit();
+        const res = try client.fetch(ctx, .{
+            .location = .{ .url = u },
+            .response_writer = &body.writer,
+            .extra_headers = &.{.{ .name = "x-custom", .value = "keep" }},
+            .privileged_headers = &.{.{ .name = "x-secret", .value = "drop" }},
+        });
+        try origin_srv.waitHandled(1);
+        try target_srv.waitHandled(1);
+        try testing.expectEqual(std.http.Status.ok, res.status);
+        try testing.expectEqualStrings("landed", body.written());
+        try testing.expect(!cross_state.saw_traceparent);
+        try testing.expect(!cross_state.saw_baggage);
+        try testing.expect(!cross_state.saw_priv);
+        try testing.expect(cross_state.saw_custom);
+    }
+
+    // 2. Same-origin redirect (relative path on same host:port): traceparent stays.
+    {
+        const u = try origin_srv.url(testing.allocator, "/go-same");
+        defer testing.allocator.free(u);
+        var body: Io.Writer.Allocating = .init(testing.allocator);
+        defer body.deinit();
+        const res = try client.fetch(ctx, .{
+            .location = .{ .url = u },
+            .response_writer = &body.writer,
+        });
+        try origin_srv.waitHandled(3);
+        try testing.expectEqual(std.http.Status.ok, res.status);
+        try testing.expectEqualStrings("same-ok", body.written());
+        try testing.expect(rctx.same_origin_saw_tp);
+    }
+}
+
+test "o11yhttp loopback: recordStatus after direct raw.respond prevents double-write on handler error" {
+    const rec = try o11ytest.start(testing.allocator, testing.io, .{});
+    defer rec.deinit();
+
+    const Handler = struct {
+        fn run(sreq: *o11yhttp.ServerRequest) !void {
+            sreq.setRoute("/direct");
+            try sreq.raw.respond("direct-202", .{ .status = .accepted });
+            sreq.recordStatus(.accepted);
+            return error.PostDirectError;
+        }
+    };
+
+    const srv = try LoopbackServer(void, Handler.run).start(testing.allocator, testing.io, .{
+        .telemetry = rec.telemetry(),
+        .canonical_line = true,
+    }, {});
+    defer srv.deinit();
+
+    var std_client: std.http.Client = .{ .allocator = testing.allocator, .io = testing.io };
+    defer std_client.deinit();
+    const u = try srv.url(testing.allocator, "/direct");
+    defer testing.allocator.free(u);
+
+    var body: Io.Writer.Allocating = .init(testing.allocator);
+    defer body.deinit();
+    const res = try std_client.fetch(.{
+        .location = .{ .url = u },
+        .response_writer = &body.writer,
+    });
+    try srv.waitHandled(1);
+
+    try testing.expectEqual(std.http.Status.accepted, res.status);
+    try testing.expectEqualStrings("direct-202", body.written());
+
+    const sp = try rec.expectSpan("GET /direct");
+    try testing.expectEqual(o11y.StatusCode.@"error", sp.status.code);
+    try testing.expectEqual(@as(i64, 202), findAttr(sp.attributes.items, "http.response.status_code").?.int);
+    try testing.expectEqualStrings("PostDirectError", findAttr(sp.attributes.items, "error.type").?.string);
+
+    const ev = try rec.expectEvent(spec.event.request_summary);
+    try testing.expectEqual(@as(i64, 202), ev.attr("http.response.status_code").?.int);
+    try testing.expectEqualStrings("failure", ev.attrString(spec.Outcome.key).?);
+}

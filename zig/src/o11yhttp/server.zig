@@ -347,9 +347,14 @@ pub const ServerRequest = struct {
 
     /// Records a committed HTTP response status (first final status wins,
     /// ignoring 1xx responses other than 101 Switching Protocols).
+    /// Also marks the request as responded once a final status is recorded,
+    /// so a subsequent handler error will not double-write a 500 response.
     pub fn recordStatus(self: *ServerRequest, status: std.http.Status) void {
         const code: u16 = @intCast(@backingInt(status));
         self.observeStatus(code);
+        if (self.status != null) {
+            self.responded = true;
+        }
     }
 
     /// Sends a full HTTP response via `raw.respond`, recording the status code
@@ -408,7 +413,7 @@ pub const ServerRequest = struct {
     /// client does not hang and marks status 500.
     pub fn fail(self: *ServerRequest, err: anyerror) void {
         self.handler_err = err;
-        if (!self.responded) {
+        if (!self.responded and self.status == null) {
             self.respond("Internal Server Error", .{
                 .status = .internal_server_error,
                 .keep_alive = false,
