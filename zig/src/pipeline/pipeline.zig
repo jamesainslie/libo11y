@@ -25,6 +25,9 @@ pub const tracer = @import("tracer.zig");
 pub const otlp = struct {
     pub const json = @import("otlp/json.zig");
     pub const http = @import("otlp/http.zig");
+    pub const hpack = @import("otlp/hpack.zig");
+    pub const h2 = @import("otlp/h2.zig");
+    pub const grpc = @import("otlp/grpc.zig");
     pub const transport = @import("otlp/transport.zig");
     pub const env = @import("otlp/env.zig");
     pub const encode = @import("otlp/encode.zig");
@@ -32,6 +35,9 @@ pub const otlp = struct {
     pub const trace_exporter = @import("otlp/trace_exporter.zig");
     pub const log_encode = @import("otlp/log_encode.zig");
     pub const log_exporter = @import("otlp/log_exporter.zig");
+    pub const grpc_trace_exporter = @import("otlp/grpc_trace_exporter.zig");
+    pub const grpc_metric_exporter = @import("otlp/grpc_metric_exporter.zig");
+    pub const grpc_log_exporter = @import("otlp/grpc_log_exporter.zig");
 };
 
 test {
