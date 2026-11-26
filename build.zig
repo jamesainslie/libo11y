@@ -3,6 +3,14 @@
 //! step. See build.zig.zon for why the shim exists.
 
 const std = @import("std");
+const zig_build = @import("libo11y");
+
+/// Options for `addBuildInfo`, re-exported from `zig/build.zig`.
+pub const BuildInfoOptions = zig_build.BuildInfoOptions;
+
+/// Records build-time identity into a build-options module on `compile`,
+/// re-exported from `zig/build.zig`.
+pub const addBuildInfo = zig_build.addBuildInfo;
 
 pub fn build(b: *std.Build) !void {
     // The package's conformance suite reads the repository's conformance/
