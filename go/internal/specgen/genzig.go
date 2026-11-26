@@ -6,7 +6,6 @@ import (
 	"maps"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -111,11 +110,19 @@ func zigSnakeName(name string) string {
 
 // zigQuote renders s as a Zig string literal. Printable characters other
 // than the quote and the backslash stay as they are; everything else is
-// escaped, as \xNN below U+0080 and \u{NNNN} above.
+// escaped, as \xNN below U+0080 and \u{NNNN} above. A byte that is not
+// valid UTF-8 is written as \xNN, so the literal holds exactly s's bytes.
 func zigQuote(s string) string {
 	var b strings.Builder
 	b.WriteByte('"')
-	for _, r := range s {
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			fmt.Fprintf(&b, `\x%02x`, s[i])
+			i++
+			continue
+		}
+		i += size
 		switch {
 		case r == '"':
 			b.WriteString(`\"`)
@@ -643,7 +650,7 @@ func genZigGoPrint() string {
 	b.WriteString("/// Go's `strconv.Quote` escapes everything outside them, and also `\"` and `\\`.\n")
 	b.WriteString("pub const go_print_ranges: []const [2]u21 = &.{\n")
 	for i := 0; i+1 < len(ranges); i += 2 {
-		fmt.Fprintf(&b, "%s.{ %s, %s },\n", zigIndent, strconv.Itoa(int(ranges[i])), strconv.Itoa(int(ranges[i+1])))
+		fmt.Fprintf(&b, "%s.{ %d, %d },\n", zigIndent, ranges[i], ranges[i+1])
 	}
 	b.WriteString("};\n")
 	return b.String()

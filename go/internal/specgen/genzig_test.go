@@ -539,6 +539,14 @@ func TestZigSpecReExportsEveryGeneratedDecl(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A type spec.zig declares itself must be one a generated enum may not
+	// take.
+	types := regexp.MustCompile(`(?m)^pub const ([A-Z][A-Za-z0-9_]*) = (?:enum|struct|union)`)
+	for _, match := range types.FindAllStringSubmatch(string(handWritten), -1) {
+		if !zigReservedTypes[match[1]] {
+			t.Errorf("zigReservedTypes lacks %s, which zig/src/spec.zig declares", match[1])
+		}
+	}
 	decl := regexp.MustCompile(`(?m)^pub const ([A-Za-z0-9_]+)[ :]`)
 	for file, src := range map[string]string{"spec": spec, "tables": tables, "goprint": genZigGoPrint()} {
 		for _, match := range decl.FindAllStringSubmatch(src, -1) {
@@ -547,5 +555,11 @@ func TestZigSpecReExportsEveryGeneratedDecl(t *testing.T) {
 				t.Errorf("zig/src/spec.zig lacks %s", want)
 			}
 		}
+	}
+}
+
+func TestZigQuoteKeepsInvalidUTF8Bytes(t *testing.T) {
+	if got, want := zigQuote("a\xffb\u00e9"), `"a\xffbé"`; got != want {
+		t.Errorf("zigQuote = %s, want %s", got, want)
 	}
 }
