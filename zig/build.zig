@@ -1,8 +1,8 @@
 //! Build script for the libo11y Zig package.
 //!
-//! It exports the `o11y` and `o11ytest` modules. The repository root's
-//! build.zig re-exports every module this script adds with `b.addModule`, so
-//! consumers that fetch the repository get the same names.
+//! It exports the `o11y`, `o11ytest`, and `o11yhttp` modules. The repository
+//! root's build.zig re-exports every module this script adds with `b.addModule`,
+//! so consumers that fetch the repository get the same names.
 
 const std = @import("std");
 
@@ -123,6 +123,15 @@ pub fn build(b: *std.Build) !void {
         },
     });
 
+    const o11yhttp = b.addModule("o11yhttp", .{
+        .root_source_file = b.path("src/o11yhttp/o11yhttp.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "o11y", .module = o11y },
+        },
+    });
+
     const tests = b.addTest(.{ .root_module = o11y });
     const test_step = b.step("test", "Run the libo11y tests");
     test_step.dependOn(&b.addRunArtifact(tests).step);
@@ -132,6 +141,21 @@ pub fn build(b: *std.Build) !void {
 
     const o11ytest_tests = b.addTest(.{ .root_module = o11ytest });
     test_step.dependOn(&b.addRunArtifact(o11ytest_tests).step);
+
+    const o11yhttp_tests = b.addTest(.{ .root_module = o11yhttp });
+    test_step.dependOn(&b.addRunArtifact(o11yhttp_tests).step);
+
+    const o11yhttp_integration_tests = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("src/o11yhttp/integration_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "o11y", .module = o11y },
+            .{ .name = "o11yhttp", .module = o11yhttp },
+            .{ .name = "o11ytest", .module = o11ytest },
+        },
+    }) });
+    test_step.dependOn(&b.addRunArtifact(o11yhttp_integration_tests).step);
 
     // Tests that read fixtures under test/, which the published package
     // leaves out. They build only when the test step runs.

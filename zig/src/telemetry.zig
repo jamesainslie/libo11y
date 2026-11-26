@@ -9,6 +9,7 @@ const build_options = @import("build_options");
 const appregistry = @import("appregistry/appregistry.zig");
 const build_info_mod = @import("build_info.zig");
 const Context = @import("context.zig").Context;
+const detached_mod = @import("detached.zig");
 const error_handler_mod = @import("error_handler.zig");
 const goquote = @import("goquote.zig");
 const log_pipeline_mod = @import("log_pipeline.zig");
@@ -416,6 +417,26 @@ pub const Telemetry = struct {
     /// Returns the SDK's egress-filtered propagator.
     pub fn propagator(self: *const Telemetry) propagation.Propagator {
         return self.egress.propagator();
+    }
+
+    /// Captures the active span context and egress-filtered baggage into an
+    /// owned `detached.Carrier`. Convenience wrapper around `o11y.detached.captureFrom`.
+    pub fn captureDetached(self: *const Telemetry, gpa: Allocator, ctx: Context) Allocator.Error!detached_mod.Carrier {
+        return detached_mod.captureFrom(gpa, self, ctx);
+    }
+
+    /// Starts a new linked root span for detached work under libo11y's
+    /// instrumentation scope, merging `carrier`'s baggage into the returned
+    /// `LinkedSpan`. Convenience wrapper around `o11y.detached.startLinked`.
+    pub fn startLinked(
+        self: *Telemetry,
+        gpa: Allocator,
+        ctx: Context,
+        carrier: detached_mod.Carrier,
+        name: []const u8,
+        options: tracer_mod.StartOptions,
+    ) detached_mod.LinkedSpan {
+        return detached_mod.startLinked(gpa, self, ctx, carrier, name, options);
     }
 
     /// Returns the SDK's classified telemetry resource.
