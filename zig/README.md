@@ -12,9 +12,12 @@ event and metric names, and the sensitivity and cardinality tables), and
 the explicit `o11y.Context` with the span identity types it carries. The
 internal pipeline under `src/pipeline/` has the trace side: W3C
 propagation, samplers, spans, the simple and batch processors, and
-OTLP/HTTP export with protobuf or JSON, gzip, retries and TLS. Setup and
-the public signal APIs come in later steps. Nothing here is ready to use,
-and no version is released.
+OTLP/HTTP export with protobuf or JSON, gzip, retries and TLS. It also
+has the OTLP log pipeline: log records with nested values and the OTel
+log record limits, the logger provider, the simple and batch log
+processors, and OTLP/HTTP export to `/v1/logs`. Setup and the public
+signal APIs come in later steps. Nothing here is ready to use, and no
+version is released.
 
 Dependencies, each pinned by commit:
 
