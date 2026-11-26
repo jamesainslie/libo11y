@@ -23,9 +23,11 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const deadline = @import("../deadline.zig");
 const Deadline = deadline.Deadline;
-const http = @import("http.zig");
-const hpack = @import("hpack.zig");
-const h2 = @import("h2.zig");
+const o11y_wire = @import("o11y_wire");
+const http = o11y_wire.http;
+const hpack = o11y_wire.hpack;
+const h2 = o11y_wire.h2;
+const grpc_frame = o11y_wire.grpc_frame;
 const transport = @import("transport.zig");
 
 pub const Compression = transport.Compression;
@@ -126,12 +128,7 @@ pub const Response = struct {
 };
 
 /// Errors from gRPC 5-byte message framing/unframing.
-pub const FrameError = error{
-    InvalidFrame,
-    ResponseTooLarge,
-    UnsupportedEncoding,
-    OutOfMemory,
-};
+pub const FrameError = grpc_frame.FrameError;
 
 /// Durations are clamped to this so deadline arithmetic cannot overflow.
 const max_duration: Io.Duration = .fromSeconds(1000 * 365 * 24 * 3600);
@@ -139,43 +136,15 @@ const max_duration: Io.Duration = .fromSeconds(1000 * 365 * 24 * 3600);
 /// Wraps `payload` in a 5-byte gRPC length-prefixed message frame, gzip-
 /// compressing it first when `compression == .gzip`.
 pub fn frameEncode(gpa: Allocator, payload: []const u8, compression: Compression) error{ OutOfMemory, PayloadTooLarge }![]u8 {
-    const body: []const u8, const owned_zip: ?[]u8 = if (compression == .gzip) blk: {
-        const z = try http.gzip(gpa, payload);
-        break :blk .{ z, z };
-    } else .{ payload, null };
-    defer if (owned_zip) |z| gpa.free(z);
-
-    if (body.len > std.math.maxInt(u32)) return error.PayloadTooLarge;
-    const out = try gpa.alloc(u8, 5 + body.len);
-    out[0] = if (compression == .gzip) 1 else 0;
-    std.mem.writeInt(u32, out[1..5], @intCast(body.len), .big);
-    @memcpy(out[5..], body);
-    return out;
+    return grpc_frame.frameEncode(gpa, payload, switch (compression) {
+        .none => .none,
+        .gzip => .gzip,
+    });
 }
 
 /// Decodes a single unary gRPC length-prefixed message from `raw`, gunzipping
 /// when the compressed flag is 1 and enforcing `max_size`.
-pub fn frameDecode(gpa: Allocator, raw: []const u8, encoding: ?[]const u8, max_size: usize) FrameError![]u8 {
-    if (raw.len == 0) return try gpa.alloc(u8, 0);
-    if (raw.len < 5) return error.InvalidFrame;
-    const compressed = raw[0];
-    if (compressed != 0 and compressed != 1) return error.InvalidFrame;
-    const msg_len: usize = std.mem.readInt(u32, raw[1..5], .big);
-    if (msg_len != raw.len - 5) return error.InvalidFrame;
-    const msg = raw[5..];
-
-    if (compressed == 0) {
-        if (msg.len > max_size) return error.ResponseTooLarge;
-        return try gpa.dupe(u8, msg);
-    }
-
-    const enc = encoding orelse return error.UnsupportedEncoding;
-    if (!std.ascii.eqlIgnoreCase(enc, "gzip")) return error.UnsupportedEncoding;
-    return http.gunzip(gpa, msg, max_size) catch |err| switch (err) {
-        error.OutOfMemory => error.OutOfMemory,
-        error.InvalidData => error.InvalidFrame,
-    };
-}
+pub const frameDecode = grpc_frame.frameDecode;
 
 /// Formats remaining time into a gRPC `grpc-timeout` header value (max 8
 /// digits plus unit `n`, `u`, `m`, `S`, `M`, or `H`).

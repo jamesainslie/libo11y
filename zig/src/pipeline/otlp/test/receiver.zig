@@ -9,7 +9,7 @@
 
 const std = @import("std");
 const tls = @import("tls");
-const http = @import("../http.zig");
+const http = @import("o11y_wire").http;
 const Io = std.Io;
 const net = Io.net;
 const Allocator = std.mem.Allocator;
