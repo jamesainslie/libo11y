@@ -64,7 +64,7 @@ pub fn Batcher(comptime T: type) type {
         batch: []T,
         flush_requested: u64 = 0,
         flush_completed: u64 = 0,
-        flush_deadline: ?Deadline = null,
+        active_flushers: usize = 0,
         stopping: bool = false,
         dropped: std.atomic.Value(u64) = .init(0),
 
@@ -132,15 +132,23 @@ pub fn Batcher(comptime T: type) type {
             return self.dropped.load(.monotonic);
         }
 
-        /// Exports everything queued, in batches, and waits for it. The
-        /// exports run under `deadline` as well as the export timeout.
+        /// Exports everything queued, in batches, and waits for it until
+        /// `deadline`. Each batch exports under `config.export_timeout`,
+        /// so a timed-out flush does not drop batches still queued. A
+        /// flush after shutdown is a no-op, as in Go.
         pub fn forceFlush(self: *Self, deadline: Deadline) ExportError!void {
             self.mutex.lock(self.io) catch return error.Canceled;
             defer self.mutex.unlock(self.io);
-            if (self.stopping) return error.Shutdown;
+            if (self.stopping) return;
             self.flush_requested += 1;
             const want = self.flush_requested;
-            self.flush_deadline = if (self.flush_deadline) |d| deadline_mod.earliest(d, deadline) else deadline;
+            self.active_flushers += 1;
+            defer {
+                self.active_flushers -= 1;
+                if (self.active_flushers == 0 and self.flush_completed < self.flush_requested) {
+                    self.flush_completed = self.flush_requested;
+                }
+            }
             self.work.signal(self.io);
             while (self.flush_completed < want) {
                 self.idle.waitTimeout(self.io, &self.mutex, deadline_mod.timeout(deadline)) catch |err| switch (err) {
@@ -213,7 +221,6 @@ pub fn Batcher(comptime T: type) type {
                 }
                 const flushing = self.flush_completed != self.flush_requested;
                 const flush_target = self.flush_requested;
-                const flush_deadline = self.flush_deadline;
                 const n = @min(self.len, self.batch.len);
                 for (self.batch[0..n]) |*slot| {
                     slot.* = self.ring[self.head];
@@ -223,10 +230,7 @@ pub fn Batcher(comptime T: type) type {
                 self.mutex.unlock(io);
 
                 if (n > 0) {
-                    var export_deadline = deadline_mod.after(io, self.config.export_timeout);
-                    if (flushing) if (flush_deadline) |d| {
-                        export_deadline = deadline_mod.earliest(export_deadline, d);
-                    };
+                    const export_deadline = deadline_mod.after(io, self.config.export_timeout);
                     const outcome = self.sink.exportFn(self.sink.ptr, self.batch[0..n], export_deadline);
                     for (self.batch[0..n]) |item| self.sink.releaseFn(self.sink.ptr, item);
                     if (outcome) |_| {} else |err| switch (err) {
@@ -241,7 +245,6 @@ pub fn Batcher(comptime T: type) type {
                 const stop = self.stopping and empty;
                 if (empty and flushing) {
                     self.flush_completed = flush_target;
-                    self.flush_deadline = null;
                 }
                 self.mutex.unlock(io);
                 if (empty and flushing) self.idle.broadcast(io);

@@ -402,7 +402,9 @@ pub const Span = struct {
     /// A span that records nothing and has an invalid span context.
     pub const noop: Span = .{};
 
-    /// Returns the span's span context.
+    /// Returns the span's span context. `trace_id`, `span_id` and `flags`
+    /// remain valid after `end`; `trace_state` is cleared when the span
+    /// ends so it never points into the released span arena.
     pub fn spanContext(span: *const Span) SpanContext {
         return span.span_context;
     }
@@ -466,6 +468,7 @@ pub const Span = struct {
     pub fn endAt(span: *Span, timestamp: ?u64) void {
         const data = span.data orelse return;
         span.data = null;
+        span.span_context.trace_state = .empty;
         data.finish(timestamp);
     }
 };

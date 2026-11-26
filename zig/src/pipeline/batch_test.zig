@@ -142,23 +142,62 @@ test "shutdown past its deadline cancels a hung export and releases the queue" {
     try testing.expect(took >= 90 and took < 2000);
     try testing.expectEqual(@as(usize, 2), s.released);
     try testing.expectEqual(@as(usize, 0), s.count());
-    // Later calls return the first result, and enqueue releases at once.
+    // Later calls return the first result, enqueue releases at once, and
+    // forceFlush after shutdown is a no-op.
     try testing.expectError(error.Timeout, b.shutdown(deadline.after(io, .fromSeconds(1))));
     b.enqueue(3);
     try testing.expectEqual(@as(usize, 3), s.released);
-    try testing.expectError(error.Shutdown, b.forceFlush(deadline.after(io, .fromSeconds(1))));
+    try b.forceFlush(deadline.after(io, .fromSeconds(1)));
 }
 
-test "forceFlush gives up at its deadline" {
-    var s: IntSink = .{ .block = true };
-    defer s.deinit();
-    const b = try B.create(testing.allocator, io, .{ .schedule_delay = .fromSeconds(60) }, s.sink(), .ignore, "test");
+test "forceFlush gives up at its deadline and later batches still export" {
+    const DeadlineSink = struct {
+        mutex: Io.Mutex = .init,
+        exported: std.ArrayList(u32) = .empty,
+        expired_deadlines: usize = 0,
+        block_first: bool = true,
+        entered: Io.Event = .unset,
+        unblock: Io.Event = .unset,
+
+        fn exportFn(ptr: *anyopaque, items: []const u32, dl: Deadline) processor.ExportError!void {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            if (deadline.expired(io, dl)) {
+                self.mutex.lockUncancelable(io);
+                self.expired_deadlines += 1;
+                self.mutex.unlock(io);
+                return error.Timeout;
+            }
+            if (self.block_first) {
+                self.block_first = false;
+                self.entered.set(io);
+                self.unblock.wait(io) catch return error.Canceled;
+            }
+            self.mutex.lockUncancelable(io);
+            defer self.mutex.unlock(io);
+            self.exported.appendSlice(testing.allocator, items) catch return error.ExportFailed;
+        }
+        fn releaseFn(_: *anyopaque, _: u32) void {}
+    };
+    var s: DeadlineSink = .{};
+    defer s.exported.deinit(testing.allocator);
+    const b = try B.create(
+        testing.allocator,
+        io,
+        .{ .max_export_batch_size = 1, .schedule_delay = .fromSeconds(60) },
+        .{ .ptr = &s, .exportFn = DeadlineSink.exportFn, .releaseFn = DeadlineSink.releaseFn },
+        .ignore,
+        "test",
+    );
     defer b.destroy();
     b.enqueue(1);
+    try s.entered.wait(io);
+    b.enqueue(2);
+    b.enqueue(3);
     try testing.expectError(error.Timeout, b.forceFlush(deadline.after(io, .fromMilliseconds(50))));
     s.unblock.set(io);
     try b.shutdown(deadline.after(io, .fromSeconds(5)));
-    try testing.expectEqual(@as(usize, 1), s.count());
+    try testing.expectEqual(@as(usize, 0), s.expired_deadlines);
+    try testing.expectEqualSlices(u32, &.{ 1, 2, 3 }, s.exported.items);
 }
 
 test "export failures go to the error handler" {

@@ -92,6 +92,7 @@ pub const TracerProvider = struct {
     mutex: Io.Mutex = .init,
     tracers: std.ArrayList(*Tracer) = .empty,
     is_shutdown: std.atomic.Value(bool) = .init(false),
+    shutdown_done: Io.Event = .unset,
     shutdown_result: ?processor.ExportError = null,
 
     pub const Options = struct {
@@ -179,9 +180,14 @@ pub const TracerProvider = struct {
     }
 
     /// Shuts every processor down in order, under one deadline. Later
-    /// spans are no-ops. A second call returns the first call's result.
+    /// spans are no-ops. Concurrent and later calls wait for the first
+    /// shutdown to finish and return its result.
     pub fn shutdown(p: *TracerProvider, deadline: Deadline) processor.ExportError!void {
         if (p.is_shutdown.swap(true, .acq_rel)) {
+            p.shutdown_done.waitTimeout(p.io, deadline_mod.timeout(deadline)) catch |err| switch (err) {
+                error.Timeout => return error.Timeout,
+                error.Canceled => return error.Canceled,
+            };
             if (p.shutdown_result) |err| return err;
             return;
         }
@@ -192,6 +198,7 @@ pub const TracerProvider = struct {
             };
         }
         p.shutdown_result = first;
+        p.shutdown_done.set(p.io);
         if (first) |err| return err;
     }
 };

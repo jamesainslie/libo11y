@@ -384,3 +384,58 @@ test "the sampler sees the start attributes and adds its own" {
     s.end();
     try testing.expect(attribute.find((try h.only()).attributes.items, "sampler.saw.start").?.bool);
 }
+
+test "ending a span clears its trace state so spanContext never dangles" {
+    var h: Harness = undefined;
+    try h.init(.{ .sampler = .always_off });
+    defer h.deinit();
+    var parent = remote_parent;
+    parent.trace_state = .{ .header = "vendor=val" };
+    var s = h.tracer().start(Context.background.withSpanContext(parent), "dropped", .{});
+    try testing.expectEqualStrings("vendor=val", s.spanContext().trace_state.header);
+    const tid = s.spanContext().trace_id;
+    const sid = s.spanContext().span_id;
+    s.end();
+    try testing.expectEqualStrings("", s.spanContext().trace_state.header);
+    try testing.expectEqual(tid, s.spanContext().trace_id);
+    try testing.expectEqual(sid, s.spanContext().span_id);
+}
+
+test "concurrent provider shutdown callers wait for the first and share its result" {
+    const BlockingProc = struct {
+        entered: std.Io.Event = .unset,
+        release: std.Io.Event = .unset,
+
+        fn onStart(_: *anyopaque, _: Context, _: *SpanData) void {}
+        fn onEnd(_: *anyopaque, _: *const SpanData) void {}
+        fn forceFlush(_: *anyopaque, _: deadline.Deadline) processor.ExportError!void {}
+        fn shutdown(ptr: *anyopaque, _: deadline.Deadline) processor.ExportError!void {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            self.entered.set(testing.io);
+            self.release.wait(testing.io) catch return error.Canceled;
+            return error.ExportFailed;
+        }
+    };
+    var proc: BlockingProc = .{};
+    const sp: processor.SpanProcessor = .{ .ptr = &proc, .vtable = &.{
+        .onStart = BlockingProc.onStart,
+        .onEnd = BlockingProc.onEnd,
+        .forceFlush = BlockingProc.forceFlush,
+        .shutdown = BlockingProc.shutdown,
+    } };
+    const provider = try tracer_mod.TracerProvider.create(testing.allocator, testing.io, .{ .processors = &.{sp} });
+    defer provider.destroy();
+
+    const Runner = struct {
+        fn call(p: *tracer_mod.TracerProvider) processor.ExportError!void {
+            return p.shutdown(deadline.after(testing.io, .fromSeconds(5)));
+        }
+    };
+    var f1 = try testing.io.concurrent(Runner.call, .{provider});
+    try proc.entered.wait(testing.io);
+    var f2 = try testing.io.concurrent(Runner.call, .{provider});
+    try testing.io.sleep(.fromMilliseconds(10), .awake);
+    proc.release.set(testing.io);
+    try testing.expectError(error.ExportFailed, f1.await(testing.io));
+    try testing.expectError(error.ExportFailed, f2.await(testing.io));
+}
