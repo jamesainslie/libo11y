@@ -6,6 +6,56 @@
 
 const std = @import("std");
 
+/// Options for `addBuildInfo`.
+pub const BuildInfoOptions = struct {
+    /// Explicit service version string (for example from a release manifest).
+    /// When null, `service.version` is left empty unless set in code or env.
+    service_version: ?[]const u8 = null,
+    /// Directory passed to `git -C` when probing VCS metadata. Defaults to
+    /// the build root.
+    git_dir: ?[]const u8 = null,
+    /// Import name added to `compile.root_module`.
+    module_name: []const u8 = "o11y_build_info",
+};
+
+/// Records build-time identity (`service.version`, `vcs.ref.head.revision`,
+/// `o11y.build.time`, `o11y.build.modified`) from git into a build-options
+/// module attached to `compile`. Fails gracefully when git is unavailable or
+/// the directory is not a git repository, leaving unavailable fields empty.
+pub fn addBuildInfo(b: *std.Build, compile: *std.Build.Step.Compile, options: BuildInfoOptions) void {
+    const opts = b.addOptions();
+    opts.addOption([]const u8, "version", options.service_version orelse "");
+    const revision = runGit(b, options.git_dir, &.{ "rev-parse", "HEAD" }) orelse "";
+    const commit_time = runGit(b, options.git_dir, &.{ "show", "-s", "--format=%cI", "HEAD" }) orelse "";
+    const status_out = runGit(b, options.git_dir, &.{ "status", "--porcelain" });
+    const modified: ?bool = if (status_out) |s| s.len > 0 else null;
+    opts.addOption([]const u8, "revision", revision);
+    opts.addOption([]const u8, "time", commit_time);
+    opts.addOption(?bool, "modified", modified);
+    compile.root_module.addOptions(options.module_name, opts);
+}
+
+fn runGit(b: *std.Build, git_dir: ?[]const u8, args: []const []const u8) ?[]const u8 {
+    var argv_buf: [12][]const u8 = undefined;
+    var n: usize = 0;
+    argv_buf[n] = "git";
+    n += 1;
+    if (git_dir) |dir| {
+        argv_buf[n] = "-C";
+        argv_buf[n + 1] = dir;
+        n += 2;
+    }
+    if (n + args.len > argv_buf.len) return null;
+    for (args) |a| {
+        argv_buf[n] = a;
+        n += 1;
+    }
+    var exit_code: u8 = 0;
+    const out = b.runAllowFail(argv_buf[0..n], &exit_code, .ignore) catch return null;
+    if (exit_code != 0) return null;
+    return std.mem.trim(u8, out, " \t\r\n");
+}
+
 pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});

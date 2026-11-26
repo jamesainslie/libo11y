@@ -5,9 +5,8 @@ const ids = @import("pipeline/ids.zig");
 const Baggage = @import("pipeline/baggage.zig").Baggage;
 const Span = @import("pipeline/span.zig").Span;
 
-/// The accumulator for a wide event. Its API arrives with the core in a
-/// later step; until then a context only carries the pointer.
-pub const Record = opaque {};
+/// The accumulator for a wide event.
+pub const Record = @import("record.zig").Record;
 
 /// A small immutable value, passed by value and never allocated, that
 /// carries the current span context, the live span, the baggage, the
