@@ -8,7 +8,7 @@ GO_TEST_P ?= 4
 # gate runs on each module separately.
 GO_MODULES := go go/o11ygin go/o11yconnect go/o11ysql
 
-.PHONY: spec-check spec-generate spec-drift test lint vet tidy-check vuln release-check schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-install ts-check ts-browser-test rust-check rust-msrv zig-check zig-hygiene-test ci
+.PHONY: spec-check spec-generate spec-drift test lint vet tidy-check vuln release-check schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-install ts-check ts-browser-test rust-check rust-msrv zig-check zig-integrations-check zig-hygiene-test ci
 
 # Validate the spec registry against the libo11y policy suite (naming,
 # ownership, sensitivity, cardinality, events, units).
@@ -147,6 +147,15 @@ zig-check: zig-hygiene-test
 	$(ZIG_FMT)
 	zig build test -j$(ZIG_BUILD_J) -Doptimize=Debug
 	zig build test -j$(ZIG_BUILD_J) -Doptimize=ReleaseSafe
+	scripts/zig-hygiene.sh
+
+# Optional Zig integration suites (o11yhttpz, o11ypg, o11ysqlite) in Debug and
+# ReleaseSafe with all lazy integration dependencies enabled. Set
+# O11YPG_TEST_DSN to run the live PostgreSQL tests against a server.
+zig-integrations-check:
+	$(ZIG_FMT)
+	zig build test -j$(ZIG_BUILD_J) -Dhttpz=true -Dpg=true -Dsqlite=true -Doptimize=Debug
+	zig build test -j$(ZIG_BUILD_J) -Dhttpz=true -Dpg=true -Dsqlite=true -Doptimize=ReleaseSafe
 	scripts/zig-hygiene.sh
 
 # Test zig-hygiene.sh against fixture trees.

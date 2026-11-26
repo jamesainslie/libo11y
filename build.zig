@@ -21,10 +21,28 @@ pub fn build(b: *std.Build) !void {
         "conformance-dir",
         "The directory of shared conformance cases (default: the repository's conformance/)",
     );
+    const httpz_enabled = b.option(
+        bool,
+        "httpz",
+        "Enable the o11yhttpz module (fetches http.zig)",
+    ) orelse false;
+    const pg_enabled = b.option(
+        bool,
+        "pg",
+        "Enable the o11ypg module (fetches pg.zig)",
+    ) orelse false;
+    const sqlite_enabled = b.option(
+        bool,
+        "sqlite",
+        "Enable the o11ysqlite module (fetches zig-sqlite)",
+    ) orelse false;
     const libo11y = b.dependency("libo11y", .{
         .target = b.standardTargetOptions(.{}),
         .optimize = b.standardOptimizeOption(.{}),
         .@"conformance-dir" = conformance_dir,
+        .httpz = httpz_enabled,
+        .pg = pg_enabled,
+        .sqlite = sqlite_enabled,
     });
 
     var modules = libo11y.builder.modules.iterator();

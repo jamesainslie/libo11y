@@ -190,6 +190,38 @@ jobs:
           version: "0.17.1"
       - run: make zig-check ZIG_BUILD_J=4
 
+  # Optional Zig integrations (o11yhttpz, o11ypg, o11ysqlite) with a live
+  # PostgreSQL 17 service container. Kept separate from the default `zig` job
+  # so CI proves the default build works without enabling optional lazy deps.
+  zig-integrations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: libo11y_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: "0.17.1"
+      - name: Run Zig integration suites
+        env:
+          O11YPG_TEST_DSN: postgres://postgres:postgres@127.0.0.1:5432/libo11y_test
+        run: make zig-integrations-check ZIG_BUILD_J=4
+
   vuln:
     runs-on: ubuntu-latest
     timeout-minutes: 15
