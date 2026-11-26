@@ -30,6 +30,7 @@ pub const Snapshot = struct {
 
 /// Active registration of the process metrics callback on a `MeterProvider`.
 pub const ProcessMetrics = struct {
+    gpa: std.mem.Allocator,
     io: Io,
     cpu_time: metric_meter.ObservableCounter(f64),
     memory_usage: metric_meter.ObservableUpDownCounter(i64),
@@ -45,6 +46,7 @@ pub const ProcessMetrics = struct {
         const self = try gpa.create(ProcessMetrics);
         const m = mp.meter(.{ .name = policy_runtime.scope_name });
         self.* = .{
+            .gpa = gpa,
             .io = io,
             .cpu_time = m.observableCounter(f64, "process.cpu.time", .{
                 .unit = "s",
@@ -86,7 +88,7 @@ pub const ProcessMetrics = struct {
     fn observe(ptr: ?*anyopaque, observer: metric_meter.Observer) void {
         const p = ptr orelse return;
         const self: *ProcessMetrics = @ptrCast(@alignCast(p));
-        const snap = sample(self.io);
+        const snap = sampleWithAllocator(self.gpa, self.io);
 
         if (snap.cpu_user_seconds) |u| {
             observer.observe(self.cpu_time, u, &.{attribute.kv("cpu.mode", "user")});
@@ -112,9 +114,13 @@ pub const ProcessMetrics = struct {
 /// Collects a snapshot of the current process's CPU, memory, thread, and file
 /// descriptor metrics.
 pub fn sample(io: Io) Snapshot {
+    return sampleWithAllocator(null, io);
+}
+
+fn sampleWithAllocator(gpa: ?std.mem.Allocator, io: Io) Snapshot {
     return switch (builtin.os.tag) {
         .linux => sampleLinux(io),
-        .macos => sampleMacos(),
+        .macos => sampleMacos(gpa),
         else => .{},
     };
 }
@@ -191,7 +197,7 @@ const darwin_ext = if (builtin.os.tag == .macos) struct {
     extern "c" fn proc_pidinfo(pid: c_int, flavor: c_int, arg: u64, buffer: ?*anyopaque, buffersize: c_int) c_int;
 } else struct {};
 
-fn sampleMacos() Snapshot {
+fn sampleMacos(gpa: ?std.mem.Allocator) Snapshot {
     if (builtin.os.tag != .macos) return .{};
     var snap: Snapshot = .{};
 
@@ -223,10 +229,31 @@ fn sampleMacos() Snapshot {
         }
     }
 
-    // Open FDs via proc_pidinfo(PROC_PIDLISTFDS).
-    const bytes = darwin_ext.proc_pidinfo(std.c.getpid(), PROC_PIDLISTFDS, 0, null, 0);
-    if (bytes >= 0) {
-        snap.fd_count = @divTrunc(@as(i64, bytes), PROC_FDINFO_SIZE);
+    // Open FDs via two-pass proc_pidinfo(PROC_PIDLISTFDS): the null-buffer
+    // probe returns XNU's capacity estimate, so populate a real buffer to get
+    // the exact count of open descriptors.
+    const pid = std.c.getpid();
+    const est_bytes = darwin_ext.proc_pidinfo(pid, PROC_PIDLISTFDS, 0, null, 0);
+    if (est_bytes == 0) {
+        snap.fd_count = 0;
+    } else if (est_bytes > 0) {
+        const max_fd_buf: usize = 16 * 1024 * 1024;
+        const needed: usize = @min(@as(usize, @intCast(est_bytes)), max_fd_buf);
+        var stack_buf: [4096]u8 align(4) = undefined;
+        if (needed <= stack_buf.len) {
+            const actual = darwin_ext.proc_pidinfo(pid, PROC_PIDLISTFDS, 0, &stack_buf, @intCast(stack_buf.len));
+            if (actual >= 0) {
+                snap.fd_count = @divTrunc(@as(i64, actual), PROC_FDINFO_SIZE);
+            }
+        } else if (gpa) |alloc| {
+            if (alloc.alloc(u8, needed)) |heap_buf| {
+                defer alloc.free(heap_buf);
+                const actual = darwin_ext.proc_pidinfo(pid, PROC_PIDLISTFDS, 0, heap_buf.ptr, @intCast(heap_buf.len));
+                if (actual >= 0) {
+                    snap.fd_count = @divTrunc(@as(i64, actual), PROC_FDINFO_SIZE);
+                }
+            } else |_| {}
+        }
     }
 
     return snap;

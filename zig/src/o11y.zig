@@ -54,6 +54,7 @@ pub const init = telemetry_mod.init;
 pub const Telemetry = telemetry_mod.Telemetry;
 pub const Options = telemetry_mod.Options;
 pub const SetupError = telemetry_mod.SetupError;
+pub const Protocol = telemetry_mod.Protocol;
 pub const ShutdownReport = telemetry_mod.ShutdownReport;
 pub const AppRegistrySource = telemetry_mod.AppRegistrySource;
 pub const HistogramBuckets = telemetry_mod.HistogramBuckets;

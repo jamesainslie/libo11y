@@ -514,8 +514,9 @@ fn toLogValueProtected(comptime T: type, value: T, comptime floor: Protection, c
         return .{ .string = redacted_literal };
     }
     if (T == log_record.Value) {
-        if (comptime floor == .mask) return maskLogValue(arena, value, depth);
-        return value;
+        var walk: LogValueWalk = .{};
+        if (comptime floor == .mask) return maskLogValue(arena, value, depth, &walk);
+        return cloneLogValue(arena, value, depth, &walk);
     }
     if (comptime @typeInfo(T) == .@"struct" and @hasDecl(T, "o11y_redact_kind")) {
         switch (comptime T.o11y_redact_kind) {
@@ -610,8 +611,81 @@ fn toLogValueProtected(comptime T: type, value: T, comptime floor: Protection, c
     }
 }
 
-fn maskLogValue(arena: Allocator, v: log_record.Value, depth: usize) Allocator.Error!log_record.Value {
-    if (depth > max_depth) return .{ .string = redacted_literal };
+const log_value_budget: usize = 2048;
+
+const LogValueAncestor = struct {
+    is_map: bool,
+    addr: usize,
+};
+
+const LogValueWalk = struct {
+    budget: usize = log_value_budget,
+    ancestors: [max_depth]LogValueAncestor = undefined,
+    ancestor_len: usize = 0,
+
+    fn spend(w: *LogValueWalk) bool {
+        if (w.budget == 0) return false;
+        w.budget -= 1;
+        return true;
+    }
+
+    fn enter(w: *LogValueWalk, is_map: bool, addr: usize) bool {
+        for (w.ancestors[0..w.ancestor_len]) |a| {
+            if (a.is_map == is_map and a.addr == addr) return false;
+        }
+        if (w.ancestor_len >= w.ancestors.len) return false;
+        w.ancestors[w.ancestor_len] = .{ .is_map = is_map, .addr = addr };
+        w.ancestor_len += 1;
+        return true;
+    }
+
+    fn leave(w: *LogValueWalk) void {
+        w.ancestor_len -= 1;
+    }
+};
+
+fn cloneLogValue(arena: Allocator, v: log_record.Value, depth: usize, w: *LogValueWalk) Allocator.Error!log_record.Value {
+    if (depth > max_depth or !w.spend()) return .empty;
+    return switch (v) {
+        .empty, .bool, .int, .double => v,
+        .string => |s| .{ .string = try arena.dupe(u8, s) },
+        .bytes => |b| .{ .bytes = try arena.dupe(u8, b) },
+        .array => |items| blk: {
+            if (items.len == 0) break :blk .{ .array = &.{} };
+            if (!w.enter(false, @intFromPtr(items.ptr))) break :blk .empty;
+            defer w.leave();
+            const cap = @min(items.len, w.budget);
+            const out = try arena.alloc(log_record.Value, cap);
+            var n: usize = 0;
+            for (items[0..cap]) |item| {
+                if (w.budget == 0) break;
+                out[n] = try cloneLogValue(arena, item, depth + 1, w);
+                n += 1;
+            }
+            break :blk .{ .array = out[0..n] };
+        },
+        .map => |pairs| blk: {
+            if (pairs.len == 0) break :blk .{ .map = &.{} };
+            if (!w.enter(true, @intFromPtr(pairs.ptr))) break :blk .empty;
+            defer w.leave();
+            const cap = @min(pairs.len, w.budget);
+            const out = try arena.alloc(log_record.KeyValue, cap);
+            var n: usize = 0;
+            for (pairs[0..cap]) |p| {
+                if (w.budget == 0) break;
+                out[n] = .{
+                    .key = try arena.dupe(u8, p.key),
+                    .value = try cloneLogValue(arena, p.value, depth + 1, w),
+                };
+                n += 1;
+            }
+            break :blk .{ .map = out[0..n] };
+        },
+    };
+}
+
+fn maskLogValue(arena: Allocator, v: log_record.Value, depth: usize, w: *LogValueWalk) Allocator.Error!log_record.Value {
+    if (depth > max_depth or !w.spend()) return .{ .string = redacted_literal };
     return switch (v) {
         .empty => .empty,
         .string => |s| if (std.mem.eql(u8, s, redacted_literal))
@@ -623,14 +697,35 @@ fn maskLogValue(arena: Allocator, v: log_record.Value, depth: usize) Allocator.E
         .double => |d| .{ .string = try allocXs(arena, maskedRuneCount(f64, d)) },
         .bytes => |b| .{ .string = try allocXs(arena, b.len) },
         .array => |items| blk: {
-            const out = try arena.alloc(log_record.Value, items.len);
-            for (out, items) |*dst, item| dst.* = try maskLogValue(arena, item, depth + 1);
-            break :blk .{ .array = out };
+            if (items.len == 0) break :blk .{ .array = &.{} };
+            if (!w.enter(false, @intFromPtr(items.ptr))) break :blk .{ .string = redacted_literal };
+            defer w.leave();
+            const cap = @min(items.len, w.budget);
+            const out = try arena.alloc(log_record.Value, cap);
+            var n: usize = 0;
+            for (items[0..cap]) |item| {
+                if (w.budget == 0) break;
+                out[n] = try maskLogValue(arena, item, depth + 1, w);
+                n += 1;
+            }
+            break :blk .{ .array = out[0..n] };
         },
         .map => |pairs| blk: {
-            const out = try arena.alloc(log_record.KeyValue, pairs.len);
-            for (out, pairs) |*dst, p| dst.* = .{ .key = p.key, .value = try maskLogValue(arena, p.value, depth + 1) };
-            break :blk .{ .map = out };
+            if (pairs.len == 0) break :blk .{ .map = &.{} };
+            if (!w.enter(true, @intFromPtr(pairs.ptr))) break :blk .{ .string = redacted_literal };
+            defer w.leave();
+            const cap = @min(pairs.len, w.budget);
+            const out = try arena.alloc(log_record.KeyValue, cap);
+            var n: usize = 0;
+            for (pairs[0..cap]) |p| {
+                if (w.budget == 0) break;
+                out[n] = .{
+                    .key = try arena.dupe(u8, p.key),
+                    .value = try maskLogValue(arena, p.value, depth + 1, w),
+                };
+                n += 1;
+            }
+            break :blk .{ .map = out[0..n] };
         },
     };
 }

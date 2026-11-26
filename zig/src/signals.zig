@@ -38,6 +38,12 @@ pub const Options = struct {
 var signal_pipe_write_fd: std.atomic.Value(i32) = .init(-1);
 
 fn posixSignalHandler(_: std.posix.SIG) callconv(.c) void {
+    const preserve_errno = builtin.link_libc or builtin.os.tag == .macos;
+    const saved_errno: c_int = if (preserve_errno) std.c._errno().* else 0;
+    defer if (preserve_errno) {
+        std.c._errno().* = saved_errno;
+    };
+
     const fd = signal_pipe_write_fd.load(.acquire);
     if (fd < 0) return;
     const byte = [1]u8{1};
@@ -67,8 +73,9 @@ pub fn shutdownOnSignals(io: Io, telemetry: anytype, options: Options) @TypeOf(t
         _ = std.posix.system.close(pipe_fds[1]);
     }
 
-    signal_pipe_write_fd.store(@intCast(pipe_fds[1]), .release);
-
+    // Install handlers BEFORE publishing signal_pipe_write_fd so any observer
+    // polling signal_pipe_write_fd (including tests raising a signal) is
+    // guaranteed that every sigaction is already active.
     const act: std.posix.Sigaction = .{
         .handler = .{ .handler = posixSignalHandler },
         .mask = std.posix.sigemptyset(),
@@ -77,6 +84,7 @@ pub fn shutdownOnSignals(io: Io, telemetry: anytype, options: Options) @TypeOf(t
     for (options.signals) |sig| {
         std.posix.sigaction(sig, &act, null);
     }
+    signal_pipe_write_fd.store(@intCast(pipe_fds[1]), .release);
 
     // Block reading a single byte from the self-pipe. Retry on EINTR.
     var buf: [1]u8 = undefined;

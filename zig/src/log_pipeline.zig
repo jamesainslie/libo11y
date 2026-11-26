@@ -163,7 +163,10 @@ pub const LogPipeline = struct {
     }
 
     pub fn deinit(self: *LogPipeline) void {
-        self.gpa.free(self.extra_sinks);
+        if (self.extra_sinks.len > 0) {
+            self.gpa.free(self.extra_sinks);
+            self.extra_sinks = &.{};
+        }
     }
 
     /// Reports whether `level` is enabled for `ctx`. Forced contexts are
@@ -185,7 +188,8 @@ pub const LogPipeline = struct {
         const arena = arena_state.allocator();
 
         const now = span_mod.nowUnixNano(self.io);
-        const processed = self.processAttrs(arena, &.{}, raw_attrs);
+        var walk: ProcessWalk = .{};
+        const processed = self.processAttrs(arena, &.{}, raw_attrs, 0, &walk);
 
         var rejected = false;
 
@@ -237,33 +241,81 @@ pub const LogPipeline = struct {
         self.emitFallible(level, ctx, msg, raw_attrs) catch {};
     }
 
+    const ProcessAncestor = struct {
+        is_map: bool,
+        addr: usize,
+    };
+
+    const ProcessWalk = struct {
+        budget: usize = policy_runtime.composite_walk_budget,
+        ancestors: [policy_runtime.max_composite_depth]ProcessAncestor = undefined,
+        ancestor_len: usize = 0,
+
+        fn spend(w: *ProcessWalk) bool {
+            if (w.budget == 0) return false;
+            w.budget -= 1;
+            return true;
+        }
+
+        fn enter(w: *ProcessWalk, is_map: bool, addr: usize) bool {
+            for (w.ancestors[0..w.ancestor_len]) |a| {
+                if (a.is_map == is_map and a.addr == addr) return false;
+            }
+            if (w.ancestor_len >= w.ancestors.len) return false;
+            w.ancestors[w.ancestor_len] = .{ .is_map = is_map, .addr = addr };
+            w.ancestor_len += 1;
+            return true;
+        }
+
+        fn leave(w: *ProcessWalk) void {
+            w.ancestor_len -= 1;
+        }
+    };
+
     /// Applies fan-out preprocessing: drops top-level `trace_id`/`span_id`
-    /// and empty keys, recurses into maps, and invokes `attr_replacer` once
+    /// and empty keys, recurses into maps and arrays with bounded depth,
+    /// cycle detection, and node budget, and invokes `attr_replacer` once
     /// per leaf attribute.
-    fn processAttrs(self: *const LogPipeline, arena: Allocator, path: []const []const u8, attrs: []const log_record.KeyValue) []log_record.KeyValue {
+    fn processAttrs(
+        self: *const LogPipeline,
+        arena: Allocator,
+        path: []const []const u8,
+        attrs: []const log_record.KeyValue,
+        depth: usize,
+        walk: *ProcessWalk,
+    ) []log_record.KeyValue {
         var out = std.ArrayList(log_record.KeyValue).initCapacity(arena, attrs.len) catch return &.{};
         for (attrs) |a| {
             if (path.len == 0 and (std.mem.eql(u8, a.key, "trace_id") or std.mem.eql(u8, a.key, "span_id"))) {
                 continue;
             }
             if (a.value == .map) {
+                if (depth >= policy_runtime.max_composite_depth or !walk.spend()) continue;
                 const members = a.value.map;
+                if (members.len == 0) continue;
+                if (!walk.enter(true, @intFromPtr(members.ptr))) continue;
+                defer walk.leave();
+
                 if (a.key.len == 0) {
                     // Inline empty-keyed group.
-                    const inlined = self.processAttrs(arena, path, members);
+                    const inlined = self.processAttrs(arena, path, members, depth + 1, walk);
                     out.appendSlice(arena, inlined) catch {};
                     continue;
                 }
                 const next_path = arena.alloc([]const u8, path.len + 1) catch continue;
                 @memcpy(next_path[0..path.len], path);
                 next_path[path.len] = a.key;
-                const processed_members = self.processAttrs(arena, next_path, members);
+                const processed_members = self.processAttrs(arena, next_path, members, depth + 1, walk);
                 if (processed_members.len == 0) continue; // elide empty group
                 out.append(arena, .{ .key = a.key, .value = .{ .map = processed_members } }) catch {};
                 continue;
             }
             if (a.key.len == 0) continue;
             var cur = a;
+            if (cur.value == .array) {
+                const processed_arr = self.processArray(arena, path, cur.key, cur.value.array, depth, walk) orelse continue;
+                cur.value = .{ .array = processed_arr };
+            }
             if (self.attr_replacer) |rep| {
                 const replaced = rep.replace(rep.ptr, path, cur, arena) orelse continue;
                 if (replaced.key.len == 0) continue;
@@ -272,6 +324,46 @@ pub const LogPipeline = struct {
             out.append(arena, cur) catch {};
         }
         return out.items;
+    }
+
+    fn processArray(
+        self: *const LogPipeline,
+        arena: Allocator,
+        path: []const []const u8,
+        key: []const u8,
+        items: []const log_record.Value,
+        depth: usize,
+        walk: *ProcessWalk,
+    ) ?[]const log_record.Value {
+        if (depth >= policy_runtime.max_composite_depth or !walk.spend()) return null;
+        if (items.len == 0) return &.{};
+        if (!walk.enter(false, @intFromPtr(items.ptr))) return null;
+        defer walk.leave();
+
+        var kept = std.ArrayList(log_record.Value).initCapacity(arena, items.len) catch return null;
+        for (items) |elem| {
+            switch (elem) {
+                .map => |members| {
+                    if (depth + 1 >= policy_runtime.max_composite_depth or !walk.spend()) continue;
+                    if (members.len == 0) continue;
+                    if (!walk.enter(true, @intFromPtr(members.ptr))) continue;
+                    defer walk.leave();
+                    const next_path = arena.alloc([]const u8, path.len + 1) catch continue;
+                    @memcpy(next_path[0..path.len], path);
+                    next_path[path.len] = key;
+                    const pm = self.processAttrs(arena, next_path, members, depth + 1, walk);
+                    if (pm.len > 0) kept.appendAssumeCapacity(.{ .map = pm });
+                },
+                .array => |sub| {
+                    if (self.processArray(arena, path, key, sub, depth + 1, walk)) |ps| {
+                        kept.appendAssumeCapacity(.{ .array = ps });
+                    }
+                },
+                else => kept.appendAssumeCapacity(elem),
+            }
+        }
+        if (kept.items.len == 0) return null;
+        return kept.items;
     }
 
     fn writeConsole(
@@ -617,20 +709,77 @@ fn writeJsonStr(w: *Io.Writer, s: []const u8) Io.Writer.Error!void {
 // std.log bridge and opt-in bindThread(ctx)
 // ---------------------------------------------------------------------------
 
-var active_std_log_pipeline: std.atomic.Value(?*LogPipeline) = .init(null);
+// Atomic reader-writer guard around `active_std_log_pipeline`:
+// - bit 31 (`std_log_writer_bit`): set while installing or clearing the target
+// - bits 0..30: active in-flight `stdLogFn` readers
+// `clearStdLogTarget` sets `std_log_writer_bit` and waits for the reader count
+// to reach zero BEFORE clearing the pointer and returning, so `Telemetry.deinit`
+// can never free the pipeline while a concurrent `stdLogFn` is using it.
+const std_log_writer_bit: u32 = 1 << 31;
+var std_log_state: std.atomic.Value(u32) = .init(0);
+var active_std_log_pipeline: ?*LogPipeline = null;
 
 threadlocal var bound_context: ?Context = null;
 threadlocal var in_std_log: bool = false;
 
-/// Installs `pipeline` as the target of `stdLogFn`. Called by `o11y.setup`.
-pub fn installStdLogTarget(pipeline: *LogPipeline) void {
-    active_std_log_pipeline.store(pipeline, .release);
+fn acquireStdLogTarget() ?*LogPipeline {
+    var state = std_log_state.load(.acquire);
+    while (true) {
+        if ((state & std_log_writer_bit) != 0) return null;
+        const next = state + 1;
+        if ((next & std_log_writer_bit) != 0) return null;
+        if (std_log_state.cmpxchgWeak(state, next, .acq_rel, .acquire)) |actual| {
+            state = actual;
+            continue;
+        }
+        const pl = active_std_log_pipeline;
+        if (pl == null) {
+            _ = std_log_state.fetchSub(1, .release);
+            return null;
+        }
+        return pl;
+    }
 }
 
-/// Clears the global `std.log` target if it still points to `pipeline`.
-/// Called on shutdown/abandon of a `setup` telemetry instance.
+fn releaseStdLogTarget() void {
+    _ = std_log_state.fetchSub(1, .release);
+}
+
+fn acquireStdLogWriter(io: ?Io) void {
+    while ((std_log_state.fetchOr(std_log_writer_bit, .acq_rel) & std_log_writer_bit) != 0) {
+        std.Thread.yield() catch {};
+    }
+    var spins: usize = 0;
+    while ((std_log_state.load(.acquire) & ~std_log_writer_bit) != 0) : (spins += 1) {
+        if (spins < 64) {
+            std.Thread.yield() catch {};
+        } else if (io) |i| {
+            i.sleep(.fromMicroseconds(50), .awake) catch {};
+        } else {
+            std.Thread.yield() catch {};
+        }
+    }
+}
+
+fn releaseStdLogWriter() void {
+    _ = std_log_state.fetchAnd(~std_log_writer_bit, .release);
+}
+
+/// Installs `pipeline` as the target of `stdLogFn`. Called by `o11y.setup`.
+pub fn installStdLogTarget(pipeline: *LogPipeline) void {
+    acquireStdLogWriter(pipeline.io);
+    active_std_log_pipeline = pipeline;
+    releaseStdLogWriter();
+}
+
+/// Clears the global `std.log` target if it still points to `pipeline`,
+/// waiting for every in-flight `stdLogFn` reader to finish before returning.
 pub fn clearStdLogTarget(pipeline: *LogPipeline) void {
-    _ = active_std_log_pipeline.cmpxchgStrong(pipeline, null, .acq_rel, .monotonic);
+    acquireStdLogWriter(pipeline.io);
+    if (active_std_log_pipeline == pipeline) {
+        active_std_log_pipeline = null;
+    }
+    releaseStdLogWriter();
 }
 
 /// Scope guard returned by `bindThread(ctx)`. Call `defer scope.end();` before
@@ -661,7 +810,8 @@ pub const std_options: std.Options = .{
 };
 
 /// `std.log` handler installed via `o11y.std_options`. Guarded against
-/// re-entrancy per thread, correlates ONLY inside an active `bindThread(ctx)`
+/// re-entrancy per thread, synchronized against `shutdown`/`deinit` via an
+/// atomic reader count, correlates ONLY inside an active `bindThread(ctx)`
 /// scope, and stamps `o11y.log.source = "logger"`.
 pub fn stdLogFn(
     comptime level: std.log.Level,
@@ -673,10 +823,11 @@ pub fn stdLogFn(
     in_std_log = true;
     defer in_std_log = false;
 
-    const pl = active_std_log_pipeline.load(.acquire) orelse {
+    const pl = acquireStdLogTarget() orelse {
         std.log.defaultLog(level, scope, format, args);
         return;
     };
+    defer releaseStdLogTarget();
 
     var msg_buf: [4096]u8 = undefined;
     var w: Io.Writer = .fixed(&msg_buf);
@@ -852,4 +1003,35 @@ test "stdLogFn correlates only inside bindThread and prevents re-entrancy" {
     rw.buf.clearRetainingCapacity();
     stdLogFn(.info, .default, "after", .{});
     try testing.expect(std.mem.indexOf(u8, rw.buf.items, "trace_id") == null);
+}
+
+test "processAttrs with replacer fails closed on cyclic LogValue.map without overflowing stack" {
+    var policy = try policy_runtime.Policy.init(testing.allocator, .drop, "", .empty, null);
+    defer policy.deinit();
+
+    var cap: TestBufferWriter = .{ .gpa = testing.allocator };
+    defer cap.deinit();
+
+    const replacer: AttrReplacer = .{
+        .replace = struct {
+            fn f(_: ?*anyopaque, _: []const []const u8, attr: log_record.KeyValue, _: Allocator) ?log_record.KeyValue {
+                return attr;
+            }
+        }.f,
+    };
+
+    var pl = try LogPipeline.init(testing.allocator, testing.io, .info, true, .json, cap.writer(), replacer, null, &.{}, &policy);
+    defer pl.deinit();
+
+    var cyclic: [1]log_record.KeyValue = undefined;
+    cyclic[0] = .{ .key = "self", .value = .{ .map = &cyclic } };
+    const attrs = [_]log_record.KeyValue{
+        .{ .key = "cycle", .value = .{ .map = &cyclic } },
+        log_record.kv("kept", "ok"),
+    };
+    const log: Logger = .{ .pipeline = &pl };
+    log.info(.background, "cyclic test", @as([]const log_record.KeyValue, &attrs));
+
+    try testing.expect(std.mem.indexOf(u8, cap.buf.items, "\"kept\":\"ok\"") != null);
+    try testing.expect(std.mem.indexOf(u8, cap.buf.items, "\"cycle\"") == null);
 }

@@ -33,6 +33,9 @@ const metric_view = metric.view;
 const metric_exemplar = metric.exemplar;
 const metric_instrument = metric.instrument;
 const otlp_env = @import("pipeline/otlp/env.zig");
+const otlp_grpc_log = @import("pipeline/otlp/grpc_log_exporter.zig");
+const otlp_grpc_metric = @import("pipeline/otlp/grpc_metric_exporter.zig");
+const otlp_grpc_trace = @import("pipeline/otlp/grpc_trace_exporter.zig");
 const otlp_log = @import("pipeline/otlp/log_exporter.zig");
 const otlp_metric = @import("pipeline/otlp/metric_exporter.zig");
 const otlp_trace = @import("pipeline/otlp/trace_exporter.zig");
@@ -42,6 +45,9 @@ const pipeline_resource = @import("pipeline/resource.zig");
 const sampler_mod = @import("pipeline/sampler.zig");
 const span_mod = @import("pipeline/span.zig");
 const tracer_mod = @import("pipeline/tracer.zig");
+
+/// OTLP wire protocol (`http_protobuf`, `http_json`, or `grpc`).
+pub const Protocol = otlp_env.Protocol;
 
 /// Closed error set returned by `o11y.setup` and `o11y.init`.
 pub const SetupError = error{
@@ -99,6 +105,11 @@ pub const Options = struct {
     /// Explicit environment source. Pass `.{ .map = &environ_map }` from `main`
     /// to read `OTEL_*` variables, or `.hermetic` to ignore all env vars.
     env: resource_mod.Env = .hermetic,
+
+    /// Explicit OTLP protocol override (`http_protobuf`, `http_json`, or `grpc`).
+    /// When set, overrides `OTEL_EXPORTER_OTLP_PROTOCOL` and per-signal
+    /// `OTEL_EXPORTER_OTLP_*_PROTOCOL` variables.
+    protocol: ?Protocol = null,
 
     service_name: ?[]const u8 = null,
     service_version: ?[]const u8 = null,
@@ -216,10 +227,13 @@ pub const Telemetry = struct {
 
     // Owned exporters/processors/readers created internally by setup/init.
     owned_otlp_trace_exporter: ?*otlp_trace.TraceExporter = null,
+    owned_otlp_grpc_trace_exporter: ?*otlp_grpc_trace.GrpcTraceExporter = null,
     owned_batch_span_processor: ?*batch.BatchSpanProcessor = null,
     owned_otlp_metric_exporter: ?*otlp_metric.MetricExporter = null,
+    owned_otlp_grpc_metric_exporter: ?*otlp_grpc_metric.GrpcMetricExporter = null,
     owned_periodic_reader: ?*metric_reader.PeriodicReader = null,
     owned_otlp_log_exporter: ?*otlp_log.LogExporter = null,
+    owned_otlp_grpc_log_exporter: ?*otlp_grpc_log.GrpcLogExporter = null,
     owned_batch_log_processor: ?*log_processor.BatchLogProcessor = null,
 
     owned_views: []metric_view.View = &.{},
@@ -497,14 +511,17 @@ pub const Telemetry = struct {
         if (self.logger_provider) |lp| lp.destroy();
         if (self.owned_batch_log_processor) |bp| bp.destroy();
         if (self.owned_otlp_log_exporter) |ex| ex.destroy();
+        if (self.owned_otlp_grpc_log_exporter) |ex| ex.destroy();
 
         if (self.tracer_provider) |tp| tp.destroy();
         if (self.owned_batch_span_processor) |bp| bp.destroy();
         if (self.owned_otlp_trace_exporter) |ex| ex.destroy();
+        if (self.owned_otlp_grpc_trace_exporter) |ex| ex.destroy();
 
         if (self.meter_provider) |mp| mp.destroy();
         if (self.owned_periodic_reader) |pr| pr.destroy();
         if (self.owned_otlp_metric_exporter) |ex| ex.destroy();
+        if (self.owned_otlp_grpc_metric_exporter) |ex| ex.destroy();
         if (self.owned_views.len > 0) gpa.free(self.owned_views);
 
         self.log_pipeline.deinit();
@@ -570,8 +587,23 @@ fn buildSdk(gpa: Allocator, io: Io, options: Options) SetupError!*Telemetry {
         .default_error_handler = error_handler_mod.DefaultErrorHandler.init(io, .stderr),
         .policy = policy,
         .owned_resource = owned_resource,
-        .log_pipeline = undefined,
-        .summary = undefined,
+        .log_pipeline = .{
+            .gpa = gpa,
+            .io = io,
+            .level = .info,
+            .console_enabled = false,
+            .console_format = .json,
+            .console_writer = .stdout,
+            .attr_replacer = null,
+            .otlp_logger = null,
+            .extra_sinks = &.{},
+            .policy = undefined,
+        },
+        .summary = .{
+            .arena = .init(gpa),
+            .attrs = &.{},
+            .effective_config = "",
+        },
     };
     owned_by_self = true;
     return finishBuild(self, options, &resource_violations) catch |err| {
@@ -645,25 +677,40 @@ fn finishBuild(
             if (std.ascii.eqlIgnoreCase(exp_name, "none")) {
                 // Disabled via env.
             } else if (std.ascii.eqlIgnoreCase(exp_name, "otlp")) {
-                var env_opts = otlp_env.fromEnv(gpa, options.env, .metrics) catch |err| return mapEnvErr(err, options.diagnostic);
+                const eff_env = EnvWithProtocol{ .inner = options.env, .protocol = options.protocol };
+                var env_opts = otlp_env.fromEnv(gpa, eff_env, .metrics) catch |err| return mapEnvErr(err, options.diagnostic);
                 defer env_opts.deinit();
-                const proto: otlp_metric.Protocol = switch (env_opts.protocol) {
-                    .http_protobuf => .http_protobuf,
-                    .http_json => .http_json,
-                    .grpc => return failDiag(options.diagnostic, error.UnsupportedProtocol, "o11y: OTLP/gRPC protocol is not yet supported"),
+                const temporality = metric_instrument.temporalityPreferenceFromEnv(options.env) orelse .cumulative;
+                const metric_exp: metric_reader.MetricExporter = switch (env_opts.protocol) {
+                    .http_protobuf, .http_json => blk: {
+                        const proto: otlp_metric.Protocol = if (env_opts.protocol == .http_json) .http_json else .http_protobuf;
+                        self.owned_otlp_metric_exporter = otlp_metric.MetricExporter.create(gpa, io, .{
+                            .protocol = proto,
+                            .endpoint = env_opts.endpoint,
+                            .headers = env_opts.headers,
+                            .compression = env_opts.compression,
+                            .timeout = env_opts.timeout,
+                            .tls = env_opts.tls,
+                            .temporality = temporality,
+                            .on_error = self.error_handler,
+                        }) catch |err| return mapExporterErr(err, options.diagnostic, "o11y: building metric exporter");
+                        break :blk self.owned_otlp_metric_exporter.?.exporter();
+                    },
+                    .grpc => blk: {
+                        self.owned_otlp_grpc_metric_exporter = otlp_grpc_metric.GrpcMetricExporter.create(gpa, io, .{
+                            .endpoint = env_opts.endpoint,
+                            .headers = env_opts.headers,
+                            .compression = env_opts.compression,
+                            .timeout = env_opts.timeout,
+                            .tls = env_opts.tls,
+                            .temporality = temporality,
+                            .on_error = self.error_handler,
+                        }) catch |err| return mapExporterErr(err, options.diagnostic, "o11y: building gRPC metric exporter");
+                        break :blk self.owned_otlp_grpc_metric_exporter.?.exporter();
+                    },
                 };
-                self.owned_otlp_metric_exporter = otlp_metric.MetricExporter.create(gpa, io, .{
-                    .protocol = proto,
-                    .endpoint = env_opts.endpoint,
-                    .headers = env_opts.headers,
-                    .compression = env_opts.compression,
-                    .timeout = env_opts.timeout,
-                    .tls = env_opts.tls,
-                    .temporality = metric_instrument.temporalityPreferenceFromEnv(options.env) orelse .cumulative,
-                    .on_error = self.error_handler,
-                }) catch |err| return mapExporterErr(err, options.diagnostic, "o11y: building metric exporter");
                 const periodic = metric_instrument.periodicFromEnv(options.env);
-                self.owned_periodic_reader = metric_reader.PeriodicReader.create(gpa, io, self.owned_otlp_metric_exporter.?.exporter(), .{
+                self.owned_periodic_reader = metric_reader.PeriodicReader.create(gpa, io, metric_exp, .{
                     .interval = periodic.interval,
                     .timeout = periodic.timeout,
                     .on_error = self.error_handler,
@@ -731,23 +778,36 @@ fn finishBuild(
             if (std.ascii.eqlIgnoreCase(exp_name, "none")) {
                 // Disabled via env.
             } else if (std.ascii.eqlIgnoreCase(exp_name, "otlp")) {
-                var env_opts = otlp_env.fromEnv(gpa, options.env, .traces) catch |err| return mapEnvErr(err, options.diagnostic);
+                const eff_env = EnvWithProtocol{ .inner = options.env, .protocol = options.protocol };
+                var env_opts = otlp_env.fromEnv(gpa, eff_env, .traces) catch |err| return mapEnvErr(err, options.diagnostic);
                 defer env_opts.deinit();
-                const proto: otlp_trace.Protocol = switch (env_opts.protocol) {
-                    .http_protobuf => .http_protobuf,
-                    .http_json => .http_json,
-                    .grpc => return failDiag(options.diagnostic, error.UnsupportedProtocol, "o11y: OTLP/gRPC protocol is not yet supported"),
+                const span_exp: processor.SpanExporter = switch (env_opts.protocol) {
+                    .http_protobuf, .http_json => blk: {
+                        const proto: otlp_trace.Protocol = if (env_opts.protocol == .http_json) .http_json else .http_protobuf;
+                        self.owned_otlp_trace_exporter = otlp_trace.TraceExporter.create(gpa, io, .{
+                            .protocol = proto,
+                            .endpoint = env_opts.endpoint,
+                            .headers = env_opts.headers,
+                            .compression = env_opts.compression,
+                            .timeout = env_opts.timeout,
+                            .tls = env_opts.tls,
+                            .on_error = self.error_handler,
+                        }) catch |err| return mapExporterErr(err, options.diagnostic, "o11y: building span exporter");
+                        break :blk self.owned_otlp_trace_exporter.?.exporter();
+                    },
+                    .grpc => blk: {
+                        self.owned_otlp_grpc_trace_exporter = otlp_grpc_trace.GrpcTraceExporter.create(gpa, io, .{
+                            .endpoint = env_opts.endpoint,
+                            .headers = env_opts.headers,
+                            .compression = env_opts.compression,
+                            .timeout = env_opts.timeout,
+                            .tls = env_opts.tls,
+                            .on_error = self.error_handler,
+                        }) catch |err| return mapExporterErr(err, options.diagnostic, "o11y: building gRPC span exporter");
+                        break :blk self.owned_otlp_grpc_trace_exporter.?.exporter();
+                    },
                 };
-                self.owned_otlp_trace_exporter = otlp_trace.TraceExporter.create(gpa, io, .{
-                    .protocol = proto,
-                    .endpoint = env_opts.endpoint,
-                    .headers = env_opts.headers,
-                    .compression = env_opts.compression,
-                    .timeout = env_opts.timeout,
-                    .tls = env_opts.tls,
-                    .on_error = self.error_handler,
-                }) catch |err| return mapExporterErr(err, options.diagnostic, "o11y: building span exporter");
-                self.owned_batch_span_processor = batch.BatchSpanProcessor.create(gpa, io, self.owned_otlp_trace_exporter.?.exporter(), .{
+                self.owned_batch_span_processor = batch.BatchSpanProcessor.create(gpa, io, span_exp, .{
                     .config = bsp_cfg,
                     .on_error = self.error_handler,
                 }) catch |err| return mapCreateErr(err, options.diagnostic, "o11y: starting batch span processor");
@@ -776,23 +836,35 @@ fn finishBuild(
         const log_exp: log_processor.LogExporter = if (options.log_exporter) |ex|
             ex
         else if (std.ascii.eqlIgnoreCase(env_logs_exporter, "otlp")) blk: {
-            var env_opts = otlp_env.fromEnv(gpa, options.env, .logs) catch |err| return mapEnvErr(err, options.diagnostic);
+            const eff_env = EnvWithProtocol{ .inner = options.env, .protocol = options.protocol };
+            var env_opts = otlp_env.fromEnv(gpa, eff_env, .logs) catch |err| return mapEnvErr(err, options.diagnostic);
             defer env_opts.deinit();
-            const proto: otlp_log.Protocol = switch (env_opts.protocol) {
-                .http_protobuf => .http_protobuf,
-                .http_json => .http_json,
-                .grpc => return failDiag(options.diagnostic, error.UnsupportedProtocol, "o11y: OTLP/gRPC protocol is not yet supported"),
+            break :blk switch (env_opts.protocol) {
+                .http_protobuf, .http_json => http_blk: {
+                    const proto: otlp_log.Protocol = if (env_opts.protocol == .http_json) .http_json else .http_protobuf;
+                    self.owned_otlp_log_exporter = otlp_log.LogExporter.create(gpa, io, .{
+                        .protocol = proto,
+                        .endpoint = env_opts.endpoint,
+                        .headers = env_opts.headers,
+                        .compression = env_opts.compression,
+                        .timeout = env_opts.timeout,
+                        .tls = env_opts.tls,
+                        .on_error = self.error_handler,
+                    }) catch |err| return mapExporterErr(err, options.diagnostic, "o11y: building log exporter");
+                    break :http_blk self.owned_otlp_log_exporter.?.exporter();
+                },
+                .grpc => grpc_blk: {
+                    self.owned_otlp_grpc_log_exporter = otlp_grpc_log.GrpcLogExporter.create(gpa, io, .{
+                        .endpoint = env_opts.endpoint,
+                        .headers = env_opts.headers,
+                        .compression = env_opts.compression,
+                        .timeout = env_opts.timeout,
+                        .tls = env_opts.tls,
+                        .on_error = self.error_handler,
+                    }) catch |err| return mapExporterErr(err, options.diagnostic, "o11y: building gRPC log exporter");
+                    break :grpc_blk self.owned_otlp_grpc_log_exporter.?.exporter();
+                },
             };
-            self.owned_otlp_log_exporter = otlp_log.LogExporter.create(gpa, io, .{
-                .protocol = proto,
-                .endpoint = env_opts.endpoint,
-                .headers = env_opts.headers,
-                .compression = env_opts.compression,
-                .timeout = env_opts.timeout,
-                .tls = env_opts.tls,
-                .on_error = self.error_handler,
-            }) catch |err| return mapExporterErr(err, options.diagnostic, "o11y: building log exporter");
-            break :blk self.owned_otlp_log_exporter.?.exporter();
         } else {
             return failDiag(options.diagnostic, error.Exporter, "o11y: unsupported OTEL_LOGS_EXPORTER");
         };
@@ -862,18 +934,47 @@ fn cleanupPartial(self: *Telemetry) void {
     if (self.logger_provider) |lp| lp.destroy();
     if (self.owned_batch_log_processor) |bp| bp.destroy();
     if (self.owned_otlp_log_exporter) |ex| ex.destroy();
+    if (self.owned_otlp_grpc_log_exporter) |ex| ex.destroy();
     if (self.tracer_provider) |tp| tp.destroy();
     if (self.owned_batch_span_processor) |bp| bp.destroy();
     if (self.owned_otlp_trace_exporter) |ex| ex.destroy();
+    if (self.owned_otlp_grpc_trace_exporter) |ex| ex.destroy();
     if (self.meter_provider) |mp| mp.destroy();
     if (self.owned_periodic_reader) |pr| pr.destroy();
     if (self.owned_otlp_metric_exporter) |ex| ex.destroy();
+    if (self.owned_otlp_grpc_metric_exporter) |ex| ex.destroy();
     if (self.owned_views.len > 0) gpa.free(self.owned_views);
+    self.log_pipeline.deinit();
+    self.summary.deinit();
     if (self.composite_propagator) |c| c.deinit(gpa);
     self.owned_resource.deinit();
     self.policy.deinit();
     gpa.destroy(self);
 }
+
+/// Wraps `resource_mod.Env` so an explicit `Options.protocol` overrides
+/// `OTEL_EXPORTER_OTLP_*_PROTOCOL` when resolving OTLP exporter settings.
+const EnvWithProtocol = struct {
+    inner: resource_mod.Env,
+    protocol: ?Protocol,
+
+    pub fn get(e: EnvWithProtocol, key: []const u8) ?[]const u8 {
+        if (e.protocol) |proto| {
+            if (std.mem.eql(u8, key, "OTEL_EXPORTER_OTLP_PROTOCOL") or
+                std.mem.eql(u8, key, "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL") or
+                std.mem.eql(u8, key, "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL") or
+                std.mem.eql(u8, key, "OTEL_EXPORTER_OTLP_LOGS_PROTOCOL"))
+            {
+                return switch (proto) {
+                    .http_protobuf => "http/protobuf",
+                    .http_json => "http/json",
+                    .grpc => "grpc",
+                };
+            }
+        }
+        return e.inner.get(key);
+    }
+};
 
 fn loadAppRegistries(
     gpa: Allocator,
@@ -949,19 +1050,23 @@ fn loadAppRegistries(
                     }
                     return error.InvalidAppRegistry;
                 }
-                const ns_copy = try gpa.dupe(u8, reg.namespace);
-                errdefer gpa.free(ns_copy);
-                const path_copy = try gpa.dupe(u8, path);
-                errdefer gpa.free(path_copy);
-                try declared_by.put(gpa, ns_copy, path_copy);
+                {
+                    const ns_copy = try gpa.dupe(u8, reg.namespace);
+                    errdefer gpa.free(ns_copy);
+                    const path_copy = try gpa.dupe(u8, path);
+                    errdefer gpa.free(path_copy);
+                    try declared_by.putNoClobber(gpa, ns_copy, path_copy);
+                }
 
                 for (reg.attributes) |a| {
                     if (spec.Sensitivity.parse(a.sensitivity)) |sens| {
-                        const gop = try classes.getOrPut(gpa, a.name);
-                        if (!gop.found_existing) {
-                            gop.key_ptr.* = try gpa.dupe(u8, a.name);
+                        if (classes.getPtr(a.name)) |existing| {
+                            existing.* = sens;
+                        } else {
+                            const owned_key = try gpa.dupe(u8, a.name);
+                            errdefer gpa.free(owned_key);
+                            try classes.putNoClobber(gpa, owned_key, sens);
                         }
-                        gop.value_ptr.* = sens;
                     }
                 }
             },
@@ -1228,9 +1333,9 @@ test "PII hash key validation, app registry enforcement, and grpc unsupported pr
     try testing.expectEqualStrings(span_email, log_record.find(logs[0].attributes, "shop.customer.email").?.string);
     try testing.expectEqual(null, log_record.find(logs[0].attributes, "shop.api.secret"));
 
-    // gRPC protocol cleanly fails with error.UnsupportedProtocol.
+    // Unknown OTLP protocol cleanly fails with error.UnsupportedProtocol.
     try testing.expectError(error.UnsupportedProtocol, init(testing.allocator, testing.io, .{
-        .env = .{ .pairs = &.{.{ "OTEL_EXPORTER_OTLP_PROTOCOL", "grpc" }} },
+        .env = .{ .pairs = &.{.{ "OTEL_EXPORTER_OTLP_PROTOCOL", "thrift" }} },
         .service_name = "svc",
         .environment = "test",
         .console_enabled = false,
@@ -1586,4 +1691,265 @@ test "log PII violation counts once per sink (console + OTLP) and shutdown emits
     try testing.expectEqual(@as(?processor.ExportError, null), report.metrics);
     try testing.expect(std.mem.indexOf(u8, console.buf.items, "\"event.name\":\"o11y.telemetry.dropped\"") != null);
     try testing.expect(std.mem.indexOf(u8, console.buf.items, "\"o11y.signal\":\"traces\"") != null);
+}
+
+test "stdLogFn racing shutdown and deinit never uses freed memory" {
+    const SlowWriter = struct {
+        io: Io,
+        in_write: Io.Event = .unset,
+        release_write: Io.Event = .unset,
+        calls: std.atomic.Value(usize) = .init(0),
+
+        fn writer(self: *@This()) log_pipeline_mod.ConsoleWriter {
+            return .{ .custom = .{ .ptr = self, .writeFn = writeFn } };
+        }
+
+        fn writeFn(ptr: *anyopaque, _: []const u8) log_pipeline_mod.ConsoleWriter.WriteError!void {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            const n = self.calls.fetchAdd(1, .acq_rel);
+            if (n == 0) {
+                self.in_write.set(self.io);
+                self.release_write.waitUncancelable(self.io);
+            }
+        }
+    };
+
+    var sw: SlowWriter = .{ .io = testing.io };
+    const t = try setup(testing.allocator, testing.io, .{
+        .service_name = "race-stdlog",
+        .environment = "test",
+        .console_writer = sw.writer(),
+        .startup_summary = false,
+        .runtime_metrics = false,
+    });
+
+    // Launch a concurrent stdLogFn call that pauses inside writeFn.
+    var logger_task = try testing.io.concurrent(struct {
+        fn run() void {
+            log_pipeline_mod.stdLogFn(.info, .default, "in flight", .{});
+        }
+    }.run, .{});
+
+    // Wait until stdLogFn is actively inside the pipeline's writer.
+    sw.in_write.waitUncancelable(testing.io);
+
+    // Start shutdown + deinit concurrently: clearStdLogTarget MUST wait for
+    // the in-flight stdLogFn before freeing Telemetry.
+    var teardown_done: std.atomic.Value(bool) = .init(false);
+    var teardown_task = try testing.io.concurrent(struct {
+        fn run(sdk: *Telemetry, done_flag: *std.atomic.Value(bool)) void {
+            _ = sdk.shutdown(null);
+            sdk.deinit();
+            done_flag.store(true, .release);
+        }
+    }.run, .{ t, &teardown_done });
+
+    // Give teardown a moment to hit clearStdLogTarget; it must still be waiting.
+    testing.io.sleep(.fromMilliseconds(15), .awake) catch {};
+    try testing.expect(!teardown_done.load(.acquire));
+
+    // Release the in-flight writer; both tasks must now complete cleanly with zero UAF/leaks.
+    sw.release_write.set(testing.io);
+    logger_task.await(testing.io);
+    teardown_task.await(testing.io);
+    try testing.expect(teardown_done.load(.acquire));
+}
+
+test "loadAppRegistries handles OOM at every allocation without invalid free or leak" {
+    const yaml =
+        \\schema: libo11y.app-registry/v1
+        \\namespace: shop
+        \\attributes:
+        \\  shop.user.email: {type: string, sensitivity: pii, cardinality: unbounded}
+        \\  shop.api.key: {type: string, sensitivity: secret, cardinality: unbounded}
+        \\
+    ;
+    const sources = [_]AppRegistrySource{
+        .{ .bytes = .{ .path = "shop.yaml", .content = yaml } },
+    };
+    try testing.checkAllAllocationFailures(testing.allocator, struct {
+        fn run(gpa: Allocator, srcs: []const AppRegistrySource) !void {
+            var classes = loadAppRegistries(gpa, testing.io, srcs, null) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return error.TestUnexpectedResult,
+            };
+            var it = classes.keyIterator();
+            while (it.next()) |k| gpa.free(k.*);
+            classes.deinit(gpa);
+        }
+    }.run, .{&sources});
+}
+
+test "BuildInfo strings freed by caller immediately after init stay valid on resource" {
+    const ver = try testing.allocator.dupe(u8, "3.4.5");
+    const rev = try testing.allocator.dupe(u8, "cafebabe");
+    const btime = try testing.allocator.dupe(u8, "2026-11-26T15:00:00Z");
+
+    const t = try init(testing.allocator, testing.io, .{
+        .service_name = "bi-svc",
+        .environment = "test",
+        .build_info = .{ .version = ver, .revision = rev, .time = btime, .modified = false },
+        .console_enabled = false,
+        .runtime_metrics = false,
+    });
+    defer t.deinit();
+
+    @memset(ver, 'X');
+    @memset(rev, 'Y');
+    @memset(btime, 'Z');
+    testing.allocator.free(ver);
+    testing.allocator.free(rev);
+    testing.allocator.free(btime);
+
+    const attrs = t.resource().attributes;
+    try testing.expectEqualStrings("3.4.5", attribute.find(attrs, "service.version").?.string);
+    try testing.expectEqualStrings("cafebabe", attribute.find(attrs, spec.attr.vcs_ref_head_revision).?.string);
+    try testing.expectEqualStrings("2026-11-26T15:00:00Z", attribute.find(attrs, spec.attr.build_time).?.string);
+    try testing.expectEqual(false, attribute.find(attrs, spec.attr.build_modified).?.bool);
+}
+
+test "OTLP/gRPC end-to-end exports traces, metrics, and logs respecting sensitivity policy" {
+    const proto = @import("opentelemetry-proto");
+    const grpc_receiver = @import("pipeline/otlp/test/grpc_receiver.zig");
+
+    const receiver = try grpc_receiver.GrpcReceiver.start(testing.allocator, testing.io, .{});
+    defer receiver.stop();
+    const url = try receiver.url(testing.allocator);
+    defer testing.allocator.free(url);
+
+    const env_pairs = [_][2][]const u8{
+        .{ "OTEL_EXPORTER_OTLP_ENDPOINT", url },
+        .{ "OTEL_EXPORTER_OTLP_PROTOCOL", "grpc" },
+        .{ "OTEL_BSP_SCHEDULE_DELAY", "60000" },
+        .{ "OTEL_BLRP_SCHEDULE_DELAY", "60000" },
+        .{ "OTEL_METRIC_EXPORT_INTERVAL", "60000" },
+    };
+
+    const pii_key = "0123456789abcdef0123456789abcdef";
+    const t = try init(testing.allocator, testing.io, .{
+        .env = .{ .pairs = &env_pairs },
+        .protocol = .grpc,
+        .service_name = "grpc-svc",
+        .service_version = "1.0.0",
+        .environment = "production",
+        .pii_mode = .hash,
+        .pii_hash_key = pii_key,
+        .console_enabled = false,
+        .runtime_metrics = false,
+    });
+    defer t.deinit();
+
+    // 1. Trace with secret + PII + public attributes.
+    const tr = t.tracer("grpc-app");
+    var sp = tr.start(.background, "handle", .{
+        .attributes = &.{
+            attribute.kv("http.request.header.authorization", "Bearer top-secret"),
+            attribute.kv("host.ip", "10.1.2.3"),
+            attribute.kv("http.request.method", "POST"),
+        },
+    });
+    const ctx = Context.background.withSpan(&sp);
+
+    // 2. Metric with secret + PII + public attributes (both secret and PII dropped on metrics).
+    const counter = t.meter("grpc-app").counter(i64, "app.requests", .{ .unit = "1" });
+    counter.add(ctx, 1, &.{
+        attribute.kv("http.request.header.authorization", "Bearer top-secret"),
+        attribute.kv("host.ip", "10.1.2.3"),
+        attribute.kv("http.request.method", "POST"),
+    });
+
+    // 3. Log with secret + PII + public attributes.
+    t.logger().info(ctx, "grpc log line", .{
+        .@"http.request.header.authorization" = "Bearer top-secret",
+        .@"host.ip" = "10.1.2.3",
+        .order_id = "ord-99",
+    });
+    sp.end();
+
+    // Shutdown flushes all 3 signals concurrently over gRPC.
+    const report = t.shutdown(.fromSeconds(10));
+    try testing.expect(report.ok());
+
+    try receiver.waitForRequests(3, .fromSeconds(5));
+    try testing.expectEqual(@as(usize, 3), receiver.requestCount());
+
+    var saw_traces = false;
+    var saw_metrics = false;
+    var saw_logs = false;
+    var span_ip_hash: ?[]u8 = null;
+    defer if (span_ip_hash) |h| testing.allocator.free(h);
+    var log_ip_hash: ?[]u8 = null;
+    defer if (log_ip_hash) |h| testing.allocator.free(h);
+
+    for (0..receiver.requestCount()) |idx| {
+        const req = receiver.request(idx);
+        var reader: Io.Reader = .fixed(req.body);
+        if (std.mem.eql(u8, req.path, otlp_grpc_trace.method)) {
+            saw_traces = true;
+            var decoded = try proto.collector_trace_v1.ExportTraceServiceRequest.decode(&reader, testing.allocator);
+            defer decoded.deinit(testing.allocator);
+            const rs = decoded.resource_spans.items[0];
+            try testing.expectEqualStrings(spec.schema_url, rs.schema_url);
+            const span_pb = rs.scope_spans.items[0].spans.items[0];
+            try testing.expectEqualStrings("handle", span_pb.name);
+            var found_method = false;
+            for (span_pb.attributes.items) |kv| {
+                try testing.expect(!std.mem.eql(u8, kv.key, "http.request.header.authorization"));
+                if (std.mem.eql(u8, kv.key, "host.ip")) {
+                    const s = kv.value.?.value.?.string_value;
+                    try testing.expect(std.mem.startsWith(u8, s, "hmac-sha256:"));
+                    span_ip_hash = try testing.allocator.dupe(u8, s);
+                }
+                if (std.mem.eql(u8, kv.key, "http.request.method")) {
+                    try testing.expectEqualStrings("POST", kv.value.?.value.?.string_value);
+                    found_method = true;
+                }
+            }
+            try testing.expect(found_method);
+        } else if (std.mem.eql(u8, req.path, otlp_grpc_metric.method)) {
+            saw_metrics = true;
+            var decoded = try proto.collector_metrics_v1.ExportMetricsServiceRequest.decode(&reader, testing.allocator);
+            defer decoded.deinit(testing.allocator);
+            const rm = decoded.resource_metrics.items[0];
+            try testing.expectEqualStrings(spec.schema_url, rm.schema_url);
+            var found_requests = false;
+            for (rm.scope_metrics.items) |sm| {
+                for (sm.metrics.items) |m| {
+                    if (std.mem.eql(u8, m.name, "app.requests")) {
+                        found_requests = true;
+                        const dp = m.data.?.sum.data_points.items[0];
+                        for (dp.attributes.items) |kv| {
+                            // Both secret AND PII dropped on metrics even in hash mode!
+                            try testing.expect(!std.mem.eql(u8, kv.key, "http.request.header.authorization"));
+                            try testing.expect(!std.mem.eql(u8, kv.key, "host.ip"));
+                        }
+                    }
+                }
+            }
+            try testing.expect(found_requests);
+        } else if (std.mem.eql(u8, req.path, otlp_grpc_log.method)) {
+            saw_logs = true;
+            var decoded = try proto.collector_logs_v1.ExportLogsServiceRequest.decode(&reader, testing.allocator);
+            defer decoded.deinit(testing.allocator);
+            const rl = decoded.resource_logs.items[0];
+            try testing.expectEqualStrings(spec.schema_url, rl.schema_url);
+            const lr = rl.scope_logs.items[0].log_records.items[0];
+            try testing.expectEqualStrings("grpc log line", lr.body.?.value.?.string_value);
+            for (lr.attributes.items) |kv| {
+                try testing.expect(!std.mem.eql(u8, kv.key, "http.request.header.authorization"));
+                if (std.mem.eql(u8, kv.key, "host.ip")) {
+                    const s = kv.value.?.value.?.string_value;
+                    try testing.expect(std.mem.startsWith(u8, s, "hmac-sha256:"));
+                    log_ip_hash = try testing.allocator.dupe(u8, s);
+                }
+            }
+        }
+    }
+
+    try testing.expect(saw_traces);
+    try testing.expect(saw_metrics);
+    try testing.expect(saw_logs);
+    try testing.expect(span_ip_hash != null);
+    try testing.expect(log_ip_hash != null);
+    try testing.expectEqualStrings(span_ip_hash.?, log_ip_hash.?);
 }

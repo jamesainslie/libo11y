@@ -288,3 +288,33 @@ test "RecordHandle with null ptr is a silent no-op" {
     h.max("c", 3.0);
     h.setError(error.Boom);
 }
+
+test "Record.set deep-clones LogValue strings, bytes, arrays, and maps" {
+    var rec = Record.init(testing.allocator, testing.io);
+    defer rec.deinit();
+
+    const key_buf = try testing.allocator.dupe(u8, "inner_key");
+    const val_buf = try testing.allocator.dupe(u8, "original_val");
+    const bytes_buf = try testing.allocator.dupe(u8, "rawbytes");
+    var pairs = [_]log_record.KeyValue{
+        .{ .key = key_buf, .value = .{ .string = val_buf } },
+        .{ .key = "bin", .value = .{ .bytes = bytes_buf } },
+    };
+    const lv: log_record.Value = .{ .map = &pairs };
+    rec.set("payload", lv);
+
+    // Mutate and free every caller buffer immediately.
+    @memset(key_buf, 'X');
+    @memset(val_buf, 'Y');
+    @memset(bytes_buf, 'Z');
+    testing.allocator.free(key_buf);
+    testing.allocator.free(val_buf);
+    testing.allocator.free(bytes_buf);
+
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const snap = try rec.snapshot(arena.allocator());
+    const payload = log_record.find(snap, "payload").?.map;
+    try testing.expectEqualStrings("original_val", log_record.find(payload, "inner_key").?.string);
+    try testing.expectEqualStrings("rawbytes", log_record.find(payload, "bin").?.bytes);
+}

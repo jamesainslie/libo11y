@@ -42,37 +42,49 @@ pub const BuildInfo = struct {
         return .empty;
     }
 
-    /// Appends non-empty build info resource attributes to `out`, skipping
-    /// empty strings and Go's `(devel)` sentinel for `service.version`.
-    pub fn appendAttributes(info: BuildInfo, gpa: std.mem.Allocator, out: *std.ArrayList(attribute.KeyValue)) std.mem.Allocator.Error!void {
+    /// Appends non-empty build info resource attributes to `out`, copying
+    /// string slices into `arena` and skipping empty strings and Go's
+    /// `(devel)` sentinel for `service.version`.
+    pub fn appendAttributes(info: BuildInfo, arena: std.mem.Allocator, out: *std.ArrayList(attribute.KeyValue)) std.mem.Allocator.Error!void {
         if (info.version.len > 0 and !std.mem.eql(u8, info.version, "(devel)")) {
-            try out.append(gpa, attribute.kv("service.version", info.version));
+            try out.append(arena, attribute.kv("service.version", try arena.dupe(u8, info.version)));
         }
         if (info.revision.len > 0) {
-            try out.append(gpa, attribute.kv(spec.attr.vcs_ref_head_revision, info.revision));
+            try out.append(arena, attribute.kv(spec.attr.vcs_ref_head_revision, try arena.dupe(u8, info.revision)));
         }
         if (info.time.len > 0) {
-            try out.append(gpa, attribute.kv(spec.attr.build_time, info.time));
+            try out.append(arena, attribute.kv(spec.attr.build_time, try arena.dupe(u8, info.time)));
         }
         if (info.modified) |m| {
-            try out.append(gpa, attribute.kv(spec.attr.build_modified, m));
+            try out.append(arena, attribute.kv(spec.attr.build_modified, m));
         }
     }
 };
 
 const testing = std.testing;
 
-test "BuildInfo appends non-empty attributes and skips (devel)" {
-    var list: std.ArrayList(attribute.KeyValue) = .empty;
-    defer list.deinit(testing.allocator);
+test "BuildInfo appends non-empty attributes, dupes into arena, and skips (devel)" {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
 
+    var list: std.ArrayList(attribute.KeyValue) = .empty;
+
+    const rev_buf = try testing.allocator.dupe(u8, "abc1234");
+    const time_buf = try testing.allocator.dupe(u8, "2026-11-26T12:00:00Z");
     const info: BuildInfo = .{
         .version = "(devel)",
-        .revision = "abc1234",
-        .time = "2026-11-26T12:00:00Z",
+        .revision = rev_buf,
+        .time = time_buf,
         .modified = true,
     };
-    try info.appendAttributes(testing.allocator, &list);
+    try info.appendAttributes(arena, &list);
+    // Mutate and free caller-owned buffers immediately to verify copies live in arena.
+    @memset(rev_buf, 'X');
+    @memset(time_buf, 'Y');
+    testing.allocator.free(rev_buf);
+    testing.allocator.free(time_buf);
+
     try testing.expectEqual(@as(usize, 3), list.items.len);
     try testing.expectEqual(null, attribute.find(list.items, "service.version"));
     try testing.expectEqualStrings("abc1234", attribute.find(list.items, spec.attr.vcs_ref_head_revision).?.string);
@@ -80,8 +92,11 @@ test "BuildInfo appends non-empty attributes and skips (devel)" {
     try testing.expectEqual(true, attribute.find(list.items, spec.attr.build_modified).?.bool);
 
     list.clearRetainingCapacity();
-    const release: BuildInfo = .{ .version = "1.2.3" };
-    try release.appendAttributes(testing.allocator, &list);
+    const ver_buf = try testing.allocator.dupe(u8, "1.2.3");
+    const release: BuildInfo = .{ .version = ver_buf };
+    try release.appendAttributes(arena, &list);
+    @memset(ver_buf, 'Z');
+    testing.allocator.free(ver_buf);
     try testing.expectEqual(@as(usize, 1), list.items.len);
     try testing.expectEqualStrings("1.2.3", attribute.find(list.items, "service.version").?.string);
 }
