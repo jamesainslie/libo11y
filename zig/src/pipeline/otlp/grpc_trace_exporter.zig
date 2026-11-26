@@ -12,6 +12,7 @@ const Deadline = @import("../deadline.zig").Deadline;
 const processor = @import("../processor.zig");
 const SpanData = @import("../span.zig").SpanData;
 const encode = @import("encode.zig");
+const env_mod = @import("env.zig");
 const grpc = @import("grpc.zig");
 
 /// The OTLP/gRPC default endpoint.
@@ -19,6 +20,8 @@ pub const default_endpoint = "http://localhost:4317";
 
 /// The gRPC method path for OTLP traces.
 pub const method = "/opentelemetry.proto.collector.trace.v1.TraceService/Export";
+
+const component = "otlp grpc trace exporter";
 
 /// Exporter options. Mapping `OTEL_EXPORTER_OTLP_*` variables onto them is
 /// `env.fromEnv`'s job.
@@ -37,6 +40,9 @@ pub const Options = struct {
 
 /// Why `GrpcTraceExporter.create` failed.
 pub const InitError = grpc.InitError;
+
+/// Why `GrpcTraceExporter.createFromEnv` failed.
+pub const FromEnvError = InitError || env_mod.EnvError;
 
 /// Exports span batches via OTLP/gRPC over one lazily dialed, persistent
 /// HTTP/2 connection.
@@ -68,6 +74,23 @@ pub const GrpcTraceExporter = struct {
         return self;
     }
 
+    /// Creates a gRPC trace exporter from `OTEL_EXPORTER_OTLP_*` variables in
+    /// `env`. Fails with `error.UnsupportedProtocol` when the environment
+    /// selects a non-gRPC protocol.
+    pub fn createFromEnv(gpa: Allocator, io: Io, env: anytype, on_error: processor.ErrorHandler) FromEnvError!*GrpcTraceExporter {
+        var opts = try env_mod.fromEnv(gpa, env, .traces);
+        defer opts.deinit();
+        if (opts.protocol != .grpc) return error.UnsupportedProtocol;
+        return create(gpa, io, .{
+            .endpoint = opts.endpoint,
+            .headers = opts.headers,
+            .compression = opts.compression,
+            .timeout = opts.timeout,
+            .tls = opts.tls,
+            .on_error = on_error,
+        });
+    }
+
     /// Frees the exporter. Shut its processor down first.
     pub fn destroy(self: *GrpcTraceExporter) void {
         self.transport.destroy();
@@ -90,22 +113,24 @@ pub const GrpcTraceExporter = struct {
 
         var body: Io.Writer.Allocating = .init(arena);
         const request = encode.traceRequest(arena, spans) catch {
-            self.on_error.handle("otlp grpc trace exporter", error.ExportFailed, "encoding the export request failed");
+            self.on_error.handle(component, error.ExportFailed, "encoding the export request failed");
             return error.ExportFailed;
         };
         request.encode(&body.writer, arena) catch {
-            self.on_error.handle("otlp grpc trace exporter", error.ExportFailed, "encoding the export request failed");
+            self.on_error.handle(component, error.ExportFailed, "encoding the export request failed");
             return error.ExportFailed;
         };
 
-        var response = self.transport.send(body.written(), dl) catch |err| {
+        var err_buf: [512]u8 = undefined;
+        var err_len: usize = 0;
+        var response = self.transport.sendDetail(body.written(), dl, &err_buf, &err_len) catch |err| {
             const mapped: processor.ExportError = switch (err) {
                 error.Timeout => error.Timeout,
                 error.Shutdown => error.Shutdown,
                 error.Canceled => error.Canceled,
                 error.Rejected, error.Unreachable, error.OutOfMemory => error.ExportFailed,
             };
-            self.on_error.handle("otlp grpc trace exporter", mapped, self.transport.lastError());
+            self.on_error.handle(component, mapped, err_buf[0..err_len]);
             return mapped;
         };
         defer response.deinit(self.gpa);
@@ -117,7 +142,7 @@ pub const GrpcTraceExporter = struct {
         if (body.len == 0) return;
         var reader: Io.Reader = .fixed(body);
         const decoded = collector_trace.ExportTraceServiceResponse.decode(&reader, arena) catch {
-            self.on_error.handle("otlp grpc trace exporter", error.ExportFailed, "decoding the export response failed");
+            self.on_error.handle(component, error.ExportFailed, "decoding the export response failed");
             return error.ExportFailed;
         };
         const partial = decoded.partial_success orelse return;
@@ -127,7 +152,7 @@ pub const GrpcTraceExporter = struct {
             partial.error_message[0..@min(partial.error_message.len, 400)],
             partial.rejected_spans,
         }) catch "OTLP partial success";
-        self.on_error.handle("otlp grpc trace exporter", error.ExportFailed, detail);
+        self.on_error.handle(component, error.ExportFailed, detail);
         return error.ExportFailed;
     }
 

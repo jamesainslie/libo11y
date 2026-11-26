@@ -354,6 +354,25 @@ fn fuzzDecode(_: void, smith: *testing.Smith) anyerror!void {
     hpack.freeHeaders(testing.allocator, headers);
 }
 
+test "Decoder handles OOM cleanly without double-free or leak" {
+    const Runner = struct {
+        fn run(alloc: std.mem.Allocator) !void {
+            var dec: hpack.Decoder = .init(alloc, 256, 65536);
+            defer dec.deinit();
+            const r1 = fromHex(
+                "488264025885aec3771a4b6196d07abe941054d444a8200595040b8166e082a6" ++
+                    "2d1bff6e919d29ad171863c78f0b97c8e9ae82ae43d3",
+            );
+            const h1 = try dec.decode(&r1, alloc);
+            defer hpack.freeHeaders(alloc, h1);
+            const r2 = fromHex("4883640effc1c0bf");
+            const h2 = try dec.decode(&r2, alloc);
+            defer hpack.freeHeaders(alloc, h2);
+        }
+    };
+    try testing.checkAllAllocationFailures(testing.allocator, Runner.run, .{});
+}
+
 test "fuzz HPACK decoder" {
     const c1 = fromHex("828684418cf1e3c2e5f23a6ba0ab90f4ff");
     const c2 = fromHex("488264025885aec3771a4b");

@@ -689,6 +689,7 @@ pub const Connection = struct {
 
         // Stream request body respecting peer max frame size and flow control.
         var sent: usize = 0;
+        var sent_end_stream = (req_body.len == 0);
         while (sent < req_body.len and !state.ended) {
             const avail = @min(c.peer_conn_window, state.stream_send_window);
             if (avail <= 0) {
@@ -709,8 +710,19 @@ pub const Connection = struct {
                 return error.WriteFailed;
             };
             sent += chunk_len;
+            if (is_last) sent_end_stream = true;
             c.peer_conn_window -= @intCast(chunk_len);
             state.stream_send_window -= @intCast(chunk_len);
+        }
+
+        if (state.ended and !sent_end_stream and !c.broken) {
+            // Peer closed the stream early while we were still uploading the
+            // request body; reset our half-open send side so server stream
+            // slots do not leak.
+            writeRstStream(w, stream_id, .no_error) catch {
+                c.broken = true;
+                return error.WriteFailed;
+            };
         }
 
         w.flush() catch {
@@ -725,8 +737,14 @@ pub const Connection = struct {
         // Replenish any remaining consumed connection window so subsequent
         // streams on this connection keep full throughput.
         if (state.conn_consumed > 0 and !c.goaway_received and !c.broken) {
-            writeWindowUpdate(w, 0, @intCast(state.conn_consumed)) catch {};
-            w.flush() catch {};
+            writeWindowUpdate(w, 0, @intCast(state.conn_consumed)) catch {
+                c.broken = true;
+                return error.WriteFailed;
+            };
+            w.flush() catch {
+                c.broken = true;
+                return error.WriteFailed;
+            };
             state.conn_consumed = 0;
         }
 
@@ -906,7 +924,12 @@ pub const Connection = struct {
                 }
             },
             .headers => |h| {
-                if (h.stream_id != state.stream_id) return;
+                if (h.stream_id != state.stream_id) {
+                    // Serialized unary client has only one active stream;
+                    // skipping a foreign HEADERS block would desync HPACK.
+                    c.broken = true;
+                    return error.ProtocolError;
+                }
                 if (state.header_block.items.len + h.fragment.len > max_header_block_size) {
                     c.broken = true;
                     return error.CompressionError;
@@ -920,8 +943,9 @@ pub const Connection = struct {
                 }
             },
             .continuation => |cont| {
-                if (cont.stream_id != state.stream_id) return;
-                if (!state.in_header_block) {
+                // RFC 9113 Section 6.10: unsolicited CONTINUATION or mismatching
+                // stream ID is a connection PROTOCOL_ERROR.
+                if (!state.in_header_block or cont.stream_id != state.stream_id) {
                     c.broken = true;
                     return error.ProtocolError;
                 }
@@ -993,7 +1017,7 @@ pub const Connection = struct {
         state.header_block.clearRetainingCapacity();
 
         if (!state.got_initial_headers) {
-            const status = parseStatus(decoded) orelse {
+            const status = validateResponseHeaders(decoded) orelse {
                 hpack.freeHeaders(gpa, decoded);
                 c.broken = true;
                 return error.ProtocolError;
@@ -1015,8 +1039,9 @@ pub const Connection = struct {
                 state.ended = true;
             }
         } else {
-            // Trailing headers must terminate the stream (RFC 9113 Section 8.1).
-            if (!state.header_block_end_stream) {
+            // Trailing headers must terminate the stream and contain no
+            // pseudo-headers (RFC 9113 Section 8.1).
+            if (!state.header_block_end_stream or !validateTrailers(decoded)) {
                 hpack.freeHeaders(gpa, decoded);
                 c.broken = true;
                 return error.ProtocolError;
@@ -1028,19 +1053,40 @@ pub const Connection = struct {
     }
 };
 
-fn parseStatus(headers: []const hpack.Header) ?u16 {
+/// Validates decoded HTTP/2 response headers per RFC 9113 Sections 8.1-8.3:
+/// only `:status` is permitted as a pseudo-header, it must appear exactly once
+/// before any regular header, and all header names and values must obey HTTP/2
+/// hygiene (lowercase token names, no CR/LF/NUL in values).
+pub fn validateResponseHeaders(headers: []const hpack.Header) ?u16 {
     var found: ?u16 = null;
+    var seen_regular = false;
     for (headers) |h| {
-        if (std.mem.eql(u8, h.name, ":status")) {
-            if (found != null) return null; // duplicate :status
+        if (h.name.len == 0 or !hpack.validHeaderValue(h.value)) return null;
+        if (h.name[0] == ':') {
+            if (seen_regular) return null;
+            if (!std.mem.eql(u8, h.name, ":status")) return null;
+            if (found != null) return null;
             if (h.value.len != 3) return null;
             for (h.value) |ch| if (!std.ascii.isDigit(ch)) return null;
             const code = std.fmt.parseInt(u16, h.value, 10) catch return null;
             if (code < 100 or code > 599) return null;
             found = code;
+        } else {
+            seen_regular = true;
+            if (!hpack.validHeaderName(h.name)) return null;
         }
     }
     return found;
+}
+
+/// Validates decoded HTTP/2 trailers per RFC 9113 Sections 8.1-8.2:
+/// no pseudo-headers are allowed, and all names/values must obey HTTP/2 hygiene.
+pub fn validateTrailers(headers: []const hpack.Header) bool {
+    for (headers) |h| {
+        if (h.name.len == 0 or h.name[0] == ':') return false;
+        if (!hpack.validHeaderName(h.name) or !hpack.validHeaderValue(h.value)) return false;
+    }
+    return true;
 }
 
 fn connect(io: Io, endpoint: *const http.Endpoint) net.HostName.ConnectError!net.Stream {

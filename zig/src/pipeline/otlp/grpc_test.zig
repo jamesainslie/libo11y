@@ -60,7 +60,9 @@ test "frameEncode and frameDecode round-trip plain and gzip" {
     try testing.expectError(error.InvalidFrame, grpc.frameDecode(testing.allocator, &.{ 0, 0, 0 }, null, 1024));
     try testing.expectError(error.InvalidFrame, grpc.frameDecode(testing.allocator, &.{ 2, 0, 0, 0, 0 }, null, 1024));
     try testing.expectError(error.InvalidFrame, grpc.frameDecode(testing.allocator, &.{ 0, 0, 0, 0, 5, 'a' }, null, 1024));
+    try testing.expectError(error.InvalidFrame, grpc.frameDecode(testing.allocator, &.{ 0, 0xff, 0xff, 0xff, 0xff }, null, 1024));
     try testing.expectError(error.ResponseTooLarge, grpc.frameDecode(testing.allocator, plain, null, 4));
+    try testing.expectError(error.UnsupportedEncoding, grpc.frameDecode(testing.allocator, zipped, null, 1024));
     try testing.expectError(error.UnsupportedEncoding, grpc.frameDecode(testing.allocator, zipped, "deflate", 1024));
 }
 
@@ -81,6 +83,12 @@ test "formatTimeout, decodeGrpcMessage and parseRetryInfo" {
     const parsed = grpc.parseRetryInfo(testing.allocator, b64).?;
     try testing.expectEqual(Io.Duration.fromMilliseconds(1500), parsed);
     try testing.expectEqual(@as(?Io.Duration, null), grpc.parseRetryInfo(testing.allocator, "!!!not-base64!!!"));
+
+    // Large seconds (10_000_000_000 > i64 max / 1e9) must not overflow i64.
+    const huge_b64 = try grpc_receiver.encodeRetryInfoBase64(testing.allocator, .fromSeconds(10_000_000_000));
+    defer testing.allocator.free(huge_b64);
+    const huge = grpc.parseRetryInfo(testing.allocator, huge_b64).?;
+    try testing.expectEqual(Io.Duration.fromSeconds(10_000_000_000), huge);
 }
 
 test "h2c unary call arrives with required gRPC headers and lowercased custom headers" {
@@ -251,8 +259,10 @@ test "INVALID_ARGUMENT (3) fails immediately without retry and reports decoded m
 
     try testing.expectError(error.Rejected, t.send("x", soon()));
     try testing.expectEqual(@as(usize, 1), r.requestCount());
-    try testing.expect(std.mem.indexOf(u8, t.lastError(), "INVALID_ARGUMENT") != null);
-    try testing.expect(std.mem.indexOf(u8, t.lastError(), "bad trace id") != null);
+    var err_buf: [512]u8 = undefined;
+    const err_text = t.copyLastError(&err_buf);
+    try testing.expect(std.mem.indexOf(u8, err_text, "INVALID_ARGUMENT") != null);
+    try testing.expect(std.mem.indexOf(u8, err_text, "bad trace id") != null);
 
     // Connection remains reusable after non-retryable gRPC status.
     var ok = try t.send("y", soon());
@@ -276,8 +286,50 @@ test "trailers-only error response is handled cleanly" {
 
     try testing.expectError(error.Rejected, t.send("x", soon()));
     try testing.expectEqual(@as(usize, 1), r.requestCount());
-    try testing.expect(std.mem.indexOf(u8, t.lastError(), "UNIMPLEMENTED") != null);
-    try testing.expect(std.mem.indexOf(u8, t.lastError(), "no such method") != null);
+    var err_buf: [512]u8 = undefined;
+    const err_text = t.copyLastError(&err_buf);
+    try testing.expect(std.mem.indexOf(u8, err_text, "UNIMPLEMENTED") != null);
+    try testing.expect(std.mem.indexOf(u8, err_text, "no such method") != null);
+}
+
+test "concurrent sendDetail callers receive isolated error details without races" {
+    var r = try GrpcReceiver.start(testing.allocator, testing.io, .{
+        .replies = &.{
+            .{ .grpc_status = @backingInt(grpc.StatusCode.invalid_argument), .grpc_message = "err-one" },
+            .{ .grpc_status = @backingInt(grpc.StatusCode.permission_denied), .grpc_message = "err-two" },
+        },
+    });
+    defer r.stop();
+    var t = try newTransport(r, .{ .endpoint = "", .method = test_method, .retry = .{ .enabled = false } });
+    defer t.destroy();
+
+    const Caller = struct {
+        buf: [512]u8 = undefined,
+        len: usize = 0,
+        err: ?grpc.SendError = null,
+        fn run(self: *@This(), tr: *grpc.Transport) void {
+            if (tr.sendDetail("x", soon(), &self.buf, &self.len)) |resp| {
+                var owned = resp;
+                owned.deinit(testing.allocator);
+            } else |e| {
+                self.err = e;
+            }
+        }
+    };
+    var c1: Caller = .{};
+    var c2: Caller = .{};
+    var f1 = try testing.io.concurrent(Caller.run, .{ &c1, t });
+    var f2 = try testing.io.concurrent(Caller.run, .{ &c2, t });
+    f1.await(testing.io);
+    f2.await(testing.io);
+
+    try testing.expectEqual(@as(?grpc.SendError, error.Rejected), c1.err);
+    try testing.expectEqual(@as(?grpc.SendError, error.Rejected), c2.err);
+    const s1 = c1.buf[0..c1.len];
+    const s2 = c2.buf[0..c2.len];
+    const got_one = std.mem.indexOf(u8, s1, "err-one") != null or std.mem.indexOf(u8, s2, "err-one") != null;
+    const got_two = std.mem.indexOf(u8, s1, "err-two") != null or std.mem.indexOf(u8, s2, "err-two") != null;
+    try testing.expect(got_one and got_two);
 }
 
 test "GOAWAY causes clean redial on next call and transparent redial when stream refused" {
@@ -417,7 +469,8 @@ test "TLS with ALPN h2 and mutual TLS client certificate" {
     });
     defer bad_ca.destroy();
     try testing.expectError(error.Unreachable, bad_ca.send("x", soon()));
-    try testing.expect(std.mem.indexOf(u8, bad_ca.lastError(), "TLS handshake") != null);
+    var bad_ca_buf: [512]u8 = undefined;
+    try testing.expect(std.mem.indexOf(u8, bad_ca.copyLastError(&bad_ca_buf), "TLS handshake") != null);
 
     // Missing client cert fails with Unreachable.
     var no_cert = try newTransport(r, .{
@@ -448,7 +501,8 @@ test "TLS rejects server that does not negotiate ALPN h2" {
     });
     defer t.destroy();
     try testing.expectError(error.Unreachable, t.send("x", soon()));
-    try testing.expect(std.mem.indexOf(u8, t.lastError(), "TLS handshake") != null);
+    var alpn_buf: [512]u8 = undefined;
+    try testing.expect(std.mem.indexOf(u8, t.copyLastError(&alpn_buf), "TLS handshake") != null);
 }
 
 test "create validates endpoint, method, headers and TLS options" {

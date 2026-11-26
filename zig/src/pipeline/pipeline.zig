@@ -36,6 +36,8 @@ pub const otlp = struct {
     pub const log_encode = @import("otlp/log_encode.zig");
     pub const log_exporter = @import("otlp/log_exporter.zig");
     pub const grpc_trace_exporter = @import("otlp/grpc_trace_exporter.zig");
+    pub const grpc_metric_exporter = @import("otlp/grpc_metric_exporter.zig");
+    pub const grpc_log_exporter = @import("otlp/grpc_log_exporter.zig");
 };
 
 test {

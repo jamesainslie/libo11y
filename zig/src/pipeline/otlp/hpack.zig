@@ -596,12 +596,11 @@ pub const Decoder = struct {
         const value = try decodeString(block, pos, out_gpa, value_budget);
         errdefer out_gpa.free(value);
 
-        total_list_size.* += name.len + value.len + entry_overhead;
-        try out.append(out_gpa, .{ .name = name, .value = value });
-
         if (incremental) {
             try d.insertDynamic(name, value);
         }
+        try out.append(out_gpa, .{ .name = name, .value = value });
+        total_list_size.* += name.len + value.len + entry_overhead;
     }
 
     fn appendDecoded(

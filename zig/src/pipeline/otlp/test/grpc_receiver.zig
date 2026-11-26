@@ -9,6 +9,7 @@
 
 const std = @import("std");
 const tls = @import("tls");
+const proto = @import("opentelemetry-proto");
 const Io = std.Io;
 const net = Io.net;
 const Allocator = std.mem.Allocator;
@@ -91,6 +92,24 @@ pub const Request = struct {
     pub fn header(r: *const Request, name: []const u8) ?[]const u8 {
         for (r.headers) |h| if (std.mem.eql(u8, h.name, name)) return h.value;
         return null;
+    }
+
+    /// Decodes the recorded body as an OTLP trace export request.
+    pub fn decodeTraces(r: *const Request, gpa: Allocator) !proto.collector_trace_v1.ExportTraceServiceRequest {
+        var reader: Io.Reader = .fixed(r.body);
+        return proto.collector_trace_v1.ExportTraceServiceRequest.decode(&reader, gpa);
+    }
+
+    /// Decodes the recorded body as an OTLP metrics export request.
+    pub fn decodeMetrics(r: *const Request, gpa: Allocator) !proto.collector_metrics_v1.ExportMetricsServiceRequest {
+        var reader: Io.Reader = .fixed(r.body);
+        return proto.collector_metrics_v1.ExportMetricsServiceRequest.decode(&reader, gpa);
+    }
+
+    /// Decodes the recorded body as an OTLP logs export request.
+    pub fn decodeLogs(r: *const Request, gpa: Allocator) !proto.collector_logs_v1.ExportLogsServiceRequest {
+        var reader: Io.Reader = .fixed(r.body);
+        return proto.collector_logs_v1.ExportLogsServiceRequest.decode(&reader, gpa);
     }
 };
 

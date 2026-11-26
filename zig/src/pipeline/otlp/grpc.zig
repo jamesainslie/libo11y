@@ -161,7 +161,7 @@ pub fn frameDecode(gpa: Allocator, raw: []const u8, encoding: ?[]const u8, max_s
     const compressed = raw[0];
     if (compressed != 0 and compressed != 1) return error.InvalidFrame;
     const msg_len: usize = std.mem.readInt(u32, raw[1..5], .big);
-    if (5 + msg_len != raw.len) return error.InvalidFrame;
+    if (msg_len != raw.len - 5) return error.InvalidFrame;
     const msg = raw[5..];
 
     if (compressed == 0) {
@@ -169,9 +169,8 @@ pub fn frameDecode(gpa: Allocator, raw: []const u8, encoding: ?[]const u8, max_s
         return try gpa.dupe(u8, msg);
     }
 
-    if (encoding) |enc| {
-        if (!std.ascii.eqlIgnoreCase(enc, "gzip")) return error.UnsupportedEncoding;
-    }
+    const enc = encoding orelse return error.UnsupportedEncoding;
+    if (!std.ascii.eqlIgnoreCase(enc, "gzip")) return error.UnsupportedEncoding;
     return http.gunzip(gpa, msg, max_size) catch |err| switch (err) {
         error.OutOfMemory => error.OutOfMemory,
         error.InvalidData => error.InvalidFrame,
@@ -304,9 +303,11 @@ fn parseProtoDuration(dur_bytes: []const u8) ?Io.Duration {
         }
     }
     if (seconds < 0 or nanos < 0) return .zero;
-    const max_secs = @divTrunc(max_duration.nanoseconds, std.time.ns_per_s);
-    if (seconds >= max_secs) return max_duration;
-    const total = seconds * std.time.ns_per_s + @min(nanos, std.time.ns_per_s - 1);
+    const max_secs: i96 = @divTrunc(max_duration.nanoseconds, std.time.ns_per_s);
+    const secs_wide: i96 = seconds;
+    if (secs_wide >= max_secs) return max_duration;
+    const nanos_wide: i96 = @min(nanos, std.time.ns_per_s - 1);
+    const total: i96 = secs_wide * std.time.ns_per_s + nanos_wide;
     return clamp(.fromNanoseconds(total));
 }
 
@@ -476,11 +477,38 @@ pub const Transport = struct {
     /// transport gzips and frames it), retrying per OTLP/gRPC rules inside
     /// `min(now + options.timeout, until)`.
     pub fn send(t: *Transport, payload: []const u8, until: Deadline) SendError!Response {
+        return t.sendDetail(payload, until, null, null);
+    }
+
+    /// Sends one unary gRPC request like `send`, and on error copies the
+    /// diagnostic detail into `err_dst` while holding the send lock so
+    /// concurrent callers never race or clobber each other's error text.
+    pub fn sendDetail(
+        t: *Transport,
+        payload: []const u8,
+        until: Deadline,
+        err_dst: ?[]u8,
+        err_len_out: ?*usize,
+    ) SendError!Response {
+        if (err_len_out) |out_len| out_len.* = 0;
         const limit = deadline.earliest(until, deadline.after(t.io, t.timeout));
         try t.acquire(limit);
         defer t.release();
-        t.err_len = 0;
+        t.clearError();
 
+        const result = t.sendLocked(payload, limit);
+        if (result) |resp| {
+            return resp;
+        } else |err| {
+            if (err_dst) |dst| {
+                const copied = t.copyLastError(dst);
+                if (err_len_out) |out_len| out_len.* = copied.len;
+            }
+            return err;
+        }
+    }
+
+    fn sendLocked(t: *Transport, payload: []const u8, limit: Deadline) SendError!Response {
         if (payload.len > transport.max_request_size) {
             t.setError("request message too large: exceeded {d} bytes", .{transport.max_request_size});
             return error.Rejected;
@@ -506,9 +534,14 @@ pub const Transport = struct {
         t.dropConn(true);
     }
 
-    /// Human-readable description of the most recent failure.
-    pub fn lastError(t: *Transport) []const u8 {
-        return t.err_buf[0..t.err_len];
+    /// Copies the most recent failure description into `dst` under `t.mutex`
+    /// and returns the written slice.
+    pub fn copyLastError(t: *Transport, dst: []u8) []const u8 {
+        t.mutex.lockUncancelable(t.io);
+        defer t.mutex.unlock(t.io);
+        const n = @min(t.err_len, dst.len);
+        @memcpy(dst[0..n], t.err_buf[0..n]);
+        return dst[0..n];
     }
 
     fn acquire(t: *Transport, limit: Deadline) SendError!void {
@@ -889,16 +922,25 @@ pub const Transport = struct {
         }
     }
 
+    fn clearError(t: *Transport) void {
+        t.mutex.lockUncancelable(t.io);
+        defer t.mutex.unlock(t.io);
+        t.err_len = 0;
+    }
+
     fn setError(t: *Transport, comptime fmt: []const u8, args: anytype) void {
-        var w: Io.Writer = .fixed(&t.err_buf);
+        var local: [512]u8 = undefined;
+        var w: Io.Writer = .fixed(&local);
         w.print(fmt, args) catch {};
+        t.mutex.lockUncancelable(t.io);
+        defer t.mutex.unlock(t.io);
+        @memcpy(t.err_buf[0..w.end], local[0..w.end]);
         t.err_len = w.end;
     }
 
     fn prefixError(t: *Transport, prefix: []const u8) void {
         var previous: [512]u8 = undefined;
-        const old = previous[0..t.err_len];
-        @memcpy(old, t.err_buf[0..t.err_len]);
+        const old = t.copyLastError(&previous);
         t.setError("{s}{s}", .{ prefix, old });
     }
 };

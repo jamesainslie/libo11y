@@ -3,6 +3,9 @@
 const std = @import("std");
 const testing = std.testing;
 const Io = std.Io;
+const net = Io.net;
+const http = @import("http.zig");
+const hpack = @import("hpack.zig");
 const h2 = @import("h2.zig");
 
 test "FrameHeader encode and parse round-trip" {
@@ -174,6 +177,204 @@ test "writeHeaderBlock splits oversized headers into HEADERS plus CONTINUATION" 
     try testing.expectEqual(@as(u24, 100), h2_hdr.length);
     try testing.expectEqual(h2.Flags.end_headers, h2_hdr.flags);
     try testing.expectEqual(@as(u31, 1), h2_hdr.stream_id);
+}
+
+test "validateResponseHeaders and validateTrailers enforce RFC 9113 header rules" {
+    // Valid response headers.
+    try testing.expectEqual(@as(?u16, 200), h2.validateResponseHeaders(&.{
+        .{ .name = ":status", .value = "200" },
+        .{ .name = "content-type", .value = "application/grpc" },
+    }));
+    // Pseudo-header after regular header is rejected.
+    try testing.expectEqual(@as(?u16, null), h2.validateResponseHeaders(&.{
+        .{ .name = "content-type", .value = "application/grpc" },
+        .{ .name = ":status", .value = "200" },
+    }));
+    // Request pseudo-header or unknown pseudo-header in response is rejected.
+    try testing.expectEqual(@as(?u16, null), h2.validateResponseHeaders(&.{
+        .{ .name = ":status", .value = "200" },
+        .{ .name = ":path", .value = "/" },
+    }));
+    try testing.expectEqual(@as(?u16, null), h2.validateResponseHeaders(&.{
+        .{ .name = ":status", .value = "200" },
+        .{ .name = ":bogus", .value = "1" },
+    }));
+    // Duplicate :status or missing :status is rejected.
+    try testing.expectEqual(@as(?u16, null), h2.validateResponseHeaders(&.{
+        .{ .name = ":status", .value = "200" },
+        .{ .name = ":status", .value = "200" },
+    }));
+    try testing.expectEqual(@as(?u16, null), h2.validateResponseHeaders(&.{
+        .{ .name = "content-type", .value = "application/grpc" },
+    }));
+    // Uppercase name or CR/LF/NUL in value is rejected.
+    try testing.expectEqual(@as(?u16, null), h2.validateResponseHeaders(&.{
+        .{ .name = ":status", .value = "200" },
+        .{ .name = "Content-Type", .value = "application/grpc" },
+    }));
+    try testing.expectEqual(@as(?u16, null), h2.validateResponseHeaders(&.{
+        .{ .name = ":status", .value = "200" },
+        .{ .name = "x-bad", .value = "a\r\nb" },
+    }));
+    try testing.expectEqual(@as(?u16, null), h2.validateResponseHeaders(&.{
+        .{ .name = ":status", .value = "200" },
+        .{ .name = "x-bad", .value = "a\x00b" },
+    }));
+
+    // Valid trailers vs pseudo-header / uppercase / invalid value in trailers.
+    try testing.expect(h2.validateTrailers(&.{
+        .{ .name = "grpc-status", .value = "0" },
+        .{ .name = "grpc-message", .value = "ok" },
+    }));
+    try testing.expect(!h2.validateTrailers(&.{
+        .{ .name = ":status", .value = "200" },
+    }));
+    try testing.expect(!h2.validateTrailers(&.{
+        .{ .name = "Grpc-Status", .value = "0" },
+    }));
+    try testing.expect(!h2.validateTrailers(&.{
+        .{ .name = "grpc-message", .value = "line1\nline2" },
+    }));
+}
+
+test "foreign HEADERS and unsolicited CONTINUATION fail with ProtocolError and mark connection broken" {
+    const io = testing.io;
+    const Mode = enum { foreign_headers, unsolicited_continuation, foreign_continuation };
+    inline for (.{ Mode.foreign_headers, Mode.unsolicited_continuation, Mode.foreign_continuation }) |mode| {
+        const address = try net.IpAddress.parse("127.0.0.1", 0);
+        var listener = try address.listen(io, .{ .reuse_address = true });
+        defer listener.deinit(io);
+        const port = listener.socket.address.getPort();
+
+        const Server = struct {
+            fn run(l: *net.Server, m: Mode) void {
+                const s = l.accept(io) catch return;
+                defer s.close(io);
+                var rbuf: [4096]u8 = undefined;
+                var wbuf: [4096]u8 = undefined;
+                var r = s.reader(io, &rbuf);
+                var w = s.writer(io, &wbuf);
+                var pref: [h2.client_preface.len]u8 = undefined;
+                r.interface.readSliceAll(&pref) catch return;
+                switch (m) {
+                    .foreign_headers => {
+                        h2.writeFrame(&w.interface, .headers, h2.Flags.end_headers, 99, &.{0x88}) catch return;
+                    },
+                    .unsolicited_continuation => {
+                        h2.writeFrame(&w.interface, .continuation, h2.Flags.end_headers, 1, &.{0x88}) catch return;
+                    },
+                    .foreign_continuation => {
+                        h2.writeFrame(&w.interface, .continuation, h2.Flags.end_headers, 99, &.{0x88}) catch return;
+                    },
+                }
+                w.interface.flush() catch return;
+                s.shutdown(io, .send) catch {};
+                var drain: [256]u8 = undefined;
+                while (true) {
+                    const n = r.interface.readSliceShort(&drain) catch break;
+                    if (n == 0) break;
+                }
+            }
+        };
+        var srv = try io.concurrent(Server.run, .{ &listener, mode });
+        defer srv.await(io);
+
+        const url = try std.fmt.allocPrint(testing.allocator, "http://127.0.0.1:{d}", .{port});
+        defer testing.allocator.free(url);
+        const ep = try http.Endpoint.parse(url);
+        var failure: http.Failure = undefined;
+        var conn = try h2.Connection.open(testing.allocator, io, &ep, null, &failure);
+        defer conn.close(testing.allocator, false);
+
+        const req_hdrs = [_]hpack.Header{
+            .{ .name = ":method", .value = "POST" },
+            .{ .name = ":scheme", .value = "http" },
+            .{ .name = ":path", .value = "/test" },
+            .{ .name = ":authority", .value = ep.authority },
+        };
+        try testing.expectError(error.ProtocolError, conn.roundTrip(testing.allocator, &req_hdrs, "", 4096));
+        try testing.expect(conn.broken);
+        try testing.expect(!conn.usable());
+    }
+}
+
+test "early END_STREAM response during blocked upload resets half-open stream cleanly" {
+    const io = testing.io;
+    const address = try net.IpAddress.parse("127.0.0.1", 0);
+    var listener = try address.listen(io, .{ .reuse_address = true });
+    defer listener.deinit(io);
+    const port = listener.socket.address.getPort();
+
+    const Result = struct { saw_rst: bool = false };
+    const Server = struct {
+        fn run(l: *net.Server, res: *Result) void {
+            const s = l.accept(io) catch return;
+            defer s.close(io);
+            var rbuf: [32 * 1024]u8 = undefined;
+            var wbuf: [4096]u8 = undefined;
+            var r = s.reader(io, &rbuf);
+            var w = s.writer(io, &wbuf);
+            var pref: [h2.client_preface.len]u8 = undefined;
+            r.interface.readSliceAll(&pref) catch return;
+            // Read client frames until first DATA frame on stream 1, then send
+            // an early trailers-only response with END_STREAM without sending
+            // WINDOW_UPDATE so the client is blocked mid-upload.
+            var frame_buf: [h2.default_max_frame_size]u8 = undefined;
+            var replied = false;
+            while (true) {
+                var raw_hdr: [h2.frame_header_len]u8 = undefined;
+                r.interface.readSliceAll(&raw_hdr) catch return;
+                const hdr = h2.FrameHeader.parse(raw_hdr);
+                if (hdr.length > frame_buf.len) return;
+                const payload = frame_buf[0..hdr.length];
+                if (payload.len > 0) r.interface.readSliceAll(payload) catch return;
+                const f = h2.parseFrame(hdr, payload) catch return;
+                switch (f) {
+                    .data => |d| {
+                        if (!replied and d.stream_id == 1) {
+                            replied = true;
+                            h2.writeFrame(&w.interface, .headers, h2.Flags.end_headers | h2.Flags.end_stream, 1, &.{0x88}) catch return;
+                            w.interface.flush() catch return;
+                        }
+                    },
+                    .rst_stream => |rst| {
+                        if (rst.stream_id == 1 and rst.error_code == @backingInt(h2.ErrorCode.no_error)) {
+                            res.saw_rst = true;
+                            return;
+                        }
+                    },
+                    else => {},
+                }
+            }
+        }
+    };
+    var res: Result = .{};
+    var srv = try io.concurrent(Server.run, .{ &listener, &res });
+    defer srv.await(io);
+
+    const url = try std.fmt.allocPrint(testing.allocator, "http://127.0.0.1:{d}", .{port});
+    defer testing.allocator.free(url);
+    const ep = try http.Endpoint.parse(url);
+    var failure: http.Failure = undefined;
+    var conn = try h2.Connection.open(testing.allocator, io, &ep, null, &failure);
+    defer conn.close(testing.allocator, true);
+
+    const big_body = try testing.allocator.alloc(u8, 96 * 1024);
+    defer testing.allocator.free(big_body);
+    @memset(big_body, 'a');
+
+    const req_hdrs = [_]hpack.Header{
+        .{ .name = ":method", .value = "POST" },
+        .{ .name = ":scheme", .value = "http" },
+        .{ .name = ":path", .value = "/test" },
+        .{ .name = ":authority", .value = ep.authority },
+    };
+    var resp = try conn.roundTrip(testing.allocator, &req_hdrs, big_body, 4096);
+    defer resp.deinit(testing.allocator);
+    try testing.expectEqual(@as(u16, 200), resp.status);
+    try testing.expect(resp.trailers_only);
+    srv.await(io);
+    try testing.expect(res.saw_rst);
 }
 
 fn fuzzParseFrame(_: void, smith: *testing.Smith) anyerror!void {
