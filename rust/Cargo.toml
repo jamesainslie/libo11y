@@ -2,7 +2,7 @@
 # together from a rust/vX.Y.Z tag.
 [workspace]
 resolver = "3"
-members = ["libo11y-spec"]
+members = ["libo11y-macros", "libo11y-redact", "libo11y-spec"]
 
 [workspace.package]
 version = "0.0.0"
@@ -11,6 +11,19 @@ rust-version = "1.88"
 license = "Apache-2.0"
 repository = "https://github.com/jamesainslie/libo11y"
 homepage = "https://o11y.ing"
+
+# Every dependency is a version published on or before the date the port's
+# plan fixed (2026-11-11). Workspace crates pin each other exactly, because
+# they are released in lockstep.
+[workspace.dependencies]
+libo11y-macros = { version = "=0.0.0", path = "libo11y-macros" }
+proc-macro2 = { version = "1.0.107", default-features = false, features = ["proc-macro"] }
+quote = { version = "1.0.47", default-features = false, features = ["proc-macro"] }
+serde = { version = "1.0.229", default-features = false, features = ["std"] }
+serde_json = "1.0.154"
+syn = { version = "3.0.10", default-features = false, features = ["clone-impls", "derive", "parsing", "printing", "proc-macro"] }
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["registry", "std"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
