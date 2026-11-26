@@ -128,6 +128,24 @@ test "a full queue drops the item and counts the drop" {
     try testing.expectEqual(@as(usize, 5), s.released);
 }
 
+test "a full queue under drop_oldest drops the oldest item and counts the drop" {
+    var s: IntSink = .{ .block = true };
+    defer s.deinit();
+    const b = try B.create(testing.allocator, io, .{ .max_queue_size = 2, .max_export_batch_size = 1, .schedule_delay = .fromSeconds(60), .overflow = .drop_oldest }, s.sink(), .ignore, "test");
+    defer b.destroy();
+    b.enqueue(1);
+    try s.entered.wait(io);
+    b.enqueue(2);
+    b.enqueue(3);
+    b.enqueue(4);
+    b.enqueue(5);
+    try testing.expectEqual(@as(u64, 2), b.droppedCount());
+    s.unblock.set(io);
+    try b.shutdown(deadline.after(io, .fromSeconds(5)));
+    try testing.expectEqualSlices(u32, &.{ 1, 4, 5 }, s.exported.items);
+    try testing.expectEqual(@as(usize, 5), s.released);
+}
+
 test "shutdown past its deadline cancels a hung export and releases the queue" {
     var s: IntSink = .{ .block = true };
     defer s.deinit();

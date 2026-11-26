@@ -25,6 +25,16 @@ pub const Config = struct {
     schedule_delay: Io.Duration = .fromMilliseconds(5000),
     /// Bounds each export.
     export_timeout: Io.Duration = .fromMilliseconds(30000),
+    /// What a full queue drops. Either way the drop is counted.
+    overflow: Overflow = .drop_newest,
+
+    pub const Overflow = enum {
+        /// Drop the item being queued, as Go's batch span processor does.
+        drop_newest,
+        /// Drop the oldest queued item to make room, as Go's batch log
+        /// processor does.
+        drop_oldest,
+    };
 };
 
 /// Why `Batcher.create` failed.
@@ -104,7 +114,8 @@ pub fn Batcher(comptime T: type) type {
             self.gpa.destroy(self);
         }
 
-        /// Queues an item. A full queue drops it and counts the drop.
+        /// Queues an item. A full queue drops it, or the oldest queued
+        /// item under `.drop_oldest`, and counts the drop.
         /// After shutdown the item is released without counting. Never
         /// blocks on the exporter.
         pub fn enqueue(self: *Self, item: T) void {
@@ -115,9 +126,16 @@ pub fn Batcher(comptime T: type) type {
                 return;
             }
             if (self.len == self.ring.len) {
+                var dropped = item;
+                if (self.config.overflow == .drop_oldest) {
+                    // The tail slot of a full ring is the head slot.
+                    dropped = self.ring[self.head];
+                    self.ring[self.head] = item;
+                    self.head = (self.head + 1) % self.ring.len;
+                }
                 self.mutex.unlock(self.io);
                 _ = self.dropped.fetchAdd(1, .monotonic);
-                self.sink.releaseFn(self.sink.ptr, item);
+                self.sink.releaseFn(self.sink.ptr, dropped);
                 return;
             }
             self.ring[(self.head + self.len) % self.ring.len] = item;
