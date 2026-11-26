@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Tests for release-tag.sh: it routes each Go and TypeScript release tag to
-# its family, directory, module and version, and it refuses any other tag.
+# Tests for release-tag.sh: it routes each Go, TypeScript and Zig release
+# tag to its family, directory, module and version, and it refuses any other
+# tag.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -116,10 +117,33 @@ prerelease=true
 EOF
 )" ts/v0.2.0-beta.1
 
+expect_route "routes the zig package" "$(
+	cat <<'EOF'
+kind=zig
+dir=zig
+module=libo11y-zig
+version=0.1.0
+prerelease=false
+EOF
+)" zig/v0.1.0
+
+expect_route "marks a zig prerelease" "$(
+	cat <<'EOF'
+kind=zig
+dir=zig
+module=libo11y-zig
+version=1.0.0-rc.1
+prerelease=true
+EOF
+)" zig/v1.0.0-rc.1
+
 expect_failure "refuses a spec tag" 1 "spec/v1.2.0 is not a release tag" spec/v1.2.0
 expect_failure "refuses an unknown go submodule" 1 "is not a release tag" go/o11yfoo/v1.0.0
 expect_failure "refuses a tag without the v" 1 "is not a release tag" ts/0.1.0
 expect_failure "refuses a nested ts path" 1 "is not a release tag" ts/core/v0.1.0
+expect_failure "refuses a zig tag without the v" 1 "is not a release tag" zig/0.1.0
+expect_failure "refuses a nested zig path" 1 "is not a release tag" zig/foo/v0.1.0
+expect_failure "refuses a two-part zig version" 1 "1.2 is not a semantic version" zig/v1.2
 expect_failure "refuses a two-part version" 1 "1.2 is not a semantic version" ts/v1.2
 expect_failure "refuses a leading zero" 1 "01.0.0 is not a semantic version" ts/v01.0.0
 expect_failure "refuses build metadata" 1 "is not a semantic version" ts/v0.1.0+build.5

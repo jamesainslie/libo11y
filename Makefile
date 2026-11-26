@@ -8,7 +8,7 @@ GO_TEST_P ?= 4
 # gate runs on each module separately.
 GO_MODULES := go go/o11ygin go/o11yconnect go/o11ysql
 
-.PHONY: spec-check spec-generate spec-drift test lint vet tidy-check vuln release-check schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-install ts-check ts-browser-test rust-check rust-msrv zig-check zig-integrations-check zig-hygiene-test ci
+.PHONY: spec-check spec-generate spec-drift test lint vet tidy-check vuln release-check zig-release-check schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-install ts-check ts-browser-test rust-check rust-msrv zig-check zig-integrations-check zig-hygiene-test ci
 
 # Validate the spec registry against the libo11y policy suite (naming,
 # ownership, sensitivity, cardinality, events, units).
@@ -96,16 +96,28 @@ RELEASE_VERSION ?= v0.2.0
 # The packages stay at 0.0.0 until the first TypeScript release.
 TS_RELEASE_VERSION ?= v0.2.0
 
+# The version the Zig package manifests (build.zig.zon and zig/build.zig.zon)
+# carry, which zig-release-check.sh validates. Moves only in a release commit.
+ZIG_RELEASE_VERSION ?= v0.1.0
+
+# Validate the Zig package at ZIG_RELEASE_VERSION as an external consumer
+# fetches and runs it against an in-process OTLP receiver.
+# Needs a clean working tree and zig 0.17.1.
+zig-release-check:
+	scripts/zig-release-check.sh $(ZIG_RELEASE_VERSION)
+
 # Validate the release sequence (go/RELEASE_VERSION and
 # go/<sub>/RELEASE_VERSION for every Go submodule, o11ygin, o11yconnect
 # and o11ysql, on HEAD) against a throwaway local remote. Then build and
 # pack the TypeScript packages at TS_RELEASE_VERSION, install the
-# tarballs into a throwaway consumer under Node and Bun, and bundle the
-# browser packages for the browser.
+# tarballs into a throwaway consumer under Node and Bun, bundle the
+# browser packages for the browser, and validate the Zig consumer tarball
+# at ZIG_RELEASE_VERSION.
 # Needs a clean working tree.
 release-check:
 	scripts/release-check.sh $(RELEASE_VERSION)
 	scripts/ts-release-check.sh $(TS_RELEASE_VERSION)
+	scripts/zig-release-check.sh $(ZIG_RELEASE_VERSION)
 
 # Release step, not a ci gate (it needs the network): confirm the schema URL
 # serves spec/schemas/<version> byte for byte before tagging spec/vX.Y.Z.

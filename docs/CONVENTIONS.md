@@ -15,7 +15,7 @@ libo11y/
   scripts/       release and schema checks, with their tests
   rust/          Rust workspace (planned)
   java/          Java/Maven module (planned)
-  zig/           Zig package (in progress), published through the
+  zig/           Zig package (zig/v0.1.0), published through the
                  root build.zig and build.zig.zon shim
 ```
 
@@ -84,10 +84,41 @@ every suite on Bun 1.3.13 and Node 24.
 builds, checks the API reports, and runs every suite under Bun and Node.
 `make ci` runs it.
 
+## Zig toolchain
+
+The Zig package in `zig/` (re-exported through the root `build.zig` and
+`build.zig.zon` shim) pins Zig `0.17.1`. On NixOS development machines it
+comes from home-manager with `mitchellh/zig-overlay` (`mise` does not manage
+Zig). CI installs it with `mlugg/setup-zig` pinned by commit and runs
+`make zig-check` on Linux and macOS, plus `make zig-integrations-check` on
+Linux with a PostgreSQL 17 service container.
+
+- **Formatting.** `zig fmt --check` runs over `build.zig`, `build.zig.zon`,
+  and `zig/` (excluding `.zig-cache`, `zig-pkg`, and `zig-out`).
+- **Tests.** `make zig-check` runs `zig build test` through the root shim in
+  both `Debug` and `ReleaseSafe` with `-j$(ZIG_BUILD_J)` (default 8). Every
+  test uses `std.testing.allocator` so leaks fail the suite. The suite
+  includes the shared conformance tests reading `conformance/` via
+  `-Dconformance-dir`.
+- **Optional integrations.** `o11yhttpz`, `o11ypg`, and `o11ysqlite` depend
+  on lazy third-party packages (`http.zig`, `pg.zig`, `zig-sqlite`) gated
+  behind `-Dhttpz=true`, `-Dpg=true`, and `-Dsqlite=true`.
+  `make zig-integrations-check` enables all three in `Debug` and
+  `ReleaseSafe`; set `O11YPG_TEST_DSN` to exercise live PostgreSQL queries.
+- **Hygiene gate.** `scripts/zig-hygiene.sh` (tested by
+  `make zig-hygiene-test`) rejects `@panic`, `std.debug.panic`,
+  `std.debug.print` (including through aliases), and `catch`/`orelse
+  unreachable` outside test blocks and test-only files (`zig/test/` and
+  `*_test.zig`). Every switch on an error set returned by the public API is
+  exhaustive.
+- **Prose and commits.** Never use the em dash character anywhere in Zig
+  sources, docs, or commit messages. Commits use `zig: <type>: <description>`
+  and release tags use `zig/vX.Y.Z`.
+
 ## Versioning and releases
 
 - Independent per-language versioning, path-prefixed tags: `go/v0.1.0`,
-  `rust/v0.1.0`.
+  `ts/v0.1.1`, `zig/v0.1.0`, `rust/v0.1.0`.
 - Semantic versioning per language ecosystem norms.
 - No lockstep releases across languages. A change to shared docs never
   forces a release.
@@ -174,6 +205,26 @@ builds, checks the API reports, and runs every suite under Bun and Node.
   exists, so a new package's first version is published by a
   maintainer's own npm login. Once it is on npm, its trust is set up the
   same way.
+- Zig releases tag `zig/vX.Y.Z` on the release commit. Both manifests
+  (`build.zig.zon` and `zig/build.zig.zon`) and `ZIG_RELEASE_VERSION` in the
+  `Makefile` move together only in a release commit. To release Zig version
+  `X.Y.Z`:
+  1. Move `zig/CHANGELOG.md` entries into a `## [X.Y.Z] - date` section and
+     update the link references.
+  2. Set `.version = "X.Y.Z"` in `build.zig.zon` and `zig/build.zig.zon`,
+     and set `ZIG_RELEASE_VERSION` in the `Makefile` and the default in
+     `scripts/zig-release-check.sh` to `X.Y.Z` / `vX.Y.Z`.
+  3. Run `make zig-check`, `make zig-integrations-check`, and (on the
+     committed tree) `make release-check` or `make zig-release-check`, then
+     merge the release PR.
+  4. Tag `zig/vX.Y.Z` on the merge commit and push that tag.
+  5. The release workflow (`scripts/release-tag.sh` routing `kind=zig`,
+     `module=libo11y-zig`) checks both manifests and `zig/CHANGELOG.md`,
+     runs `make zig-check` and `scripts/zig-release-check.sh`, publishes the
+     GitHub Release titled `libo11y-zig vX.Y.Z` (never marked Latest, so Go
+     keeps Latest), and runs a live `zig-smoke` job fetching
+     `git+https://github.com/jamesainslie/libo11y#zig/vX.Y.Z` into a fresh
+     consumer against an in-process OTLP receiver.
 - The specification versions separately: once released, each version has a
   `spec/vX.Y.Z` tag and a schema file served at its schema URL. Spec
   1.0.0 is tagged `spec/v1.0.0` on the `go/v0.1.0` commit. Before
@@ -228,10 +279,12 @@ install that version locally. Keep the two in step when adding a gate.
 | `make ts-check` | the TypeScript workspace: Biome, tsc, the build, the API reports, and every unit suite under Bun and Node |
 | `make ts-browser-test` | the `@libo11y/web` and `@libo11y/webext` browser suites under Playwright and headless Chromium. It needs Playwright's Chromium for the pinned version, which CI installs with `bun x --no-install playwright install --with-deps chromium` in `ts/`. CI runs it in the separate `ts-browser` job |
 | `make ts-browser-bundle-test` | `scripts/ts-browser-bundle-check.sh` against fixture packages (needs bun). CI runs it in the `ts` job after `make ts-check` |
-| `make release-check` | the Go release sequence, then packing and a consumer smoke test of the TypeScript packages, including the browser bundle check (needs a clean tree) |
+| `make release-check` | the Go release sequence, packing and a consumer smoke test of the TypeScript packages (including the browser bundle check), and the Zig consumer tarball smoke test (needs a clean tree) |
 | `make release-notes-test`, `make release-tag-test` | the release workflow's scripts: changelog sections become release notes, and each release tag routes to its kind, module and version |
 | `make schema-published-test` | the schema URL check against a loopback HTTP server |
 | `make zig-check` | the Zig package: `zig fmt --check`, the tests through the root shim in Debug and ReleaseSafe (`ZIG_BUILD_J` caps the job count), and the hygiene check. CI runs it in the `zig` job on Linux and macOS |
+| `make zig-integrations-check` | optional Zig integrations (`-Dhttpz=true -Dpg=true -Dsqlite=true`) in Debug and ReleaseSafe; CI runs it in `zig-integrations` against PostgreSQL 17 |
+| `make zig-release-check` | archives HEAD, fetches it with `zig fetch --save` into an isolated consumer, runs it against an in-process OTLP receiver, and verifies no `conformance/`, `zig/test/`, or lazy deps were fetched (needs a clean tree) |
 | `make zig-hygiene-test` | `scripts/zig-hygiene.sh` against fixture trees |
 | `make vuln` | `govulncheck` on every Go module; runs last because it depends on the advisory database and the toolchain's patch level |
 

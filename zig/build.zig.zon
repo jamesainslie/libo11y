@@ -1,8 +1,8 @@
 .{
     .name = .libo11y,
-    // Stays 0.0.0 until the zig/v0.1.0 release commit, which moves it
-    // together with the root shim's manifest.
-    .version = "0.0.0",
+    // Moves together with the root shim's manifest and ZIG_RELEASE_VERSION in
+    // the Makefile on each release commit.
+    .version = "0.1.0",
     .fingerprint = 0xb41b258837919eb0, // Changing this has security and trust implications.
     .minimum_zig_version = "0.17.0",
     .dependencies = .{
