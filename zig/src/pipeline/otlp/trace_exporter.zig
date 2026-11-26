@@ -132,19 +132,23 @@ pub const TraceExporter = struct {
             return mapped;
         };
         defer response.deinit(self.gpa);
-        return self.checkPartialSuccess(arena, response.body);
+        return self.checkPartialSuccess(arena, response.content_type, response.body);
     }
 
     /// Reports a partial success, as Go joins it into the export error.
-    fn checkPartialSuccess(self: *TraceExporter, arena: Allocator, body: []const u8) processor.ExportError!void {
+    /// As in Go, the response Content-Type picks the decoder, a body of
+    /// another type is ignored, and a body that does not decode fails the
+    /// export.
+    fn checkPartialSuccess(self: *TraceExporter, arena: Allocator, content_type: []const u8, body: []const u8) processor.ExportError!void {
         if (body.len == 0) return;
-        const decoded: collector_trace.ExportTraceServiceResponse = switch (self.protocol) {
-            .http_protobuf => blk: {
-                var reader: Io.Reader = .fixed(body);
-                break :blk collector_trace.ExportTraceServiceResponse.decode(&reader, arena) catch return;
-            },
-            .http_json => json.decode(collector_trace.ExportTraceServiceResponse, arena, body) catch return,
-        };
+        const media = std.mem.trim(u8, content_type[0 .. std.mem.indexOfScalar(u8, content_type, ';') orelse content_type.len], " ");
+        const decoded: collector_trace.ExportTraceServiceResponse = if (std.ascii.eqlIgnoreCase(media, "application/x-protobuf")) blk: {
+            var reader: Io.Reader = .fixed(body);
+            break :blk collector_trace.ExportTraceServiceResponse.decode(&reader, arena) catch return self.badResponse();
+        } else if (std.ascii.eqlIgnoreCase(media, "application/json"))
+            json.decode(collector_trace.ExportTraceServiceResponse, arena, body) catch return self.badResponse()
+        else
+            return;
         const partial = decoded.partial_success orelse return;
         if (partial.rejected_spans == 0 and partial.error_message.len == 0) return;
         var buf: [512]u8 = undefined;
@@ -153,6 +157,11 @@ pub const TraceExporter = struct {
             partial.rejected_spans,
         }) catch "OTLP partial success";
         self.on_error.handle("otlp trace exporter", error.ExportFailed, detail);
+        return error.ExportFailed;
+    }
+
+    fn badResponse(self: *TraceExporter) processor.ExportError {
+        self.on_error.handle("otlp trace exporter", error.ExportFailed, "decoding the export response failed");
         return error.ExportFailed;
     }
 
