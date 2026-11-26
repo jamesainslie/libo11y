@@ -234,22 +234,25 @@ test "parity: shutdownOnEvent and shutdownOnSignals run before_shutdown and shut
     try testing.expect(report.ok());
     try testing.expect(ran_before);
 
-    // Also verify real POSIX signal handling on non-Windows hosts using SIGUSR2.
+    // Also verify real POSIX signal handling on non-Windows hosts using SIGUSR2,
+    // synchronizing deterministically on `ready_event` so raise() never races sigaction.
     if (builtin.os.tag != .windows) {
         const rec2 = try o11ytest.start(testing.allocator, testing.io, .{
             .service_name = "signals-posix",
         });
         defer rec2.deinit();
 
+        var ready: std.Io.Event = .unset;
         var sig_waiter = try testing.io.concurrent(struct {
-            fn run(sdk: *o11y.Telemetry) o11y.ShutdownReport {
+            fn run(sdk: *o11y.Telemetry, ready_ev: *std.Io.Event) o11y.ShutdownReport {
                 return o11y.shutdownOnSignals(testing.io, sdk, .{
                     .signals = &.{.USR2},
+                    .ready_event = ready_ev,
                 });
             }
-        }.run, .{rec2.telemetry()});
+        }.run, .{ rec2.telemetry(), &ready });
 
-        testing.io.sleep(.fromMilliseconds(20), .awake) catch {};
+        ready.waitUncancelable(testing.io);
         try std.posix.raise(.USR2);
         const report2 = sig_waiter.await(testing.io);
         try testing.expect(report2.ok());

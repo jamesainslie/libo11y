@@ -32,6 +32,9 @@ pub const Options = struct {
     before_shutdown: ?BeforeShutdown = null,
     /// Signals to wait on. Defaults to SIGINT and SIGTERM.
     signals: []const std.posix.SIG = &.{ .INT, .TERM },
+    /// Optional event signaled immediately after the POSIX signal handlers are
+    /// installed, allowing callers and tests to synchronize without sleeping.
+    ready_event: ?*Io.Event = null,
 };
 
 // Self-pipe write fd used by the async-signal-safe POSIX handler.
@@ -85,6 +88,7 @@ pub fn shutdownOnSignals(io: Io, telemetry: anytype, options: Options) @TypeOf(t
         std.posix.sigaction(sig, &act, null);
     }
     signal_pipe_write_fd.store(@intCast(pipe_fds[1]), .release);
+    if (options.ready_event) |ev| ev.set(io);
 
     // Block reading a single byte from the self-pipe. Retry on EINTR.
     var buf: [1]u8 = undefined;

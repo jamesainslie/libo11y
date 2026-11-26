@@ -19,9 +19,10 @@ const Allocator = std.mem.Allocator;
 const tls = @import("tls");
 const proto = @import("opentelemetry-proto");
 const o11y = @import("o11y");
-const hpack = o11y.wire.hpack;
-const h2 = o11y.wire.h2;
-const grpc = o11y.wire.grpc;
+const o11y_wire = @import("o11y_wire");
+const hpack = o11y_wire.hpack;
+const h2 = o11y_wire.h2;
+const grpc_frame = o11y_wire.grpc_frame;
 const test_certs = @import("test_certs.zig");
 
 /// One scripted gRPC reply.
@@ -107,7 +108,7 @@ pub const GrpcReceiver = struct {
     replies: []const Reply,
     max_frame_size: u32,
     initial_window_size: u32,
-    cert_key: tls.config.CertKeyPair = undefined,
+    cert_key: ?tls.config.CertKeyPair = null,
     client_ca: ?tls.config.cert.Bundle = null,
     alpn_protocols: []const []const u8 = &.{"h2"},
     accept_task: Io.Future(Io.Cancelable!void) = undefined,
@@ -137,7 +138,7 @@ pub const GrpcReceiver = struct {
             .listener = undefined,
             .secure = options.tls != null,
             .replies = &.{},
-            .max_frame_size = options.max_frame_size,
+            .max_frame_size = std.math.clamp(options.max_frame_size, h2.default_max_frame_size, h2.max_allowed_frame_size),
             .initial_window_size = options.initial_window_size,
         };
         errdefer r.arena.deinit();
@@ -152,14 +153,20 @@ pub const GrpcReceiver = struct {
         }
         r.replies = replies;
 
+        // Allocate TLS material into `r.arena` so both `stop()` and partial
+        // init errors (including upstream `tls.config.cert.fromSlice` parse
+        // failures) release every byte via `r.arena.deinit()`.
         if (options.tls) |t| {
-            r.cert_key = try tls.config.CertKeyPair.fromSlice(gpa, io, t.cert_pem, t.key_pem);
+            r.cert_key = try tls.config.CertKeyPair.fromSlice(a, io, t.cert_pem, t.key_pem);
             if (t.client_ca_pem) |pem| {
-                r.client_ca = try tls.config.cert.fromSlice(gpa, io, pem);
+                r.client_ca = try tls.config.cert.fromSlice(a, io, pem);
             }
-            r.alpn_protocols = t.alpn_protocols;
+            const alpn_copy = try a.alloc([]const u8, t.alpn_protocols.len);
+            for (t.alpn_protocols, alpn_copy) |src_proto, *dst_proto| {
+                dst_proto.* = try a.dupe(u8, src_proto);
+            }
+            r.alpn_protocols = alpn_copy;
         }
-        errdefer r.freeTls();
 
         const address = try net.IpAddress.parse("127.0.0.1", 0);
         r.listener = try address.listen(io, .{ .reuse_address = true });
@@ -191,7 +198,6 @@ pub const GrpcReceiver = struct {
         }
         r.group.cancel(io);
         r.listener.deinit(io);
-        r.freeTls();
         r.open.deinit(r.gpa);
         r.recorded.deinit(r.gpa);
         r.decoded_traces.deinit(r.gpa);
@@ -199,12 +205,6 @@ pub const GrpcReceiver = struct {
         r.decoded_logs.deinit(r.gpa);
         r.arena.deinit();
         r.gpa.destroy(r);
-    }
-
-    fn freeTls(r: *GrpcReceiver) void {
-        if (!r.secure) return;
-        r.cert_key.deinit(r.gpa);
-        if (r.client_ca) |*b| b.deinit(r.gpa);
     }
 
     /// The bound ephemeral TCP port.
@@ -244,25 +244,28 @@ pub const GrpcReceiver = struct {
         return r.recorded.items[i];
     }
 
-    /// All decoded OTLP trace `ResourceSpans` received so far.
+    /// Thread-safe snapshot of all decoded OTLP trace `ResourceSpans` received
+    /// so far. Valid until `deinit()`.
     pub fn traces(r: *GrpcReceiver) []const proto.trace_v1.ResourceSpans {
         r.mutex.lockUncancelable(r.io);
         defer r.mutex.unlock(r.io);
-        return r.decoded_traces.items;
+        return r.arena.allocator().dupe(proto.trace_v1.ResourceSpans, r.decoded_traces.items) catch &.{};
     }
 
-    /// All decoded OTLP metrics `ResourceMetrics` received so far.
+    /// Thread-safe snapshot of all decoded OTLP metrics `ResourceMetrics`
+    /// received so far. Valid until `deinit()`.
     pub fn metrics(r: *GrpcReceiver) []const proto.metrics_v1.ResourceMetrics {
         r.mutex.lockUncancelable(r.io);
         defer r.mutex.unlock(r.io);
-        return r.decoded_metrics.items;
+        return r.arena.allocator().dupe(proto.metrics_v1.ResourceMetrics, r.decoded_metrics.items) catch &.{};
     }
 
-    /// All decoded OTLP logs `ResourceLogs` received so far.
+    /// Thread-safe snapshot of all decoded OTLP logs `ResourceLogs` received
+    /// so far. Valid until `deinit()`.
     pub fn logs(r: *GrpcReceiver) []const proto.logs_v1.ResourceLogs {
         r.mutex.lockUncancelable(r.io);
         defer r.mutex.unlock(r.io);
-        return r.decoded_logs.items;
+        return r.arena.allocator().dupe(proto.logs_v1.ResourceLogs, r.decoded_logs.items) catch &.{};
     }
 
     /// Number of accepted TCP connections.
@@ -354,7 +357,6 @@ pub const GrpcReceiver = struct {
         tcp_out: [tls.output_buffer_len]u8,
         clear_in: [16 * 1024]u8,
         clear_out: [16 * 1024]u8,
-        frame_buf: [h2.default_max_frame_size]u8,
     };
 
     fn serve(r: *GrpcReceiver, stream: net.Stream, index: usize) Io.Cancelable!void {
@@ -367,6 +369,9 @@ pub const GrpcReceiver = struct {
 
         const c = r.gpa.create(Conn) catch return;
         defer r.gpa.destroy(c);
+        const frame_buf = r.gpa.alloc(u8, r.max_frame_size) catch return;
+        defer r.gpa.free(frame_buf);
+
         c.rng_source = .{ .io = io };
         c.tcp_reader = stream.reader(io, &c.tcp_in);
         c.tcp_writer = stream.writer(io, &c.tcp_out);
@@ -375,9 +380,10 @@ pub const GrpcReceiver = struct {
         var alpn_proto: ?[]const u8 = null;
 
         if (r.secure) {
+            const auth_ptr = if (r.cert_key) |*ck| ck else return;
             c.tls_conn = tls.server(in, out, .{
                 .rng = c.rng_source.interface(),
-                .auth = &r.cert_key,
+                .auth = auth_ptr,
                 .client_auth = if (r.client_ca) |b| .{ .root_ca = b, .auth_type = .require } else null,
                 .alpn_protocols = r.alpn_protocols,
                 .now = Io.Clock.real.now(io),
@@ -408,6 +414,7 @@ pub const GrpcReceiver = struct {
         defer hpack_dec.deinit();
 
         var cur_stream: u31 = 0;
+        var stream_end_seen = false;
         var hdr_block: std.ArrayList(u8) = .empty;
         defer hdr_block.deinit(r.gpa);
         var req_headers: []hpack.Header = &.{};
@@ -420,8 +427,8 @@ pub const GrpcReceiver = struct {
             var raw_hdr: [h2.frame_header_len]u8 = undefined;
             in.readSliceAll(&raw_hdr) catch return;
             const hdr = h2.FrameHeader.parse(raw_hdr);
-            if (hdr.length > c.frame_buf.len) return;
-            const payload = c.frame_buf[0..hdr.length];
+            if (hdr.length > frame_buf.len) return;
+            const payload = frame_buf[0..hdr.length];
             if (payload.len > 0) in.readSliceAll(payload) catch return;
 
             const frame = h2.parseFrame(hdr, payload) catch return;
@@ -442,18 +449,21 @@ pub const GrpcReceiver = struct {
                 .window_update, .priority, .rst_stream, .unknown => {},
                 .headers => |h| {
                     cur_stream = h.stream_id;
+                    stream_end_seen = h.end_stream;
                     hdr_block.clearRetainingCapacity();
                     req_body.clearRetainingCapacity();
                     hdr_block.appendSlice(r.gpa, h.fragment) catch return;
                     if (h.end_headers) {
                         hpack.freeHeaders(r.gpa, req_headers);
+                        req_headers = &.{};
                         req_headers = hpack_dec.decode(hdr_block.items, r.gpa) catch return;
                         hdr_block.clearRetainingCapacity();
-                    }
-                    if (h.end_stream) {
-                        if (!r.handleStream(out, cur_stream, req_headers, req_body.items, index, alpn_proto, &dynamic_seq)) {
-                            gracefulDrain(io, stream, in);
-                            return;
+                        if (stream_end_seen) {
+                            stream_end_seen = false;
+                            if (!r.handleStream(out, cur_stream, req_headers, req_body.items, index, alpn_proto, &dynamic_seq)) {
+                                gracefulDrain(io, stream, in);
+                                return;
+                            }
                         }
                     }
                 },
@@ -461,8 +471,16 @@ pub const GrpcReceiver = struct {
                     hdr_block.appendSlice(r.gpa, cont.fragment) catch return;
                     if (cont.end_headers) {
                         hpack.freeHeaders(r.gpa, req_headers);
+                        req_headers = &.{};
                         req_headers = hpack_dec.decode(hdr_block.items, r.gpa) catch return;
                         hdr_block.clearRetainingCapacity();
+                        if (stream_end_seen) {
+                            stream_end_seen = false;
+                            if (!r.handleStream(out, cur_stream, req_headers, req_body.items, index, alpn_proto, &dynamic_seq)) {
+                                gracefulDrain(io, stream, in);
+                                return;
+                            }
+                        }
                     }
                 },
                 .data => |d| {
@@ -599,7 +617,7 @@ pub const GrpcReceiver = struct {
         try h2.writeHeaderBlock(out, stream_id, hdr_out.written(), h2.default_max_frame_size, false);
 
         if (reply.grpc_status == 0 or reply.body.len > 0) {
-            const framed = try grpc.frameEncode(
+            const framed = try grpc_frame.frameEncode(
                 r.gpa,
                 reply.body,
                 if (reply.compress_response) .gzip else .none,
@@ -641,7 +659,7 @@ pub const GrpcReceiver = struct {
         for (headers) |h| {
             if (std.mem.eql(u8, h.name, "grpc-encoding")) enc = h.value;
         }
-        const decoded_body = try grpc.frameDecode(r.gpa, raw_body, enc, 64 * 1024 * 1024);
+        const decoded_body = try grpc_frame.frameDecode(r.gpa, raw_body, enc, 64 * 1024 * 1024);
         defer r.gpa.free(decoded_body);
 
         r.mutex.lockUncancelable(r.io);

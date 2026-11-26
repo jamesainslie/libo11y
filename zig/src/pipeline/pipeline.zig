@@ -22,11 +22,13 @@ pub const sampler = @import("sampler.zig");
 pub const span = @import("span.zig");
 pub const tracer = @import("tracer.zig");
 
+const o11y_wire = @import("o11y_wire");
+
 pub const otlp = struct {
     pub const json = @import("otlp/json.zig");
-    pub const http = @import("otlp/http.zig");
-    pub const hpack = @import("otlp/hpack.zig");
-    pub const h2 = @import("otlp/h2.zig");
+    pub const http = o11y_wire.http;
+    pub const hpack = o11y_wire.hpack;
+    pub const h2 = o11y_wire.h2;
     pub const grpc = @import("otlp/grpc.zig");
     pub const transport = @import("otlp/transport.zig");
     pub const env = @import("otlp/env.zig");

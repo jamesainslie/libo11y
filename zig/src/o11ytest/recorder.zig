@@ -282,10 +282,12 @@ pub const Recorder = struct {
     otlp_log_capture: OtlpLogCapture,
     console_capture: ConsoleCapture,
 
-    // Storage for query results returned by `metrics()`, `metricNames()`,
-    // `exemplars()`, etc., cleared on `reset()` and freed on `deinit()`.
+    // Storage for query snapshots returned by `spans()`, `logs()`, `otlpLogs()`,
+    // `consoleOutput()`, `metrics()`, `metricNames()`, and `exemplars()`.
+    // Lock order: always acquire `query_mutex` BEFORE any capture mutex.
+    // Capture callbacks never acquire `query_mutex`.
     query_mutex: Io.Mutex = .init,
-    collected_metrics: std.ArrayList(o11y.ResourceMetrics) = .empty,
+    collected_metrics: std.ArrayList(*o11y.ResourceMetrics) = .empty,
     query_arena: std.heap.ArenaAllocator,
 
     /// Shuts down telemetry (if not already shut down) and frees all owned memory.
@@ -296,7 +298,10 @@ pub const Recorder = struct {
     }
 
     fn deinitCaptures(self: *Recorder) void {
-        for (self.collected_metrics.items) |*rm| rm.deinit();
+        for (self.collected_metrics.items) |rm| {
+            rm.deinit();
+            self.gpa.destroy(rm);
+        }
         self.collected_metrics.deinit(self.gpa);
         self.query_arena.deinit();
         self.span_recorder.deinit();
@@ -331,13 +336,16 @@ pub const Recorder = struct {
         if (!self.t.shutdown_started.load(.acquire)) {
             _ = self.t.forceFlush(null);
         }
+        self.query_mutex.lockUncancelable(self.io);
+        defer self.query_mutex.unlock(self.io);
         self.span_recorder.reset();
         self.log_capture.reset();
         self.otlp_log_capture.reset();
         self.console_capture.reset();
-        self.query_mutex.lockUncancelable(self.io);
-        defer self.query_mutex.unlock(self.io);
-        for (self.collected_metrics.items) |*rm| rm.deinit();
+        for (self.collected_metrics.items) |rm| {
+            rm.deinit();
+            self.gpa.destroy(rm);
+        }
         self.collected_metrics.clearRetainingCapacity();
         _ = self.query_arena.reset(.retain_capacity);
     }
@@ -346,11 +354,14 @@ pub const Recorder = struct {
     // Spans
     // -----------------------------------------------------------------------
 
-    /// Returns all ended sampled spans in end order.
+    /// Returns a thread-safe snapshot of all ended sampled spans in end order.
+    /// The returned slice stays valid until `reset()` or `deinit()`.
     pub fn spans(self: *Recorder) []const *const o11y.SpanData {
+        self.query_mutex.lockUncancelable(self.io);
+        defer self.query_mutex.unlock(self.io);
         self.span_recorder.mutex.lockUncancelable(self.io);
         defer self.span_recorder.mutex.unlock(self.io);
-        return self.span_recorder.spans.items;
+        return self.query_arena.allocator().dupe(*const o11y.SpanData, self.span_recorder.spans.items) catch &.{};
     }
 
     /// Returns the first recorded span named `name`, or null.
@@ -382,18 +393,26 @@ pub const Recorder = struct {
     // Logs (structured, console JSON, and OTLP)
     // -----------------------------------------------------------------------
 
-    /// Returns all structured log records captured so far, in emission order.
+    /// Returns a thread-safe snapshot of all structured log records captured so
+    /// far, in emission order. The returned slice stays valid until `reset()`
+    /// or `deinit()`.
     pub fn logs(self: *Recorder) []const LogRecord {
+        self.query_mutex.lockUncancelable(self.io);
+        defer self.query_mutex.unlock(self.io);
         self.log_capture.mutex.lockUncancelable(self.io);
         defer self.log_capture.mutex.unlock(self.io);
-        return self.log_capture.records.items;
+        const src = self.log_capture.records.items;
+        const out = self.query_arena.allocator().alloc(LogRecord, src.len) catch return &.{};
+        for (out, src) |*dst, ptr| dst.* = ptr.*;
+        return out;
     }
 
     /// Returns the first captured log record with message `msg`, or null.
+    /// The returned pointer stays valid until `reset()` or `deinit()`.
     pub fn log(self: *Recorder, msg: []const u8) ?*const LogRecord {
         self.log_capture.mutex.lockUncancelable(self.io);
         defer self.log_capture.mutex.unlock(self.io);
-        for (self.log_capture.records.items) |*rec| {
+        for (self.log_capture.records.items) |rec| {
             if (std.mem.eql(u8, rec.message, msg)) return rec;
         }
         return null;
@@ -410,10 +429,11 @@ pub const Recorder = struct {
     }
 
     /// Asserts that an event with `event.name == name` was captured and returns it.
+    /// The returned pointer stays valid until `reset()` or `deinit()`.
     pub fn expectEvent(self: *Recorder, name: []const u8) AssertError!*const LogRecord {
         self.log_capture.mutex.lockUncancelable(self.io);
         defer self.log_capture.mutex.unlock(self.io);
-        for (self.log_capture.records.items) |*rec| {
+        for (self.log_capture.records.items) |rec| {
             if (rec.eventName()) |en| {
                 if (std.mem.eql(u8, en, name)) return rec;
             }
@@ -421,36 +441,47 @@ pub const Recorder = struct {
         return error.EventNotFound;
     }
 
-    /// Returns the raw console output bytes captured so far.
+    /// Returns a thread-safe snapshot of the raw console output bytes captured
+    /// so far. Stays valid until `reset()` or `deinit()`.
     pub fn consoleOutput(self: *Recorder) []const u8 {
+        self.query_mutex.lockUncancelable(self.io);
+        defer self.query_mutex.unlock(self.io);
         self.console_capture.mutex.lockUncancelable(self.io);
         defer self.console_capture.mutex.unlock(self.io);
-        return self.console_capture.buf.items;
+        return self.query_arena.allocator().dupe(u8, self.console_capture.buf.items) catch "";
     }
 
     /// Returns each non-empty line written to the console buffer. Caller owns
-    /// the returned slice (the line slices point into the recorder's buffer).
+    /// the returned slice; each line slice points into a snapshot owned by the
+    /// recorder until `reset()` or `deinit()`.
     pub fn consoleLogs(self: *Recorder, gpa: Allocator) Allocator.Error![][]const u8 {
-        self.console_capture.mutex.lockUncancelable(self.io);
-        defer self.console_capture.mutex.unlock(self.io);
+        const snapshot = blk: {
+            self.query_mutex.lockUncancelable(self.io);
+            defer self.query_mutex.unlock(self.io);
+            self.console_capture.mutex.lockUncancelable(self.io);
+            defer self.console_capture.mutex.unlock(self.io);
+            break :blk try self.query_arena.allocator().dupe(u8, self.console_capture.buf.items);
+        };
         var lines: std.ArrayList([]const u8) = .empty;
         errdefer lines.deinit(gpa);
-        var it = std.mem.splitScalar(u8, self.console_capture.buf.items, '\n');
+        var it = std.mem.splitScalar(u8, snapshot, '\n');
         while (it.next()) |line| {
             if (line.len > 0) try lines.append(gpa, line);
         }
         return lines.toOwnedSlice(gpa);
     }
 
-    /// Flushes the OTLP log pipeline (when active) and returns every exported
-    /// OTLP `LogData` record captured so far.
+    /// Flushes the OTLP log pipeline (when active) and returns a thread-safe
+    /// snapshot of every exported OTLP `LogData` record captured so far.
     pub fn otlpLogs(self: *Recorder) []const *const o11y.LogData {
         if (!self.t.shutdown_started.load(.acquire)) {
             _ = self.t.forceFlush(null);
         }
+        self.query_mutex.lockUncancelable(self.io);
+        defer self.query_mutex.unlock(self.io);
         self.otlp_log_capture.mutex.lockUncancelable(self.io);
         defer self.otlp_log_capture.mutex.unlock(self.io);
-        return self.otlp_log_capture.records.items;
+        return self.query_arena.allocator().dupe(*const o11y.LogData, self.otlp_log_capture.records.items) catch &.{};
     }
 
     /// Plants a synthetic `LogRecord` directly into the capture buffer without
@@ -470,15 +501,18 @@ pub const Recorder = struct {
         return self.metric_reader.collect(gpa);
     }
 
-    /// Collects metrics from the manual reader and caches the snapshot in the
-    /// recorder until `reset()` or `deinit()`.
+    /// Collects metrics from the manual reader and caches the heap-allocated
+    /// snapshot in the recorder until `reset()` or `deinit()`. Previously
+    /// returned pointers remain valid across subsequent calls.
     pub fn metrics(self: *Recorder) CollectError!*const o11y.ResourceMetrics {
-        var rm = try self.metric_reader.collect(self.gpa);
+        const rm = try self.gpa.create(o11y.ResourceMetrics);
+        errdefer self.gpa.destroy(rm);
+        rm.* = try self.metric_reader.collect(self.gpa);
         errdefer rm.deinit();
         self.query_mutex.lockUncancelable(self.io);
         defer self.query_mutex.unlock(self.io);
         try self.collected_metrics.append(self.gpa, rm);
-        return &self.collected_metrics.items[self.collected_metrics.items.len - 1];
+        return rm;
     }
 
     /// Collects metrics and returns the names of all recorded instruments.
@@ -1009,7 +1043,7 @@ const LogCapture = struct {
     io: Io,
     mutex: Io.Mutex = .init,
     arena: std.heap.ArenaAllocator,
-    records: std.ArrayList(LogRecord) = .empty,
+    records: std.ArrayList(*const LogRecord) = .empty,
 
     fn init(gpa: Allocator, io: Io) LogCapture {
         return .{ .gpa = gpa, .io = io, .arena = .init(gpa) };
@@ -1062,13 +1096,15 @@ const LogCapture = struct {
         if (sc.trace_state.header.len > 0) {
             sc.trace_state = .{ .header = try a.dupe(u8, sc.trace_state.header) };
         }
-        try self.records.append(self.gpa, .{
+        const entry = try a.create(LogRecord);
+        entry.* = .{
             .time_unix_nano = rec.time_unix_nano,
             .level = rec.level,
             .message = msg_copy,
             .span_context = sc,
             .attributes = attrs_copy,
-        });
+        };
+        try self.records.append(self.gpa, entry);
     }
 };
 

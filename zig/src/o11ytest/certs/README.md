@@ -1,8 +1,9 @@
 # TLS test fixtures
 
-These PEM files are test fixtures for the OTLP/HTTP transport tests in
-`../transport_test.zig` and the test receiver in `../receiver.zig`. They
-are not secrets and protect nothing.
+These PEM files are test fixtures for `../test_certs.zig`, the in-process
+OTLP/HTTP receiver (`../http_receiver.zig`), the OTLP/gRPC receiver
+(`../grpc_receiver.zig`), and the wire tests (`../wire_test.zig`). They are
+not secrets and protect nothing.
 
 | File | What it is |
 |---|---|
@@ -29,7 +30,7 @@ go 1.26
 Then run it from that directory, naming this directory as the output:
 
 ```sh
-go run . <repo>/zig/src/pipeline/otlp/test/certs
+go run . <repo>/zig/src/o11ytest/certs
 ```
 
 The program:

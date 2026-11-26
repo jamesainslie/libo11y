@@ -13,9 +13,10 @@ const proto = @import("opentelemetry-proto");
 const Io = std.Io;
 const net = Io.net;
 const Allocator = std.mem.Allocator;
-const http = @import("../http.zig");
-const hpack = @import("../hpack.zig");
-const h2 = @import("../h2.zig");
+const o11y_wire = @import("o11y_wire");
+const http = o11y_wire.http;
+const hpack = o11y_wire.hpack;
+const h2 = o11y_wire.h2;
 const grpc = @import("../grpc.zig");
 const receiver = @import("receiver.zig");
 
@@ -391,6 +392,7 @@ pub const GrpcReceiver = struct {
                     hdr_block.appendSlice(r.gpa, h.fragment) catch return;
                     if (h.end_headers) {
                         hpack.freeHeaders(r.gpa, req_headers);
+                        req_headers = &.{};
                         req_headers = hpack_dec.decode(hdr_block.items, r.gpa) catch return;
                         hdr_block.clearRetainingCapacity();
                     }
@@ -405,6 +407,7 @@ pub const GrpcReceiver = struct {
                     hdr_block.appendSlice(r.gpa, cont.fragment) catch return;
                     if (cont.end_headers) {
                         hpack.freeHeaders(r.gpa, req_headers);
+                        req_headers = &.{};
                         req_headers = hpack_dec.decode(hdr_block.items, r.gpa) catch return;
                         hdr_block.clearRetainingCapacity();
                     }

@@ -185,3 +185,72 @@ test "expectConforms and expectCorrelated pass on default clean harness" {
     try rec.expectConforms();
     try rec.expectCorrelated();
 }
+
+test "recorder metric and log pointers remain valid across reallocations and concurrent emissions" {
+    const io = testing.io;
+    const rec = try o11ytest.start(testing.allocator, io, .{});
+    defer rec.deinit();
+
+    // 1. Metric pointers survive repeated collections that grow collected_metrics.
+    const counter = rec.meter("svc").counter(i64, "stable.counter", .{ .unit = "1" });
+    counter.add(.background, 1, &.{});
+    const m1 = try rec.metrics();
+    const p1 = try rec.expectMetric("stable.counter");
+    try testing.expectEqual(@as(i64, 1), p1.data.sum.data_points[0].value.int);
+
+    for (0..24) |_| {
+        counter.add(.background, 1, &.{});
+        _ = try rec.metrics();
+    }
+    // Original pointers still read the original snapshot value without UAF.
+    try testing.expectEqual(@as(i64, 1), m1.find("stable.counter").?.data.sum.data_points[0].value.int);
+    try testing.expectEqual(@as(i64, 1), p1.data.sum.data_points[0].value.int);
+    try testing.expectEqual(@as(i64, 25), (try rec.expectMetric("stable.counter")).data.sum.data_points[0].value.int);
+
+    // 2. LogRecord pointers survive many subsequent log emissions that grow records.
+    rec.logger().info(.background, "first-log", .{ .idx = 0 });
+    const l1 = try rec.expectLog("first-log");
+    for (1..40) |i| {
+        rec.logger().info(.background, "later-log", .{ .idx = @as(i64, @intCast(i)) });
+    }
+    try testing.expectEqualStrings("first-log", l1.message);
+    try testing.expectEqual(@as(i64, 0), l1.attr("idx").?.int);
+
+    // 3. Concurrent emission + snapshot/conformance queries do not race or UAF.
+    const Emitter = struct {
+        fn run(r: *o11ytest.Recorder) anyerror!void {
+            const c = r.meter("conc").counter(i64, "conc.hits", .{ .unit = "1" });
+            for (0..25) |i| {
+                var sp = r.tracer("conc").start(.background, "conc-op", .{});
+                const ctx = o11y.Context.background.withSpan(&sp);
+                r.logger().info(ctx, "conc-msg", .{ .seq = @as(i64, @intCast(i)) });
+                c.add(ctx, 1, &.{});
+                sp.end();
+            }
+        }
+    };
+
+    var fut = try io.concurrent(Emitter.run, .{rec});
+    var early_spans: []const *const o11y.SpanData = &.{};
+    var early_logs: []const o11ytest.LogRecord = &.{};
+    for (0..25) |_| {
+        const sp_snap = rec.spans();
+        const lg_snap = rec.logs();
+        _ = rec.consoleOutput();
+        _ = rec.otlpLogs();
+        if (early_spans.len == 0 and sp_snap.len > 0) early_spans = sp_snap;
+        if (early_logs.len == 0 and lg_snap.len > 0) early_logs = lg_snap;
+        var rep = try rec.checkConforms(testing.allocator);
+        defer rep.deinit();
+        try testing.expect(rep.ok());
+        var corr = try rec.checkCorrelated(testing.allocator);
+        defer corr.deinit();
+        try testing.expect(corr.ok());
+    }
+    try fut.await(io);
+
+    // Earlier snapshots remain intact after the emitter finishes.
+    for (early_spans) |sp| try testing.expectEqualStrings("conc-op", sp.name);
+    try testing.expect(early_logs.len > 0);
+    try testing.expectEqual(@as(usize, 25), rec.spans().len);
+}

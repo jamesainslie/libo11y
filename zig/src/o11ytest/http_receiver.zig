@@ -18,7 +18,7 @@ const tls = @import("tls");
 const proto = @import("opentelemetry-proto");
 const o11y = @import("o11y");
 const otlp_json = o11y.otlp.json;
-const wire_http = o11y.wire.http;
+const wire_http = @import("o11y_wire").http;
 const test_certs = @import("test_certs.zig");
 
 /// One HTTP header recorded on a request.
@@ -82,7 +82,7 @@ pub const HttpReceiver = struct {
     listener: net.Server,
     secure: bool,
     replies: []const Reply,
-    cert_key: tls.config.CertKeyPair = undefined,
+    cert_key: ?tls.config.CertKeyPair = null,
     client_ca: ?tls.config.cert.Bundle = null,
     accept_task: Io.Future(Io.Cancelable!void) = undefined,
     group: Io.Group = .init,
@@ -124,13 +124,15 @@ pub const HttpReceiver = struct {
         }
         r.replies = replies;
 
+        // Allocate TLS material into `r.arena` so both `stop()` and partial
+        // init errors (including upstream `tls.config.cert.fromSlice` parse
+        // failures) release every byte via `r.arena.deinit()`.
         if (options.tls) |t| {
-            r.cert_key = try tls.config.CertKeyPair.fromSlice(gpa, io, t.cert_pem, t.key_pem);
+            r.cert_key = try tls.config.CertKeyPair.fromSlice(a, io, t.cert_pem, t.key_pem);
             if (t.client_ca_pem) |pem| {
-                r.client_ca = try tls.config.cert.fromSlice(gpa, io, pem);
+                r.client_ca = try tls.config.cert.fromSlice(a, io, pem);
             }
         }
-        errdefer r.freeTls();
 
         const address = try net.IpAddress.parse("127.0.0.1", 0);
         r.listener = try address.listen(io, .{ .reuse_address = true });
@@ -162,7 +164,6 @@ pub const HttpReceiver = struct {
         }
         r.group.cancel(io);
         r.listener.deinit(io);
-        r.freeTls();
         r.open.deinit(r.gpa);
         r.recorded.deinit(r.gpa);
         r.decoded_traces.deinit(r.gpa);
@@ -170,12 +171,6 @@ pub const HttpReceiver = struct {
         r.decoded_logs.deinit(r.gpa);
         r.arena.deinit();
         r.gpa.destroy(r);
-    }
-
-    fn freeTls(r: *HttpReceiver) void {
-        if (!r.secure) return;
-        r.cert_key.deinit(r.gpa);
-        if (r.client_ca) |*b| b.deinit(r.gpa);
     }
 
     /// The bound ephemeral TCP port.
@@ -220,25 +215,28 @@ pub const HttpReceiver = struct {
         return r.recorded.items[i];
     }
 
-    /// All decoded OTLP trace `ResourceSpans` received so far (protobuf and JSON).
+    /// Thread-safe snapshot of all decoded OTLP trace `ResourceSpans` received
+    /// so far (protobuf and JSON). Valid until `deinit()`.
     pub fn traces(r: *HttpReceiver) []const proto.trace_v1.ResourceSpans {
         r.mutex.lockUncancelable(r.io);
         defer r.mutex.unlock(r.io);
-        return r.decoded_traces.items;
+        return r.arena.allocator().dupe(proto.trace_v1.ResourceSpans, r.decoded_traces.items) catch &.{};
     }
 
-    /// All decoded OTLP metrics `ResourceMetrics` received so far (protobuf and JSON).
+    /// Thread-safe snapshot of all decoded OTLP metrics `ResourceMetrics`
+    /// received so far (protobuf and JSON). Valid until `deinit()`.
     pub fn metrics(r: *HttpReceiver) []const proto.metrics_v1.ResourceMetrics {
         r.mutex.lockUncancelable(r.io);
         defer r.mutex.unlock(r.io);
-        return r.decoded_metrics.items;
+        return r.arena.allocator().dupe(proto.metrics_v1.ResourceMetrics, r.decoded_metrics.items) catch &.{};
     }
 
-    /// All decoded OTLP logs `ResourceLogs` received so far (protobuf and JSON).
+    /// Thread-safe snapshot of all decoded OTLP logs `ResourceLogs` received
+    /// so far (protobuf and JSON). Valid until `deinit()`.
     pub fn logs(r: *HttpReceiver) []const proto.logs_v1.ResourceLogs {
         r.mutex.lockUncancelable(r.io);
         defer r.mutex.unlock(r.io);
-        return r.decoded_logs.items;
+        return r.arena.allocator().dupe(proto.logs_v1.ResourceLogs, r.decoded_logs.items) catch &.{};
     }
 
     /// Number of accepted TCP connections.
@@ -340,9 +338,10 @@ pub const HttpReceiver = struct {
         var out: *Io.Writer = &c.tcp_writer.interface;
 
         if (r.secure) {
+            const auth_ptr = if (r.cert_key) |*ck| ck else return;
             c.tls_conn = tls.server(in, out, .{
                 .rng = c.rng_source.interface(),
-                .auth = &r.cert_key,
+                .auth = auth_ptr,
                 .client_auth = if (r.client_ca) |b| .{ .root_ca = b, .auth_type = .require } else null,
                 .now = Io.Clock.real.now(io),
             }) catch {

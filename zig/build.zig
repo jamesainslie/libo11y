@@ -82,6 +82,17 @@ pub fn build(b: *std.Build) !void {
         },
     });
 
+    // Private OTLP wire framing module shared by `o11y` and `o11ytest`.
+    // Created with `createModule`, never added, so consumers cannot import it.
+    const o11y_wire = b.createModule(.{
+        .root_source_file = b.path("src/pipeline/otlp/wire/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "tls", .module = tls },
+        },
+    });
+
     const manifest = @import("build.zig.zon");
     const options = b.addOptions();
     options.addOption([]const u8, "version", manifest.version);
@@ -94,6 +105,7 @@ pub fn build(b: *std.Build) !void {
             .{ .name = "opentelemetry-proto", .module = proto },
             .{ .name = "protobuf", .module = protobuf },
             .{ .name = "tls", .module = tls },
+            .{ .name = "o11y_wire", .module = o11y_wire },
             .{ .name = "build_options", .module = options.createModule() },
         },
     });
@@ -107,12 +119,16 @@ pub fn build(b: *std.Build) !void {
             .{ .name = "opentelemetry-proto", .module = proto },
             .{ .name = "protobuf", .module = protobuf },
             .{ .name = "tls", .module = tls },
+            .{ .name = "o11y_wire", .module = o11y_wire },
         },
     });
 
     const tests = b.addTest(.{ .root_module = o11y });
     const test_step = b.step("test", "Run the libo11y tests");
     test_step.dependOn(&b.addRunArtifact(tests).step);
+
+    const wire_tests = b.addTest(.{ .root_module = o11y_wire });
+    test_step.dependOn(&b.addRunArtifact(wire_tests).step);
 
     const o11ytest_tests = b.addTest(.{ .root_module = o11ytest });
     test_step.dependOn(&b.addRunArtifact(o11ytest_tests).step);

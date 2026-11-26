@@ -205,15 +205,6 @@ pub const otlp = struct {
     pub const json = @import("pipeline/otlp/json.zig");
 };
 
-/// Internal OTLP wire framing helpers used by `o11ytest` receivers.
-/// Not part of the stable public API.
-pub const wire = struct {
-    pub const http = @import("pipeline/otlp/http.zig");
-    pub const h2 = @import("pipeline/otlp/h2.zig");
-    pub const hpack = @import("pipeline/otlp/hpack.zig");
-    pub const grpc = @import("pipeline/otlp/grpc.zig");
-};
-
 // Propagation public types.
 pub const Carrier = propagation.Carrier;
 pub const Propagator = propagation.Propagator;
