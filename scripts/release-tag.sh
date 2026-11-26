@@ -9,11 +9,12 @@
 #   go/vX.Y.Z                    github.com/jamesainslie/libo11y/go
 #   go/<sub>/vX.Y.Z              the o11ygin, o11yconnect and o11ysql submodules
 #   ts/vX.Y.Z                    every @libo11y/* package, at one version
+#   zig/vX.Y.Z                   the libo11y Zig package (libo11y-zig)
 #
 # Prints one key=value line each, for $GITHUB_OUTPUT:
-#   kind        go or ts
-#   dir         the released directory: go, go/<sub> or ts
-#   module      the Go module path, or @libo11y for the TypeScript packages
+#   kind        go, ts or zig
+#   dir         the released directory: go, go/<sub>, ts or zig
+#   module      the Go module path, @libo11y for TypeScript, or libo11y-zig for Zig
 #   version     X.Y.Z[-prerelease], without the v
 #   prerelease  true when the version has a -prerelease suffix
 # and a one-line summary on stderr. Exits 1 for a tag that is not a release
@@ -39,8 +40,12 @@ ts/v*)
 	kind=ts
 	dir=ts
 	;;
+zig/v*)
+	kind=zig
+	dir=zig
+	;;
 *)
-	echo "release-tag: $tag is not a release tag (go/vX.Y.Z, go/<submodule>/vX.Y.Z or ts/vX.Y.Z)" >&2
+	echo "release-tag: $tag is not a release tag (go/vX.Y.Z, go/<submodule>/vX.Y.Z, ts/vX.Y.Z or zig/vX.Y.Z)" >&2
 	exit 1
 	;;
 esac
@@ -58,11 +63,17 @@ if [[ -n "${BASH_REMATCH[4]}" ]]; then
 	prerelease=true
 fi
 
-if [[ "$kind" == go ]]; then
+case "$kind" in
+go)
 	module="github.com/jamesainslie/libo11y/$dir"
-else
+	;;
+ts)
 	module="@libo11y"
-fi
+	;;
+zig)
+	module="libo11y-zig"
+	;;
+esac
 
 printf '%s\n' "kind=$kind" "dir=$dir" "module=$module" "version=$version" "prerelease=$prerelease"
 echo "$tag releases $module v$version (prerelease: $prerelease)" >&2

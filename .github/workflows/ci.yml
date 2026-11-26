@@ -271,4 +271,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "24.x"
-      - run: make release-check
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: "0.17.1"
+      - run: make release-check ZIG_BUILD_J=4

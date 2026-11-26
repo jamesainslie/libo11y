@@ -25,12 +25,17 @@ All three signals are first-class and OTLP-native:
   endpoints of libo11y's own. One standard route to a scrape endpoint
   remains in Go: exporter selection is delegated to OpenTelemetry's
   autoexport, so `OTEL_METRICS_EXPORTER=prometheus` starts upstream's
-  Prometheus exporter. TypeScript rejects that value.
-  Runtime metrics on by default.
+  Prometheus exporter. TypeScript and Zig reject that value.
+  Runtime metrics on by default (Zig collects semantic-convention process
+  metrics, as it has no garbage-collected runtime).
 - **Logs**: the language's standard structured-logging facade is the front
-  door (Go: `slog`; Rust: `tracing`; Java: SLF4J; Zig: `std.log` wrapping).
-  TypeScript has no such facade, so there the front door is the libo11y
-  logger, and an option routes `console` calls into it.
+  door (Go: `slog`; Rust: `tracing`; Java: SLF4J). TypeScript has no such
+  facade, so there the front door is the libo11y logger, and an option routes
+  `console` calls into it. In Zig, `std.log` takes no context argument, so
+  the correlated front door is `sdk.logger()` taking an explicit
+  `o11y.Context`, while `pub const std_options = o11y.std_options;` routes
+  `std.log` into the pipeline (with optional synchronous correlation via
+  `o11y.bindThread`).
   Records flow to both a console stream and the OTLP pipeline, both carrying
   the active trace and span identifiers.
 
@@ -126,12 +131,16 @@ libo11y honors the standard OpenTelemetry environment surface
 `OTEL_TRACES_SAMPLER`, `OTEL_{TRACES,METRICS,LOGS}_EXPORTER`, and so on) and
 never invents a parallel variable for anything OTEL already specifies.
 Language implementations delegate env parsing to their OTEL SDK or contrib
-packages rather than reimplementing it, where the SDK offers a way to.
+packages rather than reimplementing it, where the SDK offers a way to. In
+Zig, where libo11y owns its pipeline over vendored OTLP protobuf bindings,
+setup takes an explicit `o11y.Env` value (such as Zig 0.17's `environ_map`
+or `.hermetic`) and never reads the ambient process environment on its own.
 [PARITY.md](PARITY.md) lists the standard variables an implementation does
 not honor yet, such as `OTEL_PROPAGATORS`.
 
 The one exception is explicit and opt-in: a hermetic mode (Go:
-`WithoutOTELEnv`, which the test harness uses) in which no `OTEL_*`
+`WithoutOTELEnv`; TypeScript: `hermetic: true`; Zig: `.env = .hermetic`,
+which is the default) in which no `OTEL_*`
 variable affects behavior, configuration comes only from code options and
 library defaults, and a signal with nothing injected is disabled rather
 than built from the environment. In Go, two experimental switches with no
@@ -144,7 +153,9 @@ environment resource.
 Service identity: `service.name` must resolve from option or environment;
 implementations refuse to start production telemetry as `unknown_service`.
 Resources are composed from detectors (host, process, environment) with
-explicit attributes taking highest precedence. libo11y's own attributes and
+explicit attributes taking highest precedence; in Zig, where binaries embed
+no module build info, `libo11y.addBuildInfo` optionally stamps VCS and
+version metadata at build time. libo11y's own attributes and
 generated constants follow a single pinned semantic convention version per
 release. Upstream instrumentation and detectors emit the attributes of the
 semconv release they were built against, which can be newer than the pin.
@@ -154,14 +165,17 @@ semconv release they were built against, which can be newer than the pin.
 Three complementary layers, all language-idiomatic:
 
 1. **Capture-time**: type-level protection so sensitive values render redacted
-   wherever they are logged (Go: `slog.LogValuer`; Rust: derive with
-   `Display`-only output; Java: annotation processor or wrapper types).
+   wherever they are logged (Go: `slog.LogValuer`; Zig: `o11y.redact.Secret`,
+   `Masked`, and `Struct` guarding `std.fmt`, `std.json`, and the logger;
+   Rust: derive with `Display`-only output; Java: annotation processor or
+   wrapper types).
    Protections: `mask` (same-length X string), `redact` (literal `REDACTED`),
    `omit` (field absent). Strictest wins through nesting. Two more tag
    values are accepted as synonyms: `confidential` masks and `secret`
    redacts. Of the specification's sensitivity classes only `secret` is a
-   tag value. `public`, `internal` and `pii` are not, and an unknown tag
-   fails closed to `redact`.
+   tag value. `public`, `internal` and `pii` are not; an unknown tag fails
+   closed to `redact` at runtime where tags are strings (Go), or fails at
+   compile time where tags are comptime-checked (Zig).
 2. **Emit-time replacer**: an attribute-replacer hook applied to every log
    record on every sink of the language's logging facade (Go: every slog
    sink; records from other log bridges do not pass through it), as a
@@ -192,8 +206,9 @@ of map-valued span and metric attributes, attributes a span processor
 reads at span start, and baggage are outside the policy; each
 implementation documents these gaps with its per-signal guarantees (see
 [SPEC.md](SPEC.md), section 5). Baggage egress passes through a filter
-seam on every propagator. Its predicate allows every key, and no public
-option changes it yet.
+seam on every propagator; by default its predicate allows every key (Go
+and TypeScript expose no public option to change it yet, while Zig
+exposes `Options.baggage_egress_allow`).
 
 ## Testability
 
@@ -216,8 +231,8 @@ Shared cases and vectors live under `conformance/` today. They fix the
 outputs every implementation must reproduce exactly: the application
 registry check, the instance ID derivation, the PII token and endpoint
 sanitizing. The registry cases are hand-written, and Go generates the JSON
-vectors. The TypeScript suite tests against all of them, and so does the
-Go suite on `main`. Those Go tests are not in `go/v0.2.0`.
+vectors. The TypeScript and Zig suites test against all of them, and so does
+the Go suite on `main`. Those Go tests are not in `go/v0.2.0`.
 
 The OTLP payload corpus is future work. It will run each implementation's
 example app against a shared OTLP capture harness and diff normalized

@@ -14,8 +14,13 @@
 # Rerunning is safe for packages already on the registry, which are
 # skipped.
 #
-# scripts/release-tag.sh routes the tag. The verify job's kind output, go
-# or ts, selects the jobs and steps that run.
+# A zig/vX.Y.Z tag validates both Zig manifests, zig/CHANGELOG.md, the Zig
+# test suite, and a throwaway consumer tarball build, publishes the GitHub
+# Release titled `libo11y-zig vX.Y.Z` (never marked Latest), and runs a live
+# consumer smoke test fetching `git+https://github.com/<repo>#zig/vX.Y.Z`.
+#
+# scripts/release-tag.sh routes the tag. The verify job's kind output (go,
+# ts or zig) selects the jobs and steps that run.
 name: release
 
 on:
@@ -26,6 +31,7 @@ on:
       - "go/o11yconnect/v*"
       - "go/o11ysql/v*"
       - "ts/v*"
+      - "zig/v*"
 
 permissions:
   contents: read
@@ -62,7 +68,7 @@ jobs:
         run: |
           # The script explains a refused tag on stderr.
           if ! scripts/release-tag.sh "$TAG" >"$RUNNER_TEMP/release-tag.out"; then
-            echo "::error::$TAG is not a release tag with a semantic version (go/vX.Y.Z, go/<submodule>/vX.Y.Z or ts/vX.Y.Z)"
+            echo "::error::$TAG is not a release tag with a semantic version (go/vX.Y.Z, go/<submodule>/vX.Y.Z, ts/vX.Y.Z or zig/vX.Y.Z)"
             exit 1
           fi
           cat "$RUNNER_TEMP/release-tag.out" >>"$GITHUB_OUTPUT"
@@ -156,6 +162,38 @@ jobs:
         env:
           VERSION: ${{ steps.tag.outputs.version }}
         run: scripts/ts-release-check.sh "v$VERSION"
+
+      # The Zig branch. Both manifests (root shim and zig/) must carry the
+      # tag's version and zig/CHANGELOG.md must hold its release notes.
+      - name: Require both Zig manifests at the tag's version
+        if: steps.tag.outputs.kind == 'zig'
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          for manifest in build.zig.zon zig/build.zig.zon; do
+            got="$(sed -nE 's/^[[:space:]]*\.version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "$manifest" | head -n 1)"
+            if [[ "$got" != "$VERSION" ]]; then
+              echo "::error::$manifest is at version ${got:-unset}, not $VERSION"
+              exit 1
+            fi
+          done
+      - name: Check the Zig changelog has release notes
+        if: steps.tag.outputs.kind == 'zig'
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: scripts/release-notes.sh "$VERSION" zig/CHANGELOG.md
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        if: steps.tag.outputs.kind == 'zig'
+        with:
+          version: "0.17.1"
+      - if: steps.tag.outputs.kind == 'zig'
+        run: make zig-check ZIG_BUILD_J=4
+      - name: Validate the Zig package as an external consumer
+        if: steps.tag.outputs.kind == 'zig'
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+          ZIG_BUILD_J: "4"
+        run: scripts/zig-release-check.sh "v$VERSION"
 
   release:
     needs: verify
@@ -440,3 +478,53 @@ jobs:
           printf '{ "name": "libo11y-browser-smoke", "private": true, "type": "module" }\n' >"$consumer/package.json"
           (cd "$consumer" && npm install --no-audit --no-fund --ignore-scripts "@libo11y/web@$VERSION" "@libo11y/webext@$VERSION")
           scripts/ts-browser-bundle-check.sh "$consumer" @libo11y/web=setup @libo11y/webext
+
+  zig-release:
+    needs: verify
+    if: needs.verify.outputs.kind == 'zig'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.verify.outputs.version }}
+          PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+        run: |
+          notes="$RUNNER_TEMP/release-notes.md"
+          scripts/release-notes.sh "$VERSION" zig/CHANGELOG.md >"$notes"
+          title="libo11y-zig v$VERSION"
+          # The Go main module's release stays the repository's Latest release.
+          if gh release view "$TAG" >/dev/null; then
+            echo "$TAG already has a release; replacing its title and notes"
+            gh release edit "$TAG" --title "$title" --notes-file "$notes" --prerelease="$PRERELEASE" --latest=false
+          else
+            gh release create "$TAG" --title "$title" --notes-file "$notes" --verify-tag --prerelease="$PRERELEASE" --latest=false
+          fi
+
+  zig-smoke:
+    needs: [verify, zig-release]
+    if: needs.verify.outputs.kind == 'zig'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: "0.17.1"
+      - name: Fetch the pushed tag and run a consumer against an in-process OTLP receiver
+        env:
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.verify.outputs.version }}
+          ZIG_BUILD_J: "4"
+        run: scripts/zig-release-check.sh "v$VERSION" --url "git+https://github.com/${GITHUB_REPOSITORY}#${TAG}"

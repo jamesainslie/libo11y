@@ -15,9 +15,9 @@ everything is correlated and exported over OTLP.
 |----------|--------|----------|
 | Go | Implemented | [`go/`](go/) |
 | TypeScript | Implemented for Bun, Node, browsers and Manifest V3 extensions. The browser packages first ship in `ts/v0.2.0` | [`ts/`](ts/) |
+| Zig | Implemented for Zig 0.17.1 (`zig/v0.1.0`) | [`zig/`](zig/) |
 | Rust | Planned | [`rust/`](rust/) |
 | Java | Planned | [`java/`](java/) |
-| Zig | In progress, not released | [`zig/`](zig/) |
 
 ## Design principles
 
@@ -86,8 +86,10 @@ validation tables the runtime and test harness share. See [`docs/SPEC.md`](docs/
 specification and [`docs/taxonomy/`](docs/taxonomy/) for the generated
 attribute tables.
 
-The registry generates TypeScript as well as Go. The TypeScript output is
-the package `@libo11y/spec` in [`ts/packages/spec`](ts/packages/spec).
+The registry generates Go, TypeScript, Rust and Zig outputs: `go/spec` and
+`go/internal/spectables`, `@libo11y/spec` in
+[`ts/packages/spec`](ts/packages/spec), `rust/libo11y-spec/src/generated`,
+and `zig/src/spec/generated`.
 Spec 1.1.0 adds the conventions for libo11y RUM, the real-user-monitoring
 product, which [`docs/RUM.md`](docs/RUM.md) describes.
 
@@ -223,6 +225,52 @@ without telemetry. See
 and [`ts/packages/web`](ts/packages/web) and
 [`ts/packages/webext`](ts/packages/webext) for browsers and extensions.
 
+## Installation (Zig)
+
+```sh
+zig fetch --save git+https://github.com/jamesainslie/libo11y#zig/v0.1.0
+```
+
+Requires Zig 0.17.1. The package exports `o11y`, `o11ytest`, and `o11yhttp`
+by default, plus option-gated integrations `o11yhttpz` (`.httpz = true`),
+`o11ypg` (`.pg = true`), and `o11ysqlite` (`.sqlite = true`) whose
+third-party libraries are lazy and fetched only when enabled. It implements
+spec 1.2.0.
+
+## Quick start (Zig)
+
+```zig
+const std = @import("std");
+const o11y = @import("o11y");
+
+pub const std_options = o11y.std_options;
+
+pub fn main(init: std.process.Init) !void {
+    const sdk = o11y.setup(init.gpa, init.io, .{
+        .env = .{ .map = init.environ_map },
+        .service_name = "checkout",
+        .environment = o11y.spec.Environment.production.asStr(),
+    }) catch |err| {
+        std.log.err("telemetry disabled: {s}", .{@errorName(err)});
+        return;
+    };
+    defer sdk.deinit();
+
+    var sp = sdk.tracer("checkout").start(.background, "startup", .{});
+    const ctx = o11y.Context.background.withSpan(&sp);
+    sdk.logger().info(ctx, "ready", .{}); // correlated with the span, exported
+    sp.end();
+
+    _ = sdk.shutdown(null);
+}
+```
+
+libo11y Zig takes `o11y.Context` and `o11y.Env` explicitly (`.hermetic` by
+default), owns its OTLP/HTTP and OTLP/gRPC pipeline over vendored
+`opentelemetry-proto` bindings, and runs the same sensitivity policy,
+exemplars, and conformance suite as Go and TypeScript. See
+[`zig/README.md`](zig/README.md) for the full Zig documentation.
+
 ## Versioning
 
 Each language library versions and releases independently with path-prefixed
@@ -244,6 +292,14 @@ TypeScript release is listed in [`ts/CHANGELOG.md`](ts/CHANGELOG.md).
 `make release-check` also packs the packages and installs them into a
 throwaway consumer under Node and Bun, and it bundles the browser packages
 for the browser.
+
+The Zig package releases from a `zig/vX.Y.Z` tag, starting at `zig/v0.1.0`,
+and is distributed through the root `build.zig` and `build.zig.zon` shim so
+consumers fetch `git+https://github.com/jamesainslie/libo11y#zig/vX.Y.Z`.
+Each Zig release is listed in [`zig/CHANGELOG.md`](zig/CHANGELOG.md) and
+published as a GitHub Release titled `libo11y-zig vX.Y.Z`.
+`make release-check` (and `make zig-release-check`) validates a consumer
+tarball build against an in-process OTLP receiver.
 
 ## License
 
