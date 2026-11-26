@@ -1,8 +1,6 @@
 //! Parity test suite mirroring `go/parity_test.go` and verifying core Go
-//! contract invariants in Zig using `o11ytest`.
-//!
-//! Note: `o11yhttp`, `o11y.detached`, and `o11y.proc` parity tests will be
-//! added in step Z5.
+//! contract invariants in Zig using `o11ytest` (including `o11y.detached` and
+//! `o11y.proc`; `o11yhttp` parity tests live in `zig/src/o11yhttp/integration_test.zig`).
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -631,6 +629,100 @@ test "parity: shutdown is idempotent and emits o11y.telemetry.dropped on export 
 
     const dropped = try rec.expectEvent(spec.event.telemetry_dropped);
     try testing.expectEqualStrings("traces", dropped.attrString(spec.Signal.key).?);
+}
+
+test "parity: o11y.detached captures egress-filtered carrier, round-trips text, and starts linked root" {
+    const rec = try o11ytest.start(testing.allocator, testing.io, .{
+        .baggage_egress_allow = struct {
+            fn allow(key: []const u8) bool {
+                return std.mem.eql(u8, key, "tenant");
+            }
+        }.allow,
+    });
+    defer rec.deinit();
+
+    var origin = rec.tracer("api").start(.background, "enqueue-job", .{});
+    const bag: o11y.Baggage = .{ .members = &.{
+        .{ .key = "tenant", .value = "acme" },
+        .{ .key = "session", .value = "private-token" },
+    } };
+    var captured = try rec.telemetry().captureDetached(
+        testing.allocator,
+        o11y.Context.background.withSpan(&origin).withBaggage(&bag),
+    );
+    defer captured.deinit(testing.allocator);
+    origin.end();
+
+    const wire_text = try captured.marshalText(testing.allocator);
+    defer testing.allocator.free(wire_text);
+    try testing.expect(std.mem.indexOf(u8, wire_text, "tenant%3Dacme") != null);
+    try testing.expect(std.mem.indexOf(u8, wire_text, "session") == null);
+
+    var restored = try o11y.detached.Carrier.unmarshalText(testing.allocator, wire_text);
+    defer restored.deinit(testing.allocator);
+
+    var worker_loop = rec.tracer("worker").start(.background, "poll", .{});
+    const worker_bag: o11y.Baggage = .{ .members = &.{.{ .key = "worker", .value = "w-1" }} };
+    var job = rec.telemetry().startLinked(
+        testing.allocator,
+        o11y.Context.background.withSpan(&worker_loop).withBaggage(&worker_bag),
+        restored,
+        "process-job",
+        .{ .kind = .consumer },
+    );
+    const job_ctx = job.context();
+    try testing.expectEqualStrings("acme", job_ctx.baggage.?.member("tenant").?.value);
+    try testing.expectEqualStrings("w-1", job_ctx.baggage.?.member("worker").?.value);
+    rec.logger().info(job_ctx, "job running", .{});
+    job.end();
+    worker_loop.end();
+
+    const job_span = try rec.expectSpan("process-job");
+    try testing.expect(!job_span.parent.isValid());
+    try testing.expect(!std.mem.eql(u8, &origin.spanContext().trace_id.bytes, &job_span.span_context.trace_id.bytes));
+    try testing.expectEqual(@as(usize, 1), job_span.links.items.len);
+    try testing.expectEqualSlices(u8, &origin.spanContext().span_id.bytes, &job_span.links.items[0].span_context.span_id.bytes);
+    try rec.expectCorrelated();
+    try rec.expectConforms();
+}
+
+test "parity: o11y.proc propagates TRACEPARENT/TRACESTATE through env and framed maps without globals" {
+    const rec_parent = try o11ytest.start(testing.allocator, testing.io, .{ .service_name = "parent-proc" });
+    defer rec_parent.deinit();
+    const rec_child = try o11ytest.start(testing.allocator, testing.io, .{ .service_name = "child-proc" });
+    defer rec_child.deinit();
+
+    var parent_sp = rec_parent.tracer("parent").start(.background, "spawn-child", .{});
+    defer parent_sp.end();
+    const parent_ctx = o11y.Context.background.withSpan(&parent_sp);
+
+    // Child process environment map carries TRACEPARENT & TRACESTATE, keeping unrelated vars.
+    var env_map: std.process.Environ.Map = .init(testing.allocator);
+    defer env_map.deinit();
+    try env_map.put("KEEP_ME", "yes");
+    try env_map.put(o11y.proc.env_tracestate, "stale=1");
+    try o11y.proc.injectEnvMap(parent_ctx, &env_map);
+    try testing.expectEqualStrings("yes", env_map.get("KEEP_ME").?);
+    try testing.expectEqualStrings("", env_map.get(o11y.proc.env_tracestate).?);
+
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const extracted = o11y.proc.extractEnvMap(.background, arena.allocator(), &env_map);
+    var child_sp = rec_child.tracer("child").start(extracted, "worker-run", .{});
+    child_sp.end();
+
+    const child_data = try rec_child.expectSpan("worker-run");
+    try testing.expectEqualSlices(u8, &parent_sp.spanContext().trace_id.bytes, &child_data.span_context.trace_id.bytes);
+    try testing.expectEqualSlices(u8, &parent_sp.spanContext().span_id.bytes, &child_data.parent.span_id.bytes);
+
+    // Framed socket map uses SDK propagator without globals.
+    const bag: o11y.Baggage = .{ .members = &.{.{ .key = "tenant", .value = "acme" }} };
+    var frame: std.StringHashMapUnmanaged([]u8) = .empty;
+    defer o11y.proc.freeFrame(testing.allocator, &frame);
+    o11y.proc.inject(parent_ctx.withBaggage(&bag), testing.allocator, &frame, rec_parent.telemetry());
+    const from_frame = o11y.proc.extract(.background, arena.allocator(), &frame, rec_child.telemetry());
+    try testing.expectEqualSlices(u8, &parent_sp.spanContext().trace_id.bytes, &from_frame.span_context.trace_id.bytes);
+    try testing.expectEqualStrings("acme", from_frame.baggage.?.member("tenant").?.value);
 }
 
 fn findAttr(attrs: []const o11y.Attribute, key: []const u8) ?o11y.AttributeValue {

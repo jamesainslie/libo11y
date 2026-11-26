@@ -48,6 +48,14 @@ pub const spec = @import("spec.zig");
 /// and `Struct(T)`.
 pub const redact = @import("redact.zig");
 
+/// Detached work propagation (`Carrier`, `capture`, `startLinked`), for jobs,
+/// queues, and async tasks that outlive their originating request span.
+pub const detached = @import("detached.zig");
+
+/// Child-process environment (`TRACEPARENT`/`TRACESTATE`) and framed-socket
+/// trace context propagation.
+pub const proc = @import("proc.zig");
+
 // Core lifecycle & setup.
 pub const setup = telemetry_mod.setup;
 pub const init = telemetry_mod.init;
@@ -249,4 +257,6 @@ test {
     _ = signals_mod;
     _ = summary_mod;
     _ = telemetry_mod;
+    _ = detached;
+    _ = proc;
 }
