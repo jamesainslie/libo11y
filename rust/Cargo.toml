@@ -2,7 +2,7 @@
 # together from a rust/vX.Y.Z tag.
 [workspace]
 resolver = "3"
-members = ["libo11y-macros", "libo11y-redact", "libo11y-spec"]
+members = ["libo11y", "libo11y-macros", "libo11y-redact", "libo11y-spec"]
 
 [workspace.package]
 version = "0.0.0"
@@ -17,6 +17,8 @@ homepage = "https://o11y.ing"
 # they are released in lockstep.
 [workspace.dependencies]
 libo11y-macros = { version = "=0.0.0", path = "libo11y-macros" }
+libo11y-redact = { version = "=0.0.0", path = "libo11y-redact" }
+libo11y-spec = { version = "=0.0.0", path = "libo11y-spec" }
 proc-macro2 = { version = "1.0.107", default-features = false, features = ["proc-macro"] }
 quote = { version = "1.0.47", default-features = false, features = ["proc-macro"] }
 serde = { version = "1.0.229", default-features = false, features = ["std"] }
