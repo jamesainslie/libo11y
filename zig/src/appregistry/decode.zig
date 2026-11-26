@@ -48,13 +48,18 @@ pub const Problems = struct {
     }
 };
 
-pub const Error = error{ Syntax, OutOfMemory };
+/// DuplicateKeyMessage is a syntax error whose yaml.v3 message holds the
+/// words "already defined", which Go's conformance test names a duplicate
+/// key.
+pub const Error = error{ Syntax, DuplicateKeyMessage, OutOfMemory };
 
-/// How deep decoding may recurse. Go has no limit. Nested inline merges
-/// recurse once per level and the scanner allows 10000 flow levels, so the
-/// limit sits above that. Only a chain of aliases padded past yaml.v3's
-/// alias budget could go deeper, and that is refused as a syntax error.
-const max_depth = 10_100;
+/// How deep decoding may recurse. Go has no limit, because its stacks grow.
+/// Here each level costs about 2.5 KiB of stack in Debug and less in
+/// ReleaseSafe, and a thread may have as little as 512 KiB, as macOS gives
+/// secondary threads. A registry needs about five levels, plus one for each
+/// merge or alias it nests. One nested deeper than this is refused as a
+/// syntax error, where Go would decode it.
+const max_depth = 128;
 
 /// Decodes root, the content of one document, into a Registry. A syntax
 /// error leaves its reason in diag.
@@ -186,7 +191,17 @@ const Decoder = struct {
         var r: Scalar = .{ .kind = .string, .tag = resolve.str, .text = n.value };
         if (!n.indicatedString()) {
             const res = resolve.resolve(d.arena, n.tag, n.value) catch |err| switch (err) {
-                error.Mismatch => return d.fail(n, "cannot decode the value as its tag says"),
+                error.Mismatch => {
+                    // Go's conformance test names a failure by its message,
+                    // and yaml.v3's message quotes the value and the tag.
+                    if (std.mem.find(u8, n.value, "already defined") != null or
+                        std.mem.find(u8, n.tag, "already defined") != null)
+                    {
+                        d.diag.* = .{ .message = "cannot decode the value as its tag says", .mark = n.mark };
+                        return error.DuplicateKeyMessage;
+                    }
+                    return d.fail(n, "cannot decode the value as its tag says");
+                },
                 error.OutOfMemory => |e| return e,
             };
             r.kind = res.kind;

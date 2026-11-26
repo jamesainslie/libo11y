@@ -194,6 +194,7 @@ pub fn parse(arena: Allocator, raw: []const u8) Allocator.Error!Parsed {
     } orelse return parseFailure(.empty);
     const decoded = decode.decode(arena, root, &diag) catch |err| switch (err) {
         error.Syntax => return syntaxError(diag),
+        error.DuplicateKeyMessage => return parseFailure(.duplicate_key),
         error.OutOfMemory => |e| return e,
     };
     const p = decoded.problems;
@@ -492,16 +493,30 @@ test "fuzz the registry parser" {
     try std.testing.fuzz({}, fuzzCheck, .{ .corpus = &fuzz_corpus });
 }
 
-test "inline merges nest as deep as flow collections may" {
-    const depth = 9000;
+fn nestedMerges(gpa: Allocator, depth: usize) ![]u8 {
     var src: std.ArrayList(u8) = .empty;
-    defer src.deinit(std.testing.allocator);
-    try src.appendSlice(std.testing.allocator, "schema: libo11y.app-registry/v1\nnamespace: shop\nattributes:\n  shop.x: ");
-    for (0..depth) |_| try src.appendSlice(std.testing.allocator, "{<<: ");
-    try src.appendSlice(std.testing.allocator, "{type: string, sensitivity: public, cardinality: low}");
-    for (0..depth) |_| try src.append(std.testing.allocator, '}');
-    try src.append(std.testing.allocator, '\n');
-    try expectOutcome(src.items, "libo11y_cardinality_unknown: attribute shop.x: cardinality \"low\"");
+    errdefer src.deinit(gpa);
+    try src.appendSlice(gpa, "schema: libo11y.app-registry/v1\nnamespace: shop\nattributes:\n  shop.x: ");
+    for (0..depth) |_| try src.appendSlice(gpa, "{<<: ");
+    try src.appendSlice(gpa, "{type: string, sensitivity: public, cardinality: low}");
+    for (0..depth) |_| try src.append(gpa, '}');
+    try src.append(gpa, '\n');
+    return src.toOwnedSlice(gpa);
+}
+
+test "nested merges decode up to the depth limit and fail past it" {
+    const gpa = std.testing.allocator;
+    const shallow = try nestedMerges(gpa, 120);
+    defer gpa.free(shallow);
+    try expectOutcome(shallow, "libo11y_cardinality_unknown: attribute shop.x: cardinality \"low\"");
+    const deep = try nestedMerges(gpa, 9000);
+    defer gpa.free(deep);
+    try expectOutcome(deep, "parse: syntax");
+}
+
+test "a tag mismatch whose message Go names a duplicate key" {
+    try expectOutcome("schema: !!int already defined\n", "parse: duplicate-key");
+    try expectOutcome("schema: !!int client\n", "parse: syntax");
 }
 
 test "an aliased node is resolved once, however often it is visited" {
