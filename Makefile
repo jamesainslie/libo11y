@@ -16,11 +16,11 @@ spec-check:
 	cd go && go run ./internal/specgen -root .. -check
 
 # Directories holding generated artifacts.
-GENERATED := go/spec go/internal/spectables docs/taxonomy spec/schemas ts/packages/spec/src/generated rust/libo11y-spec/src/generated
+GENERATED := go/spec go/internal/spectables docs/taxonomy spec/schemas ts/packages/spec/src/generated rust/libo11y-spec/src/generated zig/src/spec/generated
 
 # Validate the registry, then regenerate go/spec, go/internal/spectables,
-# docs/taxonomy, spec/schemas, ts/packages/spec/src/generated, and
-# rust/libo11y-spec/src/generated from it.
+# docs/taxonomy, spec/schemas, ts/packages/spec/src/generated,
+# rust/libo11y-spec/src/generated, and zig/src/spec/generated from it.
 # An invalid registry generates nothing.
 spec-generate:
 	cd go && go run ./internal/specgen -root ..

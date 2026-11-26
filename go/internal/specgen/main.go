@@ -1,11 +1,11 @@
 // Command specgen generates the libo11y spec artifacts from the registry
 // at spec/registry: the public go/spec package (typed keys, enums, event
 // names, version constants), the go/internal/spectables validation tables,
-// the docs/taxonomy markdown, the TypeScript @libo11y/spec and Rust
-// libo11y-spec generated modules, and the OpenTelemetry schema file at
-// spec/schemas/<version>. Run via `make spec-generate`. Every
-// artifact is rendered in memory first and nothing is written unless all of
-// them render.
+// the docs/taxonomy markdown, the TypeScript @libo11y/spec, Rust
+// libo11y-spec and Zig o11y.spec generated modules, and the OpenTelemetry
+// schema file at spec/schemas/<version>. Run via `make spec-generate`.
+// Every artifact is rendered in memory first and nothing is written unless
+// all of them render.
 //
 // Both modes first validate the registry against the libo11y policy suite
 // (naming, ownership, references, sensitivity, cardinality, enums, events,
@@ -472,6 +472,17 @@ func render(m *model) (map[string]string, error) {
 	outputs[rustSpecPath] = rustSpec
 	outputs[rustTablesPath] = rustTables
 	outputs[rustGoPrintPath] = genRustGoPrint()
+	zigSpec, err := genZigSpec(m)
+	if err != nil {
+		return nil, err
+	}
+	zigTables, err := genZigTables(m)
+	if err != nil {
+		return nil, err
+	}
+	outputs[zigSpecPath] = zigSpec
+	outputs[zigTablesPath] = zigTables
+	outputs[zigGoPrintPath] = genZigGoPrint()
 	goSources := []struct{ rel, src string }{
 		{"go/spec/spec.go", genSpec(m)},
 		{"go/internal/spectables/tables.go", tables},

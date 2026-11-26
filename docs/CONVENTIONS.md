@@ -38,8 +38,9 @@ module itself. Make targets from the repository root:
   [SPEC.md](SPEC.md), section 8.
 - `make spec-generate` validates first, then regenerates `go/spec`,
   `go/internal/spectables`, `docs/taxonomy`,
-  `ts/packages/spec/src/generated`, and the OpenTelemetry schema files
-  under `spec/schemas` from the registry. An invalid registry
+  `ts/packages/spec/src/generated`, `rust/libo11y-spec/src/generated`,
+  `zig/src/spec/generated`, and the OpenTelemetry schema files under
+  `spec/schemas` from the registry. An invalid registry
   generates nothing. Generated files are never edited by hand.
 - `make spec-drift` fails if generated artifacts are stale or if the
   generator produced files git does not track. CI runs it, and a golden
@@ -251,4 +252,7 @@ install that version locally. Keep the two in step when adding a gate.
   `std.debug.print` (also through an alias of `std.debug`), and `catch` or
   `orelse` followed by `unreachable`, outside test blocks and test-only
   files (files under `zig/test/` and files named `*_test.zig`). Every
-  switch on an error set the public API returns is exhaustive.
+  switch on an error set the public API returns is exhaustive. The tests
+  include the shared conformance suite, which reads `conformance/` at run
+  time from `-Dconformance-dir`. It defaults to the repository's
+  directory, and the published package leaves it out.

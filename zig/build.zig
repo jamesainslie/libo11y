@@ -61,4 +61,35 @@ pub fn build(b: *std.Build) !void {
         },
     }) });
     test_step.dependOn(&b.addRunArtifact(fixture_tests).step);
+
+    // The conformance suite reads the shared cases and vectors at run time.
+    // The published package does not hold them, so the default is the
+    // repository's conformance/ directory beside zig/. The path is only
+    // resolved when the test step runs, so a consumer's build never needs
+    // it.
+    const conformance_dir: std.Build.LazyPath = if (b.option(
+        []const u8,
+        "conformance-dir",
+        "The directory of shared conformance cases (default: the repository's conformance/)",
+    )) |dir| b.graph.cwdRelativePath(dir) else b.path("../conformance");
+    const conformance = b.addOptions();
+    conformance.addOptionPathDirectory("dir", conformance_dir);
+    const conformance_tests = b.addTest(.{
+        // Only the suite itself. The unit tests of the files it imports run
+        // in the o11y module's tests.
+        .filters = &.{"conformance_test."},
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/conformance_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "conformance", .module = conformance.createModule() },
+            },
+        }),
+    });
+    const conformance_run = b.addRunArtifact(conformance_tests);
+    // The build cannot see the files the suite reads, so it runs every time
+    // rather than reporting a cached result for changed cases.
+    conformance_run.has_side_effects = true;
+    test_step.dependOn(&conformance_run.step);
 }
