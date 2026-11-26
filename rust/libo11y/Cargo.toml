@@ -14,7 +14,9 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
-libo11y-spec = { version = "0.0.0", path = "../libo11y-spec" }
+libo11y-macros.workspace = true
+libo11y-redact.workspace = true
+libo11y-spec.workspace = true
 gethostname = "1.1.0"
 hmac = "0.13.0"
 # Pinned: appregistry/yaml.rs works around this exact release's panics and

@@ -41,6 +41,15 @@ pub use libo11y_spec::Environment;
 pub use policy::{Classified, Decision, MIN_PII_HASH_KEY_LEN, PiiMode, Policy, Rule, Violations};
 pub use propagation::{BoxedPropagator, Propagator};
 
+/// Capture-time redaction: [`Secret`](redact::Secret), [`Masked`](redact::Masked),
+/// the [`Redact`](redact::Redact) trait and its derive, which renders the
+/// protected form on `Display`, `Debug` and `Serialize`. This is
+/// [`libo11y_redact`] re-exported, with a derive that names this path.
+pub mod redact {
+    pub use libo11y_macros::__RedactInLibo11y as Redact;
+    pub use libo11y_redact::*;
+}
+
 /// Helpers for tests that read the shared files under `conformance/` in
 /// the repository.
 #[cfg(test)]
