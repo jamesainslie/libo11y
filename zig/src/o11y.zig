@@ -154,8 +154,15 @@ pub const Observation = metric.meter.Observation;
 pub const Registration = metric.meter.Registration;
 pub const MetricReader = metric.reader.Reader;
 pub const ManualMetricReader = metric.reader.ManualReader;
+pub const PeriodicMetricReader = metric.reader.PeriodicReader;
+pub const MetricCollectError = metric.reader.CollectError;
 pub const MetricExporter = metric.reader.MetricExporter;
 pub const ResourceMetrics = metric.data.ResourceMetrics;
+pub const ScopeMetrics = metric.data.ScopeMetrics;
+pub const Metric = metric.data.Metric;
+pub const MetricData = metric.data.Data;
+pub const MetricNumber = metric.data.Number;
+pub const MetricExemplar = metric.data.Exemplar;
 pub const View = metric.view.View;
 pub const Aggregation = metric.view.Aggregation;
 pub const ExemplarFilter = metric.exemplar.Filter;
@@ -164,7 +171,48 @@ pub const ExemplarFilter = metric.exemplar.Filter;
 pub const LoggerProvider = pipeline_logger.LoggerProvider;
 pub const LogData = log_record.LogData;
 pub const LogProcessor = log_processor.LogProcessor;
+pub const SimpleLogProcessor = log_processor.SimpleLogProcessor;
 pub const LogExporter = log_processor.LogExporter;
+
+// OTLP exporters and OTLP/JSON codec for explicit code configuration and tests.
+pub const otlp = struct {
+    const transport = @import("pipeline/otlp/transport.zig");
+    const trace_exp = @import("pipeline/otlp/trace_exporter.zig");
+    const metric_exp = @import("pipeline/otlp/metric_exporter.zig");
+    const log_exp = @import("pipeline/otlp/log_exporter.zig");
+    const grpc_trace_exp = @import("pipeline/otlp/grpc_trace_exporter.zig");
+    const grpc_metric_exp = @import("pipeline/otlp/grpc_metric_exporter.zig");
+    const grpc_log_exp = @import("pipeline/otlp/grpc_log_exporter.zig");
+
+    pub const HttpProtocol = trace_exp.Protocol;
+    pub const Compression = transport.Compression;
+    pub const Header = transport.Header;
+    pub const TlsOptions = transport.TlsOptions;
+    pub const RetryOptions = transport.RetryOptions;
+
+    pub const TraceExporter = trace_exp.TraceExporter;
+    pub const MetricExporter = metric_exp.MetricExporter;
+    pub const LogExporter = log_exp.LogExporter;
+
+    pub const GrpcTraceExporter = grpc_trace_exp.GrpcTraceExporter;
+    pub const GrpcMetricExporter = grpc_metric_exp.GrpcMetricExporter;
+    pub const GrpcLogExporter = grpc_log_exp.GrpcLogExporter;
+
+    pub const grpc_trace_method = grpc_trace_exp.method;
+    pub const grpc_metric_method = grpc_metric_exp.method;
+    pub const grpc_log_method = grpc_log_exp.method;
+
+    pub const json = @import("pipeline/otlp/json.zig");
+};
+
+/// Internal OTLP wire framing helpers used by `o11ytest` receivers.
+/// Not part of the stable public API.
+pub const wire = struct {
+    pub const http = @import("pipeline/otlp/http.zig");
+    pub const h2 = @import("pipeline/otlp/h2.zig");
+    pub const hpack = @import("pipeline/otlp/hpack.zig");
+    pub const grpc = @import("pipeline/otlp/grpc.zig");
+};
 
 // Propagation public types.
 pub const Carrier = propagation.Carrier;
@@ -176,6 +224,7 @@ pub const BaggagePropagator = propagation.BaggagePropagator;
 pub const ShutdownOnSignalsOptions = signals_mod.Options;
 pub const BeforeShutdown = signals_mod.BeforeShutdown;
 pub const shutdownOnSignals = signals_mod.shutdownOnSignals;
+pub const shutdownOnEvent = signals_mod.shutdownOnEvent;
 
 test "version is the package version and a semantic version" {
     const parsed = try std.SemanticVersion.parse(version);

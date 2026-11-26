@@ -1,8 +1,8 @@
 //! Build script for the libo11y Zig package.
 //!
-//! It exports the `o11y` module. The repository root's build.zig re-exports
-//! every module this script adds with `b.addModule`, so consumers that fetch
-//! the repository get the same names.
+//! It exports the `o11y` and `o11ytest` modules. The repository root's
+//! build.zig re-exports every module this script adds with `b.addModule`, so
+//! consumers that fetch the repository get the same names.
 
 const std = @import("std");
 
@@ -98,9 +98,24 @@ pub fn build(b: *std.Build) !void {
         },
     });
 
+    const o11ytest = b.addModule("o11ytest", .{
+        .root_source_file = b.path("src/o11ytest/o11ytest.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "o11y", .module = o11y },
+            .{ .name = "opentelemetry-proto", .module = proto },
+            .{ .name = "protobuf", .module = protobuf },
+            .{ .name = "tls", .module = tls },
+        },
+    });
+
     const tests = b.addTest(.{ .root_module = o11y });
     const test_step = b.step("test", "Run the libo11y tests");
     test_step.dependOn(&b.addRunArtifact(tests).step);
+
+    const o11ytest_tests = b.addTest(.{ .root_module = o11ytest });
+    test_step.dependOn(&b.addRunArtifact(o11ytest_tests).step);
 
     // Tests that read fixtures under test/, which the published package
     // leaves out. They build only when the test step runs.
