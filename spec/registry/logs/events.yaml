@@ -92,6 +92,7 @@ groups:
       - {ref: session.id, requirement_level: required, annotations: {o11y.gen: alias}}
       - {ref: o11y.rum.view.id, requirement_level: required, annotations: {o11y.gen: mint}}
       - {ref: o11y.rum.error.fingerprint, annotations: {o11y.gen: mint}}
+      - {ref: o11y.rum.error.breadcrumbs, annotations: {o11y.gen: mint}}
 
   - id: event.o11y.rum.frustration
     type: event

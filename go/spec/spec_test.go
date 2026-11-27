@@ -148,3 +148,15 @@ func TestRUMSpanShapeMarkerRequired(t *testing.T) {
 		}
 	}
 }
+
+func TestRUMDetailMinted(t *testing.T) {
+	if spec.RUMErrorBreadcrumbsKey != "o11y.rum.error.breadcrumbs" {
+		t.Errorf("RUMErrorBreadcrumbsKey = %q", spec.RUMErrorBreadcrumbsKey)
+	}
+	if spec.RUMResourceTypeScript != "script" {
+		t.Errorf("RUMResourceTypeScript = %q, want script", spec.RUMResourceTypeScript)
+	}
+	if kv := spec.RUMServerTimingDuration(0.042); kv.Key != "o11y.rum.server_timing.duration" || kv.Value.Type() != attribute.FLOAT64 {
+		t.Errorf("RUMServerTimingDuration(0.042) = %v, want a double o11y.rum.server_timing.duration", kv)
+	}
+}

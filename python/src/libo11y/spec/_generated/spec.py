@@ -50,6 +50,34 @@ class LogSource(StrEnum):
     CONSOLE = "console"
 
 
+class RUMVitalAttributionInteractionType(StrEnum):
+    """Closed value set for `o11y.rum.vital.attribution.interaction_type`."""
+
+    POINTER = "pointer"
+    KEYBOARD = "keyboard"
+
+
+class RUMVitalAttributionLoadState(StrEnum):
+    """Closed value set for `o11y.rum.vital.attribution.load_state`."""
+
+    LOADING = "loading"
+    DOM_INTERACTIVE = "dom-interactive"
+    DOM_CONTENT_LOADED = "dom-content-loaded"
+    COMPLETE = "complete"
+
+
+class RUMResourceType(StrEnum):
+    """Closed value set for `o11y.rum.resource.type`."""
+
+    SCRIPT = "script"
+    STYLESHEET = "stylesheet"
+    IMAGE = "image"
+    FONT = "font"
+    MEDIA = "media"
+    DOCUMENT = "document"
+    OTHER = "other"
+
+
 class RUMPlatform(StrEnum):
     """Closed value set for `o11y.rum.platform`."""
 
@@ -185,6 +213,39 @@ ATTR_SIGNAL: Final[str] = "o11y.signal"
 ATTR_RULE: Final[str] = "o11y.rule"
 ATTR_DURATION: Final[str] = "o11y.duration"
 ATTR_LOG_SOURCE: Final[str] = "o11y.log.source"
+ATTR_RUM_ERROR_BREADCRUMBS: Final[str] = "o11y.rum.error.breadcrumbs"
+ATTR_RUM_VITAL_ATTRIBUTION_INPUT_DELAY: Final[str] = "o11y.rum.vital.attribution.input_delay"
+ATTR_RUM_VITAL_ATTRIBUTION_PROCESSING_DURATION: Final[str] = (
+    "o11y.rum.vital.attribution.processing_duration"
+)
+ATTR_RUM_VITAL_ATTRIBUTION_PRESENTATION_DELAY: Final[str] = (
+    "o11y.rum.vital.attribution.presentation_delay"
+)
+ATTR_RUM_VITAL_ATTRIBUTION_INTERACTION_TYPE: Final[str] = (
+    "o11y.rum.vital.attribution.interaction_type"
+)
+ATTR_RUM_VITAL_ATTRIBUTION_TIME_TO_FIRST_BYTE: Final[str] = (
+    "o11y.rum.vital.attribution.time_to_first_byte"
+)
+ATTR_RUM_VITAL_ATTRIBUTION_RESOURCE_LOAD_DELAY: Final[str] = (
+    "o11y.rum.vital.attribution.resource_load_delay"
+)
+ATTR_RUM_VITAL_ATTRIBUTION_RESOURCE_LOAD_DURATION: Final[str] = (
+    "o11y.rum.vital.attribution.resource_load_duration"
+)
+ATTR_RUM_VITAL_ATTRIBUTION_ELEMENT_RENDER_DELAY: Final[str] = (
+    "o11y.rum.vital.attribution.element_render_delay"
+)
+ATTR_RUM_VITAL_ATTRIBUTION_LARGEST_SHIFT_VALUE: Final[str] = (
+    "o11y.rum.vital.attribution.largest_shift_value"
+)
+ATTR_RUM_VITAL_ATTRIBUTION_LARGEST_SHIFT_TIME: Final[str] = (
+    "o11y.rum.vital.attribution.largest_shift_time"
+)
+ATTR_RUM_VITAL_ATTRIBUTION_LOAD_STATE: Final[str] = "o11y.rum.vital.attribution.load_state"
+ATTR_RUM_RESOURCE_TYPE: Final[str] = "o11y.rum.resource.type"
+ATTR_RUM_SERVER_TIMING_NAME: Final[str] = "o11y.rum.server_timing.name"
+ATTR_RUM_SERVER_TIMING_DURATION: Final[str] = "o11y.rum.server_timing.duration"
 ATTR_RUM_SUMMARY_SEQ: Final[str] = "o11y.rum.summary.seq"
 ATTR_RUM_SUMMARY_TIME_ON_VIEW: Final[str] = "o11y.rum.summary.time_on_view"
 ATTR_RUM_SUMMARY_REQUESTS: Final[str] = "o11y.rum.summary.requests"

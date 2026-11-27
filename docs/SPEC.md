@@ -469,6 +469,14 @@ in its detail events. CrUX reports the final value at page unload, so the
 p75 that libo11y reports can differ from CrUX. The difference is largest
 for CLS and INP on long-lived views.
 
+### Detail attributes
+
+Kept sessions send detail beyond the view summary. The group
+`registry.o11y.rum.detail` holds its attributes: error breadcrumbs on
+`o11y.rum.error`, vital attribution on the semconv event
+`browser.web_vital`, and resource type and Server-Timing entries on
+resource spans. docs/RUM.md lists them.
+
 ### Span shape marker
 
 Every view, action and `app_load` span carries `o11y.rum.span.shape`, set

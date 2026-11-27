@@ -134,6 +134,26 @@ records only in browsers and browser extensions.
 |---|---|---|---|---|
 | `o11y.rum.browser.family` | string | public | bounded | the browser family the gateway parsed from the user agent, such as `chrome`, `firefox`, `safari`, `edge` or `other` |
 
+The detail group `registry.o11y.rum.detail`, in
+[`spec/registry/attributes/rum-detail.yaml`](../spec/registry/attributes/rum-detail.yaml),
+holds what kept sessions send beyond the view summary (spec 1.3.0).
+Breadcrumbs ride on `o11y.rum.error`. Vital attribution rides on the
+semconv event `browser.web_vital`, which in semconv 1.41.0 carries only
+the vital's name, value, delta and ID. Resource and Server-Timing
+attributes ride on resource spans. Durations are in seconds.
+
+| Attribute | Type | Sensitivity | Cardinality | Meaning |
+|---|---|---|---|---|
+| `o11y.rum.error.breadcrumbs` | string | internal | unbounded | the actions, view changes and requests before an error, oldest first, one per line as `<kind> <label> -<age>ms`. A request label is the method, host and status, never a path |
+| `o11y.rum.vital.attribution.input_delay`, `.processing_duration`, `.presentation_delay` | double | public | unbounded | INP attribution |
+| `o11y.rum.vital.attribution.interaction_type` | string | public | enum | INP attribution: `pointer` or `keyboard` |
+| `o11y.rum.vital.attribution.time_to_first_byte`, `.resource_load_delay`, `.resource_load_duration`, `.element_render_delay` | double | public | unbounded | LCP attribution |
+| `o11y.rum.vital.attribution.largest_shift_value`, `.largest_shift_time` | double | public | unbounded | CLS attribution |
+| `o11y.rum.vital.attribution.load_state` | string | public | enum | INP and CLS attribution: `loading`, `dom-interactive`, `dom-content-loaded`, `complete` |
+| `o11y.rum.resource.type` | string | public | enum | `script`, `stylesheet`, `image`, `font`, `media`, `document`, `other` |
+| `o11y.rum.server_timing.name` | string | public | bounded | the metric name of one Server-Timing entry on a resource's response |
+| `o11y.rum.server_timing.duration` | double | public | unbounded | the duration of that entry |
+
 The group `libo11y.rum.upstream` classifies the upstream attributes RUM
 uses.
 

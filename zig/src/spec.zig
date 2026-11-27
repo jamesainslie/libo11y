@@ -55,6 +55,9 @@ pub const RumConnectionType = generated_spec.RumConnectionType;
 pub const RumConnectionEffective = generated_spec.RumConnectionEffective;
 pub const RumVitalRating = generated_spec.RumVitalRating;
 pub const RumSessionRetained = generated_spec.RumSessionRetained;
+pub const RumVitalAttributionInteractionType = generated_spec.RumVitalAttributionInteractionType;
+pub const RumVitalAttributionLoadState = generated_spec.RumVitalAttributionLoadState;
+pub const RumResourceType = generated_spec.RumResourceType;
 pub const Environment = generated_spec.Environment;
 
 // Names.

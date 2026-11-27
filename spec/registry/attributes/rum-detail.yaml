@@ -1,0 +1,120 @@
+# RUM detail attributes: what kept sessions send beyond the view summary.
+# Breadcrumbs ride on o11y.rum.error, vital attribution on the semconv
+# browser.web_vital event, and resource and Server-Timing attributes on
+# resource spans. Durations are seconds.
+groups:
+  - id: registry.o11y.rum.detail
+    type: attribute_group
+    display_name: RUM Detail Attributes
+    brief: Attributes RUM records on detail events and spans for kept sessions.
+    stability: development
+    attributes:
+      - id: o11y.rum.error.breadcrumbs
+        type: string
+        stability: development
+        brief: >
+          The recent actions, view changes and requests before the error,
+          oldest first, one per line, each as "<kind> <label> -<age>ms". A
+          request label is the method, host and status, never a path.
+        examples: ["view /documents/$docId -5120ms\nclick Sign -1530ms\nfetch POST api.example.com 500 -1210ms"]
+        annotations: {o11y.sensitivity: internal, o11y.cardinality: unbounded}
+      - id: o11y.rum.vital.attribution.input_delay
+        type: double
+        stability: development
+        brief: INP attribution. Seconds from the interaction to the start of its event handlers.
+        examples: [0.012]
+        annotations: {o11y.sensitivity: public, o11y.cardinality: unbounded}
+      - id: o11y.rum.vital.attribution.processing_duration
+        type: double
+        stability: development
+        brief: INP attribution. Seconds the interaction's event handlers ran.
+        examples: [0.08]
+        annotations: {o11y.sensitivity: public, o11y.cardinality: unbounded}
+      - id: o11y.rum.vital.attribution.presentation_delay
+        type: double
+        stability: development
+        brief: INP attribution. Seconds from the end of the handlers to the next paint.
+        examples: [0.03]
+        annotations: {o11y.sensitivity: public, o11y.cardinality: unbounded}
+      - id: o11y.rum.vital.attribution.interaction_type
+        type:
+          members:
+            - {id: pointer, value: "pointer", stability: development, brief: A pointer or touch interaction.}
+            - {id: keyboard, value: "keyboard", stability: development, brief: A keyboard interaction.}
+        stability: development
+        brief: INP attribution. The kind of the slowest interaction.
+        examples: ["pointer"]
+        annotations: {o11y.sensitivity: public, o11y.cardinality: enum}
+      - id: o11y.rum.vital.attribution.time_to_first_byte
+        type: double
+        stability: development
+        brief: LCP attribution. Seconds until the document's first byte.
+        examples: [0.3]
+        annotations: {o11y.sensitivity: public, o11y.cardinality: unbounded}
+      - id: o11y.rum.vital.attribution.resource_load_delay
+        type: double
+        stability: development
+        brief: LCP attribution. Seconds from the first byte until the LCP resource started loading.
+        examples: [0.2]
+        annotations: {o11y.sensitivity: public, o11y.cardinality: unbounded}
+      - id: o11y.rum.vital.attribution.resource_load_duration
+        type: double
+        stability: development
+        brief: LCP attribution. Seconds the LCP resource took to load.
+        examples: [0.4]
+        annotations: {o11y.sensitivity: public, o11y.cardinality: unbounded}
+      - id: o11y.rum.vital.attribution.element_render_delay
+        type: double
+        stability: development
+        brief: LCP attribution. Seconds from the end of the resource load until the LCP element rendered.
+        examples: [0.1]
+        annotations: {o11y.sensitivity: public, o11y.cardinality: unbounded}
+      - id: o11y.rum.vital.attribution.largest_shift_value
+        type: double
+        stability: development
+        brief: CLS attribution. The score of the largest single layout shift.
+        examples: [0.08]
+        annotations: {o11y.sensitivity: public, o11y.cardinality: unbounded}
+      - id: o11y.rum.vital.attribution.largest_shift_time
+        type: double
+        stability: development
+        brief: CLS attribution. Seconds from the time origin to the largest layout shift.
+        examples: [2.4]
+        annotations: {o11y.sensitivity: public, o11y.cardinality: unbounded}
+      - id: o11y.rum.vital.attribution.load_state
+        type:
+          members:
+            - {id: loading, value: "loading", stability: development, brief: The document was loading.}
+            - {id: dom_interactive, value: "dom-interactive", stability: development, brief: The DOM was interactive.}
+            - {id: dom_content_loaded, value: "dom-content-loaded", stability: development, brief: DOMContentLoaded had fired.}
+            - {id: complete, value: "complete", stability: development, brief: The document had loaded.}
+        stability: development
+        brief: INP and CLS attribution. The document's load state when the interaction or shift happened.
+        examples: ["complete"]
+        annotations: {o11y.sensitivity: public, o11y.cardinality: enum}
+      - id: o11y.rum.resource.type
+        type:
+          members:
+            - {id: script, value: "script", stability: development, brief: A script.}
+            - {id: stylesheet, value: "stylesheet", stability: development, brief: A stylesheet.}
+            - {id: image, value: "image", stability: development, brief: An image.}
+            - {id: font, value: "font", stability: development, brief: A font.}
+            - {id: media, value: "media", stability: development, brief: Audio or video.}
+            - {id: document, value: "document", stability: development, brief: A frame's document.}
+            - {id: other, value: "other", stability: development, brief: Any other resource.}
+        stability: development
+        brief: The kind of a resource the view loaded, from its initiator type.
+        examples: ["script"]
+        annotations: {o11y.sensitivity: public, o11y.cardinality: enum}
+      - id: o11y.rum.server_timing.name
+        type: string
+        stability: development
+        brief: The metric name of one Server-Timing entry on a resource's response.
+        examples: ["db", "cache"]
+        annotations: {o11y.sensitivity: public, o11y.cardinality: bounded}
+      - id: o11y.rum.server_timing.duration
+        type: double
+        stability: development
+        brief: The duration of one Server-Timing entry, in seconds.
+        examples: [0.042]
+        annotations: {o11y.sensitivity: public, o11y.cardinality: unbounded}
