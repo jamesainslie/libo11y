@@ -21,6 +21,8 @@ func sampleLogs() plog.Logs {
 	rl.Resource().Attributes().PutStr("service.name", "shop-web")
 	lr := rl.ScopeLogs().AppendEmpty().LogRecords().AppendEmpty()
 	lr.Attributes().PutStr("event.name", "o11y.rum.session.start")
+	lr.Attributes().PutStr("session.id", "s1")
+	lr.Attributes().PutStr("o11y.rum.platform", "web")
 	return ld
 }
 
