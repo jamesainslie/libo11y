@@ -31,27 +31,29 @@ type rejection struct {
 }
 
 // ingest runs one OTLP request through the pipeline: client address,
-// rate limit, decoding, app admission, validation and export. Each stage
-// is a method so later stages slot in without restructuring.
+// rate limit, decoding, app admission, validation, enrichment and export.
+// Each stage is a method so later stages slot in without restructuring.
 func (h *Handler) ingest(w http.ResponseWriter, r *http.Request, sig Signal) {
+	rep := newBatchReport()
+	defer func() { h.tel.batch(r.Context(), rep.app, sig, rep.outcome, rep.reason) }()
+	refuse := func(corsOrigins map[string]bool, rej rejection) {
+		rep.reject(rej.reason)
+		h.reject(w, r, corsOrigins, rej)
+	}
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST, OPTIONS")
-		h.reject(w, r, h.origins, rejection{status: http.StatusMethodNotAllowed, reason: "method"})
+		refuse(h.origins, rejection{status: http.StatusMethodNotAllowed, reason: "method"})
 		return
 	}
-	key, receiver, ok := h.clientKey(r)
-	if !ok {
-		h.reject(w, r, h.origins, rejection{status: http.StatusBadRequest, reason: "client_address"})
-		return
-	}
-	if ok, wait := h.limit.allow(key); !ok {
-		h.reject(w, r, h.origins, rejection{status: http.StatusTooManyRequests, reason: "rate_limited", retryAfter: wait})
+	receiver, rej := h.edge(r)
+	if rej != nil {
+		refuse(h.origins, *rej)
 		return
 	}
 	d, err := decodeBody(sig, r.Header.Get("Content-Type"), r.Header.Get("Content-Encoding"),
 		r.Body, h.cfg.Edge.MaxBodyBytes, h.cfg.Edge.MaxDecompressedBytes)
 	if err != nil {
-		h.reject(w, r, h.origins, decodeRejection(err))
+		refuse(h.origins, decodeRejection(err))
 		return
 	}
 	service, err := batchService(sig, d)
@@ -60,16 +62,20 @@ func (h *Handler) ingest(w http.ResponseWriter, r *http.Request, sig Signal) {
 		if errors.Is(err, errMissingService) {
 			reason = "missing_service"
 		}
-		h.reject(w, r, h.origins, rejection{status: http.StatusBadRequest, reason: reason})
+		refuse(h.origins, rejection{status: http.StatusBadRequest, reason: reason})
 		return
 	}
 	if service == "" { // an empty batch
+		rep.accept(nil)
 		h.respond(w, r, h.origins, sig, d.json, nil)
 		return
 	}
+	if _, ok := h.apps[service]; ok {
+		rep.app = service
+	}
 	a, rej := h.admit(r, service)
 	if rej != nil {
-		h.reject(w, r, nil, *rej)
+		refuse(nil, *rej)
 		return
 	}
 	ci := h.clientInfo(r, receiver)
@@ -91,17 +97,33 @@ func (h *Handler) ingest(w http.ResponseWriter, r *http.Request, sig Signal) {
 		d.logs.MarkReadOnly()
 		b.Logs = d.logs
 	}
+	h.tel.validated(r.Context(), service, sig, drops, v.attrsRemoved)
 	if remaining > 0 {
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), sinkTimeout)
 		defer cancel()
 		if err := exportAll(ctx, h.sinks, b); err != nil {
 			h.log.WarnContext(ctx, "o11yrum: sink export failed",
 				slog.String("o11yrum.app", service), slog.Any("error", err))
-			h.reject(w, r, a.origins, rejection{status: http.StatusServiceUnavailable, reason: "sink", retryAfter: sinkRetryAfter})
+			refuse(a.origins, rejection{status: http.StatusServiceUnavailable, reason: "sink", retryAfter: sinkRetryAfter})
 			return
 		}
 	}
+	rep.accept(drops)
 	h.respond(w, r, a.origins, sig, d.json, drops)
+}
+
+// edge runs the checks every endpoint applies before reading the body:
+// the client address and the rate limit. It returns the proxy hop that
+// received the client's connection, for the country header.
+func (h *Handler) edge(r *http.Request) (netip.Addr, *rejection) {
+	key, receiver, ok := h.clientKey(r)
+	if !ok {
+		return netip.Addr{}, &rejection{status: http.StatusBadRequest, reason: "client_address"}
+	}
+	if ok, wait := h.limit.allow(key); !ok {
+		return netip.Addr{}, &rejection{status: http.StatusTooManyRequests, reason: "rate_limited", retryAfter: wait}
+	}
+	return receiver, nil
 }
 
 // clientKey resolves the client address and returns its rate-limit key

@@ -23,6 +23,7 @@ type Handler struct {
 	sinks   []Sink
 	now     func() time.Time
 	log     *slog.Logger
+	tel     *telemetry
 }
 
 // app is one configured app with its lookups prepared.
@@ -62,12 +63,18 @@ func NewHandler(opts ...Option) (*Handler, error) {
 		trust:   trust,
 		keyer:   newClientKeyer(),
 		limit:   newLimiter(cfg.Edge.RateLimitPerMinute, cfg.Edge.MaxTrackedClients, s.now),
-		sinks:   s.sinks,
 		now:     s.now,
 		log:     slog.Default(),
 	}
 	if s.sdk != nil {
 		h.log = s.sdk.Logger()
+		h.tel = newTelemetry(s.sdk.MeterProvider(), h.log)
+	} else {
+		h.tel = newTelemetry(nil, nil)
+	}
+	h.sinks = make([]Sink, len(s.sinks))
+	for i, sink := range s.sinks {
+		h.sinks[i] = timedSink{Sink: sink, tel: h.tel}
 	}
 	for _, ac := range cfg.Apps {
 		a := &app{cfg: ac, origins: map[string]bool{}, policy: newAttrPolicy(ac, cfg.Limits)}
