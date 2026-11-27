@@ -20,3 +20,4 @@ export type {
 } from "./options.ts";
 export { setupRum } from "./setup.ts";
 export { VERSION } from "./version.ts";
+export { type ViewsOptions, views } from "./views/collector.ts";

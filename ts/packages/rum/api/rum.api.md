@@ -269,6 +269,14 @@ export type ViewEvent = {
     readonly view: ViewState;
 };
 
+// @public
+export function views(opts?: ViewsOptions): RumCollector;
+
+// @public (undocumented)
+export interface ViewsOptions {
+    readonly history?: boolean;
+}
+
 // @public (undocumented)
 export interface ViewStartOptions {
     readonly cause?: SpanContext;

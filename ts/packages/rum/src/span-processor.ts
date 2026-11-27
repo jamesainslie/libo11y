@@ -1,5 +1,6 @@
 /**
- * The RUM span processor. On every span start it adds session.id, o11y.rum.view.id and user.id,
+ * The RUM span processor. On every span start it adds session.id, o11y.rum.view.id (unless the
+ * span already names them) and user.id,
  * removes disallowed query parameters from url.full, and turns web's documentLoad span into the
  * app_load shape of the load view: it is renamed app_load and carries o11y.rum.span.shape app_load,
  * the attribute the gateway keys on. Its documentFetch child also belongs to the load view, and it
@@ -71,10 +72,13 @@ export function rumSpanProcessor(opts: RumSpanProcessorOptions): SpanProcessor {
     onStart(span: Span, _parent: Context) {
       const session = opts.session.current();
       if (session === undefined) return;
-      span.setAttribute(ATTR_SESSION_ID, session.id);
+      // RUM's own view and action spans name their view and session, which may be older ones.
+      if (span.attributes[ATTR_SESSION_ID] === undefined) span.setAttribute(ATTR_SESSION_ID, session.id);
       const appLoad = fromWeb(span, DOCUMENT_LOAD);
       const view = appLoad || fromWeb(span, DOCUMENT_FETCH) ? opts.views.loadView() : opts.views.current();
-      if (view !== undefined) span.setAttribute(ATTR_RUM_VIEW_ID, view.id);
+      if (view !== undefined && span.attributes[ATTR_RUM_VIEW_ID] === undefined) {
+        span.setAttribute(ATTR_RUM_VIEW_ID, view.id);
+      }
       const user = opts.userId();
       if (user !== undefined) span.setAttribute(ATTR_USER_ID, user);
       const full = span.attributes["url.full"];

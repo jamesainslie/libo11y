@@ -137,3 +137,14 @@ test("a finished request leaves a breadcrumb of its method, host and status, nev
     ],
   );
 });
+
+test("a span that names its view and session keeps them", async () => {
+  const { tp, exporter } = setup();
+  tp.getTracer("@libo11y/rum")
+    .startSpan("view /old", { attributes: { "o11y.rum.view.id": "v-old", "session.id": "s-old" } })
+    .end();
+  await tp.forceFlush();
+  const [s] = exporter.getFinishedSpans();
+  assert.equal(s?.attributes["o11y.rum.view.id"], "v-old");
+  assert.equal(s?.attributes["session.id"], "s-old");
+});

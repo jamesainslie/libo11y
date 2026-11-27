@@ -98,9 +98,13 @@ export interface FakeEnv {
   hidden: boolean;
   readonly MutationObserver: new (cb: () => void) => FakeMutationObserver;
   readonly root: object;
-  /** The navigation entry's loadEventEnd. Default 0. */
+  /** The navigation entry's loadEventEnd. Default 0, the load event has not ended. */
   loadEventEnd: number;
   navigationLoadEnd(): number;
+  /** Calls cb once the load event ended: at once when loadEventEnd is set, else on fireLoad. */
+  whenLoaded(cb: () => void): () => void;
+  /** Ends the load event at at (default now) and runs the whenLoaded callbacks. */
+  fireLoad(at?: number): void;
   readonly history: {
     location: { href: string };
     history: Pick<History, "pushState" | "replaceState">;
@@ -127,6 +131,7 @@ export interface FakeEnv {
 }
 
 function fakeEnv(clock: ManualTimers): FakeEnv {
+  const loads = new Set<() => void>();
   const frames: (() => void)[] = [];
   const tasks: (() => void)[] = [];
   const target = new EventTarget();
@@ -170,6 +175,19 @@ function fakeEnv(clock: ManualTimers): FakeEnv {
     root: {},
     loadEventEnd: 0,
     navigationLoadEnd: () => env.loadEventEnd,
+    whenLoaded(cb) {
+      if (env.loadEventEnd > 0) {
+        cb();
+        return () => {};
+      }
+      loads.add(cb);
+      return () => loads.delete(cb);
+    },
+    fireLoad(at = clock.now()) {
+      env.loadEventEnd = at;
+      for (const cb of [...loads]) cb();
+      loads.clear();
+    },
     history,
     cssEscape: (s) => s.replace(/["\\]/g, "\\$&"),
     selectionCollapsed: true,
