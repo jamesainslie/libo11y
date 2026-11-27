@@ -12,6 +12,7 @@ export type {
 } from "./contracts/session.ts";
 export type { SummaryAccumulator, SummaryCountKey, SummaryView, VitalName } from "./contracts/summary.ts";
 export type { ViewEvent, ViewStartOptions, ViewState, ViewTracker } from "./contracts/views.ts";
+export { type ErrorsOptions, errors } from "./errors/collector.ts";
 export type {
   AddErrorOptions,
   HttpRequestInfo,

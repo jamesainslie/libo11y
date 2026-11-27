@@ -39,6 +39,14 @@ export interface AddErrorOptions {
 // @public (undocumented)
 export type CollectorName = "views" | "actions" | "errors" | "vitals" | "resources" | "long_animation_frames";
 
+// @public
+export function errors(opts?: ErrorsOptions): RumCollector;
+
+// @public (undocumented)
+export interface ErrorsOptions {
+    readonly console?: boolean;
+}
+
 export { HttpRequestInfo }
 
 // @public (undocumented)
