@@ -38,6 +38,14 @@ type Config struct {
 	Aggregation AggregationConfig `yaml:"aggregation"`
 	Sinks       SinksConfig       `yaml:"sinks"`
 
+	// ObjectStore is where uploaded source maps are kept. Without one the
+	// gateway accepts no uploads and does not symbolicate.
+	ObjectStore ObjectStoreConfig `yaml:"object_store"`
+	// Sourcemaps configures the source map upload endpoint.
+	Sourcemaps SourcemapsConfig `yaml:"sourcemaps"`
+	// Symbolication configures how error stacks are symbolicated.
+	Symbolication SymbolicationConfig `yaml:"symbolication"`
+
 	dir string // directory of the file LoadConfig read, for relative paths
 }
 
@@ -145,6 +153,68 @@ type AppConfig struct {
 	// classifies PII, secret or unbounded are refused here and dropped
 	// whatever the pii mode.
 	AppMetricLabels []string `yaml:"app_metric_labels"`
+	// Sourcemaps configures the app's source map uploads and lookups.
+	Sourcemaps AppSourcemaps `yaml:"sourcemaps"`
+}
+
+// AppSourcemaps configures one app's source maps.
+type AppSourcemaps struct {
+	// Namespace is the object key segment the app's maps are kept under.
+	// Default service_name. Two apps that ship the same bundles, such as
+	// a canary, may share one. It must match [A-Za-z0-9][A-Za-z0-9._+-]*,
+	// up to 128 characters.
+	Namespace string `yaml:"namespace"`
+	// UploadTokenFile holds the bearer token that authorises uploads for
+	// the app. A relative path resolves against the configuration file's
+	// directory. Empty means the app accepts no uploads.
+	UploadTokenFile string `yaml:"upload_token_file"`
+}
+
+// SourcemapsConfig configures the source map upload endpoint.
+type SourcemapsConfig struct {
+	// MaxUploadBytes caps one uploaded map, before and after gzip.
+	// Default 33554432 (32 MiB).
+	MaxUploadBytes int64 `yaml:"max_upload_bytes"`
+}
+
+// ObjectStoreConfig selects the object store. Set at most one field.
+type ObjectStoreConfig struct {
+	// Filesystem keeps objects as files under a directory.
+	Filesystem *FilesystemStoreConfig `yaml:"filesystem"`
+	// S3 keeps objects in an S3 bucket. The library cannot build this
+	// store itself: pass one built with the s3store package through
+	// WithObjectStore, as the o11yrum-gateway command does.
+	S3 *S3StoreConfig `yaml:"s3"`
+}
+
+// FilesystemStoreConfig locates the filesystem object store.
+type FilesystemStoreConfig struct {
+	// Root is the directory objects are kept under. A relative path
+	// resolves against the configuration file's directory.
+	Root string `yaml:"root"`
+}
+
+// S3StoreConfig mirrors s3store.Config field for field. It lives here
+// because s3store imports o11yrum, so o11yrum cannot import s3store; the
+// command converts one to the other.
+type S3StoreConfig struct {
+	Bucket       string `yaml:"bucket"`
+	Prefix       string `yaml:"prefix"`
+	Region       string `yaml:"region"`
+	Endpoint     string `yaml:"endpoint"`
+	UsePathStyle bool   `yaml:"use_path_style"`
+}
+
+// namespace returns the key segment the app's source maps are kept
+// under, or "" when the app has none usable.
+func (a AppConfig) namespace() string {
+	if a.Sourcemaps.Namespace != "" {
+		return a.Sourcemaps.Namespace
+	}
+	if validSegment(a.ServiceName) {
+		return a.ServiceName
+	}
+	return ""
 }
 
 // PII modes.
@@ -237,6 +307,8 @@ func (c *Config) applyDefaults() {
 	setDefault(&l.MaxSpanLinks, d.MaxSpanLinks)
 	setDefault(&c.Aggregation.MaxSeriesPerMetric, 2000)
 	setDefault(&c.Aggregation.MaxMetricsPerApp, 200)
+	setDefault(&c.Sourcemaps.MaxUploadBytes, 32<<20)
+	c.Symbolication.applyDefaults()
 	for i := range c.Apps {
 		if c.Apps[i].PII == "" {
 			c.Apps[i].PII = piiDrop
@@ -273,6 +345,7 @@ func (c *Config) validate() error {
 		{"limits.max_span_links", int64(c.Limits.MaxSpanLinks)},
 		{"aggregation.max_series_per_metric", int64(c.Aggregation.MaxSeriesPerMetric)},
 		{"aggregation.max_metrics_per_app", int64(c.Aggregation.MaxMetricsPerApp)},
+		{"sourcemaps.max_upload_bytes", c.Sourcemaps.MaxUploadBytes},
 	} {
 		if f.v <= 0 {
 			return fmt.Errorf("%s must be positive", f.name)
@@ -297,6 +370,12 @@ func (c *Config) validate() error {
 	if c.Edge.ClockSkewThreshold < 0 {
 		return errors.New("edge.clock_skew_threshold must not be negative")
 	}
+	if err := c.ObjectStore.validate(); err != nil {
+		return err
+	}
+	if err := c.Symbolication.validate(); err != nil {
+		return err
+	}
 	seen := make(map[string]bool, len(c.Apps))
 	for i, a := range c.Apps {
 		if a.ServiceName == "" {
@@ -319,6 +398,9 @@ func (c *Config) validate() error {
 		}
 		if err := validateAppMetricLabels(a); err != nil {
 			return fmt.Errorf("app %s: app_metric_labels: %w", a.ServiceName, err)
+		}
+		if err := validateAppSourcemaps(a); err != nil {
+			return fmt.Errorf("app %s: %w", a.ServiceName, err)
 		}
 	}
 	return validateMetrics(c.Apps)
@@ -354,6 +436,14 @@ func (c *Config) clone() *Config {
 	out.Edge.TrustedProxies = slices.Clone(c.Edge.TrustedProxies)
 	out.Edge.Country.TrustedFrom = slices.Clone(c.Edge.Country.TrustedFrom)
 	out.Sinks.OTLP.Headers = maps.Clone(c.Sinks.OTLP.Headers)
+	if c.ObjectStore.Filesystem != nil {
+		fsc := *c.ObjectStore.Filesystem
+		out.ObjectStore.Filesystem = &fsc
+	}
+	if c.ObjectStore.S3 != nil {
+		s3c := *c.ObjectStore.S3
+		out.ObjectStore.S3 = &s3c
+	}
 	out.Apps = make([]AppConfig, len(c.Apps))
 	for i, a := range c.Apps {
 		a.Origins = slices.Clone(a.Origins)
@@ -391,6 +481,33 @@ func validateAppMetricLabels(a AppConfig) error {
 			return fmt.Errorf("%s is not defined by the specification, which alone mints o11y.* keys", k)
 		}
 		seen[k] = true
+	}
+	return nil
+}
+
+// validate refuses an object store configuration that names both stores
+// or leaves the chosen one unlocated.
+func (o ObjectStoreConfig) validate() error {
+	switch {
+	case o.Filesystem != nil && o.S3 != nil:
+		return errors.New("object_store: set exactly one of filesystem and s3")
+	case o.Filesystem != nil && o.Filesystem.Root == "":
+		return errors.New("object_store.filesystem.root is empty")
+	case o.S3 != nil && o.S3.Bucket == "":
+		return errors.New("object_store.s3.bucket is empty")
+	}
+	return nil
+}
+
+// validateAppSourcemaps checks the app's namespace is a usable key
+// segment, and that an app accepting uploads has one.
+func validateAppSourcemaps(a AppConfig) error {
+	sm := a.Sourcemaps
+	if sm.Namespace != "" && !validSegment(sm.Namespace) {
+		return fmt.Errorf("sourcemaps.namespace %q must match %s", sm.Namespace, segmentPattern)
+	}
+	if sm.UploadTokenFile != "" && a.namespace() == "" {
+		return fmt.Errorf("service_name %q cannot be an object key segment; set sourcemaps.namespace", a.ServiceName)
 	}
 	return nil
 }

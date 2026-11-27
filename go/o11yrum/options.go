@@ -17,6 +17,7 @@ type settings struct {
 	configs ConfigProvider
 
 	producer *MetricProducer
+	store    ObjectStore
 }
 
 // WithConfig sets the gateway configuration. NewHandler requires it.
@@ -56,4 +57,11 @@ func WithClock(now func() time.Time) Option {
 // it the gateway serves each app's remote_config_file.
 func WithConfigProvider(p ConfigProvider) Option {
 	return func(s *settings) { s.configs = p }
+}
+
+// WithObjectStore sets where uploaded source maps are kept and read from
+// for symbolication. It overrides the configuration's object_store. An
+// S3 store must come this way: build it with the s3store package.
+func WithObjectStore(store ObjectStore) Option {
+	return func(s *settings) { s.store = store }
 }
