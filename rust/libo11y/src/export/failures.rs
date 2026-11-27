@@ -119,10 +119,8 @@ impl ExportFailures {
                 errors.push(failure);
             }
         }
-        match state.more {
-            0 => {}
-            1 => errors.push(Arc::new(MoreFailures { count: 1 })),
-            n => errors.push(Arc::new(MoreFailures { count: n })),
+        if state.more > 0 {
+            errors.push(Arc::new(MoreFailures { count: state.more }));
         }
         errors
     }

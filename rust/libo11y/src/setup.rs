@@ -9,7 +9,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Mutex, PoisonError};
 
 use crate::builder::{Settings, build_sdk};
-use crate::layer::{check_tracing_default, install_tracing_default};
+use crate::layer::{check_tracing_default, follow_tracing_default, install_tracing_default};
 use crate::{Error, Sdk};
 
 /// Whether a global SDK is active or being set up.
@@ -48,6 +48,15 @@ pub(crate) fn release_guard() {
     *ACTIVE.lock().unwrap_or_else(PoisonError::into_inner) = false;
 }
 
+/// Releases the guard when dropped.
+pub(crate) struct ReleaseOnDrop;
+
+impl Drop for ReleaseOnDrop {
+    fn drop(&mut self) {
+        release_guard();
+    }
+}
+
 /// Builds the SDK and installs it as the process default, in Go's order.
 pub(crate) fn setup(settings: Settings) -> Result<Sdk, Error> {
     let mut claim = Claim::take()?;
@@ -64,6 +73,10 @@ pub(crate) fn setup(settings: Settings) -> Result<Sdk, Error> {
         install_tracing_default(std::sync::Arc::clone(&sdk.0.parts)).inspect_err(|_| {
             sdk.abandon();
         })?;
+    } else {
+        // libo11y's stack, once installed, is the global subscriber for
+        // good; it follows the SDK installed last.
+        follow_tracing_default(std::sync::Arc::clone(&sdk.0.parts));
     }
     sdk.0.global.store(true, Ordering::Release);
     opentelemetry::global::set_tracer_provider(sdk.0.tracer_provider.clone());

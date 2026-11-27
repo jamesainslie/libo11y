@@ -13,8 +13,9 @@ use opentelemetry_sdk::trace::{
     Span, SpanData, SpanExporter, SpanLimits, SpanProcessor,
 };
 
-use libo11y_spec::Signal;
+use libo11y_spec::{Signal, go_quote};
 
+use crate::diagnostics::TelemetryError;
 use crate::env::EnvLookup;
 use crate::export::failures::{ExportFailures, ObservedSpanExporter};
 use crate::violations::ViolationRecorder;
@@ -209,11 +210,17 @@ const DEFAULT_SAMPLER: &str = "parentbased_always_on";
 impl SamplerChoice {
     /// An explicit sampler wins. Otherwise `OTEL_TRACES_SAMPLER` and
     /// `OTEL_TRACES_SAMPLER_ARG` are read through `env`, which is empty under
-    /// hermetic mode, so hermetic mode gets the default: the name trimmed
-    /// and lowercased, as Go matches it; the six standard samplers;
-    /// a ratio sampler without a valid argument samples everything, as
-    /// upstream's does; any other name is the default, `ParentBased(AlwaysOn)`.
-    pub(crate) fn resolve(explicit: Option<Box<dyn ShouldSample>>, env: &EnvLookup) -> Self {
+    /// hermetic mode, so hermetic mode gets the default. The name is trimmed
+    /// and lowercased, as Go matches it, and one of the six standard
+    /// samplers; any other name is the default, `ParentBased(AlwaysOn)`. A
+    /// ratio sampler's argument must be a number from 0 to 1; without one
+    /// it samples everything, as Go's does. A name or an argument that is
+    /// set but unusable is reported to `warn`.
+    pub(crate) fn resolve(
+        explicit: Option<Box<dyn ShouldSample>>,
+        env: &EnvLookup,
+        warn: &dyn Fn(&TelemetryError),
+    ) -> Self {
         if let Some(sampler) = explicit {
             let report = format!("{sampler:?}");
             return Self { sampler, report };
@@ -223,9 +230,19 @@ impl SamplerChoice {
             .map(|name| name.to_lowercase())
             .unwrap_or_default();
         let ratio = || {
-            env.trimmed("OTEL_TRACES_SAMPLER_ARG")
-                .and_then(|arg| arg.parse::<f64>().ok())
-                .unwrap_or(1.0)
+            let Some(arg) = env.trimmed("OTEL_TRACES_SAMPLER_ARG") else {
+                return 1.0;
+            };
+            match arg.parse::<f64>() {
+                Ok(ratio) if (0.0..=1.0).contains(&ratio) => ratio,
+                _ => {
+                    warn(&TelemetryError::new(format!(
+                        "o11y: OTEL_TRACES_SAMPLER_ARG={} is not a ratio from 0 to 1; sampling every trace",
+                        go_quote(&arg)
+                    )));
+                    1.0
+                }
+            }
         };
         let (sampler, report) = match name.as_str() {
             "always_on" => (Sampler::AlwaysOn, name),
@@ -236,10 +253,18 @@ impl SamplerChoice {
                 Sampler::ParentBased(Box::new(Sampler::TraceIdRatioBased(ratio()))),
                 name,
             ),
-            _ => (
-                Sampler::ParentBased(Box::new(Sampler::AlwaysOn)),
-                DEFAULT_SAMPLER.to_owned(),
-            ),
+            other => {
+                if !other.is_empty() && other != DEFAULT_SAMPLER {
+                    warn(&TelemetryError::new(format!(
+                        "o11y: OTEL_TRACES_SAMPLER={} is not a supported sampler; using {DEFAULT_SAMPLER}",
+                        go_quote(other)
+                    )));
+                }
+                (
+                    Sampler::ParentBased(Box::new(Sampler::AlwaysOn)),
+                    DEFAULT_SAMPLER.to_owned(),
+                )
+            }
         };
         Self {
             sampler: Box::new(sampler),
@@ -483,6 +508,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines, reason = "one table of the sampler cases")]
     fn the_sampler_comes_from_the_option_then_the_environment() {
         let env = |name: &str, arg: &str| {
             EnvLookup::from_pairs([
@@ -491,46 +517,118 @@ mod tests {
             ])
         };
         let table = [
-            ("", "", "parentbased_always_on", "ParentBased(AlwaysOn)"),
-            ("always_on", "", "always_on", "AlwaysOn"),
-            (" ALWAYS_OFF ", "", "always_off", "AlwaysOff"),
+            ("", "", "parentbased_always_on", "ParentBased(AlwaysOn)", 0),
+            ("always_on", "", "always_on", "AlwaysOn", 0),
+            (" ALWAYS_OFF ", "", "always_off", "AlwaysOff", 0),
             (
                 "traceidratio",
                 "0.25",
                 "traceidratio",
                 "TraceIdRatioBased(0.25)",
+                0,
+            ),
+            (
+                "traceidratio",
+                "",
+                "traceidratio",
+                "TraceIdRatioBased(1.0)",
+                0,
             ),
             (
                 "traceidratio",
                 "soon",
                 "traceidratio",
                 "TraceIdRatioBased(1.0)",
+                1,
+            ),
+            (
+                "traceidratio",
+                "-0.5",
+                "traceidratio",
+                "TraceIdRatioBased(1.0)",
+                1,
+            ),
+            (
+                "traceidratio",
+                "1.5",
+                "traceidratio",
+                "TraceIdRatioBased(1.0)",
+                1,
+            ),
+            (
+                "traceidratio",
+                "NaN",
+                "traceidratio",
+                "TraceIdRatioBased(1.0)",
+                1,
             ),
             (
                 "parentbased_always_off",
                 "",
                 "parentbased_always_off",
                 "ParentBased(AlwaysOff)",
+                0,
             ),
             (
                 "parentbased_traceidratio",
                 "0.5",
                 "parentbased_traceidratio",
                 "ParentBased(TraceIdRatioBased(0.5))",
+                0,
             ),
-            ("xray", "", "parentbased_always_on", "ParentBased(AlwaysOn)"),
-            ("typo", "", "parentbased_always_on", "ParentBased(AlwaysOn)"),
+            (
+                "parentbased_always_on",
+                "",
+                "parentbased_always_on",
+                "ParentBased(AlwaysOn)",
+                0,
+            ),
+            (
+                "xray",
+                "",
+                "parentbased_always_on",
+                "ParentBased(AlwaysOn)",
+                1,
+            ),
+            (
+                "typo",
+                "",
+                "parentbased_always_on",
+                "ParentBased(AlwaysOn)",
+                1,
+            ),
         ];
-        for (name, arg, report, debug) in table {
-            let choice = SamplerChoice::resolve(None, &env(name, arg));
+        for (name, arg, report, debug, warnings) in table {
+            let warned = std::cell::RefCell::new(Vec::new());
+            let choice = SamplerChoice::resolve(None, &env(name, arg), &|err| {
+                warned.borrow_mut().push(err.message().to_owned());
+            });
             assert_eq!(choice.report, report, "{name:?}");
-            assert_eq!(format!("{:?}", choice.sampler), debug, "{name:?}");
+            assert_eq!(format!("{:?}", choice.sampler), debug, "{name:?} {arg:?}");
+            assert_eq!(
+                warned.borrow().len(),
+                warnings,
+                "{name:?} {arg:?}: {warned:?}"
+            );
         }
-        let explicit =
-            SamplerChoice::resolve(Some(Box::new(Sampler::AlwaysOff)), &env("always_on", ""));
+        let warned = std::cell::RefCell::new(Vec::new());
+        SamplerChoice::resolve(None, &env("traceidratio", "2"), &|err| {
+            warned.borrow_mut().push(err.message().to_owned());
+        });
+        assert_eq!(
+            *warned.borrow(),
+            [
+                "o11y: OTEL_TRACES_SAMPLER_ARG=\"2\" is not a ratio from 0 to 1; sampling every trace"
+            ]
+        );
+        let explicit = SamplerChoice::resolve(
+            Some(Box::new(Sampler::AlwaysOff)),
+            &env("always_on", ""),
+            &|_| unreachable!("the option reads no variable"),
+        );
         assert_eq!(explicit.report, "AlwaysOff");
         assert_eq!(
-            SamplerChoice::resolve(None, &EnvLookup::empty()).report,
+            SamplerChoice::resolve(None, &EnvLookup::empty(), &|_| {}).report,
             "parentbased_always_on"
         );
     }

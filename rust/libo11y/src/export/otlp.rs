@@ -1,8 +1,8 @@
 //! Builds upstream's OTLP span and log exporters for a resolved
-//! [`SignalExport`]: the protocol libo11y chose, a reqwest client or a tonic
-//! TLS configuration from the certificate variables, and upstream's own
-//! reading of the endpoint, header, timeout, compression and insecure
-//! variables.
+//! [`SignalExport`]: the protocol, endpoint and timeout libo11y resolved, a
+//! reqwest client or a tonic TLS configuration from the certificate
+//! variables, and upstream's own reading of the header, compression and
+//! insecure variables, which it takes from the process environment.
 
 use crate::BoxError;
 use crate::export::tls::TlsMaterial;
@@ -23,7 +23,11 @@ macro_rules! build_otlp {
                 } else {
                     opentelemetry_otlp::Protocol::HttpBinary
                 };
-                let mut builder = $builder.with_http().with_protocol(protocol);
+                let mut builder = $builder
+                    .with_http()
+                    .with_protocol(protocol)
+                    .with_endpoint(export.endpoint.clone())
+                    .with_timeout(export.timeout);
                 if let Some(tls) = &tls {
                     builder = builder.with_http_client(tls.blocking_client(export.timeout)?);
                 }
@@ -33,11 +37,16 @@ macro_rules! build_otlp {
             Protocol::Grpc => {
                 use opentelemetry_otlp::{WithExportConfig as _, WithTonicConfig as _};
                 require_tokio()?;
-                Ok($builder
+                let mut builder = $builder
                     .with_tonic()
                     .with_protocol(opentelemetry_otlp::Protocol::Grpc)
-                    .with_tls_config(TlsMaterial::tonic_config(tls.as_ref()))
-                    .build()?)
+                    .with_endpoint(export.endpoint.clone())
+                    .with_timeout(export.timeout);
+                // tonic refuses a TLS configuration for a Unix socket.
+                if tls.is_some() || !export.endpoint.starts_with("unix:") {
+                    builder = builder.with_tls_config(TlsMaterial::tonic_config(tls.as_ref()));
+                }
+                Ok(builder.build()?)
             }
             // Selection refuses a protocol this build does not carry, so
             // this arm exists only for builds with one transport.
@@ -157,6 +166,19 @@ mod tests {
                 .starts_with("OTLP over grpc needs a Tokio runtime"),
             "{err}"
         );
+    }
+
+    #[cfg(feature = "otlp-grpc")]
+    #[tokio::test]
+    async fn a_grpc_exporter_builds_for_a_unix_socket() {
+        let export = traces(&pairs(&[
+            ("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc"),
+            (
+                "OTEL_EXPORTER_OTLP_ENDPOINT",
+                "unix:///tmp/libo11y-no-collector.sock",
+            ),
+        ]));
+        span_exporter(&export).expect("no TLS configuration for a socket");
     }
 
     #[cfg(feature = "otlp-grpc")]

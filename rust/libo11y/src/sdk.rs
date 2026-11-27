@@ -39,6 +39,7 @@ use crate::{Builder, Policy, Violations};
 /// state, or install one for the whole process with [`Builder::setup`].
 /// Cloning is cheap: clones share the providers and the one shutdown.
 #[derive(Clone)]
+#[must_use = "keep the Sdk and shut it down before exit, or buffered telemetry is lost"]
 pub struct Sdk(pub(crate) Arc<Inner>);
 
 /// Everything one SDK owns.
@@ -79,6 +80,9 @@ pub(crate) struct Inner {
     /// releases the setup guard.
     pub(crate) global: AtomicBool,
     pub(crate) shutdown: ShutdownCell,
+    /// Per signal (logs, metrics, traces), whether a shutdown or flush step
+    /// is still running, so calls against a hung provider add no threads.
+    pub(crate) busy: [Arc<AtomicBool>; 3],
 }
 
 impl Sdk {
@@ -213,12 +217,16 @@ impl Sdk {
     /// for a caller that did not run the shutdown, its own timeout.
     pub fn shutdown_with_timeout(&self, timeout: Duration) -> Result<(), ShutdownError> {
         self.0.shutdown.run(timeout, || {
+            // The global SDK's shutdown releases the setup guard however it
+            // ends, a panic included.
+            let _release = self
+                .0
+                .global
+                .load(Ordering::Acquire)
+                .then_some(crate::setup::ReleaseOnDrop);
             let failures = run_steps(Op::Shutdown, self.steps(Op::Shutdown), timeout);
             for failure in &failures {
                 self.emit_dropped(failure);
-            }
-            if self.0.global.load(Ordering::Acquire) {
-                crate::setup::release_guard();
             }
             ShutdownError::from_failures(failures).map_or(Ok(()), Err)
         })
@@ -248,42 +256,46 @@ impl Sdk {
 
     /// The steps of a shutdown or a flush, in Go's order: logs (when they
     /// are exported), metrics, traces.
-    fn steps(&self, op: Op) -> Vec<(Signal, Step)> {
-        let mut steps: Vec<(Signal, Step)> = Vec::with_capacity(3);
+    fn steps(&self, op: Op) -> Vec<Step> {
+        let busy = &self.0.busy;
+        let mut steps = Vec::with_capacity(3);
         if let Some(provider) = self.0.logger_provider.clone() {
             let failures = self.0.log_failures.clone();
-            steps.push((
-                Signal::Logs,
-                Box::new(move |timeout| {
+            steps.push(Step {
+                signal: Signal::Logs,
+                busy: Arc::clone(&busy[0]),
+                run: Box::new(move |timeout| {
                     failures.during(|| match op {
                         Op::Shutdown => provider.shutdown_with_timeout(timeout),
                         Op::Flush => provider.force_flush(),
                     })
                 }),
-            ));
+            });
         }
         let meters = self.0.meter_provider.clone();
         let failures = self.0.metric_failures.clone();
-        steps.push((
-            Signal::Metrics,
-            Box::new(move |timeout| {
+        steps.push(Step {
+            signal: Signal::Metrics,
+            busy: Arc::clone(&busy[1]),
+            run: Box::new(move |timeout| {
                 failures.during(|| match op {
                     Op::Shutdown => meters.shutdown_with_timeout(timeout),
                     Op::Flush => meters.force_flush(),
                 })
             }),
-        ));
+        });
         let tracers = self.0.tracer_provider.clone();
         let failures = self.0.span_failures.clone();
-        steps.push((
-            Signal::Traces,
-            Box::new(move |timeout| {
+        steps.push(Step {
+            signal: Signal::Traces,
+            busy: Arc::clone(&busy[2]),
+            run: Box::new(move |timeout| {
                 failures.during(|| match op {
                     Op::Shutdown => tracers.shutdown_with_timeout(timeout),
                     Op::Flush => tracers.force_flush(),
                 })
             }),
-        ));
+        });
         steps
     }
 
@@ -326,21 +338,32 @@ impl Sdk {
             .await
     }
 
-    /// Runs [`Sdk::shutdown_with_timeout`] on Tokio's blocking pool, so an
-    /// async caller does not block its worker thread.
+    /// Runs [`Sdk::shutdown_with_timeout`] on a thread of its own and
+    /// awaits it, so an async caller does not block its worker thread. It
+    /// needs no particular runtime.
     ///
     /// # Errors
     ///
-    /// As [`Sdk::shutdown_with_timeout`], or the blocking task's failure.
+    /// As [`Sdk::shutdown_with_timeout`], or the shutdown thread's failure.
     #[cfg(feature = "tokio")]
     pub async fn shutdown_with_timeout_async(
         &self,
         timeout: Duration,
     ) -> Result<(), ShutdownError> {
         let sdk = self.clone();
-        tokio::task::spawn_blocking(move || sdk.shutdown_with_timeout(timeout))
-            .await
-            .unwrap_or_else(|err| Err(ShutdownError::task(err.to_string())))
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        std::thread::Builder::new()
+            .name("libo11y-shutdown".to_owned())
+            .spawn(move || {
+                // The caller may have stopped waiting; the shutdown still ran.
+                let _ = tx.send(sdk.shutdown_with_timeout(timeout));
+            })
+            .map_err(|err| ShutdownError::task(format!("starting the shutdown thread: {err}")))?;
+        rx.await.unwrap_or_else(|_| {
+            Err(ShutdownError::task(
+                "the shutdown thread stopped".to_owned(),
+            ))
+        })
     }
 }
 

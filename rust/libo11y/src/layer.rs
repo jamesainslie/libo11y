@@ -132,15 +132,24 @@ pub(crate) fn check_tracing_default() -> Result<(), Error> {
     Ok(())
 }
 
+/// Makes libo11y's global stack, when one is installed, read `parts`.
+/// Returns whether one was installed.
+pub(crate) fn follow_tracing_default(parts: Arc<Parts>) -> bool {
+    let Some(cell) = GLOBAL.get() else {
+        return false;
+    };
+    cell.replace(parts);
+    // Layers that filter by callsite may answer differently for the new
+    // parts.
+    tracing::callsite::rebuild_interest_cache();
+    true
+}
+
 /// Installs libo11y's stack as the global `tracing` default the first time,
 /// over `parts`, or makes the installed stack read `parts`. Callers hold
 /// the setup guard, so two calls never race.
 pub(crate) fn install_tracing_default(parts: Arc<Parts>) -> Result<(), Error> {
-    if let Some(cell) = GLOBAL.get() {
-        cell.replace(parts);
-        // Layers that filter by callsite may answer differently for the new
-        // parts.
-        tracing::callsite::rebuild_interest_cache();
+    if follow_tracing_default(Arc::clone(&parts)) {
         return Ok(());
     }
     let cell = Arc::new(PartsCell::new(parts));

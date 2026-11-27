@@ -104,6 +104,7 @@ fn clones_share_the_one_shutdown() {
         .expect("the stored result");
 }
 
+#[cfg(feature = "tokio")]
 #[tokio::test]
 async fn the_async_shutdown_is_bounded_too() {
     let gate = Gate::default();

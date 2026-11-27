@@ -33,6 +33,12 @@ pub(crate) use tls::TlsFiles;
 /// upstream's exporters set it.
 const DEFAULT_OTLP_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// The default OTLP/HTTP collector, without the signal's path.
+const DEFAULT_HTTP_ENDPOINT: &str = "http://localhost:4318";
+
+/// The default OTLP/gRPC collector.
+const DEFAULT_GRPC_ENDPOINT: &str = "http://localhost:4317";
+
 /// Where a signal's telemetry goes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Route {
@@ -60,7 +66,8 @@ impl Route {
 }
 
 /// An OTLP transport and encoding.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum Protocol {
     /// Protobuf over HTTP, the default.
     HttpProtobuf,
@@ -114,12 +121,17 @@ impl fmt::Display for Protocol {
 }
 
 /// What one signal exports through: the route and, for an OTLP route, the
-/// protocol, the request timeout and the TLS files. The metric exporter
-/// libo11y builds for itself reads the same values.
+/// protocol, the endpoint, the request timeout and the TLS files. The
+/// metric exporter libo11y builds for itself reads the same values.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SignalExport {
     pub(crate) route: Route,
     pub(crate) protocol: Protocol,
+    /// The collector URL, resolved as upstream resolves it but through the
+    /// env lookup: `OTEL_EXPORTER_OTLP_<SIGNAL>_ENDPOINT` as it is, else
+    /// `OTEL_EXPORTER_OTLP_ENDPOINT` with `/v1/<signal>` appended for HTTP,
+    /// else the default collector. Empty unless the route is OTLP.
+    pub(crate) endpoint: String,
     /// `OTEL_EXPORTER_OTLP_[SIGNAL_]TIMEOUT`, for a client libo11y builds.
     pub(crate) timeout: Duration,
     pub(crate) tls: TlsFiles,
@@ -130,6 +142,7 @@ impl SignalExport {
         Self {
             route: Route::None,
             protocol: Protocol::HttpProtobuf,
+            endpoint: String::new(),
             timeout: DEFAULT_OTLP_TIMEOUT,
             tls: TlsFiles::default(),
         }
@@ -244,8 +257,31 @@ fn signal_export(env: &EnvLookup, signal: Signal) -> Result<SignalExport, Error>
                 protocol: export.protocol,
             });
         }
+        export.endpoint = endpoint_from(env, signal, export.protocol);
     }
     Ok(export)
+}
+
+/// Resolves the collector URL of an OTLP signal through `env`, as
+/// upstream's exporters resolve it from the process environment.
+fn endpoint_from(env: &EnvLookup, signal: Signal, protocol: Protocol) -> String {
+    let upper = signal_upper(signal);
+    if let Some(endpoint) = env.trimmed(&format!("OTEL_EXPORTER_OTLP_{upper}_ENDPOINT")) {
+        return endpoint;
+    }
+    let general = env.trimmed("OTEL_EXPORTER_OTLP_ENDPOINT");
+    match protocol {
+        Protocol::Grpc => general.unwrap_or_else(|| DEFAULT_GRPC_ENDPOINT.to_owned()),
+        Protocol::HttpProtobuf | Protocol::HttpJson => {
+            let base = general.unwrap_or_else(|| DEFAULT_HTTP_ENDPOINT.to_owned());
+            let path = format!("v1/{}", upper.to_lowercase());
+            if base.ends_with('/') {
+                format!("{base}{path}")
+            } else {
+                format!("{base}/{path}")
+            }
+        }
+    }
 }
 
 /// Reads `OTEL_<SIGNAL>_EXPORTER`: the first non-blank entry of its comma
@@ -434,6 +470,38 @@ mod tests {
     }
 
     #[test]
+    fn endpoints_resolve_as_upstream_resolves_them() {
+        let selection = resolve(&[]).expect("defaults");
+        assert_eq!(selection.traces.endpoint, "http://localhost:4318/v1/traces");
+        assert_eq!(
+            selection.metrics.endpoint,
+            "http://localhost:4318/v1/metrics"
+        );
+        assert_eq!(selection.logs.endpoint, "http://localhost:4318/v1/logs");
+
+        let selection = resolve(&[
+            ("OTEL_EXPORTER_OTLP_ENDPOINT", "https://collector:4318/"),
+            (
+                "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+                " https://logs:9000/ingest ",
+            ),
+            ("OTEL_EXPORTER_OTLP_METRICS_PROTOCOL", "grpc"),
+        ])
+        .expect("resolves");
+        assert_eq!(
+            selection.traces.endpoint,
+            "https://collector:4318/v1/traces"
+        );
+        assert_eq!(selection.logs.endpoint, "https://logs:9000/ingest");
+        assert_eq!(selection.metrics.endpoint, "https://collector:4318/");
+
+        let selection = resolve(&[("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")]).expect("resolves");
+        assert_eq!(selection.traces.endpoint, "http://localhost:4317");
+        let selection = resolve(&[("OTEL_TRACES_EXPORTER", "console")]).expect("resolves");
+        assert_eq!(selection.traces.endpoint, "", "only an OTLP route has one");
+    }
+
+    #[test]
     fn protocols_are_case_sensitive() {
         assert!(resolve(&[("OTEL_EXPORTER_OTLP_PROTOCOL", "GRPC")]).is_err());
     }
@@ -467,13 +535,16 @@ mod tests {
             selection.logs.tls.certificate,
             Some(PathBuf::from("/etc/ca.pem"))
         );
-        assert_eq!(
-            selection.metrics.tls.client_key,
-            Some(PathBuf::from("/etc/key.pem"))
-        );
+        // The identity is a pair from one level: the metrics certificate
+        // set at the signal level does not meet the general key.
         assert_eq!(
             selection.metrics.tls.client_certificate,
             Some(PathBuf::from("/etc/m.pem"))
+        );
+        assert_eq!(selection.metrics.tls.client_key, None);
+        assert_eq!(
+            selection.logs.tls.client_key,
+            Some(PathBuf::from("/etc/key.pem"))
         );
         assert_eq!(selection.logs.tls.client_certificate, None);
     }

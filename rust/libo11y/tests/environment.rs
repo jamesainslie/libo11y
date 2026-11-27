@@ -94,7 +94,7 @@ fn exporter_variables_build_or_fail_as_go_does() {
 // go/spanpolicy_test.go TestSpanProcessorAloneBuildsNoEnvExporter.
 #[test]
 fn a_span_processor_alone_builds_no_exporter_from_the_environment() {
-    with_env(&[
+    let _sdk = with_env(&[
         ("OTEL_TRACES_EXPORTER", "no-such-exporter"),
         ("OTEL_METRICS_EXPORTER", "none"),
         ("OTEL_LOGS_EXPORTER", "none"),
@@ -280,6 +280,15 @@ fn a_disabled_sdk_exports_nothing() {
         assert!(!probe.metrics_collected(), "{value}");
         probe.sdk.shutdown().expect("shutdown");
     }
+}
+
+// go/injected_test.go TestSDKDisabledOwnsInjectedParts: what was injected
+// is shut down, though it receives nothing.
+#[test]
+fn a_disabled_sdk_shuts_down_what_was_injected() {
+    let probe = probe(&[("OTEL_SDK_DISABLED", "true")]);
+    assert!(probe.spans.was_shut_down(), "the injected exporter");
+    probe.sdk.shutdown().expect("shutdown");
 }
 
 // TestSDKDisabledKeepsPropagation.

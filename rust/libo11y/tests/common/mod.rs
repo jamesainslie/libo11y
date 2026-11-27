@@ -19,13 +19,14 @@ use libo11y::{Builder, Environment, Sdk};
 /// through shutdown.
 #[derive(Debug, Clone, Default)]
 pub struct Spans {
-    spans: Arc<Mutex<Vec<SpanData>>>,
+    exported: Arc<Mutex<Vec<SpanData>>>,
     resource: Arc<Mutex<Option<Resource>>>,
+    shut_down: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Spans {
     pub fn spans(&self) -> Vec<SpanData> {
-        self.spans.lock().expect("spans").clone()
+        self.exported.lock().expect("spans").clone()
     }
 
     pub fn named(&self, name: &str) -> SpanData {
@@ -42,16 +43,27 @@ impl Spans {
     pub fn resource(&self) -> Option<Resource> {
         self.resource.lock().expect("resource").clone()
     }
+
+    /// Whether the exporter was shut down.
+    pub fn was_shut_down(&self) -> bool {
+        self.shut_down.load(std::sync::atomic::Ordering::SeqCst)
+    }
 }
 
 impl SpanExporter for Spans {
     async fn export(&self, batch: Vec<SpanData>) -> OTelSdkResult {
-        self.spans.lock().expect("spans").extend(batch);
+        self.exported.lock().expect("spans").extend(batch);
         Ok(())
     }
 
     fn set_resource(&mut self, resource: &Resource) {
         *self.resource.lock().expect("resource") = Some(resource.clone());
+    }
+
+    fn shutdown_with_timeout(&self, _: Duration) -> OTelSdkResult {
+        self.shut_down
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
     }
 }
 

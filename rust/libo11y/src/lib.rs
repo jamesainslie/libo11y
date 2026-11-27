@@ -62,6 +62,12 @@ pub use export::Protocol;
 pub use libo11y_spec::Environment;
 pub use libo11y_spec::Signal;
 pub use lifecycle::{DEFAULT_SHUTDOWN_TIMEOUT, FlushError, ShutdownError, SignalFailure};
+/// The OpenTelemetry API this crate builds on, for the traits and types its
+/// own API takes and returns.
+pub use opentelemetry;
+/// The OpenTelemetry SDK this crate builds on, for the exporters,
+/// processors and samplers its builder takes.
+pub use opentelemetry_sdk;
 pub use policy::{Classified, Decision, MIN_PII_HASH_KEY_LEN, PiiMode, Policy, Rule, Violations};
 pub use propagation::{BoxedPropagator, Propagator};
 pub use sdk::Sdk;

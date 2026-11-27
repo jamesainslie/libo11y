@@ -2,8 +2,8 @@
 
 use std::future::Future;
 use std::io;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use signal_hook::consts::{SIGINT, SIGTERM};
 use signal_hook::iterator::{Handle, Signals};
@@ -18,7 +18,12 @@ impl Sdk {
     /// The first signal restores the default handling of both, so a second
     /// signal terminates the process at once instead of waiting on the
     /// flush. Dropping the future before a signal arrives restores the
-    /// default handling too.
+    /// default handling too, and it can be called again later.
+    ///
+    /// The default handling is libo11y's emulation of it, which stays
+    /// installed for the life of the process: once this has run, a `SIGINT`
+    /// or `SIGTERM` that arrives while no call is waiting terminates the
+    /// process even if the application registered its own handler since.
     ///
     /// ```no_run
     /// # async fn serve() {}
@@ -53,27 +58,50 @@ impl Sdk {
     }
 }
 
-/// A listener for the first `SIGINT` or `SIGTERM`.
+/// The process-wide part of signal handling, registered once: for each of
+/// `SIGINT` and `SIGTERM`, an emulation of the default action that runs
+/// while `restore` is set, then an action that sets `restore`. Registry
+/// actions run in registration order, so the first signal finds `restore`
+/// unset and does nothing, then sets it, and the second terminates the
+/// process. Nothing races: `restore` is set inside the signal handler.
 ///
-/// Each signal gets three actions: an emulation of its default action that
-/// runs once `restore` is set, an action that sets `restore`, and the
-/// iterator that wakes the waiting thread. On the first signal the
-/// emulation sees `restore` unset and does nothing, then `restore` is set,
-/// so the second signal terminates the process. Nothing races: `restore`
-/// is set inside the signal handler.
+/// signal-hook cannot put the operating system's default handling back
+/// without unsafe code (unregistering the last action leaves the signal
+/// ignored), so the actions stay registered for the life of the process:
+/// with no listener left, `restore` stays set and both signals keep their
+/// default action, even over handlers the application registers later
+/// through signal-hook or Tokio.
+struct Handling {
+    restore: Arc<AtomicBool>,
+    /// Live listeners.
+    listeners: usize,
+}
+
+static HANDLING: Mutex<Option<Handling>> = Mutex::new(None);
+
+/// A listener for the first `SIGINT` or `SIGTERM`.
 pub(crate) struct SignalListener {
     received: oneshot::Receiver<()>,
     handle: Handle,
-    restore: Arc<AtomicBool>,
 }
 
 impl SignalListener {
     pub(crate) fn install() -> io::Result<Self> {
-        let restore = Arc::new(AtomicBool::new(false));
-        for signal in [SIGINT, SIGTERM] {
-            signal_hook::flag::register_conditional_default(signal, Arc::clone(&restore))?;
-            signal_hook::flag::register(signal, Arc::clone(&restore))?;
-        }
+        let mut handling = HANDLING.lock().unwrap_or_else(PoisonError::into_inner);
+        let restore = if let Some(existing) = &*handling {
+            Arc::clone(&existing.restore)
+        } else {
+            let restore = Arc::new(AtomicBool::new(true));
+            for signal in [SIGINT, SIGTERM] {
+                signal_hook::flag::register_conditional_default(signal, Arc::clone(&restore))?;
+                signal_hook::flag::register(signal, Arc::clone(&restore))?;
+            }
+            *handling = Some(Handling {
+                restore: Arc::clone(&restore),
+                listeners: 0,
+            });
+            restore
+        };
         let mut signals = Signals::new([SIGINT, SIGTERM])?;
         let handle = signals.handle();
         let (tx, received) = oneshot::channel();
@@ -84,11 +112,12 @@ impl SignalListener {
                     let _ = tx.send(());
                 }
             })?;
-        Ok(Self {
-            received,
-            handle,
-            restore,
-        })
+        // Listening: the next signal is this listener's, not the default.
+        restore.store(false, Ordering::SeqCst);
+        if let Some(handling) = handling.as_mut() {
+            handling.listeners += 1;
+        }
+        Ok(Self { received, handle })
     }
 
     /// Resolves at the first signal.
@@ -100,9 +129,15 @@ impl SignalListener {
 
 impl Drop for SignalListener {
     fn drop(&mut self) {
-        // Whether or not a signal came, the default handling is back.
-        self.restore.store(true, Ordering::SeqCst);
         self.handle.close();
+        let mut handling = HANDLING.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(handling) = handling.as_mut() {
+            handling.listeners = handling.listeners.saturating_sub(1);
+            if handling.listeners == 0 {
+                // Nobody listens: both signals take their default action.
+                handling.restore.store(true, Ordering::SeqCst);
+            }
+        }
     }
 }
 
@@ -145,9 +180,13 @@ mod tests {
             .expect("clean shutdown");
     }
 
+    // One test, so nothing else in this binary raises a signal while the
+    // default action is armed. A dropped listener must not leave an armed
+    // default behind for the next one: the signal goes to the listener.
     #[tokio::test]
-    async fn a_real_signal_wakes_the_listener() {
-        let listener = SignalListener::install().expect("handlers");
+    async fn a_real_signal_wakes_the_listener_after_an_earlier_one_was_dropped() {
+        drop(SignalListener::install().expect("handlers"));
+        let listener = SignalListener::install().expect("handlers again");
         signal_hook::low_level::raise(SIGTERM).expect("raise");
         tokio::time::timeout(Duration::from_secs(5), listener.wait())
             .await

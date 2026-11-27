@@ -22,7 +22,6 @@ const DEFAULT_EXPORT_INTERVAL: Duration = Duration::from_secs(60);
 
 /// A metric exporter waiting for its reader. It erases the exporter's type.
 pub(crate) trait PendingMetricExporter: Send {
-    /// Registers a periodic reader over the exporter.
     /// Registers a periodic reader over the exporter, wrapped so its failed
     /// exports are recorded.
     fn register(

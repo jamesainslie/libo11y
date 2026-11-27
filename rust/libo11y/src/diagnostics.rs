@@ -6,8 +6,9 @@
 //! layer but the diagnostics layer filters them out, so they never reach the
 //! span layer or libo11y's log sinks, where a failing log exporter would
 //! feed its own failures back into itself. The warnings and errors among
-//! them go to the error handler; the debug and info ones are dropped. The default handler writes a rate-limited line to
-//! standard error, outside the telemetry pipeline, as Go's does: message
+//! them go to the error handler; the debug and info ones are dropped. The
+//! default handler writes a rate-limited line to standard error, outside
+//! the telemetry pipeline, as Go's does: message
 //! `o11y: telemetry error` at `WARN`, a burst of five reports refilling one
 //! per 30 seconds, and a `suppressed` count after a quiet spell.
 

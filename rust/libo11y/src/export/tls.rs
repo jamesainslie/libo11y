@@ -12,8 +12,9 @@ use std::path::{Path, PathBuf};
 use crate::env::EnvLookup;
 
 /// The PEM files one signal's OTLP exporter uses, each read from its
-/// signal's variable, else the general one.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// signal's variable, else the general one. Two are equal when they name
+/// the same files.
+#[derive(Debug, Clone, Default)]
 pub(crate) struct TlsFiles {
     pub(crate) certificate: Option<PathBuf>,
     pub(crate) client_certificate: Option<PathBuf>,
@@ -21,6 +22,16 @@ pub(crate) struct TlsFiles {
     /// The variables the paths came from, for messages.
     vars: TlsVars,
 }
+
+impl PartialEq for TlsFiles {
+    fn eq(&self, other: &Self) -> bool {
+        self.certificate == other.certificate
+            && self.client_certificate == other.client_certificate
+            && self.client_key == other.client_key
+    }
+}
+
+impl Eq for TlsFiles {}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct TlsVars {
@@ -74,24 +85,36 @@ impl std::fmt::Debug for TlsMaterial {
 
 impl TlsFiles {
     /// Reads the variables of the signal `upper` (`TRACES`, `METRICS` or
-    /// `LOGS`). A blank variable is unset.
+    /// `LOGS`). A blank variable is unset. The roots come from the signal's
+    /// variable, else the general one. The client identity is a pair read
+    /// at one level, as Go reads it, so a signal's certificate never meets
+    /// the general key: the signal's pair when either half is set there,
+    /// else the general pair.
     pub(crate) fn from_env(env: &EnvLookup, upper: &str) -> Self {
+        let signal_prefix = format!("OTEL_EXPORTER_OTLP_{upper}_");
+        let signal = |suffix: &str| format!("{signal_prefix}{suffix}");
+        let general = |suffix: &str| format!("OTEL_EXPORTER_OTLP_{suffix}");
+        let read = |var: String| env.trimmed(&var).map(|v| (var, PathBuf::from(v)));
         let mut vars = TlsVars::default();
-        let read = |suffix: &str, slot: &mut String| {
-            [
-                format!("OTEL_EXPORTER_OTLP_{upper}_{suffix}"),
-                format!("OTEL_EXPORTER_OTLP_{suffix}"),
-            ]
-            .into_iter()
-            .find_map(|var| env.trimmed(&var).map(|v| (var, v)))
-            .map(|(var, value)| {
-                *slot = var;
-                PathBuf::from(value)
-            })
+        let certificate = read(signal("CERTIFICATE"))
+            .or_else(|| read(general("CERTIFICATE")))
+            .map(|(var, path)| {
+                vars.certificate = var;
+                path
+            });
+        let signal_level =
+            read(signal("CLIENT_CERTIFICATE")).is_some() || read(signal("CLIENT_KEY")).is_some();
+        let level = |suffix: &str| {
+            if signal_level {
+                signal(suffix)
+            } else {
+                general(suffix)
+            }
         };
-        let certificate = read("CERTIFICATE", &mut vars.certificate);
-        let client_certificate = read("CLIENT_CERTIFICATE", &mut vars.client_certificate);
-        let client_key = read("CLIENT_KEY", &mut vars.client_key);
+        vars.client_certificate = level("CLIENT_CERTIFICATE");
+        vars.client_key = level("CLIENT_KEY");
+        let client_certificate = read(level("CLIENT_CERTIFICATE")).map(|(_, path)| path);
+        let client_key = read(level("CLIENT_KEY")).map(|(_, path)| path);
         Self {
             certificate,
             client_certificate,
@@ -365,6 +388,30 @@ pub(crate) mod tests {
         assert_eq!(
             files.load().expect_err("half").to_string(),
             "OTEL_EXPORTER_OTLP_METRICS_CLIENT_CERTIFICATE is set without OTEL_EXPORTER_OTLP_METRICS_CLIENT_KEY"
+        );
+    }
+
+    #[test]
+    fn a_signal_certificate_never_pairs_with_the_general_key() {
+        let dir = TempDir::new("tls-pair");
+        let cert = dir.write("client.pem", b"cert");
+        let key = dir.write("client.key", b"key");
+        let files = TlsFiles::from_env(
+            &env(&[
+                (
+                    "OTEL_EXPORTER_OTLP_TRACES_CLIENT_CERTIFICATE",
+                    cert.to_str().expect("utf-8"),
+                ),
+                (
+                    "OTEL_EXPORTER_OTLP_CLIENT_KEY",
+                    key.to_str().expect("utf-8"),
+                ),
+            ]),
+            "TRACES",
+        );
+        assert_eq!(
+            files.load().expect_err("half a signal pair").to_string(),
+            "OTEL_EXPORTER_OTLP_TRACES_CLIENT_CERTIFICATE is set without OTEL_EXPORTER_OTLP_TRACES_CLIENT_KEY"
         );
     }
 

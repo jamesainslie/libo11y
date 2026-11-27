@@ -112,10 +112,17 @@ fn the_global_lifecycle() {
     );
     second.shutdown().expect("shutdown");
 
-    // A setup that leaves tracing alone still works after one that did not.
+    // A setup that leaves tracing alone still works after one that did not,
+    // and the stack that stays installed follows it rather than the SDK
+    // that was shut down.
+    let third_spans = Spans::default();
     let third = hermetic("third")
+        .with_span_exporter(third_spans.clone())
         .without_tracing_default()
         .setup()
         .expect("setup");
+    tracing::info_span!("third-tracing").in_scope(|| {});
+    third.force_flush().expect("flush");
+    assert_eq!(third_spans.names(), ["third-tracing"]);
     third.shutdown().expect("shutdown");
 }

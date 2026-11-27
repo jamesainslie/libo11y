@@ -261,8 +261,8 @@ impl Builder {
         self
     }
 
-    /// Adds `processor` to the tracer provider. The SDK holds one: a later
-    /// processor replaces an earlier one. Without a
+    /// Sets the one injected span processor; a later call replaces it, as
+    /// Go's `WithSpanProcessor` does. Without a
     /// [`Builder::with_span_exporter`] exporter the processor owns the
     /// export path, and no exporter is built from the environment; with
     /// one, both run. `on_end` receives the span redacted by the sensitivity
@@ -292,11 +292,14 @@ impl Builder {
     /// which writes rate-limited `o11y: telemetry error` lines to standard
     /// error.
     ///
-    /// The OpenTelemetry crates report their errors as `tracing` events,
-    /// which libo11y's tracing layers take out of the stack and hand to the
-    /// handler, so the handler sees them wherever those layers run. It must
-    /// not log through libo11y's pipeline: when the failing component is the
-    /// log exporter, that recurses.
+    /// The OpenTelemetry crates report their errors as `tracing` events
+    /// under `opentelemetry*` targets. libo11y's layers hand the warnings and
+    /// errors among them to the handler, wherever those layers run, and keep
+    /// all of them away from the span layer and libo11y's log sinks. Other
+    /// layers in a subscriber of your own still see them unless they filter
+    /// those targets out. The handler must not log through libo11y's
+    /// pipeline: when the failing component is the log exporter, that
+    /// recurses.
     pub fn with_error_handler<F>(mut self, handler: F) -> Self
     where
         F: Fn(&TelemetryError) + Send + Sync + 'static,
@@ -307,6 +310,10 @@ impl Builder {
 
     /// Makes [`Builder::setup`] leave the global `tracing` subscriber alone.
     /// Compose [`Sdk::tracing_layer`] into your own subscriber instead.
+    ///
+    /// `tracing` takes one global subscriber per process. Once an earlier
+    /// setup installed libo11y's, it stays, and this setup points it at the
+    /// new SDK rather than leave it on the old one.
     pub fn without_tracing_default(mut self) -> Self {
         self.settings.tracing_default = false;
         self
@@ -453,7 +460,7 @@ pub(crate) fn build_sdk(mut settings: Settings) -> Result<Sdk, Error> {
     // The resource was classified before the counter existed.
     violations.add_all(Signal::Resource, &resolved.violations);
 
-    let sampler = SamplerChoice::resolve(settings.sampler.take(), &env);
+    let sampler = SamplerChoice::resolve(settings.sampler.take(), &env, &*handler);
     let span_failures = ExportFailures::default();
     let tracer_provider = build_tracer_provider(TraceParts {
         resource: resolved.resource.clone(),
@@ -503,6 +510,7 @@ pub(crate) fn build_sdk(mut settings: Settings) -> Result<Sdk, Error> {
         tracing_default: settings.tracing_default,
         global: AtomicBool::new(false),
         shutdown: ShutdownCell::default(),
+        busy: Default::default(),
     })))
 }
 
@@ -514,14 +522,27 @@ struct Exporters {
 
 /// The span and log exporters the selection names: the injected ones, or
 /// ones built from the environment.
+///
+/// An injected exporter the selection does not use (the SDK is disabled,
+/// or log export is off) is shut down now: the SDK owns what it was given.
 fn exporters(settings: &mut Settings, selection: &Selection) -> Result<Exporters, Error> {
     let spans = match selection.traces.route {
         Route::Injected => settings.span_exporter.take(),
-        route => span_exporter_for(route, &selection.traces)?,
+        route => {
+            if let Some(unused) = settings.span_exporter.take() {
+                unused.discard();
+            }
+            span_exporter_for(route, &selection.traces)?
+        }
     };
     let logs = match selection.logs.route {
         Route::Injected => settings.log_exporter.take(),
-        route => log_exporter_for(route, &selection.logs)?,
+        route => {
+            if let Some(unused) = settings.log_exporter.take() {
+                unused.discard();
+            }
+            log_exporter_for(route, &selection.logs)?
+        }
     };
     Ok(Exporters { spans, logs })
 }

@@ -8,6 +8,7 @@
 
 use std::fmt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -50,6 +51,9 @@ enum FailureKind {
     Errors(Vec<SharedError>),
     /// The provider was still running at the deadline.
     TimedOut(Duration),
+    /// An earlier call's step for the signal was still running, so this
+    /// call started none: hung providers do not pile up threads.
+    StillRunning,
     /// The provider panicked.
     Panicked,
 }
@@ -61,10 +65,14 @@ impl SignalFailure {
         self.signal
     }
 
-    /// Whether the signal's provider was still running at the deadline.
+    /// Whether the signal's provider was still running at the deadline, or
+    /// still running from an earlier call.
     #[must_use]
     pub fn is_timeout(&self) -> bool {
-        matches!(self.kind, FailureKind::TimedOut(_))
+        matches!(
+            self.kind,
+            FailureKind::TimedOut(_) | FailureKind::StillRunning
+        )
     }
 
     /// The errors the provider returned and the export failures recorded
@@ -72,7 +80,7 @@ impl SignalFailure {
     pub fn errors(&self) -> impl Iterator<Item = &(dyn std::error::Error + Send + Sync + 'static)> {
         let errors: &[SharedError] = match &self.kind {
             FailureKind::Errors(errors) => errors,
-            FailureKind::TimedOut(_) | FailureKind::Panicked => &[],
+            FailureKind::TimedOut(_) | FailureKind::StillRunning | FailureKind::Panicked => &[],
         };
         errors.iter().map(AsRef::as_ref)
     }
@@ -94,7 +102,19 @@ impl fmt::Display for SignalFailure {
                 Ok(())
             }
             FailureKind::TimedOut(after) => write!(f, "deadline exceeded after {after:?}"),
+            FailureKind::StillRunning => f.write_str("still running from an earlier call"),
             FailureKind::Panicked => f.write_str("the provider panicked"),
+        }
+    }
+}
+
+impl std::error::Error for SignalFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match &self.kind {
+            FailureKind::Errors(errors) => errors
+                .first()
+                .map(|err| err.as_ref() as &(dyn std::error::Error + 'static)),
+            FailureKind::TimedOut(_) | FailureKind::StillRunning | FailureKind::Panicked => None,
         }
     }
 }
@@ -120,6 +140,8 @@ enum WaitFailure {
         allow(dead_code, reason = "only the async shutdown runs a task")
     )]
     Task(String),
+    /// The shutdown panicked, in code the log legs run after the providers.
+    Panicked,
     /// The signal handlers could not be installed.
     #[cfg_attr(
         not(all(feature = "tokio", unix)),
@@ -134,6 +156,13 @@ impl ShutdownError {
             failures,
             wait: None,
         })
+    }
+
+    fn panicked() -> Self {
+        Self {
+            failures: Vec::new(),
+            wait: Some(WaitFailure::Panicked),
+        }
     }
 
     fn waiting(timeout: Duration) -> Self {
@@ -191,6 +220,7 @@ impl fmt::Display for ShutdownError {
             Some(WaitFailure::Task(detail)) => {
                 write!(f, "{sep}o11y: waiting for shutdown: {detail}")
             }
+            Some(WaitFailure::Panicked) => write!(f, "{sep}o11y: shutdown panicked"),
             Some(WaitFailure::Signals(err)) => {
                 write!(f, "{sep}o11y: listening for shutdown signals: {err}")
             }
@@ -202,7 +232,10 @@ impl std::error::Error for ShutdownError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match &self.wait {
             Some(WaitFailure::Signals(err)) => Some(err.as_ref()),
-            _ => None,
+            _ => self
+                .failures
+                .first()
+                .map(|failure| failure as &(dyn std::error::Error + 'static)),
         }
     }
 }
@@ -237,35 +270,51 @@ impl fmt::Display for FlushError {
     }
 }
 
-impl std::error::Error for FlushError {}
+impl std::error::Error for FlushError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.failures
+            .first()
+            .map(|failure| failure as &(dyn std::error::Error + 'static))
+    }
+}
 
-/// One signal's part of a shutdown or flush: given the timeout, it returns
-/// the errors to report, none on success.
-pub(crate) type Step = Box<dyn FnOnce(Duration) -> Vec<SharedError> + Send + 'static>;
+/// One signal's part of a shutdown or flush.
+pub(crate) struct Step {
+    pub(crate) signal: Signal,
+    /// Set while a step of this signal runs, across calls.
+    pub(crate) busy: Arc<AtomicBool>,
+    /// Given the timeout, returns the errors to report, none on success.
+    pub(crate) run: Box<dyn FnOnce(Duration) -> Vec<SharedError> + Send + 'static>,
+}
 
 /// Runs every step on a thread of its own under one deadline, `timeout`
 /// from now, and returns the failures in step order. A step still running
-/// at the deadline is reported as timed out and left to finish on its own.
-pub(crate) fn run_steps(
-    op: Op,
-    steps: Vec<(Signal, Step)>,
-    timeout: Duration,
-) -> Vec<SignalFailure> {
-    let deadline = Instant::now() + timeout;
+/// at the deadline is reported as timed out and left to finish on its own;
+/// until it does, a later call starts no step for that signal. A timeout too
+/// large to add to the clock waits without a deadline.
+pub(crate) fn run_steps(op: Op, steps: Vec<Step>, timeout: Duration) -> Vec<SignalFailure> {
+    let deadline = Instant::now().checked_add(timeout);
     let (tx, rx) = mpsc::channel();
     let mut outcomes: Vec<Option<FailureKind>> = Vec::with_capacity(steps.len());
-    let signals: Vec<Signal> = steps.iter().map(|(signal, _)| *signal).collect();
+    let signals: Vec<Signal> = steps.iter().map(|step| step.signal).collect();
     let mut pending = 0;
-    for (i, (signal, step)) in steps.into_iter().enumerate() {
+    for (i, step) in steps.into_iter().enumerate() {
+        if step.busy.swap(true, Ordering::AcqRel) {
+            outcomes.push(Some(FailureKind::StillRunning));
+            continue;
+        }
         let tx = tx.clone();
+        let busy = Arc::clone(&step.busy);
+        let run = step.run;
         let spawned = std::thread::Builder::new()
-            .name(format!("libo11y-{}-{signal}", op.as_str()))
+            .name(format!("libo11y-{}-{}", op.as_str(), step.signal))
             .spawn(move || {
-                let outcome = match catch_unwind(AssertUnwindSafe(|| step(timeout))) {
+                let outcome = match catch_unwind(AssertUnwindSafe(|| run(timeout))) {
                     Ok(errors) if errors.is_empty() => None,
                     Ok(errors) => Some(FailureKind::Errors(errors)),
                     Err(_) => Some(FailureKind::Panicked),
                 };
+                busy.store(false, Ordering::Release);
                 // The caller may have stopped waiting; then nobody listens.
                 let _ = tx.send((i, outcome));
             });
@@ -274,19 +323,23 @@ pub(crate) fn run_steps(
                 outcomes.push(Some(FailureKind::TimedOut(timeout)));
                 pending += 1;
             }
-            Err(err) => outcomes.push(Some(FailureKind::Errors(vec![Arc::new(err)]))),
+            Err(err) => {
+                step.busy.store(false, Ordering::Release);
+                outcomes.push(Some(FailureKind::Errors(vec![Arc::new(err)])));
+            }
         }
     }
     drop(tx);
     while pending > 0 {
-        let left = deadline.saturating_duration_since(Instant::now());
-        match rx.recv_timeout(left) {
-            Ok((i, outcome)) => {
-                outcomes[i] = outcome;
-                pending -= 1;
-            }
-            Err(_) => break,
-        }
+        let received = match deadline {
+            Some(deadline) => rx
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .ok(),
+            None => rx.recv().ok(),
+        };
+        let Some((i, outcome)) = received else { break };
+        outcomes[i] = outcome;
+        pending -= 1;
     }
     outcomes
         .into_iter()
@@ -325,7 +378,11 @@ impl ShutdownCell {
             State::Idle => {
                 *state = State::Running;
                 drop(state);
+                // A panic in `shutdown` still finishes the shutdown, so no
+                // caller waits on it forever.
+                let mut unwinding = Unwinding(Some(self));
                 let result = shutdown();
+                unwinding.0 = None;
                 self.finish(result.clone());
                 result
             }
@@ -363,24 +420,45 @@ impl ShutdownCell {
     }
 }
 
+/// Finishes the shutdown as panicked when dropped while armed.
+struct Unwinding<'a>(Option<&'a ShutdownCell>);
+
+impl Drop for Unwinding<'_> {
+    fn drop(&mut self) {
+        if let Some(cell) = self.0 {
+            cell.finish(Err(ShutdownError::panicked()));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     use opentelemetry_sdk::error::OTelSdkError;
 
-    fn ok() -> Step {
+    type Run = Box<dyn FnOnce(Duration) -> Vec<SharedError> + Send + 'static>;
+
+    fn step(signal: Signal, run: Run) -> Step {
+        Step {
+            signal,
+            busy: Arc::default(),
+            run,
+        }
+    }
+
+    fn ok() -> Run {
         Box::new(|_| Vec::new())
     }
 
-    fn failing(message: &'static str) -> Step {
+    fn failing(message: &'static str) -> Run {
         Box::new(move |_| {
             vec![Arc::new(OTelSdkError::InternalFailure(message.to_owned())) as SharedError]
         })
     }
 
     /// A step that blocks until `release` drops its sender.
-    fn hanging() -> (Step, mpsc::Sender<()>) {
+    fn hanging() -> (Run, mpsc::Sender<()>) {
         let (tx, rx) = mpsc::channel::<()>();
         (
             Box::new(move |_| {
@@ -396,9 +474,9 @@ mod tests {
         let failures = run_steps(
             Op::Shutdown,
             vec![
-                (Signal::Logs, ok()),
-                (Signal::Metrics, ok()),
-                (Signal::Traces, ok()),
+                step(Signal::Logs, ok()),
+                step(Signal::Metrics, ok()),
+                step(Signal::Traces, ok()),
             ],
             Duration::from_secs(5),
         );
@@ -410,9 +488,9 @@ mod tests {
         let failures = run_steps(
             Op::Shutdown,
             vec![
-                (Signal::Logs, failing("logs down")),
-                (Signal::Metrics, ok()),
-                (Signal::Traces, failing("traces down")),
+                step(Signal::Logs, failing("logs down")),
+                step(Signal::Metrics, ok()),
+                step(Signal::Traces, failing("traces down")),
             ],
             Duration::from_secs(5),
         );
@@ -423,7 +501,7 @@ mod tests {
         );
         let flush = FlushError::from_failures(run_steps(
             Op::Flush,
-            vec![(Signal::Metrics, failing("m"))],
+            vec![step(Signal::Metrics, failing("m"))],
             Duration::from_secs(5),
         ))
         .expect("failed");
@@ -442,9 +520,9 @@ mod tests {
         let failures = run_steps(
             Op::Shutdown,
             vec![
-                (Signal::Logs, hung),
-                (Signal::Metrics, ok()),
-                (Signal::Traces, failing("rejected")),
+                step(Signal::Logs, hung),
+                step(Signal::Metrics, ok()),
+                step(Signal::Traces, failing("rejected")),
             ],
             Duration::from_millis(200),
         );
@@ -466,15 +544,112 @@ mod tests {
     fn a_panicking_step_is_a_failure() {
         let failures = run_steps(
             Op::Flush,
-            vec![(
+            vec![step(
                 Signal::Traces,
-                Box::new(|_| -> Vec<SharedError> { panic!("exporter bug") }) as Step,
+                Box::new(|_| -> Vec<SharedError> { panic!("exporter bug") }),
             )],
             Duration::from_secs(5),
         );
         assert_eq!(
             failures[0].to_string(),
             "o11y: flush traces: the provider panicked"
+        );
+    }
+
+    #[test]
+    fn a_timeout_too_large_for_the_clock_waits_without_a_deadline() {
+        let failures = run_steps(
+            Op::Shutdown,
+            vec![step(Signal::Traces, failing("x")), step(Signal::Logs, ok())],
+            Duration::MAX,
+        );
+        assert_eq!(failures.len(), 1);
+        assert!(!failures[0].is_timeout());
+    }
+
+    #[test]
+    fn a_hung_step_blocks_only_its_signal_in_a_later_call() {
+        let busy = Arc::new(AtomicBool::new(false));
+        let (hung, release) = hanging();
+        let first = run_steps(
+            Op::Flush,
+            vec![Step {
+                signal: Signal::Metrics,
+                busy: Arc::clone(&busy),
+                run: hung,
+            }],
+            Duration::from_millis(50),
+        );
+        assert!(first[0].is_timeout());
+        let second = run_steps(
+            Op::Flush,
+            vec![
+                Step {
+                    signal: Signal::Metrics,
+                    busy: Arc::clone(&busy),
+                    run: Box::new(|_| unreachable!("no second thread")),
+                },
+                step(Signal::Traces, ok()),
+            ],
+            Duration::from_secs(5),
+        );
+        assert_eq!(second.len(), 1);
+        assert_eq!(
+            second[0].to_string(),
+            "o11y: flush metrics: still running from an earlier call"
+        );
+        drop(release);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while busy.load(Ordering::Acquire) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            run_steps(
+                Op::Flush,
+                vec![Step {
+                    signal: Signal::Metrics,
+                    busy,
+                    run: ok(),
+                }],
+                Duration::from_secs(5),
+            )
+            .is_empty(),
+            "the signal runs again once the hung step ends"
+        );
+    }
+
+    #[test]
+    fn a_panicking_shutdown_still_finishes() {
+        let cell = ShutdownCell::default();
+        let panicked = catch_unwind(AssertUnwindSafe(|| {
+            cell.run(Duration::from_secs(1), || panic!("a log leg bug"))
+        }));
+        assert!(panicked.is_err());
+        let err = cell
+            .run(Duration::ZERO, || unreachable!("finished"))
+            .expect_err("panicked");
+        assert_eq!(err.to_string(), "o11y: shutdown panicked");
+        assert!(!err.is_wait_timeout());
+    }
+
+    #[test]
+    fn failures_expose_their_sources() {
+        use std::error::Error as _;
+
+        let err = ShutdownError::from_failures(run_steps(
+            Op::Shutdown,
+            vec![step(Signal::Traces, failing("rejected"))],
+            Duration::from_secs(1),
+        ))
+        .expect("failed");
+        let failure = err.source().expect("the failed signal");
+        assert_eq!(
+            failure.to_string(),
+            "o11y: shutdown traces: Operation failed: rejected"
+        );
+        assert_eq!(
+            failure.source().map(ToString::to_string).as_deref(),
+            Some("Operation failed: rejected")
         );
     }
 
@@ -485,7 +660,7 @@ mod tests {
         let first = cell.run(Duration::from_secs(1), || {
             Err(ShutdownError::from_failures(run_steps(
                 Op::Shutdown,
-                vec![(Signal::Traces, failing("x"))],
+                vec![step(Signal::Traces, failing("x"))],
                 Duration::from_secs(1),
             ))
             .expect("failed"))
