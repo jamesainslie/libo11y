@@ -641,7 +641,7 @@ export type RUMViewKind = "initial" | "soft" | "bfcache_restore" | "prerender" |
 export type RUMVitalRating = "good" | "needs-improvement" | "poor";
 
 // @public
-export const SCHEMA_URL = "https://schemas.o11y.ing/libo11y/1.2.0";
+export const SCHEMA_URL = "https://schemas.o11y.ing/libo11y/1.3.0";
 
 // @public
 export const SEMCONV_VERSION = "1.41.0";
@@ -674,7 +674,7 @@ export const SIGNAL_VALUES: readonly Signal[];
 export const SPAN_REQUIRED: ReadonlyMap<string, readonly string[]>;
 
 // @public
-export const SPEC_VERSION = "1.2.0";
+export const SPEC_VERSION = "1.3.0";
 
 // @public
 export function validateAppRegistry(reg: AppRegistry): AppRegistryResult;

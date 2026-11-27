@@ -89,8 +89,8 @@ test("RUM conventions", () => {
   assert.equal(RUM_VITAL_RATING_VALUE_NEEDS_IMPROVEMENT, "needs-improvement");
 });
 
-test("spec 1.2.0 marks captured console records", () => {
-  assert.equal(SPEC_VERSION, "1.2.0");
+test("captured console records (spec 1.2.0)", () => {
+  assert.equal(SPEC_VERSION, "1.3.0");
   assert.equal(ATTR_LOG_SOURCE, "o11y.log.source");
   assert.deepEqual([...LOG_SOURCE_VALUES], ["logger", "console"]);
   assert.equal(SENSITIVITY_OF.get("o11y.log.source"), "public");

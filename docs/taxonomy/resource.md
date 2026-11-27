@@ -1,4 +1,4 @@
-# libo11y resource taxonomy (spec 1.2.0)
+# libo11y resource taxonomy (spec 1.3.0)
 
 Generated from `spec/registry`; do not edit. Semconv pin: v1.41.0.
 

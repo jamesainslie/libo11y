@@ -17,8 +17,8 @@ func TestGenCSpec(t *testing.T) {
 
 	for _, want := range []string{
 		`#ifndef O11Y_SPEC_H`,
-		`#define O11Y_SCHEMA_URL "https://schemas.o11y.ing/libo11y/1.2.0"`,
-		`#define O11Y_SPEC_VERSION "1.2.0"`,
+		`#define O11Y_SCHEMA_URL "https://schemas.o11y.ing/libo11y/1.3.0"`,
+		`#define O11Y_SPEC_VERSION "1.3.0"`,
 		`#define O11Y_SEMCONV_VERSION "1.41.0"`,
 		`#define O11Y_EVENT_NAME_KEY "event.name"`,
 		`#define O11Y_APP_REGISTRY_SCHEMA "libo11y.app-registry/v1"`,
