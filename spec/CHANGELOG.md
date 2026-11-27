@@ -8,7 +8,9 @@ at its schema URL.
 
 ## [Unreleased]
 
-Spec 1.3.0, the RUM view summary. The schema URL is
+## [1.3.0] - 2026-11-27
+
+Tagged `spec/v1.3.0`. Its schema file is served at
 `https://schemas.o11y.ing/libo11y/1.3.0`.
 
 ### Added
