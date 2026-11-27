@@ -29,6 +29,18 @@ adhere to [Semantic Versioning](https://semver.org/).
   carries `o11y.rum.span.shape`, `o11y.rum.platform`, `session.id` and
   `o11y.rum.view.id`. `@libo11y/web` on its own still records
   `documentLoad`.
+- `@libo11y/rum`: the `views()`, `actions()` and `errors()` collectors.
+  `views()` records a view span per view, with soft navigations from the
+  History API by default. `actions()` records clicks, key presses and
+  submits as action spans that parent their requests and end when the work
+  settles, and reports rage, dead and error clicks. `errors()` records
+  uncaught errors, unhandled rejections, resource, CSP and network
+  failures, and optionally `console.error`, each with breadcrumbs. The
+  `rum` handle gains `startView`, `setViewName`, `viewRendered`,
+  `addAction` and `addError`.
+- `@libo11y/rum`: app metrics export with delta temporality, as the RUM
+  gateway requires. `@libo11y/web` on its own still exports cumulative
+  metrics.
 - `@libo11y/web/internal` exports `setupWithDeps`, `defaultSetupDeps` and
   `SetupDeps`, the seam `@libo11y/rum` builds on.
 - Size budgets for the browser bundles in `ts/size-budget.json`, checked by
