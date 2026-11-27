@@ -71,7 +71,7 @@ Arrows point the way data moves. A solid arrow is pushed by its sender. A dashed
 ## What a client sends
 
 1. **Nothing before consent.** In the `pending` state the client records nothing, buffers nothing and sends nothing. Revoking consent clears every queue and buffer.
-2. **A view summary for every consented session.** When a view ends, or the page is first hidden, the client sends one `o11y.rum.view.summary` event. It carries the view name and kind, the time on the view, the counts of errors, frustration signals, requests and long animation frames, and each web vital with its rating.
+2. **A view summary for every consented session.** When a view ends, or the page is first hidden, the client sends one `o11y.rum.view.summary` event. It carries the view name and kind, the time on the view, the counts of errors, frustration signals, requests and long animation frames, and each web vital's value. The gateway rates it against the thresholds the spec publishes.
    - Counts are deltas since the previous summary of the same view, so several summaries for one view add up correctly.
    - Each vital is reported once per view, in the first summary sent after the vital is known. A CLS or INP change after the page returns from hidden is left out of the metrics. Kept sessions still record it in their detail events. This differs from CrUX, which reports final values, and the spec states the difference.
 3. **Detail for kept sessions.** Spans, `o11y.rum.error`, `o11y.rum.frustration`, the session events and the semconv `browser.web_vital` event with attribution go out only for kept sessions.

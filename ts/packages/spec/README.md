@@ -23,7 +23,7 @@ import { ATTR_OUTCOME, SCHEMA_URL, SENSITIVITY_OF } from "@libo11y/spec";
 
 SENSITIVITY_OF.get("o11y.tenant.id"); // "internal"
 SENSITIVITY_OF.get(ATTR_OUTCOME); // "public", for o11y.outcome
-SCHEMA_URL; // "https://schemas.o11y.ing/libo11y/1.2.0"
+SCHEMA_URL; // "https://schemas.o11y.ing/libo11y/1.3.0"
 ```
 
 ## Application registries
