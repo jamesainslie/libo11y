@@ -8,7 +8,7 @@ GO_TEST_P ?= 4
 # gate runs on each module separately.
 GO_MODULES := go go/o11ygin go/o11yconnect go/o11ysql go/o11yrum
 
-.PHONY: spec-check spec-generate spec-drift test lint vet tidy-check vuln release-check zig-release-check python-release-check rust-release-check rust-release-check-test c-release-check schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-npm-plan-test ts-install ts-check ts-size ts-browser-test rust-check rust-msrv zig-check zig-integrations-check zig-hygiene-test python-check python-hygiene-test c-check ci
+.PHONY: spec-check spec-generate spec-drift test lint vet tidy-check vuln release-check zig-release-check python-release-check rust-release-check rust-release-check-test c-release-check schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-npm-plan-test ts-install ts-check ts-size ts-browser-test rum-e2e rust-check rust-msrv zig-check zig-integrations-check zig-hygiene-test python-check python-hygiene-test c-check ci
 
 # Validate the spec registry against the libo11y policy suite (naming,
 # ownership, sensitivity, cardinality, events, units).
@@ -55,6 +55,15 @@ ts-size: ts-install
 # `bun run test:browser --project=web --project=webext --project=rum-chromium`.
 ts-browser-test: ts-install
 	cd ts && bun run test:browser
+
+# The RUM gateway end-to-end journey: builds o11yrum-gateway and runs the
+# journey in ts/packages/sourcemaps/src/e2e under Node and Bun against the
+# in-process OTLP sink from @libo11y/test.
+rum-e2e: ts-install
+	@set -e; tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; \
+	(cd go/o11yrum && go build -o "$$tmp/o11yrum-gateway" ./cmd/o11yrum-gateway); \
+	cd ts && O11YRUM_GATEWAY_BIN="$$tmp/o11yrum-gateway" node --test packages/sourcemaps/src/e2e/*.test.ts \
+		&& O11YRUM_GATEWAY_BIN="$$tmp/o11yrum-gateway" bun test --timeout 60000 packages/sourcemaps/src/e2e
 
 # Rust workspace (rust/): formatting, clippy with warnings as errors, the
 # tests, and the docs with warnings as errors (needs cargo with rustfmt and
@@ -262,4 +271,4 @@ c-check:
 
 # vuln runs last: it depends on the advisory database and the toolchain's
 # patch level, so local runs exercise every other gate first.
-ci: lint vet test tidy-check spec-check spec-drift ts-check ts-size ts-browser-test rust-check rust-msrv zig-check python-check c-check schema-published-test release-notes-test release-tag-test rust-release-check-test ts-browser-bundle-test ts-npm-plan-test release-check vuln
+ci: lint vet test tidy-check spec-check spec-drift ts-check ts-size ts-browser-test rum-e2e rust-check rust-msrv zig-check python-check c-check schema-published-test release-notes-test release-tag-test rust-release-check-test ts-browser-bundle-test ts-npm-plan-test release-check vuln
