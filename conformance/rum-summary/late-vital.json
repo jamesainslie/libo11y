@@ -1,0 +1,72 @@
+{
+  "description": "A vital for a view that already closed goes out in a later summary of that view, with no time and no counts.",
+  "platform": "web",
+  "steps": [
+    {
+      "at": 0,
+      "do": "open",
+      "view": {
+        "id": "v0",
+        "name": "/",
+        "kind": "initial",
+        "sessionId": "s1"
+      }
+    },
+    {
+      "at": 1000,
+      "do": "close",
+      "viewId": "v0"
+    },
+    {
+      "at": 1000,
+      "do": "open",
+      "view": {
+        "id": "v1",
+        "name": "/docs/$id",
+        "kind": "soft",
+        "sessionId": "s1"
+      }
+    },
+    {
+      "at": 3000,
+      "do": "vital",
+      "viewId": "v0",
+      "name": "inp",
+      "value": 0.25
+    },
+    {
+      "at": 3000,
+      "do": "hide"
+    }
+  ],
+  "want": [
+    {
+      "o11y.rum.platform": "web",
+      "o11y.rum.view.id": "v0",
+      "o11y.rum.view.name": "/",
+      "o11y.rum.view.kind": "initial",
+      "session.id": "s1",
+      "o11y.rum.summary.seq": 0,
+      "o11y.rum.summary.time_on_view": 1
+    },
+    {
+      "o11y.rum.platform": "web",
+      "o11y.rum.view.id": "v0",
+      "o11y.rum.view.name": "/",
+      "o11y.rum.view.kind": "initial",
+      "session.id": "s1",
+      "o11y.rum.summary.seq": 1,
+      "o11y.rum.summary.time_on_view": 0,
+      "o11y.rum.summary.inp.value": 0.25
+    },
+    {
+      "o11y.rum.platform": "web",
+      "o11y.rum.view.id": "v1",
+      "o11y.rum.view.name": "/docs/$id",
+      "o11y.rum.view.kind": "soft",
+      "session.id": "s1",
+      "o11y.rum.summary.seq": 0,
+      "o11y.rum.summary.time_on_view": 2
+    }
+  ]
+}

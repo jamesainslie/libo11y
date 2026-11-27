@@ -1,0 +1,45 @@
+{
+  "description": "One view, one error, closed after 2.5 s visible.",
+  "platform": "web",
+  "steps": [
+    {
+      "at": 0,
+      "do": "open",
+      "view": {
+        "id": "v0",
+        "name": "/",
+        "kind": "initial",
+        "sessionId": "s1"
+      }
+    },
+    {
+      "at": 400,
+      "do": "count",
+      "key": "errors.uncaught"
+    },
+    {
+      "at": 900,
+      "do": "count",
+      "key": "requests",
+      "n": 3
+    },
+    {
+      "at": 2500,
+      "do": "close",
+      "viewId": "v0"
+    }
+  ],
+  "want": [
+    {
+      "o11y.rum.platform": "web",
+      "o11y.rum.view.id": "v0",
+      "o11y.rum.view.name": "/",
+      "o11y.rum.view.kind": "initial",
+      "session.id": "s1",
+      "o11y.rum.summary.seq": 0,
+      "o11y.rum.summary.time_on_view": 2.5,
+      "o11y.rum.summary.errors.uncaught": 1,
+      "o11y.rum.summary.requests": 3
+    }
+  ]
+}

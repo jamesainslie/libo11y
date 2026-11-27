@@ -1,0 +1,68 @@
+{
+  "description": "A soft navigation closes one view and opens the next; counts go to the current view.",
+  "platform": "web",
+  "steps": [
+    {
+      "at": 0,
+      "do": "open",
+      "view": {
+        "id": "v0",
+        "name": "/",
+        "kind": "initial",
+        "sessionId": "s1"
+      }
+    },
+    {
+      "at": 100,
+      "do": "count",
+      "key": "requests"
+    },
+    {
+      "at": 2000,
+      "do": "close",
+      "viewId": "v0"
+    },
+    {
+      "at": 2000,
+      "do": "open",
+      "view": {
+        "id": "v1",
+        "name": "/docs/$id",
+        "kind": "soft",
+        "sessionId": "s1"
+      }
+    },
+    {
+      "at": 2100,
+      "do": "count",
+      "key": "errors.unhandled_rejection"
+    },
+    {
+      "at": 3000,
+      "do": "close",
+      "viewId": "v1"
+    }
+  ],
+  "want": [
+    {
+      "o11y.rum.platform": "web",
+      "o11y.rum.view.id": "v0",
+      "o11y.rum.view.name": "/",
+      "o11y.rum.view.kind": "initial",
+      "session.id": "s1",
+      "o11y.rum.summary.seq": 0,
+      "o11y.rum.summary.time_on_view": 2,
+      "o11y.rum.summary.requests": 1
+    },
+    {
+      "o11y.rum.platform": "web",
+      "o11y.rum.view.id": "v1",
+      "o11y.rum.view.name": "/docs/$id",
+      "o11y.rum.view.kind": "soft",
+      "session.id": "s1",
+      "o11y.rum.summary.seq": 0,
+      "o11y.rum.summary.time_on_view": 1,
+      "o11y.rum.summary.errors.unhandled_rejection": 1
+    }
+  ]
+}
