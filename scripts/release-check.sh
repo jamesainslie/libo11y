@@ -4,14 +4,14 @@
 # local remote. It never touches the real repository's refs, its remote,
 # or the shared module cache.
 #
-# Usage: release-check.sh [VERSION]   (default v0.2.0; `make release-check`
+# Usage: release-check.sh [VERSION]   (default v0.3.0; `make release-check`
 # passes RELEASE_VERSION). The default matches the version the submodules
 # require of the parent module, because the check asserts that requirement.
 # A release commit moves it, here and RELEASE_VERSION in the Makefile,
 # together with the submodules' go.mod requirements.
 set -euo pipefail
 
-version="${1:-v0.2.0}"
+version="${1:-v0.3.0}"
 module="github.com/jamesainslie/libo11y"
 # The Go submodules, each released as go/<name>/VERSION on the go/VERSION
 # commit and requiring the parent module at the same version.

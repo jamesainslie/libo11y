@@ -10,10 +10,10 @@ and [its README](o11ysql/README.md) explains why.
 ## Installation
 
 ```sh
-go get github.com/jamesainslie/libo11y/go@v0.2.0
-go get github.com/jamesainslie/libo11y/go/o11ygin@v0.2.0       # only for Gin
-go get github.com/jamesainslie/libo11y/go/o11yconnect@v0.2.0   # only for Connect
-go get github.com/jamesainslie/libo11y/go/o11ysql@v0.2.0       # only for database/sql
+go get github.com/jamesainslie/libo11y/go@v0.3.0
+go get github.com/jamesainslie/libo11y/go/o11ygin@v0.3.0       # only for Gin
+go get github.com/jamesainslie/libo11y/go/o11yconnect@v0.3.0   # only for Connect
+go get github.com/jamesainslie/libo11y/go/o11ysql@v0.3.0       # only for database/sql
 ```
 
 The Gin, Connect, and database/sql integrations are separate modules

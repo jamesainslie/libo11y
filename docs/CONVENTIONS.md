@@ -129,7 +129,7 @@ Linux with a PostgreSQL 17 service container.
   `go/o11ygin/vX.Y.Z`, `go/o11yconnect/vX.Y.Z` and `go/o11ysql/vX.Y.Z`, all
   on the same commit, and each submodule's `go.mod` requires the parent at
   that version. `make release-check` validates the sequence for
-  `RELEASE_VERSION` (default `v0.2.0`) against a throwaway local remote;
+  `RELEASE_VERSION` (default `v0.3.0`) against a throwaway local remote;
   it never touches real refs. The default always matches the version the
   submodules require, so it moves only in a release commit.
 - To release Go version X.Y.Z: move the changelog's entries into a

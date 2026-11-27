@@ -227,10 +227,9 @@ On logs, a grouped attribute is judged on its dotted effective key, and
 composite values (maps, slices of maps, pointers) are walked so their
 members are judged the same way; the walk fails closed at cycles, at a
 depth bound, and at a node budget, dropping what it did not examine. In
-`go/v0.2.0` the bounds apply on the slog sinks only. The processor for
-records from other log bridges has no depth bound or node budget of its
-own, so only the SDK's default attribute depth limit of 64 applies, and
-nothing fails closed. That is a defect, listed in [PARITY.md](PARITY.md).
+Go the bounds apply to the processor for records from other log bridges
+as well as the slog sinks from `go/v0.3.0`. In `go/v0.2.0` they applied
+on the slog sinks only.
 
 The sensitivity layer runs after any user attribute replacer (in Go, the
 replacer runs on the slog sinks only), so renaming a key to a classified
@@ -333,9 +332,10 @@ its model directories, spelled as attribute namespaces. It also reserves
 the root of every attribute it defines, which includes `oracle`. The list
 is in `go/internal/appregistry/reserved.go`. A test fails when the semconv
 pin in `spec/registry/manifest.yaml` names a release the list does not
-reflect. The list in `go/v0.2.0` and `ts/v0.1.2` misses one root, `state`,
-which semconv 1.41.0 defines as a deprecated database attribute. That is a
-defect, listed in [PARITY.md](PARITY.md).
+reflect. The list in `go/v0.2.0` and earlier misses one root, `state`, which
+semconv 1.41.0 defines as a deprecated database attribute. `go/v0.3.0`
+reserves it. The TypeScript list in `ts/v0.2.0` and earlier misses it too,
+which is a defect listed in [PARITY.md](PARITY.md).
 
 ### Checking a registry
 

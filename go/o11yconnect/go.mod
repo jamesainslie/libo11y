@@ -5,7 +5,7 @@ go 1.26.0
 require (
 	connectrpc.com/connect v1.21.1
 	connectrpc.com/otelconnect v0.12.0
-	github.com/jamesainslie/libo11y/go v0.2.0
+	github.com/jamesainslie/libo11y/go v0.3.0
 	go.opentelemetry.io/otel v1.47.0
 	go.opentelemetry.io/otel/sdk v1.47.0
 	go.opentelemetry.io/otel/trace v1.47.0

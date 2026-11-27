@@ -88,7 +88,7 @@ vuln:
 # The version release-check validates. It matches the version the
 # submodules require, and a release commit moves both (see
 # scripts/release-check.sh). CI uses this default.
-RELEASE_VERSION ?= v0.2.0
+RELEASE_VERSION ?= v0.3.0
 
 # The version every @libo11y/* package carries, which ts-release-check.sh
 # validates. Like RELEASE_VERSION, it moves only in a release commit,
