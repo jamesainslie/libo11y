@@ -134,6 +134,9 @@ import (
 	"log/slog"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 
 	o11y "github.com/jamesainslie/libo11y/go"
 	"github.com/jamesainslie/libo11y/go/spec"
@@ -153,9 +156,19 @@ func main() {
 	}
 
 	// Vanilla OTEL and log/slog from here on.
-	ctx, span := otel.Tracer("checkout").Start(ctx, "startup")
+	ctx, span := otel.Tracer("checkout").Start(ctx, "checkout.place",
+		trace.WithAttributes(attribute.String("order.id", "ord-42")),
+	)
 	defer span.End()
-	slog.InfoContext(ctx, "ready") // correlated with the span, exported
+
+	slog.InfoContext(ctx, "order placed", "order.id", "ord-42") // correlated with the span
+
+	orders, err := otel.Meter("checkout").Int64Counter("checkout.orders",
+		metric.WithUnit("{order}"),
+	)
+	if err == nil {
+		orders.Add(ctx, 1, metric.WithAttributes(attribute.String("payment.method", "card")))
+	}
 }
 ```
 
@@ -193,23 +206,32 @@ and by default they record nothing until the application grants consent.
 ## Quick start (TypeScript)
 
 ```ts
-import { instrumentServe, setup, shutdownOnSignals } from "@libo11y/server";
+import { metrics, trace } from "@opentelemetry/api";
+import { setup } from "@libo11y/server";
 
-const telemetry = await setup({ serviceName: "checkout", environment: "production" });
-
-const server = Bun.serve({
-  port: 8080,
-  fetch: instrumentServe(
-    async () => {
-      telemetry.logger.info("checkout started"); // correlated with the request's span
-      return new Response("ok");
-    },
-    { route: () => "/checkout" },
-  ),
+const telemetry = await setup({
+  serviceName: "checkout",
+  environment: "production",
 });
 
-// On SIGINT or SIGTERM, stop the server, then flush and shut the telemetry down.
-await shutdownOnSignals(telemetry, { beforeShutdown: () => server.stop() });
+try {
+  // Vanilla @opentelemetry/api and telemetry.logger from here on.
+  const tracer = trace.getTracer("checkout");
+  const orders = metrics.getMeter("checkout").createCounter("checkout.orders", {
+    unit: "{order}",
+  });
+
+  tracer.startActiveSpan("checkout.place", { attributes: { "order.id": "ord-42" } }, (span) => {
+    try {
+      telemetry.logger.info("order placed", { "order.id": "ord-42" }); // correlated with the span
+      orders.add(1, { "payment.method": "card" }); // attaches trace exemplar
+    } finally {
+      span.end();
+    }
+  });
+} finally {
+  await telemetry.shutdown();
+}
 ```
 
 `setup` reads the rest of its configuration from `OTEL_*`, as Go's
@@ -257,13 +279,18 @@ pub fn main(init: std.process.Init) !void {
         return;
     };
     defer sdk.deinit();
+    defer _ = sdk.shutdown(null);
 
-    var sp = sdk.tracer("checkout").start(.background, "startup", .{});
-    const ctx = o11y.Context.background.withSpan(&sp);
-    sdk.logger().info(ctx, "ready", .{}); // correlated with the span, exported
-    sp.end();
+    var span = sdk.tracer("checkout").start(.background, "checkout.place", .{
+        .attributes = &.{o11y.kv("order.id", "ord-42")},
+    });
+    defer span.end();
+    const ctx = o11y.Context.background.withSpan(&span);
 
-    _ = sdk.shutdown(null);
+    sdk.logger().info(ctx, "order placed", .{ .@"order.id" = "ord-42" }); // correlated with the span
+
+    const orders = sdk.meter("checkout").counter(i64, "checkout.orders", .{ .unit = "{order}" });
+    orders.add(ctx, 1, &.{o11y.kv("payment.method", "card")}); // attaches trace exemplar
 }
 ```
 
@@ -296,19 +323,22 @@ extras for third-party libraries. It implements spec 1.2.0.
 
 ```python
 import logging
-from opentelemetry import trace
+from opentelemetry import metrics, trace
 import libo11y
 from libo11y.spec import Environment
 
 with libo11y.setup(
     service_name="checkout",
-    version="1.2.0",
     environment=Environment.PRODUCTION,
-) as tel:
+):
+    # Vanilla OTEL and stdlib logging from here on.
     tracer = trace.get_tracer("checkout")
+    orders = metrics.get_meter("checkout").create_counter("checkout.orders", unit="{order}")
     logger = logging.getLogger("checkout")
-    with tracer.start_as_current_span("startup"):
-        logger.info("ready", extra={"checkout.items": 3})  # correlated with the span
+
+    with tracer.start_as_current_span("checkout.place", attributes={"order.id": "ord-42"}):
+        logger.info("order placed", extra={"order.id": "ord-42"})  # correlated with the span
+        orders.add(1, {"payment.method": "card"})  # attaches trace exemplar
 ```
 
 `libo11y.setup` installs the tracer, meter, and logger providers globally,
@@ -352,20 +382,18 @@ int main(void) {
         return 0; /* run safely without telemetry */
     }
 
-    o11y_tracer_t *tracer = o11y_tracer(sdk, "checkout");
-    o11y_span_t *span = o11y_tracer_start(tracer, NULL, "POST /checkout", NULL);
+    o11y_attr_t span_attrs[] = { o11y_kv_str("order.id", "ord-42") };
+    o11y_span_start_options_t span_opts = { .attributes = span_attrs, .attributes_len = 1 };
+    o11y_span_t *span = o11y_tracer_start(o11y_tracer(sdk, "checkout"), NULL, "checkout.place", &span_opts);
     o11y_ctx_t *ctx = o11y_ctx_with_span(NULL, span);
 
-    /* Correlated structured log carrying the active trace_id and span_id. */
-    o11y_log_attr_t attrs[] = {
-        o11y_log_kv_str("order.id", "ord-42"),
-        o11y_log_kv_secret("payment.card_cvv"),
-    };
-    o11y_log_info(sdk, ctx, "order accepted", attrs, 2);
+    o11y_log_attr_t log_attrs[] = { o11y_log_kv_str("order.id", "ord-42") };
+    o11y_log_info(sdk, ctx, "order placed", log_attrs, 1); /* correlated with the span */
 
-    /* Metric with automatic trace-based exemplar attachment. */
-    o11y_counter_i64_t reqs = o11y_meter_counter_i64(o11y_meter(sdk, "checkout"), "checkout.requests", NULL);
-    o11y_counter_i64_add(reqs, ctx, 1, NULL, 0);
+    o11y_instrument_options_t counter_opts = { .unit = "{order}" };
+    o11y_counter_i64_t orders = o11y_meter_counter_i64(o11y_meter(sdk, "checkout"), "checkout.orders", &counter_opts);
+    o11y_attr_t metric_attrs[] = { o11y_kv_str("payment.method", "card") };
+    o11y_counter_i64_add(orders, ctx, 1, metric_attrs, 1); /* attaches trace exemplar */
 
     o11y_ctx_destroy(ctx);
     o11y_span_end(span);
@@ -405,22 +433,28 @@ a `rust/vX.Y.Z` tag and implement spec 1.2.0. Workspace MSRV is Rust 1.88
 ## Quick start (Rust)
 
 ```rust
-use libo11y::{Environment, PiiMode, Sdk};
+use libo11y::opentelemetry::KeyValue;
+use libo11y::{Environment, Sdk};
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sdk = Sdk::builder()
         .service_name("checkout")
         .environment(Environment::Production)
-        .build_info(libo11y::build_info!())
-        .pii_mode(PiiMode::Drop)
         .setup()?;
 
     // Standard tracing and OpenTelemetry APIs from here on.
-    let _span = tracing::info_span!("startup").entered();
-    tracing::info!("ready"); // correlated with the active span, exported
+    let orders = sdk
+        .meter("checkout")
+        .u64_counter("checkout.orders")
+        .with_unit("{order}")
+        .build();
 
-    sdk.shutdown_on_signals().await?;
+    tracing::info_span!("checkout.place", order.id = "ord-42").in_scope(|| {
+        tracing::info!(order.id = "ord-42", "order placed"); // correlated with the span
+        orders.add(1, &[KeyValue::new("payment.method", "card")]); // attaches trace exemplar
+    });
+
+    sdk.shutdown()?;
     Ok(())
 }
 ```
