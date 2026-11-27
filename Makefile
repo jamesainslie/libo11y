@@ -6,7 +6,7 @@ GO_TEST_P ?= 4
 
 # Every Go module in the repository. Each has its own go.mod and every Go
 # gate runs on each module separately.
-GO_MODULES := go go/o11ygin go/o11yconnect go/o11ysql
+GO_MODULES := go go/o11ygin go/o11yconnect go/o11ysql go/o11yrum
 
 .PHONY: spec-check spec-generate spec-drift test lint vet tidy-check vuln release-check zig-release-check python-release-check rust-release-check rust-release-check-test c-release-check schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-npm-plan-test ts-install ts-check ts-browser-test rust-check rust-msrv zig-check zig-integrations-check zig-hygiene-test python-check python-hygiene-test c-check ci
 
@@ -16,11 +16,12 @@ spec-check:
 	cd go && go run ./internal/specgen -root .. -check
 
 # Directories holding generated artifacts.
-GENERATED := go/spec go/internal/spectables docs/taxonomy spec/schemas ts/packages/spec/src/generated rust/libo11y-spec/src/generated zig/src/spec/generated python/src/libo11y/spec/_generated c/include/o11y/spec.h
+GENERATED := go/spec go/internal/spectables docs/taxonomy spec/schemas ts/packages/spec/src/generated rust/libo11y-spec/src/generated zig/src/spec/generated python/src/libo11y/spec/_generated c/include/o11y/spec.h go/o11yrum/internal/rumspec
 
 # Validate the registry, then regenerate go/spec, go/internal/spectables,
 # docs/taxonomy, spec/schemas, ts/packages/spec/src/generated,
-# rust/libo11y-spec/src/generated, and zig/src/spec/generated from it.
+# rust/libo11y-spec/src/generated, zig/src/spec/generated and the o11yrum
+# gateway's go/o11yrum/internal/rumspec from it.
 # An invalid registry generates nothing.
 spec-generate:
 	cd go && go run ./internal/specgen -root ..

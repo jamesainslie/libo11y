@@ -4,5 +4,6 @@ use (
 	./go
 	./go/o11yconnect
 	./go/o11ygin
+	./go/o11yrum
 	./go/o11ysql
 )
