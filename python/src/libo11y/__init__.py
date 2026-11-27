@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from libo11y import buildinfo, redact, spec
+from libo11y import buildinfo, detached, proc, redact, spec
 from libo11y._internal.logging_handler import force_emit
 from libo11y.errors import (
     AlreadySetup,
@@ -55,8 +55,10 @@ __all__ = [
     "ashutdown_on_signals",
     "buildinfo",
     "current_record",
+    "detached",
     "force_emit",
     "init",
+    "proc",
     "redact",
     "setup",
     "shutdown_on_signals",
