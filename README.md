@@ -484,6 +484,12 @@ The TypeScript packages release in lockstep. One `ts/vX.Y.Z` tag publishes
 provenance, through npm trusted publishing. The first version on npm is
 0.1.1, and `@libo11y/web` and `@libo11y/webext` join at 0.2.1. Each
 TypeScript release is listed in [`ts/CHANGELOG.md`](ts/CHANGELOG.md).
+Trusted publishing cannot create a package on npm, so a release leaves a
+package that is new to npm out of npm. The GitHub Release for the tag
+attaches every packed tarball, and its notes give the `npm install` URL
+for each package that is not on npm yet. A maintainer publishes the first
+version of such a package by hand, and later releases publish it with
+the rest.
 `make release-check` also packs the packages and installs them into a
 throwaway consumer under Node and Bun, and it bundles the browser packages
 for the browser.

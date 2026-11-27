@@ -232,35 +232,62 @@ container (`O11Y_PG_TEST_DSN`).
      `scripts/ts-release-check.sh` to `vX.Y.Z`.
   4. Run `make release-check` on the release commit, then merge it.
   5. Tag `ts/vX.Y.Z` on the merge commit and push that tag on its own.
-  6. The release workflow verifies the tag, publishes every package to
-     npm with provenance, installs the published packages and creates the
-     GitHub Release. Nobody approves anything on npmjs.com.
+  6. The release workflow verifies the tag, publishes every package that
+     npm already has with provenance, installs the packages and creates
+     the GitHub Release with every packed tarball attached. Nobody
+     approves anything on npmjs.com.
 - The release workflow routes each tag with `scripts/release-tag.sh`. For
   a `ts/` tag it checks that the version is semantic, that every
   `ts/packages/*/package.json` is at the tag's version, and that
   `ts/CHANGELOG.md` has the section. Then it runs `make ts-check` on Bun
   1.3.13 and Node 24 and packs and installs the tarballs with
-  `scripts/ts-release-check.sh`. It publishes each tarball in dependency
-  order with `npm publish --provenance` from a pinned npm 11.21.2,
-  skipping a version the registry already has. A prerelease version
-  publishes under the `next` dist-tag. A smoke job waits up to ten
-  minutes for the registry to serve the new version of every package
-  under `ts/packages`. It installs `@libo11y/server` and `@libo11y/test`
-  into fresh projects under Node and Bun, and runs the `libo11y` bin
-  under Node. It installs `@libo11y/web` and `@libo11y/webext` into
-  another fresh project and runs the same bundle check on them. Only
-  after it passes is the GitHub Release created. The
-  release is titled `@libo11y vX.Y.Z`, takes its notes from
-  `ts/CHANGELOG.md`, and is never marked Latest, so the Go main module
-  keeps Latest. Publishing authenticates with npm trusted publishing
-  (OIDC), so the repository stores no npm token. Each package on
-  npmjs.com trusts `release.yml` in `jamesainslie/libo11y`, with no
-  environment, and allows `npm publish`. A tag ruleset lets only
-  repository admins create, move or delete `ts/v*` tags, because pushing
-  one publishes to npm. npm sets up trust only on a package that already
-  exists, so a new package's first version is published by a
-  maintainer's own npm login. Once it is on npm, its trust is set up the
-  same way.
+  `scripts/ts-release-check.sh`. The publish job packs the packages again
+  and runs `scripts/ts-npm-plan.sh plan`, which asks the registry about
+  each package with `npm view`. A package that npm has publishes in
+  dependency order with `npm publish --provenance` from a pinned npm
+  11.21.2. A version the registry already has is skipped. A package that
+  npm does not have yet is not published, and the job prints a warning
+  naming it and lists it in the job summary. When a package on npm
+  depends on a package new to npm through `dependencies`,
+  `peerDependencies` or `optionalDependencies`, the plan fails the
+  release before anything publishes, because npm consumers of that
+  package would get a broken install. A prerelease version publishes
+  under the `next` dist-tag. A smoke job waits up to ten minutes for the
+  registry to serve the new version of every published package. It
+  installs `@libo11y/server` and `@libo11y/test` into fresh projects
+  under Node and Bun, and runs the `libo11y` bin under Node. It installs
+  `@libo11y/web` and `@libo11y/webext` into another fresh project and
+  runs the same bundle check on them. In each of these installs, a
+  package not on npm yet comes from its packed tarball. A last step
+  installs every package not on npm yet from its tarball, with its other
+  dependencies from the registry, and runs `scripts/ts-npm-plan.sh
+  check`. The check fails on an incomplete dependency tree or on an entry
+  point that does not resolve to a file under Node. Only after the smoke
+  job passes is the GitHub Release created. The release is titled
+  `@libo11y vX.Y.Z`, takes its notes from `ts/CHANGELOG.md`, and is never
+  marked Latest, so the Go main module keeps Latest. It attaches every
+  packed tarball. When a package is not on npm yet, the notes end with a
+  paragraph that names it and gives its install command, such as `npm
+  install
+  https://github.com/jamesainslie/libo11y/releases/download/ts/vX.Y.Z/libo11y-rum-X.Y.Z.tgz`.
+  That is the asset URL GitHub reports, and the same asset also serves
+  with the slash in the tag encoded as `ts%2FvX.Y.Z`. `make
+  ts-npm-plan-test` tests the plan script against fixture tarballs and a
+  fake npm. Publishing authenticates with npm trusted publishing (OIDC),
+  so the repository stores no npm token. Each package on npmjs.com trusts
+  `release.yml` in `jamesainslie/libo11y`, with no environment, and
+  allows `npm publish`. A tag ruleset lets only repository admins create,
+  move or delete `ts/v*` tags, because pushing one publishes to npm.
+- npm sets up trust only on a package that already exists, so trusted
+  publishing cannot publish the first version of a new package. A
+  release with a package new to npm completes without it, and consumers
+  install that package from the tarball on the GitHub Release. To bring
+  the package onto npm, a maintainer publishes the release's tarball with
+  their own npm login (`npm publish --access public <file>.tgz`) and then
+  sets up its trusted publisher the same way as the other packages. The
+  next release publishes it like any other package. A package already on
+  npm can depend on a new package only after the new package reaches npm
+  this way. Until then the release fails at the plan step.
 - Zig releases tag `zig/vX.Y.Z` on the release commit. Both manifests
   (`build.zig.zon` and `zig/build.zig.zon`) and `ZIG_RELEASE_VERSION` in the
   `Makefile` move together only in a release commit. To release Zig version

@@ -94,7 +94,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "24.x"
-      - run: make ts-check ts-browser-bundle-test
+      - run: make ts-check ts-browser-bundle-test ts-npm-plan-test
 
   # The browser packages' suites under Playwright and headless Chromium.
   ts-browser:
