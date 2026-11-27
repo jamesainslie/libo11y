@@ -108,6 +108,9 @@ func (h *Handler) ingest(w http.ResponseWriter, r *http.Request, sig Signal) {
 			refuse(a.origins, rejection{status: http.StatusServiceUnavailable, reason: "sink", retryAfter: sinkRetryAfter})
 			return
 		}
+		// Derivation runs only once the sinks hold the batch: a 503 makes
+		// the client retry it, and counting it first would count it twice.
+		h.derived(b)
 	}
 	rep.accept(drops)
 	h.respond(w, r, a.origins, sig, d.json, drops)

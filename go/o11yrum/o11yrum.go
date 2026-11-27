@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -25,6 +26,12 @@ type Handler struct {
 	log     *slog.Logger
 	tel     *telemetry
 	configs ConfigProvider
+
+	// derive is nil without WithMetricProducer.
+	derive           *deriver
+	unregisterDerive func() error
+	closeOnce        sync.Once
+	closeErr         error
 }
 
 // app is one configured app with its lookups prepared.
@@ -91,11 +98,23 @@ func NewHandler(opts ...Option) (*Handler, error) {
 		}
 		h.apps[ac.ServiceName] = a
 	}
+	if s.producer != nil {
+		if h.derive, h.unregisterDerive, err = newDeriver(s.producer, s.sdk, cfg.Aggregation.MaxSeriesPerMetric, s.now); err != nil {
+			return nil, err
+		}
+	}
 	return h, nil
 }
 
 // Close releases background resources. It is safe to call more than once.
-func (h *Handler) Close() error { return nil }
+func (h *Handler) Close() error {
+	h.closeOnce.Do(func() {
+		if h.unregisterDerive != nil {
+			h.closeErr = h.unregisterDerive()
+		}
+	})
+	return h.closeErr
+}
 
 // ServeHTTP routes a request to its endpoint.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {

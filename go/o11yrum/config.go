@@ -30,10 +30,11 @@ type Config struct {
 	// Telemetry configures the gateway's own telemetry.
 	Telemetry TelemetryConfig `yaml:"telemetry"`
 
-	Edge   EdgeConfig   `yaml:"edge"`
-	Limits LimitsConfig `yaml:"limits"`
-	Apps   []AppConfig  `yaml:"apps"`
-	Sinks  SinksConfig  `yaml:"sinks"`
+	Edge        EdgeConfig        `yaml:"edge"`
+	Limits      LimitsConfig      `yaml:"limits"`
+	Apps        []AppConfig       `yaml:"apps"`
+	Aggregation AggregationConfig `yaml:"aggregation"`
+	Sinks       SinksConfig       `yaml:"sinks"`
 
 	dir string // directory of the file LoadConfig read, for relative paths
 }
@@ -93,6 +94,14 @@ type LimitsConfig struct {
 	MaxSpanEvents int `yaml:"max_span_events"`
 	// MaxSpanLinks caps the links of one span. Default 128.
 	MaxSpanLinks int `yaml:"max_span_links"`
+}
+
+// AggregationConfig bounds the metrics the gateway derives.
+type AggregationConfig struct {
+	// MaxSeriesPerMetric caps the attribute sets of one derived metric.
+	// Measurements past it go to an overflow series per app, marked
+	// otel.metric.overflow=true. Default 2000.
+	MaxSeriesPerMetric int `yaml:"max_series_per_metric"`
 }
 
 // AppConfig registers one app, identified by its service.name.
@@ -211,6 +220,7 @@ func (c *Config) applyDefaults() {
 	setDefault(&l.MaxArrayLength, d.MaxArrayLength)
 	setDefault(&l.MaxSpanEvents, d.MaxSpanEvents)
 	setDefault(&l.MaxSpanLinks, d.MaxSpanLinks)
+	setDefault(&c.Aggregation.MaxSeriesPerMetric, 2000)
 	for i := range c.Apps {
 		if c.Apps[i].PII == "" {
 			c.Apps[i].PII = piiDrop
@@ -244,6 +254,7 @@ func (c *Config) validate() error {
 		{"limits.max_array_length", int64(c.Limits.MaxArrayLength)},
 		{"limits.max_span_events", int64(c.Limits.MaxSpanEvents)},
 		{"limits.max_span_links", int64(c.Limits.MaxSpanLinks)},
+		{"aggregation.max_series_per_metric", int64(c.Aggregation.MaxSeriesPerMetric)},
 	} {
 		if f.v <= 0 {
 			return fmt.Errorf("%s must be positive", f.name)

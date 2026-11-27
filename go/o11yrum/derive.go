@@ -9,10 +9,6 @@ import (
 	"github.com/jamesainslie/libo11y/go/o11yrum/internal/rumspec"
 )
 
-// scopeName is the instrumentation scope of the metrics the gateway
-// derives.
-const scopeName = "github.com/jamesainslie/libo11y/go/o11yrum"
-
 // Histogram bounds of the derived vitals. Every rating threshold is a
 // bound, so the share of good and poor views is exact from the buckets.
 var (
