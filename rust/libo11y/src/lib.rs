@@ -72,9 +72,16 @@ pub use libo11y_spec::Environment;
 pub use libo11y_spec::Signal;
 pub use lifecycle::{DEFAULT_SHUTDOWN_TIMEOUT, FlushError, ShutdownError, SignalFailure};
 pub use log_layer::{AttrReplacer, LevelHandle, LogRecord, LogSink};
+pub use metrics::{
+    ExemplarFilter, ExemplarSample, ExemplarValue, Libo11yMeterProvider, MemoryMetricSink,
+    MetricSink,
+};
 /// The OpenTelemetry API this crate builds on, for the traits and types its
 /// own API takes and returns.
 pub use opentelemetry;
+/// The OpenTelemetry protobuf definitions and transforms, for [`MetricSink`]
+/// implementations.
+pub use opentelemetry_proto;
 /// The OpenTelemetry SDK this crate builds on, for the exporters,
 /// processors and samplers its builder takes.
 pub use opentelemetry_sdk;

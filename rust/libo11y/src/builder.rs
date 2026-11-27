@@ -26,7 +26,11 @@ use crate::layer::Parts;
 use crate::lifecycle::ShutdownCell;
 use crate::log_layer::{AttrReplacer, LevelHandle, LogPipeline, LogSink};
 use crate::logs::{PendingLog, PendingLogExporter, build_logger_provider};
-use crate::metrics::{PendingMetric, PendingMetricExporter, build_meter_provider};
+use crate::metrics::provider::HistogramBucketRule;
+use crate::metrics::{
+    ExemplarFilter, MeterParts, MetricSink, MetricView, PendingMetric, PendingMetricExporter,
+    PendingSink, build_meter_provider, metric_exporter_for,
+};
 use crate::propagation::{BoxedPropagator, Propagator};
 use crate::resource::build_resource;
 use crate::sdk::{Inner, Sdk};
@@ -73,6 +77,10 @@ pub(crate) struct Settings {
     span_exporter: Option<Box<dyn PendingSpanExporter>>,
     span_processor: Option<Box<dyn SpanProcessor>>,
     metric_exporter: Option<Box<dyn PendingMetricExporter>>,
+    extra_metric_sinks: Vec<Box<dyn PendingMetricExporter>>,
+    exemplar_filter: Option<ExemplarFilter>,
+    histogram_rules: Vec<HistogramBucketRule>,
+    metric_views: Vec<MetricView>,
     log_exporter: Option<Box<dyn PendingLogExporter>>,
     log_level: LevelHandle,
     console_writer: Option<Box<dyn io::Write + Send>>,
@@ -109,6 +117,10 @@ impl Default for Settings {
             span_exporter: None,
             span_processor: None,
             metric_exporter: None,
+            extra_metric_sinks: Vec::new(),
+            exemplar_filter: None,
+            histogram_rules: Vec::new(),
+            metric_views: Vec::new(),
             log_exporter: None,
             log_level: LevelHandle::default(),
             console_writer: None,
@@ -136,6 +148,8 @@ impl fmt::Debug for Settings {
             .field("span_exporter", &self.span_exporter.is_some())
             .field("span_processor", &self.span_processor.is_some())
             .field("metric_exporter", &self.metric_exporter.is_some())
+            .field("extra_metric_sinks", &self.extra_metric_sinks.len())
+            .field("exemplar_filter", &self.exemplar_filter)
             .field("log_exporter", &self.log_exporter.is_some())
             .field("log_level", &self.log_level)
             .field("console_format", &self.console_format)
@@ -314,12 +328,70 @@ impl Builder {
     /// Exports metrics through `exporter`, read by a periodic reader at the
     /// `OTEL_METRIC_EXPORT_INTERVAL` interval (60 seconds by default),
     /// instead of the exporter `OTEL_METRICS_EXPORTER` would select. A later
-    /// exporter replaces an earlier one.
+    /// exporter or sink replaces an earlier one.
     ///
     /// `OTEL_SDK_DISABLED=true` overrides this: no reader is registered and
     /// the exporter is shut down when the SDK is built.
     pub fn with_metric_exporter<E: PushMetricExporter>(mut self, exporter: E) -> Self {
         self.settings.metric_exporter = Some(Box::new(PendingMetric(exporter)));
+        self
+    }
+
+    /// Exports OTLP metrics (with exemplars attached) through `sink`, read by
+    /// a periodic reader at `OTEL_METRIC_EXPORT_INTERVAL` (60 seconds by
+    /// default), instead of the exporter `OTEL_METRICS_EXPORTER` would select.
+    /// A later sink or exporter replaces an earlier one.
+    ///
+    /// `OTEL_SDK_DISABLED=true` overrides this: no reader is registered and
+    /// the sink is shut down when the SDK is built.
+    pub fn with_metric_sink<S: MetricSink + 'static>(mut self, sink: S) -> Self {
+        self.settings.metric_exporter = Some(Box::new(PendingSink(sink)));
+        self
+    }
+
+    /// Adds an additional [`MetricSink`] on its own periodic reader with its
+    /// own independent exemplar store. May be called multiple times.
+    ///
+    /// `OTEL_SDK_DISABLED=true` overrides this: no reader is registered and
+    /// the sink is shut down when the SDK is built.
+    pub fn with_extra_metric_sink<S: MetricSink + 'static>(mut self, sink: S) -> Self {
+        self.settings
+            .extra_metric_sinks
+            .push(Box::new(PendingSink(sink)));
+        self
+    }
+
+    /// Chooses which measurements record exemplars, overriding
+    /// `OTEL_METRICS_EXEMPLAR_FILTER`. Defaults to
+    /// [`ExemplarFilter::TraceBased`].
+    pub fn exemplar_filter(mut self, filter: ExemplarFilter) -> Self {
+        self.settings.exemplar_filter = Some(filter);
+        self
+    }
+
+    /// Sets explicit bucket boundaries for histograms whose name matches
+    /// `name` (exact name or `*` / `?` wildcards). Also aligns the histogram's
+    /// exemplar reservoir to these exact boundaries.
+    pub fn with_histogram_buckets(mut self, name: impl Into<String>, boundaries: Vec<f64>) -> Self {
+        self.settings.histogram_rules.push(HistogramBucketRule {
+            pattern: name.into(),
+            boundaries,
+        });
+        self
+    }
+
+    /// Registers a custom OpenTelemetry metric view on the SDK meter provider.
+    /// May be called multiple times.
+    pub fn with_view<F>(mut self, view: F) -> Self
+    where
+        F: Fn(
+                &opentelemetry_sdk::metrics::Instrument,
+            ) -> Option<opentelemetry_sdk::metrics::Stream>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.settings.metric_views.push(Arc::new(view));
         self
     }
 
@@ -407,8 +479,8 @@ impl Builder {
         self
     }
 
-    /// Disables process/runtime metrics collection (reported as
-    /// `o11y.config.runtime_metrics=false`).
+    /// Disables the default `process.*` runtime metrics registered on the
+    /// SDK's meter provider (reported as `o11y.config.runtime_metrics=false`).
     pub fn without_runtime_metrics(mut self) -> Self {
         self.settings.runtime_metrics = false;
         self
@@ -489,7 +561,8 @@ impl Builder {
     /// `OTEL_PROPAGATORS`; [`Error::UnknownExporter`],
     /// [`Error::UnsupportedExporter`], [`Error::InvalidOtlpProtocol`] and
     /// [`Error::OtlpFeatureDisabled`] for the exporter variables; and
-    /// [`Error::BuildingSpanExporter`] and [`Error::BuildingLogExporter`]
+    /// [`Error::BuildingSpanExporter`], [`Error::BuildingMetricReader`] and
+    /// [`Error::BuildingLogExporter`]
     /// when an exporter cannot be built, such as for an unreadable
     /// certificate file or OTLP over gRPC outside a Tokio runtime.
     pub fn build(self) -> Result<Sdk, Error> {
@@ -517,9 +590,9 @@ impl Builder {
     }
 }
 
-/// Loads the application registries and builds the sensitivity policy from
-/// `settings`.
-fn load_policy(settings: &mut Settings) -> Result<Policy, Error> {
+/// Loads and validates every configured application registry and builds the
+/// sensitivity policy.
+fn build_policy(settings: &mut Settings) -> Result<Policy, Error> {
     if settings.pii_mode == PiiMode::Hash && settings.pii_hash_key.len() < MIN_PII_HASH_KEY_LEN {
         return Err(Error::PiiHashKey);
     }
@@ -540,7 +613,7 @@ fn load_policy(settings: &mut Settings) -> Result<Policy, Error> {
     reason = "linear construction sequence in Go's newSDK order"
 )]
 pub(crate) fn build_sdk(mut settings: Settings) -> Result<Sdk, Error> {
-    let policy = load_policy(&mut settings)?;
+    let policy = build_policy(&mut settings)?;
     let env = if settings.ignore_env {
         EnvLookup::empty()
     } else {
@@ -572,16 +645,22 @@ pub(crate) fn build_sdk(mut settings: Settings) -> Result<Sdk, Error> {
 
     // The exporters can fail; the providers cannot, and run threads once
     // built.
-    let exporters = exporters(&mut settings, &selection)?;
+    let exporters = exporters(&mut settings, &selection, &env)?;
 
     let metric_failures = ExportFailures::default();
-    let meter_provider = build_meter_provider(
-        resolved.resource.clone(),
-        &env,
-        settings.metric_exporter.take(),
-        metric_failures.clone(),
+    let (meter_provider, process_metrics) = build_meter_provider(MeterParts {
+        resource: resolved.resource.clone(),
+        policy: policy.clone(),
+        env: &env,
+        exemplar_filter: settings.exemplar_filter,
+        histogram_rules: std::mem::take(&mut settings.histogram_rules),
+        views: std::mem::take(&mut settings.metric_views),
+        exporter: exporters.metrics,
+        extra_sinks: std::mem::take(&mut settings.extra_metric_sinks),
+        failures: metric_failures.clone(),
         disabled,
-    );
+        runtime_metrics: settings.runtime_metrics,
+    });
     let violations = ViolationRecorder::new(&meter_provider);
     // The resource was classified before the counter existed.
     violations.add_all(Signal::Resource, &resolved.violations);
@@ -649,6 +728,7 @@ pub(crate) fn build_sdk(mut settings: Settings) -> Result<Sdk, Error> {
         tracer_provider,
         span_failures,
         meter_provider,
+        _process_metrics: process_metrics,
         metric_failures,
         logger_provider,
         log_failures,
@@ -687,18 +767,32 @@ fn build_log_pipeline(
     ))
 }
 
-/// The span and log exporters the selection names.
+/// The metric, span and log exporters the selection names.
 struct Exporters {
+    metrics: Option<Box<dyn PendingMetricExporter>>,
     spans: Option<Box<dyn PendingSpanExporter>>,
     logs: Option<Box<dyn PendingLogExporter>>,
 }
 
-/// The span and log exporters the selection names: the injected ones, or
-/// ones built from the environment.
+/// The metric, span and log exporters the selection names: the injected ones,
+/// or ones built from the environment.
 ///
 /// An injected exporter the selection does not use (the SDK is disabled,
 /// or log export is off) is shut down now: the SDK owns what it was given.
-fn exporters(settings: &mut Settings, selection: &Selection) -> Result<Exporters, Error> {
+fn exporters(
+    settings: &mut Settings,
+    selection: &Selection,
+    env: &EnvLookup,
+) -> Result<Exporters, Error> {
+    let metrics = match selection.metrics.route {
+        Route::Injected => settings.metric_exporter.take(),
+        route => {
+            if let Some(unused) = settings.metric_exporter.take() {
+                unused.discard();
+            }
+            metric_exporter_for(route, &selection.metrics, env)?
+        }
+    };
     let spans = match selection.traces.route {
         Route::Injected => settings.span_exporter.take(),
         route => {
@@ -717,7 +811,11 @@ fn exporters(settings: &mut Settings, selection: &Selection) -> Result<Exporters
             log_exporter_for(route, &selection.logs)?
         }
     };
-    Ok(Exporters { spans, logs })
+    Ok(Exporters {
+        metrics,
+        spans,
+        logs,
+    })
 }
 
 /// Warns, as the specification asks for a boolean variable, when

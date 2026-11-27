@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use opentelemetry::metrics::MeterProvider as _;
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::logs::SdkLoggerProvider;
@@ -27,6 +28,8 @@ use crate::lifecycle::{
     run_steps,
 };
 use crate::log_layer::LogPipeline;
+use crate::metrics::Libo11yMeterProvider;
+use crate::metrics::process::ProcessMetrics;
 use crate::propagation::Propagator;
 use crate::summary::Summary;
 use crate::{Builder, Policy, Violations};
@@ -56,7 +59,8 @@ pub(crate) struct Inner {
     pub(crate) startup_summary: bool,
     pub(crate) tracer_provider: SdkTracerProvider,
     pub(crate) span_failures: ExportFailures,
-    pub(crate) meter_provider: SdkMeterProvider,
+    pub(crate) meter_provider: Libo11yMeterProvider,
+    pub(crate) _process_metrics: ProcessMetrics,
     pub(crate) metric_failures: ExportFailures,
     pub(crate) logger_provider: Option<SdkLoggerProvider>,
     pub(crate) log_failures: ExportFailures,
@@ -128,11 +132,27 @@ impl Sdk {
         self.0.tracer_provider.tracer(name)
     }
 
-    /// The meter provider. While `OTEL_SDK_DISABLED` switches the SDK off it
-    /// has no reader: instruments work and nothing is collected.
+    /// The classifying, exemplar-aware meter provider. While
+    /// `OTEL_SDK_DISABLED` switches the SDK off it has no reader: instruments
+    /// work and nothing is collected.
     #[must_use]
-    pub fn meter_provider(&self) -> &SdkMeterProvider {
+    pub fn meter_provider(&self) -> &Libo11yMeterProvider {
         &self.0.meter_provider
+    }
+
+    /// The underlying OpenTelemetry SDK meter provider. Prefer
+    /// [`Sdk::meter_provider`] or [`Sdk::meter`] so measurements are
+    /// classified and record exemplars.
+    #[must_use]
+    pub fn sdk_meter_provider(&self) -> &SdkMeterProvider {
+        self.0.meter_provider.sdk()
+    }
+
+    /// A classifying, exemplar-aware meter on the SDK's meter provider.
+    #[must_use]
+    pub fn meter(&self, name: impl Into<Cow<'static, str>>) -> opentelemetry::metrics::Meter {
+        let scope = opentelemetry::InstrumentationScope::builder(name).build();
+        self.0.meter_provider.meter_with_scope(scope)
     }
 
     /// The logger provider behind the OTLP log leg, when logs are exported.
@@ -376,7 +396,6 @@ mod tests {
     use std::time::Instant;
 
     use opentelemetry::logs::{LogRecord as _, Logger as _, LoggerProvider as _};
-    use opentelemetry::metrics::MeterProvider as _;
     use opentelemetry::trace::{Span as _, Tracer as _};
     use opentelemetry_sdk::error::{OTelSdkError, OTelSdkResult};
     use opentelemetry_sdk::logs::{LogBatch, LogExporter};
