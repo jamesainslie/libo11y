@@ -53,7 +53,7 @@ import { createBus } from "./bus.ts";
 import { rumContextManager } from "./context-manager.ts";
 import type { RetentionRouting } from "./contracts/retention.ts";
 import type { RequestStartHook, RumRuntime, RumSettings } from "./contracts/runtime.ts";
-import type { SessionStore } from "./contracts/session.ts";
+import type { SessionState, SessionStore } from "./contracts/session.ts";
 import { createBreadcrumbs } from "./errors/breadcrumbs.ts";
 import { recordError } from "./errors/record.ts";
 import type { Rum, RumSetupOptions, RumTelemetry } from "./options.ts";
@@ -458,21 +458,44 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
   // won emits o11y.rum.session.end, so it is emitted once: each tab waits SESSION_END_ELECTION_MILLIS
   // for the others' broadcasts and emits only if its successor is still the current session. An
   // unkept session that ends removes only its own records from the shared retention buffer.
+  //
+  // The start of a session that replaces another waits for the same election, so only the winning
+  // session's o11y.rum.session.start is sent: a tab whose new session lost to another tab's
+  // abandons it. A page that hides first sends its pending start if that session is still current.
+  // The first session of a page sends its start at once.
   const endTimers = new Set<ReturnType<typeof setTimeout>>();
   let endingSession: EndingSession | undefined;
+  const pendingStarts = new Map<ReturnType<typeof setTimeout>, () => void>();
+  const sendStart = (s: SessionState): void => {
+    t.event(EVENT_RUM_SESSION_START, {
+      [ATTR_SESSION_ID]: s.id,
+      [ATTR_RUM_PLATFORM]: "web",
+      ...(s.configVersion === undefined ? {} : { [ATTR_RUM_CONFIG_VERSION]: s.configVersion }),
+    });
+  };
+  const settleStarts = (): void => {
+    for (const [timer, decide] of pendingStarts) {
+      clearTimeout(timer);
+      decide();
+    }
+  };
   const offSession = session.subscribe((e) => {
     if (e.type === "kept") {
       flushRetention().catch((err: unknown) => diag.warn("o11y: rum: retention flush failed", err));
     } else if (e.type === "start" && e.local) {
       if (endingSession !== undefined && e.previous?.id === endingSession.id)
         endingSession.successor = e.session.id;
-      t.event(EVENT_RUM_SESSION_START, {
-        [ATTR_SESSION_ID]: e.session.id,
-        [ATTR_RUM_PLATFORM]: "web",
-        ...(e.session.configVersion === undefined
-          ? {}
-          : { [ATTR_RUM_CONFIG_VERSION]: e.session.configVersion }),
-      });
+      if (e.previous === undefined) {
+        sendStart(e.session);
+        return;
+      }
+      const started = e.session;
+      const decide = (): void => {
+        pendingStarts.delete(timer);
+        if (gate.recording() && session.current()?.id === started.id) sendStart(started);
+      };
+      const timer = setTimeout(decide, SESSION_END_ELECTION_MILLIS);
+      pendingStarts.set(timer, decide);
     } else if (e.type === "end" && e.local) {
       const ended = e.session;
       if (ended.retained === undefined) {
@@ -530,6 +553,7 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
     } else session.touch();
   };
   const onPageHide = (): void => {
+    settleStarts();
     summary.flush();
     void t.forceFlush();
   };
@@ -593,6 +617,7 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
       offGate();
       offRevoke();
       offSession();
+      settleStarts();
       for (const timer of endTimers) clearTimeout(timer);
       endTimers.clear();
       const report = await webShutdown(opts);

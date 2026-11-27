@@ -660,6 +660,55 @@ test("two tabs that rotate a session at once emit one session.end for it", async
   }
 });
 
+test("two tabs that rotate a session at once send session.start only for the winning session", async () => {
+  let now = 1_000_000;
+  const storage = createFakeStorage();
+  const hub = createChannelHub({ async: true });
+  const a = harness({ storage, hub, now: () => now });
+  const b = harness({ storage, hub, now: () => now });
+  const tabA = await setupRumWith(
+    { ...OPTS, consent: { initial: "granted" } },
+    { ...a.deps, install: false },
+  );
+  const tabB = await setupRumWith(
+    { ...OPTS, consent: { initial: "granted" } },
+    { ...b.deps, install: false },
+  );
+  try {
+    await new Promise((r) => setTimeout(r, 10));
+    const first = tabA.rum.sessionId();
+    now += IDLE;
+    runtimeOf(tabA)?.session.touch();
+    runtimeOf(tabB)?.session.touch();
+    await until(() => tabA.rum.sessionId() === tabB.rum.sessionId(), "the tabs to agree on a session");
+    const winner = tabA.rum.sessionId();
+    await new Promise((r) => setTimeout(r, 700));
+    await Promise.all([tabA.forceFlush(), tabB.forceFlush()]);
+    const starts = [...logRecords(a.transport), ...logRecords(b.transport)]
+      .filter((r) => r["event.name"] === "o11y.rum.session.start" && r["session.id"] !== first)
+      .map((r) => r["session.id"]);
+    assert.deepEqual(starts, [winner]);
+  } finally {
+    await tabA.shutdown();
+    await tabB.shutdown();
+  }
+});
+
+test("a rotated session's start still goes out when the page hides before the election ends", async () => {
+  let now = 1_000_000;
+  const h = harness({ now: () => now });
+  open = await setupRumWith({ ...OPTS, consent: { initial: "granted" } }, h.deps);
+  now += IDLE;
+  runtimeOf(open)?.session.touch();
+  const rotated = open.rum.sessionId();
+  h.deps.window?.dispatchEvent(new Event("pagehide"));
+  await open.forceFlush();
+  const starts = logRecords(h.transport)
+    .filter((r) => r["event.name"] === "o11y.rum.session.start")
+    .map((r) => r["session.id"]);
+  assert.ok(starts.includes(rotated), "the rotated session's start was sent on pagehide");
+});
+
 test("a request that ends after a revoke leaves no breadcrumb for the next grant", async () => {
   const h = harness();
   open = await setupRumWith({ ...OPTS, consent: { initial: "granted" } }, h.deps);
