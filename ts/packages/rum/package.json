@@ -1,0 +1,36 @@
+{
+  "name": "@libo11y/rum",
+  "version": "0.2.1",
+  "private": true,
+  "description": "libo11y RUM for browsers and MV3 extensions: sessions shared across tabs, consent, session sampling with a retention buffer, views, actions, frustration signals, errors with breadcrumbs, web vitals with attribution, resources and per-view summaries over @libo11y/web.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts",
+    "./internal": "./src/internal.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jamesainslie/libo11y.git",
+    "directory": "ts/packages/rum"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "api": "api-extractor run --local",
+    "api:check": "api-extractor run"
+  },
+  "dependencies": {
+    "@libo11y/core": "workspace:*",
+    "@libo11y/spec": "workspace:*",
+    "@libo11y/web": "workspace:*",
+    "@opentelemetry/api": "1.10.0",
+    "@opentelemetry/core": "3.1.1",
+    "@opentelemetry/sdk-logs": "3.1.1",
+    "@opentelemetry/sdk-trace": "3.1.1"
+  },
+  "devDependencies": {
+    "@libo11y/test": "workspace:*",
+    "fake-indexeddb": "6.2.7"
+  }
+}
