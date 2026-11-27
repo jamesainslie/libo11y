@@ -2,9 +2,17 @@
 //! specification.
 //!
 //! [`Sdk::builder`] takes the service identity, the sensitivity settings,
-//! the application registries and the propagators, and builds an [`Sdk`]
-//! that holds the telemetry resource, the sensitivity [`Policy`] and the
-//! [`Propagator`] every signal shares.
+//! the application registries, the propagators and any injected exporters,
+//! and builds an [`Sdk`]: the telemetry resource, the sensitivity
+//! [`Policy`] and the [`Propagator`] every signal shares, the tracer and
+//! meter providers over the exporters the standard `OTEL_*` variables
+//! select, and the `tracing` layers that feed them
+//! ([`Sdk::tracing_layer`]).
+//!
+//! [`Builder::build`] touches no global state. [`Builder::setup`] also
+//! installs the OpenTelemetry globals and the global `tracing` subscriber,
+//! once per process at a time. [`Sdk::shutdown`] flushes and stops every
+//! signal under one deadline.
 //!
 //! ```
 //! use libo11y::{Environment, PiiMode, Sdk};
@@ -25,21 +33,44 @@ mod builder;
 mod buildinfo;
 mod canonical;
 mod detect;
+mod diagnostics;
 mod env;
 mod error;
+mod export;
+mod layer;
+mod lifecycle;
+mod logs;
+mod metrics;
 mod policy;
 mod propagation;
 mod resource;
 mod sanitize;
+mod sdk;
+mod setup;
+#[cfg(all(feature = "tokio", unix))]
+mod signals;
+mod traces;
+mod violations;
 
 pub use appregistry::AppRegistry;
-pub use builder::{Builder, Sdk};
+pub use builder::Builder;
 pub use buildinfo::BuildInfo;
+pub use diagnostics::TelemetryError;
 pub use env::EnvLookup;
 pub use error::{BoxError, Error};
+pub use export::Protocol;
 pub use libo11y_spec::Environment;
+pub use libo11y_spec::Signal;
+pub use lifecycle::{DEFAULT_SHUTDOWN_TIMEOUT, FlushError, ShutdownError, SignalFailure};
+/// The OpenTelemetry API this crate builds on, for the traits and types its
+/// own API takes and returns.
+pub use opentelemetry;
+/// The OpenTelemetry SDK this crate builds on, for the exporters,
+/// processors and samplers its builder takes.
+pub use opentelemetry_sdk;
 pub use policy::{Classified, Decision, MIN_PII_HASH_KEY_LEN, PiiMode, Policy, Rule, Violations};
 pub use propagation::{BoxedPropagator, Propagator};
+pub use sdk::Sdk;
 
 /// Capture-time redaction: [`Secret`](redact::Secret), [`Masked`](redact::Masked),
 /// the [`Redact`](redact::Redact) trait and its derive, which renders the
@@ -55,6 +86,71 @@ pub mod redact {
 #[cfg(test)]
 mod test_support {
     use std::path::PathBuf;
+
+    use opentelemetry::Value;
+    use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData, ResourceMetrics};
+    use opentelemetry_sdk::metrics::{InMemoryMetricExporter, PeriodicReader, SdkMeterProvider};
+
+    /// A meter provider whose metrics a test reads back.
+    pub(crate) struct ViolationReader {
+        exporter: InMemoryMetricExporter,
+        provider: SdkMeterProvider,
+    }
+
+    impl ViolationReader {
+        pub(crate) fn new() -> Self {
+            let exporter = InMemoryMetricExporter::default();
+            let provider = SdkMeterProvider::builder()
+                .with_reader(PeriodicReader::builder(exporter.clone()).build())
+                .build();
+            Self { exporter, provider }
+        }
+
+        pub(crate) fn provider(&self) -> &SdkMeterProvider {
+            &self.provider
+        }
+
+        /// Collects and returns everything exported so far.
+        pub(crate) fn collect(&self) -> Vec<ResourceMetrics> {
+            self.provider.force_flush().expect("flush");
+            self.exporter.get_finished_metrics().expect("metrics")
+        }
+    }
+
+    /// The `o11y.schema.violations` points of the last collection, as
+    /// (signal, rule, count), sorted.
+    pub(crate) fn violation_points(metrics: &[ResourceMetrics]) -> Vec<(String, String, u64)> {
+        let mut points = Vec::new();
+        for metric in metrics
+            .last()
+            .into_iter()
+            .flat_map(ResourceMetrics::scope_metrics)
+            .flat_map(opentelemetry_sdk::metrics::data::ScopeMetrics::metrics)
+            .filter(|m| m.name() == libo11y_spec::metric::SCHEMA_VIOLATIONS)
+        {
+            if let AggregatedMetrics::U64(MetricData::Sum(sum)) = metric.data() {
+                for point in sum.data_points() {
+                    let value_of = |key: &str| {
+                        point
+                            .attributes()
+                            .find(|kv| kv.key.as_str() == key)
+                            .map(|kv| match &kv.value {
+                                Value::String(s) => s.to_string(),
+                                other => other.to_string(),
+                            })
+                            .unwrap_or_default()
+                    };
+                    points.push((
+                        value_of(libo11y_spec::attr::SIGNAL),
+                        value_of(libo11y_spec::attr::RULE),
+                        point.value(),
+                    ));
+                }
+            }
+        }
+        points.sort();
+        points
+    }
 
     /// The path of `relative` under the repository's `conformance/`
     /// directory, or `None` outside the repository, as when the published

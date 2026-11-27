@@ -13,6 +13,13 @@ type LookupFn = dyn Fn(&str) -> Option<String> + Send + Sync;
 /// ([`Builder::without_otel_env`](crate::Builder::without_otel_env)) uses
 /// [`EnvLookup::empty`], and a test can supply its own variables with
 /// [`EnvLookup::from_pairs`] instead of changing the process environment.
+///
+/// One exception: an OTLP exporter libo11y builds is upstream's, and
+/// upstream reads `OTEL_EXPORTER_OTLP_[SIGNAL_]HEADERS`, `_COMPRESSION` and
+/// `_INSECURE` from the process environment itself. libo11y resolves the
+/// exporter, the protocol, the endpoint, the timeout and the certificate
+/// files through the lookup and passes them in code. Hermetic mode builds
+/// no OTLP exporter, so it reads none of them.
 #[derive(Clone)]
 pub struct EnvLookup(Arc<LookupFn>);
 

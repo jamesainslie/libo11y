@@ -1,6 +1,6 @@
 [package]
 name = "libo11y"
-description = "Opinionated OpenTelemetry setup for Rust services: identity, resource, sensitivity policy and propagation that follow the libo11y specification."
+description = "Opinionated OpenTelemetry setup for Rust services: identity, resource, sensitivity policy, exporters, propagation and lifecycle that follow the libo11y specification."
 readme = "README.md"
 build = "build.rs"
 keywords = ["observability", "opentelemetry", "telemetry", "tracing", "libo11y"]
@@ -13,6 +13,32 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+[features]
+default = ["otlp-http", "otlp-grpc", "tokio", "log"]
+# OTLP over HTTP (http/protobuf and http/json) through upstream's exporters
+# and a blocking reqwest client with TLS through rustls.
+otlp-http = [
+    "dep:opentelemetry-otlp",
+    "dep:reqwest",
+    "opentelemetry-otlp/http-proto",
+    "opentelemetry-otlp/http-json",
+    "opentelemetry-otlp/reqwest-blocking-client",
+    "opentelemetry-otlp/reqwest-rustls",
+]
+# OTLP over gRPC through upstream's tonic exporters, with TLS through rustls.
+otlp-grpc = [
+    "dep:opentelemetry-otlp",
+    "dep:tonic",
+    "dep:tokio",
+    "opentelemetry-otlp/grpc-tonic",
+    "opentelemetry-otlp/tls-aws-lc",
+    "opentelemetry-otlp/tls-webpki-roots",
+]
+# Asynchronous shutdown and shutdown on SIGINT and SIGTERM.
+tokio = ["dep:tokio", "dep:signal-hook"]
+# Bridges `log` crate records into the tracing stack setup installs.
+log = ["dep:tracing-log"]
+
 [dependencies]
 libo11y-macros.workspace = true
 libo11y-redact.workspace = true
@@ -22,15 +48,30 @@ hmac = "0.13.0"
 # Pinned: appregistry/yaml.rs works around this exact release's panics and
 # its byte-offset marks, so an upgrade reruns the conformance and fuzz checks.
 libyaml-safer = "=0.3.0"
-opentelemetry = { version = "0.33.1", default-features = false, features = ["logs", "trace"] }
-opentelemetry_sdk = { version = "0.33.1", default-features = false, features = ["trace"] }
+opentelemetry = { version = "0.33.1", default-features = false, features = ["logs", "metrics", "trace", "internal-logs"] }
+opentelemetry-otlp = { version = "0.33.1", default-features = false, optional = true, features = ["trace", "logs", "internal-logs"] }
+opentelemetry-stdout = { version = "0.33.1", default-features = false, features = ["trace", "logs"] }
+opentelemetry_sdk = { version = "0.33.1", default-features = false, features = ["logs", "metrics", "trace", "internal-logs"] }
+reqwest = { version = "0.13.5", default-features = false, optional = true, features = ["blocking", "rustls"] }
 sha2 = "0.11.1"
 thiserror = "2.0.21"
+tokio = { version = "1.54.1", default-features = false, optional = true, features = ["rt", "sync"] }
+tonic = { version = "0.14.9", default-features = false, optional = true, features = ["tls-aws-lc", "tls-webpki-roots"] }
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
+tracing-log = { version = "0.2.0", default-features = false, optional = true, features = ["log-tracer", "std"] }
+tracing-opentelemetry = { version = "0.34.0", default-features = false }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["registry", "std"] }
 uuid = { version = "1.26.1", default-features = false, features = ["std", "v4", "v5"] }
 
+[target.'cfg(unix)'.dependencies]
+signal-hook = { version = "0.4.6", default-features = false, optional = true, features = ["iterator"] }
+
 [dev-dependencies]
+opentelemetry_sdk = { version = "0.33.1", default-features = false, features = ["logs", "metrics", "trace", "testing"] }
+rcgen = { version = "0.14.10", default-features = false, features = ["aws_lc_rs", "pem"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "time"] }
 
 [lints]
 workspace = true
