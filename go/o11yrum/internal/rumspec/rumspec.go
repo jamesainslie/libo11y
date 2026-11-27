@@ -331,6 +331,12 @@ var Events = map[string][]string{
 	"o11y.rum.view.summary":     {"o11y.rum.platform", "o11y.rum.view.id", "o11y.rum.view.name", "o11y.rum.view.kind", "session.id", "o11y.rum.summary.seq", "o11y.rum.summary.time_on_view"},
 }
 
+// EventTemplates maps each event that requires a template attribute to
+// those templates; any <template>.<name> attribute satisfies one.
+var EventTemplates = map[string][]string{
+	"o11y.telemetry.configured": {"o11y.config"},
+}
+
 // RUMSpanRequired maps each RUM span shape to its required attributes.
 var RUMSpanRequired = map[string][]string{
 	"view":     {"o11y.rum.platform", "o11y.rum.view.name", "o11y.rum.view.id", "o11y.rum.view.kind", "session.id"},

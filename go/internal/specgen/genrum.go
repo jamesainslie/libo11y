@@ -101,9 +101,17 @@ func genRUMSpec(m *model) (string, error) {
 	fmt.Fprintf(&b, "}\n\n// Templates lists template attributes; a key <template>.<name> is defined.\nvar Templates = []string{%s}\n\n", quoteAll(templates))
 
 	b.WriteString("// Events maps each registered event to its required attributes.\nvar Events = map[string][]string{\n")
+	eventTemplates := map[string][]string{}
 	for _, ev := range m.events {
-		required, _ := m.eventRequirements(ev)
+		required, templates := m.eventRequirements(ev)
 		fmt.Fprintf(&b, "\t%q: {%s},\n", ev.Name, quoteAll(required))
+		if len(templates) > 0 {
+			eventTemplates[ev.Name] = templates
+		}
+	}
+	b.WriteString("}\n\n// EventTemplates maps each event that requires a template attribute to\n// those templates; any <template>.<name> attribute satisfies one.\nvar EventTemplates = map[string][]string{\n")
+	for _, name := range slices.Sorted(maps.Keys(eventTemplates)) {
+		fmt.Fprintf(&b, "\t%q: {%s},\n", name, quoteAll(eventTemplates[name]))
 	}
 
 	b.WriteString("}\n\n// RUMSpanRequired maps each RUM span shape to its required attributes.\nvar RUMSpanRequired = map[string][]string{\n")

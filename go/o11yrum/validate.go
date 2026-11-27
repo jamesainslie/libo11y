@@ -193,6 +193,9 @@ func (v *validator) logs(ld plog.Logs) dropCounts {
 // logRecord validates one record in place and returns why it must be
 // dropped.
 func (v *validator) logRecord(lr plog.LogRecord, res pcommon.Map) string {
+	// The name is read before the policy runs, so an event.name the
+	// attribute cap removes still faces the checks below.
+	name := eventName(lr)
 	v.filter(lr.Attributes())
 	body := lr.Body()
 	switch body.Type() {
@@ -207,13 +210,17 @@ func (v *validator) logRecord(lr plog.LogRecord, res pcommon.Map) string {
 	case pcommon.ValueTypeBytes:
 		pcommon.NewValueEmpty().CopyTo(body)
 	}
-	name := eventName(lr)
 	required, registered := rumspec.Events[name]
 	switch {
 	case registered:
 		l := attrLookup{record: lr.Attributes(), resource: res}
 		for _, k := range required {
 			if !l.has(k) {
+				return reasonEventRequired
+			}
+		}
+		for _, t := range rumspec.EventTemplates[name] {
+			if !hasPrefix(lr.Attributes(), t+".") && !hasPrefix(res, t+".") {
 				return reasonEventRequired
 			}
 		}
