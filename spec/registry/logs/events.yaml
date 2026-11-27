@@ -121,3 +121,23 @@ groups:
     attributes:
       - {ref: session.id, requirement_level: required, annotations: {o11y.gen: alias}}
       - {ref: o11y.rum.session.retained, requirement_level: required, annotations: {o11y.gen: mint}}
+
+  - id: event.o11y.rum.view.summary
+    type: event
+    name: o11y.rum.view.summary
+    stability: development
+    brief: >
+      A view's counts, time on view and vitals since the previous summary of
+      the same view. Every consented session sends it, whatever its sampling,
+      and the gateway derives the standard RUM metrics from it.
+    attributes:
+      - {ref: o11y.rum.platform, requirement_level: required, annotations: {o11y.gen: mint}}
+      - {ref: o11y.rum.view.id, requirement_level: required, annotations: {o11y.gen: mint}}
+      - {ref: o11y.rum.view.name, requirement_level: required, annotations: {o11y.gen: mint}}
+      - {ref: o11y.rum.view.kind, requirement_level: required, annotations: {o11y.gen: mint}}
+      - {ref: session.id, requirement_level: required, annotations: {o11y.gen: alias}}
+      - {ref: o11y.rum.summary.seq, requirement_level: required, annotations: {o11y.gen: mint}}
+      - {ref: o11y.rum.summary.time_on_view, requirement_level: required, annotations: {o11y.gen: mint}}
+      - {ref: o11y.rum.device.class, annotations: {o11y.gen: mint}}
+      - {ref: o11y.rum.connection.effective, annotations: {o11y.gen: mint}}
+      - {ref: o11y.rum.config.version, annotations: {o11y.gen: mint}}

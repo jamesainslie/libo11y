@@ -216,7 +216,64 @@ func checkGroups(groups []group, idx *index) []violation {
 		}
 		violations = append(violations, checkGroup(g)...)
 	}
+	violations = append(violations, checkRUMSummaryCoverage(groups)...)
 	return dedupeRegistryWide(violations)
+}
+
+// rumSummaryGroup is the group defining the RUM view summary's attributes.
+const rumSummaryGroup = "registry.o11y.rum.summary"
+
+// rumSummaryCounts pairs each enum the view summary breaks its counts down
+// by with the name prefix of those count attributes.
+var rumSummaryCounts = []struct{ enum, prefix string }{
+	{"o11y.rum.error.source", "o11y.rum.summary.errors."},
+	{"o11y.rum.frustration.type", "o11y.rum.summary.frustrations."},
+}
+
+// checkRUMSummaryCoverage keeps the view summary's count attributes in step
+// with the enums they break down: one count per member value, and no count
+// for a value the enum does not have. The gateway turns each count into a
+// metric point labelled with the member, so a missing count drops a label
+// value and an extra one invents it. The rule applies only when the
+// registry defines the summary group.
+func checkRUMSummaryCoverage(groups []group) []violation {
+	var summary *group
+	members := map[string][]string{}
+	for i := range groups {
+		g := &groups[i]
+		if g.ID == rumSummaryGroup {
+			summary = g
+		}
+		for _, a := range g.Attributes {
+			members[a.ID] = append(members[a.ID], enumValues(a)...)
+		}
+	}
+	if summary == nil {
+		return nil
+	}
+	defined := map[string]bool{}
+	for _, a := range summary.Attributes {
+		defined[a.ID] = true
+	}
+	var violations []violation
+	fail := func(name string) {
+		violations = append(violations, violation{RuleID: "libo11y_rum_summary_coverage", Category: "rum", Group: rumSummaryGroup, Attr: name})
+	}
+	for _, c := range rumSummaryCounts {
+		want := map[string]bool{}
+		for _, v := range members[c.enum] {
+			want[c.prefix+v] = true
+			if !defined[c.prefix+v] {
+				fail(c.prefix + v)
+			}
+		}
+		for _, a := range summary.Attributes {
+			if strings.HasPrefix(a.ID, c.prefix) && !want[a.ID] {
+				fail(a.ID)
+			}
+		}
+	}
+	return violations
 }
 
 // duplicateGroups reports each group ID that more than one group in the

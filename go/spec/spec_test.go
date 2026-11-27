@@ -2,8 +2,12 @@ package spec_test
 
 import (
 	"log/slog"
+	"slices"
 	"testing"
 
+	"go.opentelemetry.io/otel/attribute"
+
+	"github.com/jamesainslie/libo11y/go/internal/spectables"
 	"github.com/jamesainslie/libo11y/go/spec"
 )
 
@@ -90,5 +94,32 @@ func TestLogSourceMinted(t *testing.T) {
 	}
 	if spec.LogSourceLogger != "logger" {
 		t.Errorf("LogSourceLogger = %q, want logger", spec.LogSourceLogger)
+	}
+}
+
+// TestViewSummaryMinted pins the spec 1.3.0 view summary event: its name,
+// its typed attribute constructors, and the required attributes its
+// contract lists.
+func TestViewSummaryMinted(t *testing.T) {
+	if spec.EventRUMViewSummary != "o11y.rum.view.summary" {
+		t.Errorf("EventRUMViewSummary = %q, want o11y.rum.view.summary", spec.EventRUMViewSummary)
+	}
+	if kv := spec.RUMSummarySeq(0); kv.Key != "o11y.rum.summary.seq" || kv.Value.Type() != attribute.INT64 {
+		t.Errorf("RUMSummarySeq(0) = %v, want an int o11y.rum.summary.seq", kv)
+	}
+	if kv := spec.RUMSummaryLCPValue(1.8); kv.Key != "o11y.rum.summary.lcp.value" || kv.Value.Type() != attribute.FLOAT64 {
+		t.Errorf("RUMSummaryLCPValue(1.8) = %v, want a double o11y.rum.summary.lcp.value", kv)
+	}
+	if spec.RUMSummaryErrorsUnhandledRejectionKey != "o11y.rum.summary.errors.unhandled_rejection" {
+		t.Errorf("RUMSummaryErrorsUnhandledRejectionKey = %q", spec.RUMSummaryErrorsUnhandledRejectionKey)
+	}
+	info, ok := spectables.Events[spec.EventRUMViewSummary]
+	if !ok {
+		t.Fatal("spectables.Events lacks o11y.rum.view.summary")
+	}
+	for _, key := range []attribute.Key{spec.RUMSummarySeqKey, spec.RUMSummaryTimeOnViewKey, spec.RUMViewIDKey} {
+		if !slices.Contains(info.Required, key) {
+			t.Errorf("o11y.rum.view.summary required = %v, missing %s", info.Required, key)
+		}
 	}
 }

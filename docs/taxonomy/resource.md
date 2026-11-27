@@ -93,3 +93,4 @@ are not a tier and have no generated key constants.
 | `o11y.rum.frustration` | `o11y.rum.frustration.type`, `session.id`, `o11y.rum.view.id` |
 | `o11y.rum.session.start` | `session.id`, `o11y.rum.platform` |
 | `o11y.rum.session.end` | `session.id`, `o11y.rum.session.retained` |
+| `o11y.rum.view.summary` | `o11y.rum.platform`, `o11y.rum.view.id`, `o11y.rum.view.name`, `o11y.rum.view.kind`, `session.id`, `o11y.rum.summary.seq`, `o11y.rum.summary.time_on_view` |

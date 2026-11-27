@@ -1106,6 +1106,53 @@ pub mod attr {
     pub const DURATION: &str = "o11y.duration";
     /// The `o11y.log.source` attribute key.
     pub const LOG_SOURCE: &str = "o11y.log.source";
+    /// The `o11y.rum.summary.seq` attribute key.
+    pub const RUM_SUMMARY_SEQ: &str = "o11y.rum.summary.seq";
+    /// The `o11y.rum.summary.time_on_view` attribute key.
+    pub const RUM_SUMMARY_TIME_ON_VIEW: &str = "o11y.rum.summary.time_on_view";
+    /// The `o11y.rum.summary.requests` attribute key.
+    pub const RUM_SUMMARY_REQUESTS: &str = "o11y.rum.summary.requests";
+    /// The `o11y.rum.summary.long_animation_frames` attribute key.
+    pub const RUM_SUMMARY_LONG_ANIMATION_FRAMES: &str = "o11y.rum.summary.long_animation_frames";
+    /// The `o11y.rum.summary.errors.uncaught` attribute key.
+    pub const RUM_SUMMARY_ERRORS_UNCAUGHT: &str = "o11y.rum.summary.errors.uncaught";
+    /// The `o11y.rum.summary.errors.unhandled_rejection` attribute key.
+    pub const RUM_SUMMARY_ERRORS_UNHANDLED_REJECTION: &str =
+        "o11y.rum.summary.errors.unhandled_rejection";
+    /// The `o11y.rum.summary.errors.console` attribute key.
+    pub const RUM_SUMMARY_ERRORS_CONSOLE: &str = "o11y.rum.summary.errors.console";
+    /// The `o11y.rum.summary.errors.boundary` attribute key.
+    pub const RUM_SUMMARY_ERRORS_BOUNDARY: &str = "o11y.rum.summary.errors.boundary";
+    /// The `o11y.rum.summary.errors.resource` attribute key.
+    pub const RUM_SUMMARY_ERRORS_RESOURCE: &str = "o11y.rum.summary.errors.resource";
+    /// The `o11y.rum.summary.errors.csp` attribute key.
+    pub const RUM_SUMMARY_ERRORS_CSP: &str = "o11y.rum.summary.errors.csp";
+    /// The `o11y.rum.summary.errors.network` attribute key.
+    pub const RUM_SUMMARY_ERRORS_NETWORK: &str = "o11y.rum.summary.errors.network";
+    /// The `o11y.rum.summary.errors.crash` attribute key.
+    pub const RUM_SUMMARY_ERRORS_CRASH: &str = "o11y.rum.summary.errors.crash";
+    /// The `o11y.rum.summary.errors.anr` attribute key.
+    pub const RUM_SUMMARY_ERRORS_ANR: &str = "o11y.rum.summary.errors.anr";
+    /// The `o11y.rum.summary.errors.hang` attribute key.
+    pub const RUM_SUMMARY_ERRORS_HANG: &str = "o11y.rum.summary.errors.hang";
+    /// The `o11y.rum.summary.errors.custom` attribute key.
+    pub const RUM_SUMMARY_ERRORS_CUSTOM: &str = "o11y.rum.summary.errors.custom";
+    /// The `o11y.rum.summary.frustrations.rage` attribute key.
+    pub const RUM_SUMMARY_FRUSTRATIONS_RAGE: &str = "o11y.rum.summary.frustrations.rage";
+    /// The `o11y.rum.summary.frustrations.dead` attribute key.
+    pub const RUM_SUMMARY_FRUSTRATIONS_DEAD: &str = "o11y.rum.summary.frustrations.dead";
+    /// The `o11y.rum.summary.frustrations.error` attribute key.
+    pub const RUM_SUMMARY_FRUSTRATIONS_ERROR: &str = "o11y.rum.summary.frustrations.error";
+    /// The `o11y.rum.summary.lcp.value` attribute key.
+    pub const RUM_SUMMARY_LCP_VALUE: &str = "o11y.rum.summary.lcp.value";
+    /// The `o11y.rum.summary.inp.value` attribute key.
+    pub const RUM_SUMMARY_INP_VALUE: &str = "o11y.rum.summary.inp.value";
+    /// The `o11y.rum.summary.cls.value` attribute key.
+    pub const RUM_SUMMARY_CLS_VALUE: &str = "o11y.rum.summary.cls.value";
+    /// The `o11y.rum.summary.fcp.value` attribute key.
+    pub const RUM_SUMMARY_FCP_VALUE: &str = "o11y.rum.summary.fcp.value";
+    /// The `o11y.rum.summary.ttfb.value` attribute key.
+    pub const RUM_SUMMARY_TTFB_VALUE: &str = "o11y.rum.summary.ttfb.value";
     /// The `o11y.rum.platform` attribute key.
     pub const RUM_PLATFORM: &str = "o11y.rum.platform";
     /// The `o11y.rum.view.name` attribute key.
@@ -1214,6 +1261,8 @@ pub mod event {
     pub const RUM_SESSION_START: &str = "o11y.rum.session.start";
     /// The `o11y.rum.session.end` event.
     pub const RUM_SESSION_END: &str = "o11y.rum.session.end";
+    /// The `o11y.rum.view.summary` event.
+    pub const RUM_VIEW_SUMMARY: &str = "o11y.rum.view.summary";
 }
 
 /// Registered metric names.

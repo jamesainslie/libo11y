@@ -201,39 +201,62 @@ const (
 
 // Attribute keys minted by the libo11y specification.
 const (
-	OutcomeKey                attribute.Key = "o11y.outcome"
-	RecordClassKey            attribute.Key = "o11y.record.class"
-	TeamNameKey               attribute.Key = "o11y.team.name"
-	TenantIDKey               attribute.Key = "o11y.tenant.id"
-	CostCenterKey             attribute.Key = "o11y.cost_center"
-	DataClassificationKey     attribute.Key = "o11y.data.classification"
-	LabelKey                  attribute.Key = "o11y.label"
-	BuildModifiedKey          attribute.Key = "o11y.build.modified"
-	BuildTimeKey              attribute.Key = "o11y.build.time"
-	ConfigKey                 attribute.Key = "o11y.config"
-	SignalKey                 attribute.Key = "o11y.signal"
-	RuleKey                   attribute.Key = "o11y.rule"
-	DurationKey               attribute.Key = "o11y.duration"
-	LogSourceKey              attribute.Key = "o11y.log.source"
-	RUMPlatformKey            attribute.Key = "o11y.rum.platform"
-	RUMViewNameKey            attribute.Key = "o11y.rum.view.name"
-	RUMViewIDKey              attribute.Key = "o11y.rum.view.id"
-	RUMViewKindKey            attribute.Key = "o11y.rum.view.kind"
-	RUMActionTypeKey          attribute.Key = "o11y.rum.action.type"
-	RUMActionNameKey          attribute.Key = "o11y.rum.action.name"
-	RUMFrustrationTypeKey     attribute.Key = "o11y.rum.frustration.type"
-	RUMErrorSourceKey         attribute.Key = "o11y.rum.error.source"
-	RUMErrorFingerprintKey    attribute.Key = "o11y.rum.error.fingerprint"
-	RUMElementSelectorKey     attribute.Key = "o11y.rum.element.selector"
-	RUMElementTextKey         attribute.Key = "o11y.rum.element.text"
-	RUMDeviceClassKey         attribute.Key = "o11y.rum.device.class"
-	RUMConnectionTypeKey      attribute.Key = "o11y.rum.connection.type"
-	RUMConnectionEffectiveKey attribute.Key = "o11y.rum.connection.effective"
-	RUMVitalRatingKey         attribute.Key = "o11y.rum.vital.rating"
-	RUMSessionRetainedKey     attribute.Key = "o11y.rum.session.retained"
-	RUMReplaySegmentKey       attribute.Key = "o11y.rum.replay.segment"
-	RUMConfigVersionKey       attribute.Key = "o11y.rum.config.version"
-	RUMBrowserFamilyKey       attribute.Key = "o11y.rum.browser.family"
+	OutcomeKey                            attribute.Key = "o11y.outcome"
+	RecordClassKey                        attribute.Key = "o11y.record.class"
+	TeamNameKey                           attribute.Key = "o11y.team.name"
+	TenantIDKey                           attribute.Key = "o11y.tenant.id"
+	CostCenterKey                         attribute.Key = "o11y.cost_center"
+	DataClassificationKey                 attribute.Key = "o11y.data.classification"
+	LabelKey                              attribute.Key = "o11y.label"
+	BuildModifiedKey                      attribute.Key = "o11y.build.modified"
+	BuildTimeKey                          attribute.Key = "o11y.build.time"
+	ConfigKey                             attribute.Key = "o11y.config"
+	SignalKey                             attribute.Key = "o11y.signal"
+	RuleKey                               attribute.Key = "o11y.rule"
+	DurationKey                           attribute.Key = "o11y.duration"
+	LogSourceKey                          attribute.Key = "o11y.log.source"
+	RUMSummarySeqKey                      attribute.Key = "o11y.rum.summary.seq"
+	RUMSummaryTimeOnViewKey               attribute.Key = "o11y.rum.summary.time_on_view"
+	RUMSummaryRequestsKey                 attribute.Key = "o11y.rum.summary.requests"
+	RUMSummaryLongAnimationFramesKey      attribute.Key = "o11y.rum.summary.long_animation_frames"
+	RUMSummaryErrorsUncaughtKey           attribute.Key = "o11y.rum.summary.errors.uncaught"
+	RUMSummaryErrorsUnhandledRejectionKey attribute.Key = "o11y.rum.summary.errors.unhandled_rejection"
+	RUMSummaryErrorsConsoleKey            attribute.Key = "o11y.rum.summary.errors.console"
+	RUMSummaryErrorsBoundaryKey           attribute.Key = "o11y.rum.summary.errors.boundary"
+	RUMSummaryErrorsResourceKey           attribute.Key = "o11y.rum.summary.errors.resource"
+	RUMSummaryErrorsCSPKey                attribute.Key = "o11y.rum.summary.errors.csp"
+	RUMSummaryErrorsNetworkKey            attribute.Key = "o11y.rum.summary.errors.network"
+	RUMSummaryErrorsCrashKey              attribute.Key = "o11y.rum.summary.errors.crash"
+	RUMSummaryErrorsANRKey                attribute.Key = "o11y.rum.summary.errors.anr"
+	RUMSummaryErrorsHangKey               attribute.Key = "o11y.rum.summary.errors.hang"
+	RUMSummaryErrorsCustomKey             attribute.Key = "o11y.rum.summary.errors.custom"
+	RUMSummaryFrustrationsRageKey         attribute.Key = "o11y.rum.summary.frustrations.rage"
+	RUMSummaryFrustrationsDeadKey         attribute.Key = "o11y.rum.summary.frustrations.dead"
+	RUMSummaryFrustrationsErrorKey        attribute.Key = "o11y.rum.summary.frustrations.error"
+	RUMSummaryLCPValueKey                 attribute.Key = "o11y.rum.summary.lcp.value"
+	RUMSummaryINPValueKey                 attribute.Key = "o11y.rum.summary.inp.value"
+	RUMSummaryCLSValueKey                 attribute.Key = "o11y.rum.summary.cls.value"
+	RUMSummaryFCPValueKey                 attribute.Key = "o11y.rum.summary.fcp.value"
+	RUMSummaryTTFBValueKey                attribute.Key = "o11y.rum.summary.ttfb.value"
+	RUMPlatformKey                        attribute.Key = "o11y.rum.platform"
+	RUMViewNameKey                        attribute.Key = "o11y.rum.view.name"
+	RUMViewIDKey                          attribute.Key = "o11y.rum.view.id"
+	RUMViewKindKey                        attribute.Key = "o11y.rum.view.kind"
+	RUMActionTypeKey                      attribute.Key = "o11y.rum.action.type"
+	RUMActionNameKey                      attribute.Key = "o11y.rum.action.name"
+	RUMFrustrationTypeKey                 attribute.Key = "o11y.rum.frustration.type"
+	RUMErrorSourceKey                     attribute.Key = "o11y.rum.error.source"
+	RUMErrorFingerprintKey                attribute.Key = "o11y.rum.error.fingerprint"
+	RUMElementSelectorKey                 attribute.Key = "o11y.rum.element.selector"
+	RUMElementTextKey                     attribute.Key = "o11y.rum.element.text"
+	RUMDeviceClassKey                     attribute.Key = "o11y.rum.device.class"
+	RUMConnectionTypeKey                  attribute.Key = "o11y.rum.connection.type"
+	RUMConnectionEffectiveKey             attribute.Key = "o11y.rum.connection.effective"
+	RUMVitalRatingKey                     attribute.Key = "o11y.rum.vital.rating"
+	RUMSessionRetainedKey                 attribute.Key = "o11y.rum.session.retained"
+	RUMReplaySegmentKey                   attribute.Key = "o11y.rum.replay.segment"
+	RUMConfigVersionKey                   attribute.Key = "o11y.rum.config.version"
+	RUMBrowserFamilyKey                   attribute.Key = "o11y.rum.browser.family"
 )
 
 // OutcomeValue returns the o11y.outcome attribute.
@@ -279,6 +302,91 @@ func Duration(v float64) attribute.KeyValue { return DurationKey.Float64(v) }
 
 // LogSourceValue returns the o11y.log.source attribute.
 func LogSourceValue(v LogSource) attribute.KeyValue { return LogSourceKey.String(string(v)) }
+
+// RUMSummarySeq returns the o11y.rum.summary.seq attribute.
+func RUMSummarySeq(v int64) attribute.KeyValue { return RUMSummarySeqKey.Int64(v) }
+
+// RUMSummaryTimeOnView returns the o11y.rum.summary.time_on_view attribute.
+func RUMSummaryTimeOnView(v float64) attribute.KeyValue { return RUMSummaryTimeOnViewKey.Float64(v) }
+
+// RUMSummaryRequests returns the o11y.rum.summary.requests attribute.
+func RUMSummaryRequests(v int64) attribute.KeyValue { return RUMSummaryRequestsKey.Int64(v) }
+
+// RUMSummaryLongAnimationFrames returns the o11y.rum.summary.long_animation_frames attribute.
+func RUMSummaryLongAnimationFrames(v int64) attribute.KeyValue {
+	return RUMSummaryLongAnimationFramesKey.Int64(v)
+}
+
+// RUMSummaryErrorsUncaught returns the o11y.rum.summary.errors.uncaught attribute.
+func RUMSummaryErrorsUncaught(v int64) attribute.KeyValue {
+	return RUMSummaryErrorsUncaughtKey.Int64(v)
+}
+
+// RUMSummaryErrorsUnhandledRejection returns the o11y.rum.summary.errors.unhandled_rejection attribute.
+func RUMSummaryErrorsUnhandledRejection(v int64) attribute.KeyValue {
+	return RUMSummaryErrorsUnhandledRejectionKey.Int64(v)
+}
+
+// RUMSummaryErrorsConsole returns the o11y.rum.summary.errors.console attribute.
+func RUMSummaryErrorsConsole(v int64) attribute.KeyValue { return RUMSummaryErrorsConsoleKey.Int64(v) }
+
+// RUMSummaryErrorsBoundary returns the o11y.rum.summary.errors.boundary attribute.
+func RUMSummaryErrorsBoundary(v int64) attribute.KeyValue {
+	return RUMSummaryErrorsBoundaryKey.Int64(v)
+}
+
+// RUMSummaryErrorsResource returns the o11y.rum.summary.errors.resource attribute.
+func RUMSummaryErrorsResource(v int64) attribute.KeyValue {
+	return RUMSummaryErrorsResourceKey.Int64(v)
+}
+
+// RUMSummaryErrorsCSP returns the o11y.rum.summary.errors.csp attribute.
+func RUMSummaryErrorsCSP(v int64) attribute.KeyValue { return RUMSummaryErrorsCSPKey.Int64(v) }
+
+// RUMSummaryErrorsNetwork returns the o11y.rum.summary.errors.network attribute.
+func RUMSummaryErrorsNetwork(v int64) attribute.KeyValue { return RUMSummaryErrorsNetworkKey.Int64(v) }
+
+// RUMSummaryErrorsCrash returns the o11y.rum.summary.errors.crash attribute.
+func RUMSummaryErrorsCrash(v int64) attribute.KeyValue { return RUMSummaryErrorsCrashKey.Int64(v) }
+
+// RUMSummaryErrorsANR returns the o11y.rum.summary.errors.anr attribute.
+func RUMSummaryErrorsANR(v int64) attribute.KeyValue { return RUMSummaryErrorsANRKey.Int64(v) }
+
+// RUMSummaryErrorsHang returns the o11y.rum.summary.errors.hang attribute.
+func RUMSummaryErrorsHang(v int64) attribute.KeyValue { return RUMSummaryErrorsHangKey.Int64(v) }
+
+// RUMSummaryErrorsCustom returns the o11y.rum.summary.errors.custom attribute.
+func RUMSummaryErrorsCustom(v int64) attribute.KeyValue { return RUMSummaryErrorsCustomKey.Int64(v) }
+
+// RUMSummaryFrustrationsRage returns the o11y.rum.summary.frustrations.rage attribute.
+func RUMSummaryFrustrationsRage(v int64) attribute.KeyValue {
+	return RUMSummaryFrustrationsRageKey.Int64(v)
+}
+
+// RUMSummaryFrustrationsDead returns the o11y.rum.summary.frustrations.dead attribute.
+func RUMSummaryFrustrationsDead(v int64) attribute.KeyValue {
+	return RUMSummaryFrustrationsDeadKey.Int64(v)
+}
+
+// RUMSummaryFrustrationsError returns the o11y.rum.summary.frustrations.error attribute.
+func RUMSummaryFrustrationsError(v int64) attribute.KeyValue {
+	return RUMSummaryFrustrationsErrorKey.Int64(v)
+}
+
+// RUMSummaryLCPValue returns the o11y.rum.summary.lcp.value attribute.
+func RUMSummaryLCPValue(v float64) attribute.KeyValue { return RUMSummaryLCPValueKey.Float64(v) }
+
+// RUMSummaryINPValue returns the o11y.rum.summary.inp.value attribute.
+func RUMSummaryINPValue(v float64) attribute.KeyValue { return RUMSummaryINPValueKey.Float64(v) }
+
+// RUMSummaryCLSValue returns the o11y.rum.summary.cls.value attribute.
+func RUMSummaryCLSValue(v float64) attribute.KeyValue { return RUMSummaryCLSValueKey.Float64(v) }
+
+// RUMSummaryFCPValue returns the o11y.rum.summary.fcp.value attribute.
+func RUMSummaryFCPValue(v float64) attribute.KeyValue { return RUMSummaryFCPValueKey.Float64(v) }
+
+// RUMSummaryTTFBValue returns the o11y.rum.summary.ttfb.value attribute.
+func RUMSummaryTTFBValue(v float64) attribute.KeyValue { return RUMSummaryTTFBValueKey.Float64(v) }
 
 // RUMPlatformValue returns the o11y.rum.platform attribute.
 func RUMPlatformValue(v RUMPlatform) attribute.KeyValue { return RUMPlatformKey.String(string(v)) }
@@ -392,6 +500,7 @@ const (
 	EventRUMFrustration      = "o11y.rum.frustration"
 	EventRUMSessionStart     = "o11y.rum.session.start"
 	EventRUMSessionEnd       = "o11y.rum.session.end"
+	EventRUMViewSummary      = "o11y.rum.view.summary"
 )
 
 // Registered metric names.

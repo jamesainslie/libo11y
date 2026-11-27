@@ -5,9 +5,13 @@ import {
   APP_RESERVED_NAMESPACES,
   ATTR_LOG_SOURCE,
   ATTR_OUTCOME,
+  ATTR_RUM_SUMMARY_ERRORS_UNHANDLED_REJECTION,
+  ATTR_RUM_SUMMARY_LCP_VALUE,
+  ATTR_RUM_SUMMARY_SEQ,
   ATTR_RUM_VIEW_NAME,
   ENVIRONMENT_VALUES,
   EVENT_RUM_ERROR,
+  EVENT_RUM_VIEW_SUMMARY,
   EVENT_TELEMETRY_CONFIGURED,
   EVENTS,
   LOG_SOURCE_VALUES,
@@ -102,4 +106,15 @@ test("the application registry reserved namespaces", () => {
     assert.equal(APP_RESERVED_NAMESPACES.has(ns), true);
   }
   assert.equal(APP_RESERVED_NAMESPACES.has("lor"), false);
+});
+
+test("the view summary event (spec 1.3.0)", () => {
+  assert.equal(EVENT_RUM_VIEW_SUMMARY, "o11y.rum.view.summary");
+  assert.equal(ATTR_RUM_SUMMARY_SEQ, "o11y.rum.summary.seq");
+  assert.equal(ATTR_RUM_SUMMARY_LCP_VALUE, "o11y.rum.summary.lcp.value");
+  assert.equal(ATTR_RUM_SUMMARY_ERRORS_UNHANDLED_REJECTION, "o11y.rum.summary.errors.unhandled_rejection");
+  const required = EVENTS.get(EVENT_RUM_VIEW_SUMMARY)?.required ?? [];
+  for (const key of ["o11y.rum.summary.seq", "o11y.rum.summary.time_on_view", "o11y.rum.view.id"]) {
+    assert.ok(required.includes(key), `missing ${key}`);
+  }
 });
