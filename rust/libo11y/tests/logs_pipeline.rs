@@ -247,10 +247,7 @@ fn tracing_field_types_and_diagnostics_isolation() {
     assert_eq!(rec.attr("b"), Some(&AnyValue::Boolean(true)));
     assert_eq!(rec.attr("s"), Some(&AnyValue::from("hello")));
     assert_eq!(rec.attr("dbg"), Some(&AnyValue::from("[1, 2]")));
-    assert_eq!(
-        rec.attr("exception.message"),
-        Some(&AnyValue::from("disk broke"))
-    );
+    assert_eq!(rec.attr("err"), Some(&AnyValue::from("disk broke")));
 
     // OTLP record carries source location for tracing events.
     let otlp_recs = otlp.records();

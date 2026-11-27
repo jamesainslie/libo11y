@@ -142,11 +142,13 @@ impl Sdk {
     }
 
     /// libo11y's `tracing` layers, to compose into a subscriber of your
-    /// own: the span layer, which turns `tracing` spans into OpenTelemetry
-    /// spans on this SDK's tracer and sets a span's status from an `ERROR`
-    /// event inside it, and the layer that takes the OpenTelemetry crates'
+    /// own: the diagnostics layer, which takes the OpenTelemetry crates'
     /// own diagnostics out of the stack and reports them to the error
-    /// handler.
+    /// handler; the span layer, which turns `tracing` spans into
+    /// OpenTelemetry spans on this SDK's tracer and sets a span's status
+    /// from an `ERROR` event inside it; and the log layer, which
+    /// classifies, correlates and fans `tracing` events out to the console,
+    /// OTLP and extra log sinks.
     ///
     /// ```
     /// use tracing_subscriber::layer::SubscriberExt as _;

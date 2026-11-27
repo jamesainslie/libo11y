@@ -540,11 +540,8 @@ impl Visit for FieldExtractor {
         self.push(field, AnyValue::from(value.to_owned()));
     }
 
-    fn record_error(&mut self, _field: &Field, value: &(dyn std::error::Error + 'static)) {
-        self.attrs.push((
-            Key::from_static_str("exception.message"),
-            AnyValue::from(value.to_string()),
-        ));
+    fn record_error(&mut self, field: &Field, value: &(dyn std::error::Error + 'static)) {
+        self.push(field, AnyValue::from(value.to_string()));
     }
 
     fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {

@@ -57,6 +57,22 @@ impl Drop for ReleaseOnDrop {
     }
 }
 
+/// Abandons an uncommitted SDK when dropped, so any early return or panic
+/// during setup stops its background provider threads before the setup guard
+/// is released.
+struct AbandonOnDrop<'a> {
+    sdk: &'a Sdk,
+    keep: bool,
+}
+
+impl Drop for AbandonOnDrop<'_> {
+    fn drop(&mut self) {
+        if !self.keep {
+            self.sdk.abandon();
+        }
+    }
+}
+
 /// Builds the SDK and installs it as the process default, in Go's order.
 pub(crate) fn setup(settings: Settings) -> Result<Sdk, Error> {
     let mut claim = Claim::take()?;
@@ -66,37 +82,37 @@ pub(crate) fn setup(settings: Settings) -> Result<Sdk, Error> {
         check_tracing_default()?;
     }
     let sdk = build_sdk(settings)?;
-    startup_canary(&sdk)?;
-    if sdk.0.tracing_default {
-        // The tracing default is claimed before any OpenTelemetry global is
-        // installed, so a setup that loses it installs nothing.
-        install_tracing_default(std::sync::Arc::clone(&sdk.0.parts)).inspect_err(|_| {
-            sdk.abandon();
-        })?;
-    } else {
-        // libo11y's stack, once installed, is the global subscriber for
-        // good; it follows the SDK installed last.
-        follow_tracing_default(std::sync::Arc::clone(&sdk.0.parts));
+    {
+        let mut guard = AbandonOnDrop {
+            sdk: &sdk,
+            keep: false,
+        };
+        startup_canary(&sdk)?;
+        if sdk.0.tracing_default {
+            // The tracing default is claimed before any OpenTelemetry global is
+            // installed, so a setup that loses it installs nothing.
+            install_tracing_default(std::sync::Arc::clone(&sdk.0.parts))?;
+        } else {
+            // libo11y's stack, once installed, is the global subscriber for
+            // good; it follows the SDK installed last.
+            follow_tracing_default(std::sync::Arc::clone(&sdk.0.parts));
+        }
+        sdk.0.global.store(true, Ordering::Release);
+        opentelemetry::global::set_tracer_provider(sdk.0.tracer_provider.clone());
+        opentelemetry::global::set_meter_provider(sdk.0.meter_provider.clone());
+        opentelemetry::global::set_text_map_propagator(sdk.0.propagator.clone());
+        guard.keep = true;
     }
-    sdk.0.global.store(true, Ordering::Release);
-    opentelemetry::global::set_tracer_provider(sdk.0.tracer_provider.clone());
-    opentelemetry::global::set_meter_provider(sdk.0.meter_provider.clone());
-    opentelemetry::global::set_text_map_propagator(sdk.0.propagator.clone());
     claim.keep = true;
     Ok(sdk)
 }
 
 /// The startup canary: the effective configuration, forced through every
 /// log sink before any global is installed, so a sink that rejects it fails
-/// setup instead of dropping records later. A rejection abandons `sdk` and
-/// returns [`Error::StartupCanary`].
+/// setup instead of dropping records later.
 fn startup_canary(sdk: &Sdk) -> Result<(), Error> {
     if !sdk.0.startup_summary {
         return Ok(());
     }
-    if let Err(err) = sdk.emit_startup_summary() {
-        sdk.abandon();
-        return Err(Error::StartupCanary(err));
-    }
-    Ok(())
+    sdk.emit_startup_summary().map_err(Error::StartupCanary)
 }
