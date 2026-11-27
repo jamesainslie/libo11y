@@ -16,9 +16,9 @@ everything is correlated and exported over OTLP.
 | Go | Implemented | [`go/`](go/) |
 | TypeScript | Implemented for Bun, Node, browsers and Manifest V3 extensions. The browser packages first ship in `ts/v0.2.0` | [`ts/`](ts/) |
 | Zig | Implemented for Zig 0.17.1 (`zig/v0.1.0`) | [`zig/`](zig/) |
+| Python | Implemented for Python 3.12, 3.13, and 3.14 (`python/v0.1.0`) | [`python/`](python/) |
 | C | Implemented for C11 (pure C11 ABI backed by `zig/`) | [`c/`](c/) |
 | Rust | In development (coming soon) | [`rust/`](rust/) |
-| Python | In development (coming soon) | design in progress |
 | Java | Planned | [`java/`](java/) |
 
 ## Design principles
@@ -273,6 +273,52 @@ default), owns its OTLP/HTTP and OTLP/gRPC pipeline over vendored
 exemplars, and conformance suite as Go and TypeScript. See
 [`zig/README.md`](zig/README.md) for the full Zig documentation.
 
+## Installation (Python)
+
+```sh
+pip install libo11y                    # core, logging, asgi, wsgi, sqlite3 dbapi, detached, proc, redact, spec
+pip install "libo11y[httpx]"           # sync and async httpx transports
+pip install "libo11y[requests]"        # requests.HTTPAdapter (no global patching)
+pip install "libo11y[grpc]"            # grpcio sync/aio interceptors + OTLP/gRPC exporter
+pip install "libo11y[connect]"         # connectrpc async/sync interceptors
+pip install "libo11y[psycopg]"         # psycopg 3 + psycopg_pool metrics
+pip install "libo11y[test]"            # pytest plugin (o11y_recorder fixture) + in-process OTLP receivers
+```
+
+Requires Python 3.12 or later (tested on CPython 3.12, 3.13, and 3.14 on Linux
+and macOS). One PyPI distribution (`libo11y`) built on OpenTelemetry Python
+SDK 1.45 ships the core SDK, generated specification tables, sensitivity
+policy, `@redacted` capture-time redaction, detached and child-process
+propagation, and ASGI, WSGI, and SQLite DB-API instrumentation, with optional
+extras for third-party libraries. It implements spec 1.2.0.
+
+## Quick start (Python)
+
+```python
+import logging
+from opentelemetry import trace
+import libo11y
+from libo11y.spec import Environment
+
+with libo11y.setup(
+    service_name="checkout",
+    version="1.2.0",
+    environment=Environment.PRODUCTION,
+) as tel:
+    tracer = trace.get_tracer("checkout")
+    logger = logging.getLogger("checkout")
+    with tracer.start_as_current_span("startup"):
+        logger.info("ready", extra={"checkout.items": 3})  # correlated with the span
+```
+
+`libo11y.setup` installs the tracer, meter, and logger providers globally,
+attaches a structured `logging.Handler` to the root logger (JSON console and
+OTLP export), wraps the W3C TraceContext and Baggage propagator in the baggage
+egress filter, and runs the startup canary. Leaving the `with` block runs
+bounded concurrent shutdown across all three signals. Use `libo11y.init` for
+global-free handles in tests and dependency injection. See
+[`python/README.md`](python/README.md) for the full Python documentation.
+
 ## Installation (C)
 
 ```sh
@@ -366,6 +412,14 @@ Each Zig release is listed in [`zig/CHANGELOG.md`](zig/CHANGELOG.md) and
 published as a GitHub Release titled `libo11y-zig vX.Y.Z`.
 `make release-check` (and `make zig-release-check`) validates a consumer
 tarball build against an in-process OTLP receiver.
+
+The Python distribution (`libo11y`) releases from a `python/vX.Y.Z` tag,
+starting at `python/v0.1.0`, publishing sdist and wheel to PyPI with PEP 740
+attestations through PyPI trusted publishing (OIDC). Each Python release is
+listed in [`python/CHANGELOG.md`](python/CHANGELOG.md) and published as a
+GitHub Release titled `libo11y-python vX.Y.Z`. `make release-check` (and
+`make python-release-check`) builds the wheel and sdist, verifies packaged
+contents, and runs a consumer smoke test against an in-process OTLP receiver.
 
 The C11 library versions independently with `c/vX.Y.Z` tags and records its
 changes in [`c/CHANGELOG.md`](c/CHANGELOG.md). It is currently unreleased.

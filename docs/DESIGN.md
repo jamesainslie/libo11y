@@ -25,11 +25,12 @@ All three signals are first-class and OTLP-native:
   endpoints of libo11y's own. One standard route to a scrape endpoint
   remains in Go: exporter selection is delegated to OpenTelemetry's
   autoexport, so `OTEL_METRICS_EXPORTER=prometheus` starts upstream's
-  Prometheus exporter. TypeScript, Zig, and C reject that value.
+  Prometheus exporter. TypeScript, Zig, Python, and C reject that value.
   Runtime metrics on by default (Zig and C collect semantic-convention process
-  metrics, as they have no garbage-collected runtime).
+  metrics, as they have no garbage-collected runtime; Python collects
+  `cpython.gc.*` and `process.*` using only the standard library).
 - **Logs**: the language's standard structured-logging facade is the front
-  door (Go: `slog`; Rust: `tracing`; Java: SLF4J). TypeScript has no such
+  door (Go: `slog`; Python: stdlib `logging`; Rust: `tracing`; Java: SLF4J). TypeScript has no such
   facade, so there the front door is the libo11y logger, and an option routes
   `console` calls into it. In Zig, `std.log` takes no context argument, so
   the correlated front door is `sdk.logger()` taking an explicit
@@ -144,7 +145,8 @@ not honor yet, such as `OTEL_PROPAGATORS`.
 
 The one exception is explicit and opt-in: a hermetic mode (Go:
 `WithoutOTELEnv`; TypeScript: `hermetic: true`; Zig: `.env = .hermetic`,
-which is the default; C: `env_mode = O11Y_ENV_HERMETIC`) in which no `OTEL_*`
+which is the default; Python: `env=libo11y.HERMETIC`; C:
+`env_mode = O11Y_ENV_HERMETIC`) in which no `OTEL_*`
 variable affects behavior, configuration comes only from code options and
 library defaults, and a signal with nothing injected is disabled rather
 than built from the environment. In Go, two experimental switches with no
@@ -152,7 +154,8 @@ overriding SDK option (`OTEL_GO_X_PER_SERIES_START_TIMESTAMPS` and
 `OTEL_GO_X_DEPRECATED_RUNTIME_METRICS`) still apply, and keys named in
 `OTEL_RESOURCE_ATTRIBUTES` that the library resource does not define are
 exported with empty values because the OTEL providers always merge the
-environment resource.
+environment resource. In Python, two upstream SDK reads have no constructor
+override (see [PARITY.md](PARITY.md)).
 
 Service identity: `service.name` must resolve from option or environment;
 implementations refuse to start production telemetry as `unknown_service`.
@@ -171,6 +174,8 @@ Three complementary layers, all language-idiomatic:
 1. **Capture-time**: type-level protection so sensitive values render redacted
    wherever they are logged (Go: `slog.LogValuer`; Zig: `o11y.redact.Secret`,
    `Masked`, and `Struct` guarding `std.fmt`, `std.json`, and the logger;
+   Python: `libo11y.redact.Secret`, `Masked`, and `@redacted` dataclass
+   decorator;
    C: `o11y_log_kv_secret`, `o11y_log_kv_masked`, `o11y_redact_secret`, and
    `o11y_redact_mask`;
    Rust: derive with `Display`-only output; Java: annotation processor or
@@ -180,7 +185,8 @@ Three complementary layers, all language-idiomatic:
    values are accepted as synonyms: `confidential` masks and `secret`
    redacts. Of the specification's sensitivity classes only `secret` is a
    tag value. `public`, `internal` and `pii` are not; an unknown tag fails
-   closed to `redact` at runtime where tags are strings (Go), or fails at
+   closed to `redact` at runtime where tags are strings (Go), raises
+   `TypeError` at class definition time in Python, or fails at
    compile time where tags are comptime-checked (Zig).
 2. **Emit-time replacer**: an attribute-replacer hook applied to every log
    record on every sink of the language's logging facade (Go: every slog
@@ -214,7 +220,8 @@ implementation documents these gaps with its per-signal guarantees (see
 [SPEC.md](SPEC.md), section 5). Baggage egress passes through a filter
 seam on every propagator; by default its predicate allows every key (Go
 and TypeScript expose no public option to change it yet, while Zig
-exposes `Options.baggage_egress_allow` and C exposes
+exposes `Options.baggage_egress_allow`, Python exposes
+`Options.baggage_egress_allow`, and C exposes
 `o11y_options_t.baggage_egress_allow`).
 
 ## Testability
@@ -238,7 +245,7 @@ Shared cases and vectors live under `conformance/` today. They fix the
 outputs every implementation must reproduce exactly: the application
 registry check, the instance ID derivation, the PII token and endpoint
 sanitizing. The registry cases are hand-written, and Go generates the JSON
-vectors. The Go, TypeScript, Zig, and C suites all test against them.
+vectors. The Go, TypeScript, Zig, Python, and C suites all test against them.
 
 The OTLP payload corpus is future work. It will run each implementation's
 example app against a shared OTLP capture harness and diff normalized

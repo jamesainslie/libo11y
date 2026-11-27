@@ -10,11 +10,12 @@
 #   go/<sub>/vX.Y.Z              the o11ygin, o11yconnect and o11ysql submodules
 #   ts/vX.Y.Z                    every @libo11y/* package, at one version
 #   zig/vX.Y.Z                   the libo11y Zig package (libo11y-zig)
+#   python/vX.Y.Z                the libo11y Python distribution on PyPI
 #
 # Prints one key=value line each, for $GITHUB_OUTPUT:
-#   kind        go, ts or zig
-#   dir         the released directory: go, go/<sub>, ts or zig
-#   module      the Go module path, @libo11y for TypeScript, or libo11y-zig for Zig
+#   kind        go, ts, zig or python
+#   dir         the released directory: go, go/<sub>, ts, zig or python
+#   module      the Go module path, @libo11y for TypeScript, libo11y-zig for Zig, or libo11y for Python
 #   version     X.Y.Z[-prerelease], without the v
 #   prerelease  true when the version has a -prerelease suffix
 # and a one-line summary on stderr. Exits 1 for a tag that is not a release
@@ -44,8 +45,12 @@ zig/v*)
 	kind=zig
 	dir=zig
 	;;
+python/v*)
+	kind=python
+	dir=python
+	;;
 *)
-	echo "release-tag: $tag is not a release tag (go/vX.Y.Z, go/<submodule>/vX.Y.Z, ts/vX.Y.Z or zig/vX.Y.Z)" >&2
+	echo "release-tag: $tag is not a release tag (go/vX.Y.Z, go/<submodule>/vX.Y.Z, ts/vX.Y.Z, zig/vX.Y.Z or python/vX.Y.Z)" >&2
 	exit 1
 	;;
 esac
@@ -72,6 +77,9 @@ ts)
 	;;
 zig)
 	module="libo11y-zig"
+	;;
+python)
+	module="libo11y"
 	;;
 esac
 
