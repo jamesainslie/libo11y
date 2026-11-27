@@ -4,9 +4,12 @@
  *
  *   GET  /health                         200 "ok"
  *   GET  /page/<name>[?serverTiming=tp]  an HTML page loading /bundles/<name>.js; with serverTiming,
- *                                        the response carries Server-Timing: traceparent;desc="tp"
+ *                                        the response carries Server-Timing: traceparent;desc="tp";
+ *                                        with csp=1, Content-Security-Policy: img-src 'self'
+ *   GET  /page/<name>/<path...>          the same page, for history navigations that were reloaded
  *   GET  /bundles/<file>                 dist/bundles/<file>
- *   ANY  /echo                           JSON of the request method, headers and body text (CORS open)
+ *   ANY  /echo[?delay=ms]                JSON of the request method, headers and body text (CORS open),
+ *                                        after delay milliseconds (at most 5000) when given
  *   POST /sink/<id>/v1/<signal>          records an OTLP request (gzip decoded), answers from the script
  *   POST /sink/<id>/script               body {"responses":[{"status":429,"retryAfter":"1"}, ...]}:
  *                                        the next requests get these answers in order, then 200
@@ -104,9 +107,10 @@ async function recordOtlp(req: Request, sink: Sink, signal: string): Promise<Res
   return new Response("{}", { status: next?.status ?? 200, headers });
 }
 
-function page(name: string, serverTiming: string | null): Response {
+function page(name: string, serverTiming: string | null, csp: boolean): Response {
   const headers = new Headers({ "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
   if (serverTiming !== null) headers.set("Server-Timing", `traceparent;desc="${serverTiming}"`);
+  if (csp) headers.set("Content-Security-Policy", "img-src 'self'");
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>${name}</title></head><body><script type="module" src="/bundles/${name}.js"></script></body></html>`;
   return new Response(html, { headers });
 }
@@ -119,8 +123,8 @@ const server = Bun.serve({
     const parts = url.pathname.split("/").filter((p) => p !== "");
     if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: cors(req) });
     if (url.pathname === "/health") return new Response("ok");
-    if (parts[0] === "page" && parts.length === 2 && parts[1] !== undefined) {
-      return page(parts[1], url.searchParams.get("serverTiming"));
+    if (parts[0] === "page" && parts.length >= 2 && parts[1] !== undefined) {
+      return page(parts[1], url.searchParams.get("serverTiming"), url.searchParams.get("csp") === "1");
     }
     if (parts[0] === "bundles" && parts.length >= 2) {
       const file = normalize(join(bundles, ...parts.slice(1)));
@@ -130,6 +134,8 @@ const server = Bun.serve({
       return new Response(f, { headers: { "Content-Type": "text/javascript", "Cache-Control": "no-store" } });
     }
     if (parts[0] === "echo") {
+      const delay = Math.min(5000, Math.max(0, Number(url.searchParams.get("delay") ?? "0") || 0));
+      if (delay > 0) await new Promise((r) => setTimeout(r, delay));
       return json(req, {
         method: req.method,
         headers: Object.fromEntries(req.headers),

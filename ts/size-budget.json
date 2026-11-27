@@ -10,5 +10,21 @@
       "budget": 87296
     }
   },
-  "deltas": {}
+  "deltas": {
+    "@libo11y/rum views()": {
+      "base": "@libo11y/rum setupRum",
+      "code": "import { setupRum, views } from \"@libo11y/rum\"; (globalThis as Record<string, unknown>).__x = [setupRum, views()];\n",
+      "budget": 2048
+    },
+    "@libo11y/rum actions()": {
+      "base": "@libo11y/rum setupRum",
+      "code": "import { setupRum, actions } from \"@libo11y/rum\"; (globalThis as Record<string, unknown>).__x = [setupRum, actions()];\n",
+      "budget": 2816
+    },
+    "@libo11y/rum errors()": {
+      "base": "@libo11y/rum setupRum",
+      "code": "import { setupRum, errors } from \"@libo11y/rum\"; (globalThis as Record<string, unknown>).__x = [setupRum, errors()];\n",
+      "budget": 1024
+    }
+  }
 }
