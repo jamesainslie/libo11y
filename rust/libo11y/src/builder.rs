@@ -799,7 +799,7 @@ fn exporters(
             if let Some(unused) = settings.span_exporter.take() {
                 unused.discard();
             }
-            span_exporter_for(route, &selection.traces)?
+            span_exporter_for(route, &selection.traces, env)?
         }
     };
     let logs = match selection.logs.route {
@@ -808,7 +808,7 @@ fn exporters(
             if let Some(unused) = settings.log_exporter.take() {
                 unused.discard();
             }
-            log_exporter_for(route, &selection.logs)?
+            log_exporter_for(route, &selection.logs, env)?
         }
     };
     Ok(Exporters {
@@ -837,9 +837,10 @@ fn warn_on_disabled_value(value: &str, handler: &ErrorHandler) {
 fn span_exporter_for(
     route: Route,
     export: &SignalExport,
+    env: &EnvLookup,
 ) -> Result<Option<Box<dyn PendingSpanExporter>>, Error> {
     Ok(match route {
-        Route::Otlp => Some(otlp_span_exporter(export)?),
+        Route::Otlp => Some(otlp_span_exporter(export, env)?),
         Route::Console => Some(Box::new(Pending(
             opentelemetry_stdout::SpanExporter::default(),
         ))),
@@ -851,9 +852,10 @@ fn span_exporter_for(
 fn log_exporter_for(
     route: Route,
     export: &SignalExport,
+    env: &EnvLookup,
 ) -> Result<Option<Box<dyn PendingLogExporter>>, Error> {
     Ok(match route {
-        Route::Otlp => Some(otlp_log_exporter(export)?),
+        Route::Otlp => Some(otlp_log_exporter(export, env)?),
         Route::Console => Some(Box::new(PendingLog(
             opentelemetry_stdout::LogExporter::default(),
         ))),
@@ -862,15 +864,21 @@ fn log_exporter_for(
 }
 
 #[cfg(any(feature = "otlp-http", feature = "otlp-grpc"))]
-fn otlp_span_exporter(export: &SignalExport) -> Result<Box<dyn PendingSpanExporter>, Error> {
-    crate::export::otlp::span_exporter(export)
+fn otlp_span_exporter(
+    export: &SignalExport,
+    env: &EnvLookup,
+) -> Result<Box<dyn PendingSpanExporter>, Error> {
+    crate::export::otlp::span_exporter(export, env)
         .map(|exporter| Box::new(Pending(exporter)) as Box<dyn PendingSpanExporter>)
         .map_err(Error::BuildingSpanExporter)
 }
 
 #[cfg(any(feature = "otlp-http", feature = "otlp-grpc"))]
-fn otlp_log_exporter(export: &SignalExport) -> Result<Box<dyn PendingLogExporter>, Error> {
-    crate::export::otlp::log_exporter(export)
+fn otlp_log_exporter(
+    export: &SignalExport,
+    env: &EnvLookup,
+) -> Result<Box<dyn PendingLogExporter>, Error> {
+    crate::export::otlp::log_exporter(export, env)
         .map(|exporter| Box::new(PendingLog(exporter)) as Box<dyn PendingLogExporter>)
         .map_err(Error::BuildingLogExporter)
 }
@@ -878,7 +886,10 @@ fn otlp_log_exporter(export: &SignalExport) -> Result<Box<dyn PendingLogExporter
 /// Selection refuses an OTLP route this build cannot carry, so this is
 /// never reached; it keeps a build without transports compiling.
 #[cfg(not(any(feature = "otlp-http", feature = "otlp-grpc")))]
-fn otlp_span_exporter(export: &SignalExport) -> Result<Box<dyn PendingSpanExporter>, Error> {
+fn otlp_span_exporter(
+    export: &SignalExport,
+    _env: &EnvLookup,
+) -> Result<Box<dyn PendingSpanExporter>, Error> {
     Err(Error::OtlpFeatureDisabled {
         signal: Signal::Traces,
         protocol: export.protocol,
@@ -886,7 +897,10 @@ fn otlp_span_exporter(export: &SignalExport) -> Result<Box<dyn PendingSpanExport
 }
 
 #[cfg(not(any(feature = "otlp-http", feature = "otlp-grpc")))]
-fn otlp_log_exporter(export: &SignalExport) -> Result<Box<dyn PendingLogExporter>, Error> {
+fn otlp_log_exporter(
+    export: &SignalExport,
+    _env: &EnvLookup,
+) -> Result<Box<dyn PendingLogExporter>, Error> {
     Err(Error::OtlpFeatureDisabled {
         signal: Signal::Logs,
         protocol: export.protocol,

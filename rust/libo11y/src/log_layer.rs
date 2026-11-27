@@ -377,6 +377,7 @@ impl LogPipeline {
         }
 
         // 3. Extra sinks.
+        let _cx = (!self.extra_sinks.is_empty()).then(|| cx.clone().attach());
         for sink in &self.extra_sinks {
             let (classified, counts) = classify_log_attrs(&self.policy, &processed);
             self.violations.add_all(Signal::Logs, &counts);

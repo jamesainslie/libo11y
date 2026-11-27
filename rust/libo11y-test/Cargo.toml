@@ -1,0 +1,39 @@
+[package]
+name = "libo11y-test"
+description = "Hermetic test harness for libo11y: in-memory telemetry recorder, conformance and correlation assertions, and in-process OTLP HTTP and gRPC receivers."
+readme = "README.md"
+keywords = ["observability", "opentelemetry", "telemetry", "testing", "libo11y"]
+categories = ["development-tools::testing", "development-tools::debugging"]
+include = ["src/**/*.rs", "README.md", "LICENSE"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+flate2 = "1.1.11"
+http = "1.5.0"
+http-body-util = "0.1.5"
+hyper = { version = "1.12.0", features = ["http1", "server"] }
+hyper-util = { version = "0.1.21", features = ["http1", "tokio"] }
+libo11y.workspace = true
+libo11y-spec.workspace = true
+opentelemetry = { version = "0.33.1", default-features = false, features = ["logs", "metrics", "trace"] }
+opentelemetry-proto = { version = "0.33.1", default-features = false, features = ["gen-tonic", "trace", "metrics", "logs", "with-serde"] }
+opentelemetry_sdk = { version = "0.33.1", default-features = false, features = ["logs", "metrics", "trace", "spec_unstable_metrics_views"] }
+prost = { version = "0.14.5", default-features = false, features = ["std"] }
+serde.workspace = true
+serde_json.workspace = true
+tokio = { version = "1.54.1", default-features = false, features = ["net", "rt", "rt-multi-thread", "sync", "time"] }
+tonic = { version = "0.14.9", default-features = false, features = ["gzip", "router", "server", "transport"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+opentelemetry_sdk = { version = "0.33.1", default-features = false, features = ["logs", "metrics", "trace", "testing", "spec_unstable_metrics_views"] }
+tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "time"] }
+
+[lints]
+workspace = true
