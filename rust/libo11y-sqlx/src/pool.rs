@@ -111,7 +111,7 @@ impl<DB: Database> O11yPool<DB> {
                     }
                     let total = i64::from(state.pool.size());
                     let idle = i64::try_from(state.pool.num_idle()).unwrap_or(i64::MAX);
-                    let used = total.saturating_sub(idle);
+                    let used = total.saturating_sub(idle).max(0);
                     observer.observe(idle, &idle_attrs);
                     observer.observe(used, &used_attrs);
                 })

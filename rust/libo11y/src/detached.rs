@@ -394,7 +394,8 @@ fn query_unescape(s: &str) -> Result<String, String> {
                     return Err(format!("invalid URL escape {:?}", &s[i..]));
                 };
                 let (Some(hi), Some(lo)) = (hex_nibble(hi_b), hex_nibble(lo_b)) else {
-                    return Err(format!("invalid URL escape {:?}", &s[i..i + 3]));
+                    let esc = String::from_utf8_lossy(&bytes[i..i + 3]);
+                    return Err(format!("invalid URL escape {esc:?}"));
                 };
                 out.push((hi << 4) | lo);
                 i += 3;
@@ -1160,5 +1161,15 @@ mod tests {
         let mut out = String::new();
         query_escape_into("a b+c~d*e=1&2", &mut out);
         assert_eq!(out, "a+b%2Bc~d%2Ae%3D1%262");
+    }
+
+    #[test]
+    fn malformed_percent_escape_with_multibyte_utf8_returns_error_without_panic() {
+        for bad in ["%aé", "%€", "traceparent=%aé", "baggage=%€"] {
+            assert!(
+                matches!(Carrier::parse(bad), Err(Error::InvalidCarrier { .. })),
+                "expected InvalidCarrier for {bad:?}"
+            );
+        }
     }
 }

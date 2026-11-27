@@ -186,7 +186,7 @@ pub fn sanitize(query: &str, dialect: Dialect) -> String {
         Ok(s) => s,
         Err(err) => String::from_utf8_lossy(err.as_bytes()).into_owned(),
     };
-    collapse_in_lists(&lexed)
+    collapse_in_lists(&lexed, dialect)
 }
 
 /// Sanitizes raw bytes (which may contain invalid UTF-8), replacing any
@@ -202,34 +202,45 @@ pub fn sanitize_lossy(query: &[u8], dialect: Dialect) -> String {
 ///
 /// Only collapses parenthesized lists immediately following the standalone
 /// SQL keyword `IN` (case-insensitive) whose elements are two or more `?`
-/// placeholders separated by commas and optional ASCII whitespace.
-fn collapse_in_lists(s: &str) -> String {
+/// placeholders separated by commas and optional ASCII whitespace. Quoted
+/// identifiers for `dialect` are skipped verbatim.
+fn collapse_in_lists(s: &str, dialect: Dialect) -> String {
     let bytes = s.as_bytes();
     if bytes.len() < 7 {
         return s.to_owned();
     }
+    let pg = dialect == Dialect::Postgres;
+    let sqlite = dialect == Dialect::Sqlite;
     let mut out = String::with_capacity(s.len());
     let mut i = 0;
     let mut last_copied = 0;
 
-    while i + 2 <= bytes.len() {
-        let is_in = matches!(bytes[i], b'I' | b'i') && matches!(bytes[i + 1], b'N' | b'n');
-        let prev_ok = i == 0 || !is_ident_cont(bytes[i - 1]);
-        let next_ok = i + 2 == bytes.len() || !is_ident_cont(bytes[i + 2]);
-        if is_in && prev_ok && next_ok {
-            let mut j = i + 2;
-            while j < bytes.len() && is_space(bytes[j]) {
-                j += 1;
-            }
-            if j < bytes.len() && bytes[j] == b'(' {
-                let open_paren = j;
-                if let Some(close_paren) = match_repeated_question_list(bytes, open_paren) {
-                    out.push_str(&s[last_copied..=open_paren]);
-                    out.push('?');
-                    out.push(')');
-                    i = close_paren + 1;
-                    last_copied = i;
-                    continue;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if (c == b'"' && pg) || (c == b'`' && !pg) || (c == b'[' && sqlite) {
+            let (end, _) = skip_quoted_name(bytes, i);
+            i = end;
+            continue;
+        }
+        if i + 2 <= bytes.len() {
+            let is_in = matches!(c, b'I' | b'i') && matches!(bytes[i + 1], b'N' | b'n');
+            let prev_ok = i == 0 || !is_ident_cont(bytes[i - 1]);
+            let next_ok = i + 2 == bytes.len() || !is_ident_cont(bytes[i + 2]);
+            if is_in && prev_ok && next_ok {
+                let mut j = i + 2;
+                while j < bytes.len() && is_space(bytes[j]) {
+                    j += 1;
+                }
+                if j < bytes.len() && bytes[j] == b'(' {
+                    let open_paren = j;
+                    if let Some(close_paren) = match_repeated_question_list(bytes, open_paren) {
+                        out.push_str(&s[last_copied..=open_paren]);
+                        out.push('?');
+                        out.push(')');
+                        i = close_paren + 1;
+                        last_copied = i;
+                        continue;
+                    }
                 }
             }
         }
@@ -1527,5 +1538,30 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn collapse_in_lists_skips_quoted_identifiers() {
+        assert_eq!(
+            sanitize(
+                r#"SELECT * FROM "t IN (?, ?)" WHERE id IN (1, 2, 3)"#,
+                Dialect::Postgres
+            ),
+            r#"SELECT * FROM "t IN (?, ?)" WHERE id IN (?)"#
+        );
+        assert_eq!(
+            sanitize(
+                "SELECT * FROM `t IN (?, ?)` WHERE id IN (1, 2)",
+                Dialect::Mysql
+            ),
+            "SELECT * FROM `t IN (?, ?)` WHERE id IN (?)"
+        );
+        assert_eq!(
+            sanitize(
+                "SELECT * FROM [t IN (?, ?)] WHERE id IN (1, 2)",
+                Dialect::Sqlite
+            ),
+            "SELECT * FROM [t IN (?, ?)] WHERE id IN (?)"
+        );
     }
 }
