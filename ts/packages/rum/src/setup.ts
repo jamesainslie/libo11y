@@ -303,9 +303,13 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
       }
       deps.web.onPlatform?.(platform, po);
     },
-    // Traces are injected, so web builds no span exporter here; logs are routed by session.
+    // Traces are injected, so web builds no span exporter here; logs are routed by session. The
+    // gateway accepts only delta sums and histograms, so app metrics export with delta temporality.
     createExporterSet: (req, d, endpoints, eo) =>
-      withRetention(deps.web.createExporterSet(req, d, endpoints, eo), routing),
+      withRetention(
+        deps.web.createExporterSet(req, d, endpoints, { ...eo, metricTemporality: "delta" }),
+        routing,
+      ),
     installFetchInstrumentation: (o) => deps.web.installFetchInstrumentation({ ...o, onStart }),
     installXhrInstrumentation: (o) => deps.web.installXhrInstrumentation({ ...o, onStart }),
   };

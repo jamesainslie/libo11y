@@ -421,3 +421,36 @@ function tracesBody(name: string, sessionId: string): string {
     ],
   });
 }
+
+test("app Meter API metrics export with delta temporality, as the gateway requires", async () => {
+  const h = harness();
+  open = await setupRumWith({ ...OPTS, consent: { initial: "granted" } }, h.deps);
+  open.meterProvider.getMeter("app").createCounter("app.clicks").add(2);
+  open.meterProvider.getMeter("app").createHistogram("app.wait").record(1);
+  await open.forceFlush();
+  const temporalities = h.transport.requests
+    .filter((r) => r.signal === "metrics")
+    .flatMap((r) => {
+      const body = JSON.parse(r.body) as {
+        resourceMetrics: {
+          scopeMetrics: {
+            metrics: {
+              name: string;
+              sum?: { aggregationTemporality: number };
+              histogram?: { aggregationTemporality: number };
+            }[];
+          }[];
+        }[];
+      };
+      return body.resourceMetrics.flatMap((rm) =>
+        rm.scopeMetrics.flatMap((sm) =>
+          sm.metrics
+            .filter((m) => m.name.startsWith("app."))
+            .map((m) => (m.sum ?? m.histogram)?.aggregationTemporality),
+        ),
+      );
+    });
+  // OTLP AGGREGATION_TEMPORALITY_DELTA is 1, CUMULATIVE 2.
+  assert.ok(temporalities.length >= 2);
+  assert.deepEqual(new Set(temporalities), new Set([1]));
+});

@@ -32,6 +32,11 @@ export interface ExporterOptions {
    * () => "normal", which never splits.
    */
   readonly mode?: () => SendMode;
+  /**
+   * The aggregation temporality of every exported metric. Default "cumulative". The RUM gateway
+   * accepts only delta sums and histograms, so @libo11y/rum asks for "delta".
+   */
+  readonly metricTemporality?: "cumulative" | "delta";
 }
 
 const encoder = new TextEncoder();
@@ -122,8 +127,12 @@ export function createLogExporter(delivery: Delivery, opts?: ExporterOptions): L
   return deliveryExporter<ReadableLogRecord>(delivery, "logs", serializeLogs, opts?.mode ?? NORMAL);
 }
 
-/** The PushMetricExporter counterpart, cumulative temporality, never split. */
-export function createMetricExporter(delivery: Delivery): PushMetricExporter {
+/** The PushMetricExporter counterpart, cumulative temporality unless asked for delta, never split. */
+export function createMetricExporter(
+  delivery: Delivery,
+  temporality: "cumulative" | "delta" = "cumulative",
+): PushMetricExporter {
+  const selected = temporality === "delta" ? AggregationTemporality.DELTA : AggregationTemporality.CUMULATIVE;
   const inner = deliveryExporter<ResourceMetrics>(
     delivery,
     "metrics",
@@ -134,7 +143,7 @@ export function createMetricExporter(delivery: Delivery): PushMetricExporter {
     export: (metrics, resultCallback) => inner.export([metrics], resultCallback),
     forceFlush: () => inner.forceFlush(),
     shutdown: () => inner.shutdown(),
-    selectAggregationTemporality: () => AggregationTemporality.CUMULATIVE,
+    selectAggregationTemporality: () => selected,
   };
 }
 
@@ -202,7 +211,7 @@ export function createExporterSet(
     metrics === "console"
       ? (): PushMetricExporter => new ConsoleMetricExporter()
       : metrics === "otlp" && endpoints.metrics !== undefined
-        ? (): PushMetricExporter => createMetricExporter(delivery)
+        ? (): PushMetricExporter => createMetricExporter(delivery, exporterOpts.metricTemporality)
         : undefined;
   if (metricInner !== undefined) {
     metricReader = build("metric reader", () => {

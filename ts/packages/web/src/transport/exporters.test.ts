@@ -262,6 +262,13 @@ test("the metric exporter delivers a metrics batch, is cumulative, and never spl
   assert.equal((await exportWith(exporter, await metrics())).code, ExportResultCode.FAILED);
 });
 
+test("the metric exporter selects delta temporality for every instrument when asked", () => {
+  const exporter = createMetricExporter(fakeDelivery(), "delta");
+  for (const t of Object.values(InstrumentType)) {
+    assert.equal(exporter.selectAggregationTemporality?.(t), AggregationTemporality.DELTA, t);
+  }
+});
+
 const BATCH = {
   scheduledDelayMillis: 5000,
   exportTimeoutMillis: 5000,
@@ -342,6 +349,38 @@ test("the metric reader exports through the delivery", async () => {
   await mp.forceFlush();
   assert.equal(d.batches.at(-1)?.signal, "metrics");
   assert.match(d.batches.at(-1)?.body ?? "", /"app.clicks"/);
+  await mp.shutdown();
+});
+
+test("metricTemporality delta makes the metric reader export delta sums", async () => {
+  const d = fakeDelivery();
+  const set = createExporterSet(
+    { config: config({ traces: "none", logs: "none" }), exemplars: exemplars() },
+    d,
+    ALL,
+    { metricTemporality: "delta" },
+  );
+  const reader = set.metricReader;
+  assert.ok(reader);
+  const mp = new MeterProvider({ resource, readers: [reader] });
+  mp.getMeter("m").createCounter("app.clicks").add(1);
+  mp.getMeter("m").createHistogram("app.wait").record(2);
+  await mp.forceFlush();
+  const body = JSON.parse(d.batches.at(-1)?.body ?? "{}") as {
+    resourceMetrics: {
+      scopeMetrics: {
+        metrics: {
+          sum?: { aggregationTemporality: number };
+          histogram?: { aggregationTemporality: number };
+        }[];
+      }[];
+    }[];
+  };
+  const ms = body.resourceMetrics.flatMap((r) => r.scopeMetrics.flatMap((s) => s.metrics));
+  assert.deepEqual(
+    ms.map((m) => (m.sum ?? m.histogram)?.aggregationTemporality),
+    [1, 1],
+  );
   await mp.shutdown();
 });
 
