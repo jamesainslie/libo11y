@@ -1,0 +1,14 @@
+{
+  "unit": "bytes of minified, gzip-compressed browser bundle",
+  "entries": {
+    "@libo11y/web setup": {
+      "code": "import { setup } from \"@libo11y/web\"; (globalThis as Record<string, unknown>).__x = setup;\n",
+      "budget": 80896
+    },
+    "@libo11y/rum setupRum": {
+      "code": "import { setupRum } from \"@libo11y/rum\"; (globalThis as Record<string, unknown>).__x = setupRum;\n",
+      "budget": 87296
+    }
+  },
+  "deltas": {}
+}

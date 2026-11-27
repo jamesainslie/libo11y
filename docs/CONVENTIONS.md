@@ -78,6 +78,14 @@ every suite on Bun 1.3.13 and Node 24.
   fails when a build's API differs from the committed report. After a
   deliberate API change, run `bun run build && bun run api` and commit the
   updated report.
+- **Size budgets.** `ts/size-budget.json` budgets the browser bundles in
+  bytes of minified, gzip-compressed output. Each entry is an ES module
+  source that imports from `@libo11y/*`, measured on its own. Each delta
+  is measured against a base entry, so it is what one RUM collector adds.
+  `bun scripts/size.ts --check` (`make ts-size`) fails when a bundle is
+  over its budget. A package or collector that ships browser code adds
+  its entry or delta in the same change. A budget increase is a reviewed
+  diff of the file, with the measured number in the commit message.
 - **Packing.** `ts/scripts/release.ts` sets the lockstep version
   (`version X.Y.Z`) and packs each package (`pack OUTDIR`). The packed
   `package.json` has exact versions in place of `workspace:` ranges, and
@@ -401,6 +409,7 @@ install that version locally. Keep the two in step when adding a gate.
 | `make spec-check`, `make spec-drift` | registry policy checks and generated-artifact drift |
 | `make ts-check` | the TypeScript workspace: Biome, tsc, the build, the API reports, and every unit suite under Bun and Node |
 | `make ts-browser-test` | the browser suites under Playwright: `@libo11y/web` and `@libo11y/webext` in headless Chromium, and `@libo11y/rum` and its adapters in headless Chromium, Firefox and WebKit (projects `rum-chromium`, `rum-firefox` and `rum-webkit`). It needs Playwright's browsers for the pinned version, which CI installs with `bun x --no-install playwright install --with-deps chromium firefox webkit` in `ts/`. A host with only Chromium runs `bun run test:browser --project=web --project=webext --project=rum-chromium`. CI runs it in the separate `ts-browser` job |
+| `make ts-size` | the browser bundle size budgets in `ts/size-budget.json`. CI runs it in the `ts` job and writes the table to the job summary |
 | `make ts-browser-bundle-test` | `scripts/ts-browser-bundle-check.sh` against fixture packages (needs bun). CI runs it in the `ts` job after `make ts-check` |
 | `make release-check` | the Go release sequence, packing and a consumer smoke test of the TypeScript packages (including the browser bundle check), the Zig consumer tarball smoke test, and the Python wheel/sdist build and consumer smoke test (needs a clean tree) |
 | `make release-notes-test`, `make release-tag-test` | the release workflow's scripts: changelog sections become release notes, and each release tag routes to its kind, module and version |
