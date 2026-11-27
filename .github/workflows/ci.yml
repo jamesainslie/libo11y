@@ -16,14 +16,14 @@ concurrency:
 
 jobs:
   lint:
-    runs-on: blacksmith-4vcpu-ubuntu-2604
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
         module: [go, go/o11ygin, go/o11yconnect, go/o11ysql]
     steps:
-      - uses: useblacksmith/checkout@v1
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: actions/setup-go@v7
@@ -37,7 +37,7 @@ jobs:
           working-directory: ${{ matrix.module }}
 
   test:
-    runs-on: blacksmith-4vcpu-ubuntu-2604
+    runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
       fail-fast: false
@@ -46,7 +46,7 @@ jobs:
         # older toolchains cannot build the modules.
         go: ["1.26.x"]
     steps:
-      - uses: useblacksmith/checkout@v1
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: actions/setup-go@v7
@@ -61,10 +61,10 @@ jobs:
       - run: make vet test tidy-check GO_TEST_P=4
 
   spec:
-    runs-on: blacksmith-4vcpu-ubuntu-2604
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: useblacksmith/checkout@v1
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: actions/setup-go@v7
@@ -75,10 +75,10 @@ jobs:
       - run: make spec-check spec-drift schema-published-test release-notes-test release-tag-test
 
   ts:
-    runs-on: blacksmith-4vcpu-ubuntu-2604
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: useblacksmith/checkout@v1
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: oven-sh/setup-bun@v2
@@ -98,10 +98,10 @@ jobs:
 
   # The browser packages' suites under Playwright and headless Chromium.
   ts-browser:
-    runs-on: blacksmith-4vcpu-ubuntu-2604
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: useblacksmith/checkout@v1
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: oven-sh/setup-bun@v2
@@ -135,10 +135,10 @@ jobs:
 
   # The Rust workspace: fmt, clippy, tests and docs on the pinned toolchain.
   rust:
-    runs-on: blacksmith-4vcpu-ubuntu-2604
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: useblacksmith/checkout@v1
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       # Pinned to a master commit; the toolchain input picks the release.
@@ -156,10 +156,10 @@ jobs:
   # The workspace must build on its minimum supported Rust version
   # (rust-version in rust/Cargo.toml).
   rust-msrv:
-    runs-on: blacksmith-4vcpu-ubuntu-2604
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: useblacksmith/checkout@v1
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, 2026-10-16
@@ -179,7 +179,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [blacksmith-4vcpu-ubuntu-2604, blacksmith-6vcpu-macos-15]
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -198,7 +198,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [blacksmith-4vcpu-ubuntu-2604, blacksmith-6vcpu-macos-15]
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -212,7 +212,7 @@ jobs:
   # PostgreSQL 17 service container. Kept separate from the default `zig` job
   # so CI proves the default build works without enabling optional lazy deps.
   zig-integrations:
-    runs-on: blacksmith-4vcpu-ubuntu-2604
+    runs-on: ubuntu-latest
     timeout-minutes: 25
     services:
       postgres:
@@ -229,7 +229,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     steps:
-      - uses: useblacksmith/checkout@v1
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
@@ -247,7 +247,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [blacksmith-4vcpu-ubuntu-2604, blacksmith-6vcpu-macos-15]
+        os: [ubuntu-latest, macos-latest]
         python: ["3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v7
@@ -293,10 +293,10 @@ jobs:
         run: cd python && uv sync --frozen --all-extras --dev && uv run --frozen --no-sync pytest tests/test_dbapi.py
 
   vuln:
-    runs-on: blacksmith-4vcpu-ubuntu-2604
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: useblacksmith/checkout@v1
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: actions/setup-go@v7
@@ -312,10 +312,10 @@ jobs:
       - run: make vuln
 
   release-check:
-    runs-on: blacksmith-4vcpu-ubuntu-2604
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: useblacksmith/checkout@v1
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
