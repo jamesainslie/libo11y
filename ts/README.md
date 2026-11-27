@@ -90,17 +90,17 @@ ts/
 
 Run these in `ts/`:
 
-| Command                                 | What it does                                                                                          |
-| --------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `bun install --frozen-lockfile`         | installs the locked dependencies                                                                      |
-| `bun run lint`                          | Biome lint and format check                                                                           |
-| `bun run typecheck`                     | tsc over every package, the examples, the scripts and the browser specs                               |
-| `bun run build`                         | ESM JavaScript and declarations in each package's `dist/`                                             |
-| `bun run api:check`                     | fails when the build's API differs from `api/*.api.md`                                                |
-| `bun run api`                           | rewrites the API reports after a deliberate API change                                                |
-| `bun run test:bun`, `bun run test:node` | every unit suite under Bun, then under Node                                                           |
+| Command                                 | What it does                                                                                                                                              |
+| --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `bun install --frozen-lockfile`         | installs the locked dependencies                                                                                                                          |
+| `bun run lint`                          | Biome lint and format check                                                                                                                               |
+| `bun run typecheck`                     | tsc over every package, the examples, the scripts and the browser specs                                                                                   |
+| `bun run build`                         | ESM JavaScript and declarations in each package's `dist/`                                                                                                 |
+| `bun run api:check`                     | fails when the build's API differs from `api/*.api.md`                                                                                                    |
+| `bun run api`                           | rewrites the API reports after a deliberate API change                                                                                                    |
+| `bun run test:bun`, `bun run test:node` | every unit suite under Bun, then under Node                                                                                                               |
 | `bun run test:browser`                  | the browser suites under Playwright 1.64.1, with two workers: `web` and `webext` in headless Chromium, and `rum-chromium`, `rum-firefox` and `rum-webkit` |
-| `bun scripts/size.ts --check`           | the browser bundle size budgets in `size-budget.json`                                                 |
+| `bun scripts/size.ts --check`           | the browser bundle size budgets in `size-budget.json`                                                                                                     |
 
 The browser specs are `packages/*/browser/**/*.pw.ts`, a suffix that
 neither `bun test` nor the Node glob picks up. Their global setup bundles
