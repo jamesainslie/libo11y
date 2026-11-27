@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
 	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
 )
 
@@ -97,14 +98,20 @@ sinks:
 }
 
 // waitForListening reads the gateway's stderr until it reports its
-// address, then keeps draining it so the gateway never blocks writing.
+// address, then keeps draining it so the gateway never blocks writing. On
+// a timeout it reports what the gateway wrote, such as a startup error.
 func waitForListening(t *testing.T, r io.Reader) string {
 	t.Helper()
 	const marker = "o11yrum-gateway: listening on "
 	found := make(chan string, 1)
+	var mu sync.Mutex
+	var lines []string
 	go func() {
 		sc := bufio.NewScanner(r)
 		for sc.Scan() {
+			mu.Lock()
+			lines = append(lines, sc.Text())
+			mu.Unlock()
 			if addr, ok := strings.CutPrefix(sc.Text(), marker); ok {
 				select {
 				case found <- addr:
@@ -117,7 +124,9 @@ func waitForListening(t *testing.T, r io.Reader) string {
 	case addr := <-found:
 		return addr
 	case <-time.After(10 * time.Second):
-		t.Fatal("the gateway did not report its address within 10s")
+		mu.Lock()
+		defer mu.Unlock()
+		t.Fatalf("the gateway did not report its address within 10s; stderr:\n%s", strings.Join(lines, "\n"))
 		return ""
 	}
 }
@@ -367,8 +376,8 @@ func (c *metricsCollector) seen(name string) (bool, []error) {
 // derives from a view summary leave the process with them, both through
 // the fallback producer and when OTEL_METRICS_PRODUCERS names o11yrum.
 func TestFallbackProducerRegistered(t *testing.T) {
-	for name, producers := range map[string]string{"fallback": "", "named": "o11yrum"} {
-		t.Run(name, func(t *testing.T) {
+	for _, tc := range []struct{ name, producers string }{{"fallback", ""}, {"named", "o11yrum"}} {
+		t.Run(tc.name, func(t *testing.T) {
 			collector := &metricsCollector{names: map[string]bool{}}
 			srv := httptest.NewServer(collector)
 			defer srv.Close()
@@ -378,7 +387,7 @@ func TestFallbackProducerRegistered(t *testing.T) {
 			t.Setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf")
 			t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", srv.URL)
 			t.Setenv("OTEL_METRIC_EXPORT_INTERVAL", "200")
-			t.Setenv("OTEL_METRICS_PRODUCERS", producers)
+			t.Setenv("OTEL_METRICS_PRODUCERS", tc.producers)
 			cfg := writeConfig(t, srv.URL)
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
@@ -398,10 +407,14 @@ func TestFallbackProducerRegistered(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			respBody, _ := io.ReadAll(resp.Body)
+			respBody, err := io.ReadAll(resp.Body)
 			_ = resp.Body.Close()
-			if resp.StatusCode != http.StatusOK || strings.Contains(string(respBody), "rejected") {
-				t.Fatalf("logs: status %d body %s", resp.StatusCode, respBody)
+			if err != nil || resp.StatusCode != http.StatusOK {
+				t.Fatalf("logs: status %d body %s err %v", resp.StatusCode, respBody, err)
+			}
+			lr := plogotlp.NewExportResponse()
+			if err := lr.UnmarshalJSON(respBody); err != nil || lr.PartialSuccess().RejectedLogRecords() != 0 {
+				t.Fatalf("logs: response %s err %v", respBody, err)
 			}
 
 			deadline := time.Now().Add(10 * time.Second)

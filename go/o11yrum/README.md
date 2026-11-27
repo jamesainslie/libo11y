@@ -36,7 +36,11 @@ metrics browsers post to `/_o11y/v1/metrics`. The command exports them
 with its own metrics, through the reader `OTEL_METRICS_EXPORTER` selects.
 Its producer is registered as `o11yrum` and as the fallback, so leave
 `OTEL_METRICS_PRODUCERS` unset, or include `o11yrum` in it. The command
-refuses to start when the variable is set without it.
+refuses to start when the variable is set without it. With
+`OTEL_METRICS_EXPORTER=none`, the derived metrics are not exported at all.
+The derived metrics are always cumulative.
+`OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE` changes only the
+gateway's own metrics.
 
 ## App metric labels
 

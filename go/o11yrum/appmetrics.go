@@ -71,7 +71,8 @@ func (v *validator) metrics(md pmetric.Metrics) dropCounts {
 				m := sm.Metrics().At(k)
 				m.SetDescription(v.truncate(m.Description()))
 				eachPoint(m, func(attrs pcommon.Map, exemplars pmetric.ExemplarSlice) {
-					v.filter(attrs)
+					// Labels the point may not keep go first, so they never
+					// count against limits.max_attributes in the filter.
 					attrs.RemoveIf(func(k string, _ pcommon.Value) bool {
 						if v.policy.metricLabel(k) {
 							return false
@@ -79,6 +80,7 @@ func (v *validator) metrics(md pmetric.Metrics) dropCounts {
 						v.attrsRemoved++
 						return true
 					})
+					v.filter(attrs)
 					exemplars.RemoveIf(func(pmetric.Exemplar) bool { return true })
 				})
 			}

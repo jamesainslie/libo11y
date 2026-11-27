@@ -63,7 +63,10 @@ var (
 // unset, and under the name o11yrum when it is set. autoexport keeps
 // registrations in package state and panics on a duplicate name, so the
 // registration happens once per process and points at a forwarding shell;
-// each call only swaps the producer the shell forwards to.
+// each call only swaps the producer the shell forwards to. The shell is
+// process-wide, so run must not execute twice at once in one process, and
+// the registration must happen before any metric reader is built, because
+// autoexport reads the fallback without a lock.
 func registerProducer(p *o11yrum.MetricProducer) {
 	registerOnce.Do(func() {
 		factory := func(context.Context) (sdkmetric.Producer, error) { return forwarding, nil }

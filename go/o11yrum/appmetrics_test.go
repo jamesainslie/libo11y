@@ -604,3 +604,24 @@ func TestAppLabelsRefusesLongKey(t *testing.T) {
 		t.Fatal("appLabels accepted a key longer than maxAppLabelLen")
 	}
 }
+
+func TestAppMetricAllowListBeforeAttributeCap(t *testing.T) {
+	// Unlisted labels go before limits.max_attributes counts, so junk
+	// arriving first cannot push a listed label out.
+	cfg, err := ParseConfig([]byte("limits: {max_attributes: 4}\n" + testConfig))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Apps[0].AppMetricLabels = []string{"shop.step"}
+	v := &validator{policy: newAttrPolicy(cfg.Apps[0], cfg.Limits), limits: cfg.Limits}
+	md, ms := appMetricsBatch()
+	attrs := addDeltaSum(ms, "shop.cart.adds", 1, nil).Sum().DataPoints().At(0).Attributes()
+	for i := range 8 {
+		attrs.PutStr("shop.junk"+strings.Repeat("x", i), "v")
+	}
+	attrs.PutStr("shop.step", "pay")
+	v.metrics(md)
+	if got := attrs.AsRaw(); !maps.Equal(got, map[string]any{"shop.step": "pay"}) {
+		t.Fatalf("attributes %v", got)
+	}
+}
