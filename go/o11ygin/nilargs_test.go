@@ -20,6 +20,7 @@ func TestNilArgumentsDoNotPanic(t *testing.T) {
 		"WithFilter nil":            {o11ygin.WithFilter(nil)},
 		"WithIgnorePaths none":      {o11ygin.WithIgnorePaths()},
 		"WithSpanNameFormatter nil": {o11ygin.WithSpanNameFormatter(nil)},
+		"WithServerTiming no SDK":   {o11ygin.WithServerTiming()},
 	} {
 		t.Run(name, func(t *testing.T) {
 			defer func() {

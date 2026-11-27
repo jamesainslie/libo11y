@@ -21,6 +21,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	o11y "github.com/jamesainslie/libo11y/go"
+	"github.com/jamesainslie/libo11y/go/internal/servertiming"
 	"github.com/jamesainslie/libo11y/go/spec"
 )
 
@@ -32,6 +33,7 @@ type config struct {
 	filters       []otelhttp.Filter
 	publicServer  bool
 	canonicalLine bool
+	serverTiming  bool
 	nameFormatter func(operation string, r *http.Request) string
 }
 
@@ -90,6 +92,27 @@ func WithCanonicalLine() Option {
 	return func(c *config) { c.canonicalLine = true }
 }
 
+// WithServerTiming adds `Server-Timing: traceparent;desc="00-<trace-id>-<span-id>-<flags>"`
+// to HTML responses, naming the server span. A browser page instrumented
+// with @libo11y/web reads it from the navigation timing entry and makes the
+// server span the parent of its documentLoad span, so the first page load
+// joins the backend trace. An existing Server-Timing value the handler set
+// is kept, and the entry is added after it.
+//
+// The entry is added when the handler commits the response headers (the
+// first WriteHeader with a final status, Write, Flush, or ReadFrom that
+// copies bytes, direct or through [http.ResponseController]), and only if
+// the response is HTML then: its Content-Type is text/html, or it has none
+// and net/http will sniff text/html from the first bytes written. Set
+// Content-Type before calling WriteHeader. A handler that never writes or
+// calls WriteHeader gets no entry, since net/http commits its headers only
+// after the handler returns. Unsampled spans get an entry with their
+// flags; requests excluded by [WithFilter] or [WithIgnorePaths], or with no
+// valid span context, get none.
+func WithServerTiming() Option {
+	return func(c *config) { c.serverTiming = true }
+}
+
 // WithSpanNameFormatter replaces the default span name formatter. The
 // default prefers the matched ServeMux pattern ("GET /users/{id}"), then
 // the operation name, then the request method. A nil format keeps the
@@ -112,6 +135,9 @@ func NewHandler(handler http.Handler, operation string, opts ...Option) http.Han
 	if cfg.canonicalLine {
 		handler = cfg.wrapCanonical(handler)
 	}
+	if cfg.serverTiming {
+		handler = cfg.wrapServerTiming(handler)
+	}
 	handler = cfg.recordPanics(handler)
 	return otelhttp.NewHandler(handler, operation, cfg.serverOptions()...)
 }
@@ -126,6 +152,9 @@ func NewMiddleware(operation string, opts ...Option) func(http.Handler) http.Han
 	return func(next http.Handler) http.Handler {
 		if cfg.canonicalLine {
 			next = cfg.wrapCanonical(next)
+		}
+		if cfg.serverTiming {
+			next = cfg.wrapServerTiming(next)
 		}
 		return otel(cfg.recordPanics(next))
 	}
@@ -250,6 +279,26 @@ func (c *config) wrapCanonical(next http.Handler) http.Handler {
 		}()
 
 		next.ServeHTTP(ww, r)
+	})
+}
+
+// wrapServerTiming adds the server span's Server-Timing entry to HTML
+// responses (see [WithServerTiming]). It runs inside the otelhttp span, so
+// the span is in the request context. Filtered requests have no server span
+// and pass straight through rather than naming whatever span an outer layer
+// put in the context.
+func (c *config) wrapServerTiming(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !c.allowed(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		entry, ok := servertiming.Entry(trace.SpanContextFromContext(r.Context()))
+		if !ok {
+			next.ServeHTTP(w, r)
+			return
+		}
+		next.ServeHTTP(timingResponse(w, entry), r)
 	})
 }
 
