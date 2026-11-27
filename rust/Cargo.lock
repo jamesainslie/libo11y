@@ -956,7 +956,7 @@ checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 
 [[package]]
 name = "httpserver-example"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "axum",
  "http",
@@ -1307,7 +1307,7 @@ checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 
 [[package]]
 name = "libo11y"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "flate2",
  "gethostname",
@@ -1340,14 +1340,14 @@ dependencies = [
 
 [[package]]
 name = "libo11y-cli"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "libo11y",
 ]
 
 [[package]]
 name = "libo11y-connect"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "buffa",
  "buffa-types",
@@ -1374,7 +1374,7 @@ dependencies = [
 
 [[package]]
 name = "libo11y-http"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "axum",
  "http",
@@ -1393,7 +1393,7 @@ dependencies = [
 
 [[package]]
 name = "libo11y-macros"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1402,7 +1402,7 @@ dependencies = [
 
 [[package]]
 name = "libo11y-redact"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "libo11y-macros",
  "serde",
@@ -1413,7 +1413,7 @@ dependencies = [
 
 [[package]]
 name = "libo11y-reqwest"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "http",
@@ -1432,11 +1432,11 @@ dependencies = [
 
 [[package]]
 name = "libo11y-spec"
-version = "0.0.0"
+version = "0.1.0"
 
 [[package]]
 name = "libo11y-sqlx"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "futures-core",
  "futures-util",
@@ -1451,7 +1451,7 @@ dependencies = [
 
 [[package]]
 name = "libo11y-test"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "flate2",
  "http",
@@ -1474,7 +1474,7 @@ dependencies = [
 
 [[package]]
 name = "libo11y-tonic"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "bytes",
  "http",

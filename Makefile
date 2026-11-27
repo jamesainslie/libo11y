@@ -107,7 +107,7 @@ PYTHON_RELEASE_VERSION ?= v0.1.0
 
 # The lockstep version every publishable Rust crate in rust/ carries, which
 # rust-release-check.sh validates. Moves only in a release commit.
-RUST_RELEASE_VERSION ?= v0.0.0
+RUST_RELEASE_VERSION ?= v0.1.0
 
 # Validate the Zig package at ZIG_RELEASE_VERSION as an external consumer
 # fetches and runs it against an in-process OTLP receiver.

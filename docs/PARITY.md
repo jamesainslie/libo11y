@@ -34,16 +34,16 @@ a pure ISO C11 public ABI (`o11y/o11y.h`, `o11y/spec.h`, `o11y/test.h`,
 C++ `extern "C"` safe) backed by libo11y's Zig telemetry engine with zero
 external runtime dependencies beyond libc and pthreads.
 
-The Rust columns describe the eleven-crate `rust/` workspace (`libo11y`,
-`libo11y-spec`, `libo11y-redact`, `libo11y-macros`, `libo11y-test`,
+The Rust columns describe the eleven-crate `rust/` workspace (`rust/v0.1.0`:
+`libo11y`, `libo11y-spec`, `libo11y-redact`, `libo11y-macros`, `libo11y-test`,
 `libo11y-http`, `libo11y-reqwest`, `libo11y-tonic`, `libo11y-connect`,
-`libo11y-sqlx`, and `libo11y-cli`, unreleased, targeting `rust/v0.1.0`), built
-on Rust edition 2024 (workspace MSRV 1.88; `libo11y-sqlx` requires 1.94),
-`tracing` 0.1.44, and OpenTelemetry Rust 0.33.1.
+`libo11y-sqlx`, and `libo11y-cli`), built on Rust edition 2024 (workspace MSRV
+1.88; `libo11y-sqlx` requires 1.94), `tracing` 0.1.44, and OpenTelemetry Rust
+0.33.1.
 
 The matrix describes the latest releases: `go/v0.3.0`, `ts/v0.2.0`,
-`zig/v0.1.0`, and `python/v0.1.0`, plus the unreleased C11 (`c/`) and Rust
-(`rust/`) implementations.
+`zig/v0.1.0`, `python/v0.1.0`, and `rust/v0.1.0`, plus the unreleased C11
+(`c/`) implementation.
 
 A status describes how a capability is designed and built. It does not say
 the release is free of defects in it. The section "Known defects in the
