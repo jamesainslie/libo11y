@@ -181,3 +181,31 @@ test("activity saves at most every saveEveryMillis", async () => {
   }
   assert.equal(writes.length, 2);
 });
+
+test("no session exists until the stored one has loaded", async () => {
+  const storage = createFakeStorage();
+  storage.setItem(
+    "libo11y.rum.session",
+    JSON.stringify({ v: 1, id: "stored", startedAt: 999_000, lastActivityAt: 999_000, sampled: false }),
+  );
+  const inner = localStorageSessionStore({ storage, channel: createChannelHub().channel() });
+  let release: () => void = () => {};
+  const gate = new Promise<void>((r) => {
+    release = r;
+  });
+  const store = {
+    ...inner,
+    load: async () => {
+      await gate;
+      return inner.load();
+    },
+  };
+  const { m } = setup({ store });
+  const starting = m.start();
+  assert.equal(m.current(), undefined);
+  m.touch();
+  assert.equal(m.retain("error"), false);
+  release();
+  await starting;
+  assert.equal(m.current()?.id, "stored");
+});

@@ -3,10 +3,10 @@
  * processor, and saves to the store on every change and on activity at most every saveEveryMillis.
  *
  * Rules. A session is expired when now - lastActivityAt >= idleMillis or now - startedAt >=
- * maxMillis. current() rotates an expired session: records made after expiry start a new session,
- * and only touch() extends one. Rotation creates a session whose sampled flag is sessionSampled(id,
- * rate), retained head_sampled when sampled, saves it, emits end (local) for the old one, then start
- * (local, with previous).
+ * maxMillis. There is no session before start() has loaded the stored one. current() rotates an
+ * expired session: records made after expiry start a new session, and only touch() extends one.
+ * Rotation creates a session whose sampled flag is sessionSampled(id, rate), retained head_sampled
+ * when sampled, saves it, emits end (local) for the old one, then start (local, with previous).
  *
  * On another context's change: the same ID merges (the latest lastActivityAt, retained kept once
  * set, emitting kept with local false when it newly became kept). A different ID is adopted when
@@ -52,7 +52,10 @@ export function createSessionManager(opts: SessionManagerOptions): SessionManage
   /** Sessions this context knew, newest last, with whether each was kept. */
   const recent = new Map<string, boolean>();
   let state: SessionState | undefined;
+  /** start() was called and not cleared since. */
   let started = false;
+  /** The stored session has loaded: until then there is no session, so none is created early. */
+  let ready = false;
   let lastSave = 0;
   let unsubscribe: (() => void) | undefined;
 
@@ -93,7 +96,7 @@ export function createSessionManager(opts: SessionManagerOptions): SessionManage
   };
 
   const live = (): SessionState | undefined => {
-    if (!started) return undefined;
+    if (!ready) return undefined;
     const t = now();
     if (state === undefined || expired(state, t)) return rotate(t);
     return state;
@@ -133,6 +136,8 @@ export function createSessionManager(opts: SessionManagerOptions): SessionManage
       started = true;
       unsubscribe = opts.store.onChange(adopt);
       const stored = await opts.store.load();
+      if (!started) return; // cleared while loading
+      ready = true;
       if (stored !== undefined && state === undefined) {
         state = stored;
         remember(stored);
@@ -171,6 +176,7 @@ export function createSessionManager(opts: SessionManagerOptions): SessionManage
       state = undefined;
       recent.clear();
       started = false;
+      ready = false;
       unsubscribe?.();
       unsubscribe = undefined;
       save(undefined);
