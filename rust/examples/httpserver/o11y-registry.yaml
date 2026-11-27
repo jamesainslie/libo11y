@@ -1,0 +1,23 @@
+schema: libo11y.app-registry/v1
+namespace: demo
+attributes:
+  demo.user.id:
+    type: string
+    sensitivity: internal
+    cardinality: unbounded
+    brief: Application user identifier.
+  demo.user.email:
+    type: string
+    sensitivity: pii
+    cardinality: unbounded
+    brief: User email address (dropped by default PII policy).
+  demo.user.token:
+    type: string
+    sensitivity: secret
+    cardinality: unbounded
+    brief: Session credential (always dropped by sensitivity policy).
+  demo.user.found:
+    type: boolean
+    sensitivity: public
+    cardinality: bounded
+    brief: Whether the requested user existed.

@@ -17,7 +17,7 @@ everything is correlated and exported over OTLP.
 | TypeScript | Implemented for Bun, Node, browsers and Manifest V3 extensions. The browser packages first ship in `ts/v0.2.0` | [`ts/`](ts/) |
 | Zig | Implemented for Zig 0.17.1 (`zig/v0.1.0`) | [`zig/`](zig/) |
 | C | Implemented for C11 (pure C11 ABI backed by `zig/`) | [`c/`](c/) |
-| Rust | In development (coming soon) | [`rust/`](rust/) |
+| Rust | Implemented (MSRV 1.88; `libo11y-sqlx` requires 1.94) | [`rust/`](rust/) |
 | Python | In development (coming soon) | design in progress |
 | Java | Planned | [`java/`](java/) |
 
@@ -337,6 +337,55 @@ libc and pthreads. See [`c/README.md`](c/README.md) for the full C
 documentation and [`c/examples/quickstart.c`](c/examples/quickstart.c) for a
 complete runnable program.
 
+## Installation (Rust)
+
+```sh
+cargo add libo11y                        # core SDK, tracing layers, redact, detached, proc
+cargo add libo11y-http --features axum   # Tower HTTP server/client layers (+ axum MatchedPath)
+cargo add libo11y-reqwest                # reqwest-middleware client instrumentation
+cargo add libo11y-tonic                  # tonic gRPC server/client layers
+cargo add libo11y-connect                # Connect RPC server/client instrumentation
+cargo add libo11y-sqlx                   # sqlx instrumentation (requires Rust 1.94)
+cargo add --dev libo11y-test             # hermetic Recorder and in-process OTLP receivers
+cargo install libo11y-cli                # `libo11y registry check` binary
+```
+
+The eleven crates (`libo11y`, `libo11y-spec`, `libo11y-redact`, `libo11y-macros`,
+`libo11y-test`, `libo11y-http`, `libo11y-reqwest`, `libo11y-tonic`,
+`libo11y-connect`, `libo11y-sqlx`, and `libo11y-cli`) release in lockstep from
+a `rust/vX.Y.Z` tag and implement spec 1.2.0. Workspace MSRV is Rust 1.88
+(edition 2024); `libo11y-sqlx` requires Rust 1.94.
+
+## Quick start (Rust)
+
+```rust
+use libo11y::{Environment, PiiMode, Sdk};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let sdk = Sdk::builder()
+        .service_name("checkout")
+        .environment(Environment::Production)
+        .build_info(libo11y::build_info!())
+        .pii_mode(PiiMode::Drop)
+        .setup()?;
+
+    // Standard tracing and OpenTelemetry APIs from here on.
+    let _span = tracing::info_span!("startup").entered();
+    tracing::info!("ready"); // correlated with the active span, exported
+
+    sdk.shutdown_on_signals().await?;
+    Ok(())
+}
+```
+
+`Builder::setup` installs the OpenTelemetry globals and a swappable `tracing`
+subscriber (use `Builder::build` for a global-free handle and
+`Sdk::tracing_layer` to compose into your own subscriber). See
+[`rust/README.md`](rust/README.md) for the full Rust documentation and
+[`rust/examples/httpserver`](rust/examples/httpserver) for a complete, tested
+HTTP service.
+
 ## Versioning
 
 Each language library versions and releases independently with path-prefixed
@@ -369,6 +418,17 @@ tarball build against an in-process OTLP receiver.
 
 The C11 library versions independently with `c/vX.Y.Z` tags and records its
 changes in [`c/CHANGELOG.md`](c/CHANGELOG.md). It is currently unreleased.
+
+The Rust crates release in lockstep. One `rust/vX.Y.Z` tag publishes all eleven
+crates (`libo11y-spec`, `libo11y-macros`, `libo11y-redact`, `libo11y`,
+`libo11y-test`, `libo11y-http`, `libo11y-reqwest`, `libo11y-tonic`,
+`libo11y-connect`, `libo11y-sqlx`, and `libo11y-cli`) to crates.io in
+dependency order through crates.io trusted publishing, runs a live consumer
+smoke build against the registry, and creates a GitHub Release titled
+`libo11y Rust vX.Y.Z`. Each Rust release is listed in
+[`rust/CHANGELOG.md`](rust/CHANGELOG.md). `make release-check` (and
+`make rust-release-check`) validates lockstep versions, crates.io metadata,
+and package contents before tagging.
 
 ## License
 

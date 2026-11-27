@@ -1,0 +1,27 @@
+[package]
+name = "httpserver-example"
+description = "Complete, tested HTTP service example demonstrating libo11y with axum, redaction, app registry, canonical log lines, and signal shutdown."
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+axum = { version = "0.8.9", default-features = false, features = ["http1", "matched-path", "tokio"] }
+libo11y.workspace = true
+libo11y-http = { workspace = true, features = ["axum"] }
+libo11y-spec.workspace = true
+tokio = { version = "1.54.1", default-features = false, features = ["macros", "net", "rt-multi-thread", "sync"] }
+tracing.workspace = true
+
+[dev-dependencies]
+http = "1.5.0"
+http-body-util = "0.1.5"
+libo11y-test.workspace = true
+tower = { version = "0.5.3", features = ["util"] }
+
+[lints]
+workspace = true

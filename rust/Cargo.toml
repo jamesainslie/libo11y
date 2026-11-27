@@ -3,7 +3,9 @@
 [workspace]
 resolver = "3"
 members = [
+    "examples/httpserver",
     "libo11y",
+    "libo11y-cli",
     "libo11y-http",
     "libo11y-macros",
     "libo11y-redact",
@@ -26,6 +28,7 @@ homepage = "https://o11y.ing"
 # they are released in lockstep.
 [workspace.dependencies]
 libo11y = { version = "=0.0.0", path = "libo11y" }
+libo11y-cli = { version = "=0.0.0", path = "libo11y-cli" }
 libo11y-http = { version = "=0.0.0", path = "libo11y-http" }
 libo11y-macros = { version = "=0.0.0", path = "libo11y-macros" }
 libo11y-redact = { version = "=0.0.0", path = "libo11y-redact" }

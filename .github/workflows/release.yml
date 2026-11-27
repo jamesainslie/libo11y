@@ -19,8 +19,15 @@
 # Release titled `libo11y-zig vX.Y.Z` (never marked Latest), and runs a live
 # consumer smoke test fetching `git+https://github.com/<repo>#zig/vX.Y.Z`.
 #
+# A rust/vX.Y.Z tag validates lockstep workspace versions, rust/CHANGELOG.md,
+# `make rust-check`, and `make rust-msrv`, publishes all eleven crates to
+# crates.io in dependency order through crates.io trusted publishing
+# (skipping any crate version already on crates.io), runs a live consumer
+# smoke test against crates.io, and publishes the GitHub Release titled
+# `libo11y Rust vX.Y.Z` (never marked Latest).
+#
 # scripts/release-tag.sh routes the tag. The verify job's kind output (go,
-# ts or zig) selects the jobs and steps that run.
+# ts, zig or rust) selects the jobs and steps that run.
 name: release
 
 on:
@@ -32,6 +39,7 @@ on:
       - "go/o11ysql/v*"
       - "ts/v*"
       - "zig/v*"
+      - "rust/v*"
 
 permissions:
   contents: read
@@ -68,7 +76,7 @@ jobs:
         run: |
           # The script explains a refused tag on stderr.
           if ! scripts/release-tag.sh "$TAG" >"$RUNNER_TEMP/release-tag.out"; then
-            echo "::error::$TAG is not a release tag with a semantic version (go/vX.Y.Z, go/<submodule>/vX.Y.Z, ts/vX.Y.Z or zig/vX.Y.Z)"
+            echo "::error::$TAG is not a release tag with a semantic version (go/vX.Y.Z, go/<submodule>/vX.Y.Z, ts/vX.Y.Z, zig/vX.Y.Z or rust/vX.Y.Z)"
             exit 1
           fi
           cat "$RUNNER_TEMP/release-tag.out" >>"$GITHUB_OUTPUT"
@@ -194,6 +202,33 @@ jobs:
           VERSION: ${{ steps.tag.outputs.version }}
           ZIG_BUILD_J: "4"
         run: scripts/zig-release-check.sh "v$VERSION"
+
+      # The Rust branch. Every publishable crate in rust/ must carry the tag's
+      # version, rust/CHANGELOG.md must hold its release notes, and both the
+      # pinned toolchain and the MSRV toolchain must pass.
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, 2026-10-16
+        if: steps.tag.outputs.kind == 'rust'
+        with:
+          toolchain: "1.95.0"
+          components: rustfmt, clippy
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, 2026-10-16
+        if: steps.tag.outputs.kind == 'rust'
+        with:
+          toolchain: "1.88"
+      - uses: Swatinem/rust-cache@v2
+        if: steps.tag.outputs.kind == 'rust'
+        with:
+          workspaces: rust
+      - name: Validate Rust lockstep versions, changelog, and package hygiene
+        if: steps.tag.outputs.kind == 'rust'
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: scripts/rust-release-check.sh "v$VERSION"
+      - name: Run Rust workspace checks and MSRV verification
+        if: steps.tag.outputs.kind == 'rust'
+        run: |
+          make rust-check RUST_JOBS=4
+          make rust-msrv RUST_MSRV=1.88 RUST_JOBS=4
 
   release:
     needs: verify
@@ -528,3 +563,187 @@ jobs:
           VERSION: ${{ needs.verify.outputs.version }}
           ZIG_BUILD_J: "4"
         run: scripts/zig-release-check.sh "v$VERSION" --url "git+https://github.com/${GITHUB_REPOSITORY}#${TAG}"
+
+  publish-rust:
+    needs: verify
+    if: needs.verify.outputs.kind == 'rust'
+    runs-on: blacksmith-4vcpu-ubuntu-2604
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      # Exchanges the workflow's OIDC identity for a short-lived crates.io
+      # publish token via trusted publishing (no long-lived token stored).
+      id-token: write
+    steps:
+      - uses: useblacksmith/checkout@v1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, 2026-10-16
+        with:
+          toolchain: "1.95.0"
+      - name: Obtain crates.io trusted publishing token
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+      - name: Publish Rust crates to crates.io in dependency order
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          crates=(
+            libo11y-spec
+            libo11y-macros
+            libo11y-redact
+            libo11y
+            libo11y-test
+            libo11y-http
+            libo11y-reqwest
+            libo11y-tonic
+            libo11y-connect
+            libo11y-sqlx
+            libo11y-cli
+          )
+          for crate in "${crates[@]}"; do
+            if curl -fsS -A "libo11y-release-workflow" "https://crates.io/api/v1/crates/$crate/$VERSION" >/dev/null 2>&1; then
+              echo "$crate@$VERSION is already on crates.io; skipping it"
+              continue
+            fi
+            echo "Publishing $crate@$VERSION"
+            cargo publish --locked -p "$crate" --manifest-path rust/Cargo.toml
+            # Wait for crates.io to serve the new version before publishing dependents.
+            published=false
+            for attempt in $(seq 1 18); do
+              if curl -fsS -A "libo11y-release-workflow" "https://crates.io/api/v1/crates/$crate/$VERSION" >/dev/null 2>&1; then
+                published=true
+                break
+              fi
+              echo "attempt $attempt: waiting for $crate@$VERSION on crates.io" >&2
+              sleep 10
+            done
+            if [[ "$published" != true ]]; then
+              echo "::error::$crate@$VERSION did not appear on crates.io after publishing"
+              exit 1
+            fi
+          done
+
+  smoke-rust:
+    needs: [verify, publish-rust]
+    if: needs.verify.outputs.kind == 'rust'
+    runs-on: blacksmith-4vcpu-ubuntu-2604
+    timeout-minutes: 30
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+    steps:
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, 2026-10-16
+        with:
+          toolchain: "1.95.0"
+      - name: Wait for all published crates on crates.io
+        run: |
+          crates=(
+            libo11y-spec
+            libo11y-macros
+            libo11y-redact
+            libo11y
+            libo11y-test
+            libo11y-http
+            libo11y-reqwest
+            libo11y-tonic
+            libo11y-connect
+            libo11y-sqlx
+            libo11y-cli
+          )
+          for attempt in $(seq 1 20); do
+            missing=""
+            for crate in "${crates[@]}"; do
+              if ! curl -fsS -A "libo11y-release-workflow" "https://crates.io/api/v1/crates/$crate/$VERSION" >/dev/null 2>&1; then
+                missing="$missing $crate"
+              fi
+            done
+            if [[ -z "$missing" ]]; then
+              exit 0
+            fi
+            echo "attempt $attempt: crates.io does not serve$missing at $VERSION yet" >&2
+            sleep 15
+          done
+          echo "::error::crates.io did not serve$missing at $VERSION"
+          exit 1
+      - name: Build and test a fresh consumer against crates.io
+        run: |
+          consumer="$(mktemp -d)"
+          cd "$consumer"
+          cat >Cargo.toml <<EOF
+          [package]
+          name = "libo11y-rust-smoke"
+          version = "0.1.0"
+          edition = "2024"
+
+          [dependencies]
+          libo11y = "=$VERSION"
+          libo11y-spec = "=$VERSION"
+          libo11y-test = "=$VERSION"
+          tracing = "0.1"
+          EOF
+          mkdir -p src
+          cat >src/main.rs <<'EOF'
+          use libo11y_test::Recorder;
+
+          fn main() {
+              let rec = Recorder::start("rust-smoke");
+              rec.in_scope(|| {
+                  let _span = tracing::info_span!("smoke.op").entered();
+                  tracing::info!(smoke.ok = true, "smoke log");
+                  rec.sdk()
+                      .meter("smoke")
+                      .u64_counter("smoke.requests")
+                      .build()
+                      .add(1, &[]);
+              });
+              rec.assert_conforms();
+              rec.assert_correlated();
+              rec.assert_triangle("smoke.requests");
+              assert_eq!(rec.sdk().resource().schema_url(), Some(libo11y_spec::SCHEMA_URL));
+          }
+          EOF
+          cargo run -j 4
+      - name: Install and run libo11y-cli from crates.io
+        run: |
+          tmp="$(mktemp -d)"
+          cargo install libo11y-cli --version "=$VERSION" --locked --root "$tmp/bin" -j 4
+          cat >"$tmp/registry.yaml" <<'EOF'
+          schema: libo11y.app-registry/v1
+          namespace: smoke
+          attributes:
+            smoke.order.id: {type: string, sensitivity: internal, cardinality: unbounded}
+          EOF
+          "$tmp/bin/bin/libo11y" registry check "$tmp/registry.yaml"
+
+  # The GitHub Release waits for smoke-rust so it is created only after the
+  # published crates resolve and run for an external consumer.
+  release-rust:
+    needs: [verify, smoke-rust]
+    if: needs.verify.outputs.kind == 'rust'
+    runs-on: blacksmith-4vcpu-ubuntu-2604
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: useblacksmith/checkout@v1
+        with:
+          persist-credentials: false
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.verify.outputs.version }}
+          PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+        run: |
+          notes="$RUNNER_TEMP/release-notes.md"
+          scripts/release-notes.sh "$VERSION" rust/CHANGELOG.md >"$notes"
+          title="libo11y Rust v$VERSION"
+          # The Go main module's release stays the repository's Latest release.
+          if gh release view "$TAG" >/dev/null; then
+            echo "$TAG already has a release; replacing its title and notes"
+            gh release edit "$TAG" --title "$title" --notes-file "$notes" --prerelease="$PRERELEASE" --latest=false
+          else
+            gh release create "$TAG" --title "$title" --notes-file "$notes" --verify-tag --prerelease="$PRERELEASE" --latest=false
+          fi
