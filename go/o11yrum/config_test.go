@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseConfigDefaults(t *testing.T) {
@@ -24,6 +25,9 @@ func TestParseConfigDefaults(t *testing.T) {
 	}
 	if cfg.Limits != defaultLimits() {
 		t.Errorf("defaultLimits() disagrees with applyDefaults: %+v", defaultLimits())
+	}
+	if cfg.Edge.ClockSkewThreshold != time.Second {
+		t.Errorf("clock skew threshold default %v", cfg.Edge.ClockSkewThreshold)
 	}
 	if cfg.Apps[0].PII != "drop" {
 		t.Errorf("pii default %q", cfg.Apps[0].PII)
@@ -50,6 +54,8 @@ func TestParseConfigRefuses(t *testing.T) {
 		"negative body":    {"edge: {max_body_bytes: -1}\napps:\n  - {service_name: a, origins: [\"https://a\"]}\n", "max_body_bytes"},
 		"negative limit":   {"limits: {max_attributes: -1}\napps:\n  - {service_name: a, origins: [\"https://a\"]}\n", "max_attributes"},
 		"negative tracked": {"edge: {max_tracked_clients: -1}\napps:\n  - {service_name: a, origins: [\"https://a\"]}\n", "max_tracked_clients"},
+		"bad country cidr": {"edge: {country: {header: CF-IPCountry, trusted_from: [\"x\"]}}\napps:\n  - {service_name: a, origins: [\"https://a\"]}\n", "edge.country.trusted_from"},
+		"negative skew":    {"edge: {clock_skew_threshold: -1s}\napps:\n  - {service_name: a, origins: [\"https://a\"]}\n", "clock_skew_threshold"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := ParseConfig([]byte(tc.yaml))

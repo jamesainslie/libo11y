@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"time"
 
@@ -38,7 +39,7 @@ func (h *Handler) ingest(w http.ResponseWriter, r *http.Request, sig Signal) {
 		h.reject(w, r, h.origins, rejection{status: http.StatusMethodNotAllowed, reason: "method"})
 		return
 	}
-	key, ok := h.clientKey(r)
+	key, receiver, ok := h.clientKey(r)
 	if !ok {
 		h.reject(w, r, h.origins, rejection{status: http.StatusBadRequest, reason: "client_address"})
 		return
@@ -71,6 +72,7 @@ func (h *Handler) ingest(w http.ResponseWriter, r *http.Request, sig Signal) {
 		h.reject(w, r, nil, *rej)
 		return
 	}
+	ci := h.clientInfo(r, receiver)
 	v := &validator{policy: a.policy, limits: h.cfg.Limits}
 	var drops dropCounts
 	var remaining int
@@ -78,11 +80,13 @@ func (h *Handler) ingest(w http.ResponseWriter, r *http.Request, sig Signal) {
 	switch sig {
 	case SignalTraces:
 		drops = v.traces(d.traces)
+		enrich(sig, d, ci)
 		remaining = d.traces.SpanCount()
 		d.traces.MarkReadOnly()
 		b.Traces = d.traces
 	case SignalLogs:
 		drops = v.logs(d.logs)
+		enrich(sig, d, ci)
 		remaining = d.logs.LogRecordCount()
 		d.logs.MarkReadOnly()
 		b.Logs = d.logs
@@ -100,15 +104,16 @@ func (h *Handler) ingest(w http.ResponseWriter, r *http.Request, sig Signal) {
 	h.respond(w, r, a.origins, sig, d.json, drops)
 }
 
-// clientKey resolves the client address and returns its rate-limit key.
-// The address never leaves this function, which keeps the privacy
-// invariant structural: no later stage can see it.
-func (h *Handler) clientKey(r *http.Request) (uint64, bool) {
-	client, _, ok := h.trust.resolve(r)
+// clientKey resolves the client address and returns its rate-limit key
+// and the proxy hop that received the client's connection (invalid for a
+// direct connection). The client address never leaves this function, which
+// keeps the privacy invariant structural: no later stage can see it.
+func (h *Handler) clientKey(r *http.Request) (key uint64, receiver netip.Addr, ok bool) {
+	client, receiver, ok := h.trust.resolve(r)
 	if !ok {
-		return 0, false
+		return 0, netip.Addr{}, false
 	}
-	return h.keyer.key(client), true
+	return h.keyer.key(client), receiver, true
 }
 
 var (

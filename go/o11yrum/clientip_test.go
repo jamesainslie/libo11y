@@ -3,6 +3,7 @@ package o11yrum
 import (
 	"net/http/httptest"
 	"net/netip"
+	"strings"
 	"testing"
 )
 
@@ -86,5 +87,64 @@ func TestClientKeyIsPerProcess(t *testing.T) {
 	first, second := newClientKeyer(), newClientKeyer()
 	if first.key(addr) == second.key(addr) {
 		t.Error("two keyers produced the same key, so the seed is not random")
+	}
+}
+
+func TestCountryTrustedOnlyFromListedHop(t *testing.T) {
+	p, err := newProxyTrust(EdgeConfig{
+		TrustedProxies:  []string{"10.0.0.0/8"},
+		ForwardedHeader: "X-Forwarded-For",
+		Country:         CountryConfig{Header: "CF-IPCountry", TrustedFrom: []string{"173.245.48.0/20"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, tc := range map[string]struct{ remote, xff, header, want string }{
+		"via cloudflare":       {"10.1.2.3:1", "198.51.100.1, 173.245.48.7", "de", "DE"},
+		"padded":               {"10.1.2.3:1", "198.51.100.1, 173.245.48.7", " fr ", "FR"},
+		"bypassing cloudflare": {"10.1.2.3:1", "198.51.100.1", "DE", ""},
+		"direct connection":    {"173.245.48.7:1", "", "DE", ""},
+		"unknown country":      {"10.1.2.3:1", "198.51.100.1, 173.245.48.7", "XX", ""},
+		"tor":                  {"10.1.2.3:1", "198.51.100.1, 173.245.48.7", "T1", ""},
+		"junk":                 {"10.1.2.3:1", "198.51.100.1, 173.245.48.7", "Germany", ""},
+		"absent":               {"10.1.2.3:1", "198.51.100.1, 173.245.48.7", "", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := httptest.NewRequest("POST", "/", nil)
+			r.RemoteAddr = tc.remote
+			if tc.xff != "" {
+				r.Header.Set("X-Forwarded-For", tc.xff)
+			}
+			r.Header.Set("CF-IPCountry", tc.header)
+			_, receiver, _ := p.resolve(r)
+			if got := p.country(r, receiver); got != tc.want {
+				t.Errorf("country %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCountryDisabledWithoutHeader(t *testing.T) {
+	p, err := newProxyTrust(EdgeConfig{
+		ForwardedHeader: "X-Forwarded-For",
+		Country:         CountryConfig{TrustedFrom: []string{"173.245.48.0/20"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest("POST", "/", nil)
+	r.RemoteAddr = "173.245.48.7:1"
+	r.Header.Set("X-Forwarded-For", "198.51.100.1")
+	r.Header.Set("CF-IPCountry", "DE")
+	_, receiver, _ := p.resolve(r)
+	if got := p.country(r, receiver); got != "" {
+		t.Errorf("country %q with no header configured", got)
+	}
+}
+
+func TestNewProxyTrustRefusesBadCountryCIDR(t *testing.T) {
+	_, err := newProxyTrust(EdgeConfig{Country: CountryConfig{Header: "CF-IPCountry", TrustedFrom: []string{"nope"}}})
+	if err == nil || !strings.Contains(err.Error(), "edge.country.trusted_from") {
+		t.Fatalf("err = %v", err)
 	}
 }
