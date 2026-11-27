@@ -177,6 +177,26 @@ prerelease=true
 EOF
 )" rust/v0.2.0-rc.1
 
+expect_route "routes the c library" "$(
+	cat <<'EOF'
+kind=c
+dir=c
+module=libo11y-c
+version=0.1.0
+prerelease=false
+EOF
+)" c/v0.1.0
+
+expect_route "marks a c prerelease" "$(
+	cat <<'EOF'
+kind=c
+dir=c
+module=libo11y-c
+version=0.2.0-rc.1
+prerelease=true
+EOF
+)" c/v0.2.0-rc.1
+
 expect_failure "refuses a spec tag" 1 "spec/v1.2.0 is not a release tag" spec/v1.2.0
 expect_failure "refuses an unknown go submodule" 1 "is not a release tag" go/o11yfoo/v1.0.0
 expect_failure "refuses a tag without the v" 1 "is not a release tag" ts/0.1.0
@@ -190,6 +210,9 @@ expect_failure "refuses a two-part python version" 1 "1.2 is not a semantic vers
 expect_failure "refuses a rust tag without the v" 1 "is not a release tag" rust/0.1.0
 expect_failure "refuses a nested rust path" 1 "is not a release tag" rust/libo11y/v0.1.0
 expect_failure "refuses a two-part rust version" 1 "1.2 is not a semantic version" rust/v1.2
+expect_failure "refuses a c tag without the v" 1 "is not a release tag" c/0.1.0
+expect_failure "refuses a nested c path" 1 "is not a release tag" c/foo/v0.1.0
+expect_failure "refuses a two-part c version" 1 "1.2 is not a semantic version" c/v1.2
 expect_failure "refuses a two-part version" 1 "1.2 is not a semantic version" ts/v1.2
 expect_failure "refuses a leading zero" 1 "01.0.0 is not a semantic version" ts/v01.0.0
 expect_failure "refuses build metadata" 1 "is not a semantic version" ts/v0.1.0+build.5

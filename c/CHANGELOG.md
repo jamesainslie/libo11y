@@ -5,6 +5,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-27
+
 ### Added
 
 - Generated ISO C11 specification header (`c/include/o11y/spec.h`) via `go/internal/specgen` (spec 1.2.0, semconv v1.41.0).
@@ -17,3 +19,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Self-contained C11 hermetic test harness (`libo11ytest.a`, `c/include/o11y/test.h`) with conformance, correlation, and triangle assertions plus in-process OTLP/HTTP and OTLP/gRPC receivers.
 - `libo11y registry check` CLI binary, `pkg-config` (`libo11y.pc`), CMake config (`libo11yConfig.cmake`), and runnable C11 quickstart example.
 - Full C11 unit, shared cross-language conformance, wire, and CLI test suites (`make c-check`).
+
+[Unreleased]: https://github.com/jamesainslie/libo11y/compare/c/v0.1.0...HEAD
+[0.1.0]: https://github.com/jamesainslie/libo11y/releases/tag/c/v0.1.0

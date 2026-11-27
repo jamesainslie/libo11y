@@ -32,8 +32,13 @@
 # smoke test against crates.io, and publishes the GitHub Release titled
 # `libo11y Rust vX.Y.Z` (never marked Latest).
 #
+# A c/vX.Y.Z tag validates c/build.zig.zon, c/CHANGELOG.md, `make c-check`,
+# and `scripts/c-release-check.sh`, builds a ReleaseSafe install archive with
+# SHA256SUMS, and publishes the GitHub Release titled `libo11y-c vX.Y.Z`
+# (never marked Latest).
+#
 # scripts/release-tag.sh routes the tag. The verify job's kind output (go,
-# ts, zig, python or rust) selects the jobs and steps that run.
+# ts, zig, python, rust or c) selects the jobs and steps that run.
 name: release
 
 on:
@@ -47,6 +52,7 @@ on:
       - "zig/v*"
       - "python/v*"
       - "rust/v*"
+      - "c/v*"
 
 permissions:
   contents: read
@@ -85,7 +91,7 @@ jobs:
         run: |
           # The script explains a refused tag on stderr.
           if ! scripts/release-tag.sh "$TAG" >"$RUNNER_TEMP/release-tag.out"; then
-            echo "::error::$TAG is not a release tag with a semantic version (go/vX.Y.Z, go/<submodule>/vX.Y.Z, ts/vX.Y.Z, zig/vX.Y.Z, python/vX.Y.Z or rust/vX.Y.Z)"
+            echo "::error::$TAG is not a release tag with a semantic version (go/vX.Y.Z, go/<submodule>/vX.Y.Z, ts/vX.Y.Z, zig/vX.Y.Z, python/vX.Y.Z, rust/vX.Y.Z or c/vX.Y.Z)"
             exit 1
           fi
           cat "$RUNNER_TEMP/release-tag.out" >>"$GITHUB_OUTPUT"
@@ -279,6 +285,36 @@ jobs:
         run: |
           make rust-check RUST_JOBS=4
           make rust-msrv RUST_MSRV=1.88 RUST_JOBS=4
+
+      # The C branch. c/build.zig.zon must carry the tag's version and
+      # c/CHANGELOG.md must hold its release notes.
+      - name: Require c/build.zig.zon at the tag's version
+        if: steps.tag.outputs.kind == 'c'
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          got="$(sed -nE 's/^[[:space:]]*\.version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' c/build.zig.zon | head -n 1)"
+          if [[ "$got" != "$VERSION" ]]; then
+            echo "::error::c/build.zig.zon is at version ${got:-unset}, not $VERSION"
+            exit 1
+          fi
+      - name: Check the C changelog has release notes
+        if: steps.tag.outputs.kind == 'c'
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: scripts/release-notes.sh "$VERSION" c/CHANGELOG.md
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        if: steps.tag.outputs.kind == 'c'
+        with:
+          version: "0.17.1"
+      - if: steps.tag.outputs.kind == 'c'
+        run: make c-check ZIG_BUILD_J=4
+      - name: Validate the C install prefix and external C11 consumer
+        if: steps.tag.outputs.kind == 'c'
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+          ZIG_BUILD_J: "4"
+        run: scripts/c-release-check.sh "v$VERSION"
 
   release:
     needs: verify
@@ -916,4 +952,52 @@ jobs:
             gh release edit "$TAG" --title "$title" --notes-file "$notes" --prerelease="$PRERELEASE" --latest=false
           else
             gh release create "$TAG" --title "$title" --notes-file "$notes" --verify-tag --prerelease="$PRERELEASE" --latest=false
+          fi
+
+  c-release:
+    needs: verify
+    if: needs.verify.outputs.kind == 'c'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: "0.17.1"
+      - name: Build ReleaseSafe C11 release archive and checksums
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          stage="$RUNNER_TEMP/c-stage"
+          dist="$RUNNER_TEMP/c-dist"
+          prefix="$stage/libo11y-c-v$VERSION-linux-x86_64"
+          mkdir -p "$prefix" "$dist"
+          (cd c && zig build -j4 -Doptimize=ReleaseSafe --prefix "$prefix")
+          cp LICENSE c/README.md c/CHANGELOG.md "$prefix/"
+          archive="$dist/libo11y-c-v$VERSION-linux-x86_64.tar.gz"
+          tar -C "$stage" -czf "$archive" "libo11y-c-v$VERSION-linux-x86_64"
+          (cd "$dist" && sha256sum "libo11y-c-v$VERSION-linux-x86_64.tar.gz" > SHA256SUMS)
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.verify.outputs.version }}
+          PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+        run: |
+          notes="$RUNNER_TEMP/release-notes.md"
+          dist="$RUNNER_TEMP/c-dist"
+          scripts/release-notes.sh "$VERSION" c/CHANGELOG.md >"$notes"
+          title="libo11y-c v$VERSION"
+          # The Go main module's release stays the repository's Latest release.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "$TAG already has a release; replacing its title, notes, and assets"
+            gh release edit "$TAG" --title "$title" --notes-file "$notes" --prerelease="$PRERELEASE" --latest=false
+            gh release upload "$TAG" "$dist/libo11y-c-v$VERSION-linux-x86_64.tar.gz" "$dist/SHA256SUMS" --clobber
+          else
+            gh release create "$TAG" "$dist/libo11y-c-v$VERSION-linux-x86_64.tar.gz" "$dist/SHA256SUMS" --title "$title" --notes-file "$notes" --verify-tag --prerelease="$PRERELEASE" --latest=false
           fi

@@ -8,7 +8,7 @@ GO_TEST_P ?= 4
 # gate runs on each module separately.
 GO_MODULES := go go/o11ygin go/o11yconnect go/o11ysql
 
-.PHONY: spec-check spec-generate spec-drift test lint vet tidy-check vuln release-check zig-release-check python-release-check rust-release-check rust-release-check-test schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-install ts-check ts-browser-test rust-check rust-msrv zig-check zig-integrations-check zig-hygiene-test python-check python-hygiene-test c-check ci
+.PHONY: spec-check spec-generate spec-drift test lint vet tidy-check vuln release-check zig-release-check python-release-check rust-release-check rust-release-check-test c-release-check schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-install ts-check ts-browser-test rust-check rust-msrv zig-check zig-integrations-check zig-hygiene-test python-check python-hygiene-test c-check ci
 
 # Validate the spec registry against the libo11y policy suite (naming,
 # ownership, sensitivity, cardinality, events, units).
@@ -109,6 +109,10 @@ PYTHON_RELEASE_VERSION ?= v0.1.0
 # rust-release-check.sh validates. Moves only in a release commit.
 RUST_RELEASE_VERSION ?= v0.1.0
 
+# The version c/build.zig.zon carries, which c-release-check.sh validates.
+# Moves only in a release commit.
+C_RELEASE_VERSION ?= v0.1.0
+
 # Validate the Zig package at ZIG_RELEASE_VERSION as an external consumer
 # fetches and runs it against an in-process OTLP receiver.
 # Needs a clean working tree and zig 0.17.1.
@@ -131,6 +135,12 @@ rust-release-check:
 rust-release-check-test:
 	scripts/rust-release-check_test.sh
 
+# Validate the C11 library at C_RELEASE_VERSION: manifest, changelog, clean
+# ReleaseSafe install prefix, external C11 consumer against an in-process
+# OTLP/HTTP receiver, and installed CLI.
+c-release-check:
+	scripts/c-release-check.sh $(C_RELEASE_VERSION)
+
 # Validate the release sequence (go/RELEASE_VERSION and
 # go/<sub>/RELEASE_VERSION for every Go submodule, o11ygin, o11yconnect
 # and o11ysql, on HEAD) against a throwaway local remote. Then build and
@@ -138,8 +148,9 @@ rust-release-check-test:
 # tarballs into a throwaway consumer under Node and Bun, bundle the
 # browser packages for the browser, validate the Zig consumer tarball at
 # ZIG_RELEASE_VERSION, validate the Python wheel and sdist at
-# PYTHON_RELEASE_VERSION, and validate the Rust workspace at
-# RUST_RELEASE_VERSION.
+# PYTHON_RELEASE_VERSION, validate the Rust workspace at
+# RUST_RELEASE_VERSION, and validate the C11 install prefix at
+# C_RELEASE_VERSION.
 # Needs a clean working tree.
 release-check:
 	scripts/release-check.sh $(RELEASE_VERSION)
@@ -147,6 +158,7 @@ release-check:
 	scripts/zig-release-check.sh $(ZIG_RELEASE_VERSION)
 	scripts/python-release-check.sh $(PYTHON_RELEASE_VERSION)
 	scripts/rust-release-check.sh $(RUST_RELEASE_VERSION)
+	scripts/c-release-check.sh $(C_RELEASE_VERSION)
 
 # Release step, not a ci gate (it needs the network): confirm the schema URL
 # serves spec/schemas/<version> byte for byte before tagging spec/vX.Y.Z.

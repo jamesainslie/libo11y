@@ -17,7 +17,7 @@ everything is correlated and exported over OTLP.
 | TypeScript | Implemented for Bun, Node, browsers and Manifest V3 extensions. The browser packages first ship in `ts/v0.2.0` | [`ts/`](ts/) |
 | Zig | Implemented for Zig 0.17.1 (`zig/v0.1.0`) | [`zig/`](zig/) |
 | Python | Implemented for Python 3.12, 3.13, and 3.14 (`python/v0.1.0`) | [`python/`](python/) |
-| C | Implemented for C11 (pure C11 ABI backed by `zig/`) | [`c/`](c/) |
+| C | Implemented for C11 (`c/v0.1.0`, pure C11 ABI backed by `zig/`) | [`c/`](c/) |
 | Rust | Implemented for Rust 1.88+ (`rust/v0.1.0`; `libo11y-sqlx` requires 1.94) | [`rust/`](rust/) |
 | Java | Planned | [`java/`](java/) |
 
@@ -470,8 +470,13 @@ GitHub Release titled `libo11y-python vX.Y.Z`. `make release-check` (and
 `make python-release-check`) builds the wheel and sdist, verifies packaged
 contents, and runs a consumer smoke test against an in-process OTLP receiver.
 
-The C11 library versions independently with `c/vX.Y.Z` tags and records its
-changes in [`c/CHANGELOG.md`](c/CHANGELOG.md). It is currently unreleased.
+The C11 library releases from a `c/vX.Y.Z` tag, starting at `c/v0.1.0`,
+and records its changes in [`c/CHANGELOG.md`](c/CHANGELOG.md). Each C release
+is published as a GitHub Release titled `libo11y-c vX.Y.Z` with prebuilt
+library archives, headers, `pkg-config` and CMake packaging, and the
+`libo11y` CLI. `make release-check` (and `make c-release-check`) validates a
+clean install prefix and links an external C11 consumer against an in-process
+OTLP receiver.
 
 The Rust crates release in lockstep. One `rust/vX.Y.Z` tag publishes all eleven
 crates (`libo11y-spec`, `libo11y-macros`, `libo11y-redact`, `libo11y`,

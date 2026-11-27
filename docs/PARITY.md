@@ -29,7 +29,7 @@ The Python columns describe `libo11y` (`python/v0.1.0`) on CPython 3.12,
 extras for third-party integrations and isolating the private
 `opentelemetry.sdk._logs` module behind `libo11y._internal.logs_bridge`.
 
-The C columns describe `libo11y` C (`c/`, unreleased, targeting `c/v0.1.0`),
+The C columns describe `libo11y-c` (`c/v0.1.0`),
 a pure ISO C11 public ABI (`o11y/o11y.h`, `o11y/spec.h`, `o11y/test.h`,
 C++ `extern "C"` safe) backed by libo11y's Zig telemetry engine with zero
 external runtime dependencies beyond libc and pthreads.
@@ -42,8 +42,7 @@ The Rust columns describe the eleven-crate `rust/` workspace (`rust/v0.1.0`:
 0.33.1.
 
 The matrix describes the latest releases: `go/v0.3.0`, `ts/v0.2.0`,
-`zig/v0.1.0`, `python/v0.1.0`, and `rust/v0.1.0`, plus the unreleased C11
-(`c/`) implementation.
+`zig/v0.1.0`, `python/v0.1.0`, `c/v0.1.0`, and `rust/v0.1.0`.
 
 A status describes how a capability is designed and built. It does not say
 the release is free of defects in it. The section "Known defects in the
