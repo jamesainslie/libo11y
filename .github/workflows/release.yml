@@ -605,7 +605,7 @@ jobs:
       # tarball for a package not on npm yet (scripts/ts-npm-plan.sh specs).
       - name: Install and import the packages under Node
         run: |
-          specs_out="$(scripts/ts-npm-plan.sh specs "$RUNNER_TEMP/packs/plan.tsv" "$VERSION" @libo11y/server @libo11y/test)"
+          specs_out="$(scripts/ts-npm-plan.sh specs "$RUNNER_TEMP/packs/plan.tsv" "$VERSION" @libo11y/server @libo11y/test @libo11y/sourcemaps)"
           mapfile -t specs <<<"$specs_out"
           consumer="$(mktemp -d)"
           cd "$consumer"
@@ -632,6 +632,8 @@ jobs:
             smoke.order.id: {type: string, sensitivity: internal, cardinality: unbounded}
           EOF
           npx --no-install libo11y registry check registry.yaml
+          help="$(npx --no-install libo11y-sourcemaps --help)"
+          grep -q '^usage: libo11y-sourcemaps upload' <<<"$help"
       - name: Install and import the packages under Bun
         run: |
           specs_out="$(scripts/ts-npm-plan.sh specs "$RUNNER_TEMP/packs/plan.tsv" "$VERSION" @libo11y/server @libo11y/test)"

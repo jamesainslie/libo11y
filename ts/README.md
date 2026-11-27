@@ -1,8 +1,8 @@
 # libo11y for TypeScript
 
-The TypeScript implementation of libo11y, as a Bun workspace of seven
-`@libo11y/*` packages. `@libo11y/server` and `@libo11y/test` run on Bun
-1.3.13 and Node 24. `@libo11y/web`, `@libo11y/webext` and `@libo11y/rum` run
+The TypeScript implementation of libo11y, as a Bun workspace of eight
+`@libo11y/*` packages. `@libo11y/server`, `@libo11y/test` and
+`@libo11y/sourcemaps` run on Bun 1.3.13 and Node 24. `@libo11y/web`, `@libo11y/webext` and `@libo11y/rum` run
 in browsers and Manifest V3 extensions. `@libo11y/spec` and `@libo11y/core` run in
 both. The packages are built on
 OpenTelemetry JS 3.x (`@opentelemetry/api` 1.10.0, the SDK packages at
@@ -11,18 +11,19 @@ libo11y's own HTTP transport). They release together at one
 version from a `ts/vX.Y.Z` tag, and [CHANGELOG.md](CHANGELOG.md) lists
 each release.
 
-| Package                              | What it holds                                                                                                                                                                                                |
-| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| [`@libo11y/spec`](packages/spec)     | the spec constants and tables generated from `spec/registry`, the application registry validator, and the `libo11y` bin. It also runs in browsers                                                            |
-| [`@libo11y/core`](packages/core)     | the platform-neutral core: configuration, identity, the sensitivity policy, the logger, events, exemplars and the signal pipelines                                                                           |
-| [`@libo11y/server`](packages/server) | the Bun and Node platform: `setup`, the `AsyncLocalStorage` context manager, resource detection, OTLP exporters, runtime metrics, `instrumentServe` and `instrumentFetch`                                    |
-| [`@libo11y/test`](packages/test)     | the hermetic recorder, its assertions, and an in-process OTLP/HTTP sink                                                                                                                                      |
-| [`@libo11y/web`](packages/web)       | the browser platform: `setup` with a pluggable context manager, the browser resource, the OTLP/HTTP JSON transport with an IndexedDB retry queue, the consent gate, and `fetch`, XHR and document-load spans |
-| [`@libo11y/webext`](packages/webext) | the Manifest V3 extension platform: `setupWorker` for the service worker, `setupContentScript` for content scripts and extension pages, and traced runtime messaging                                         |
-| [`@libo11y/rum`](packages/rum)       | browser RUM over `@libo11y/web`: `setupRum`, sessions shared across tabs, session sampling with a retention buffer, and per-view summaries. In development                                                   |
+| Package                                      | What it holds                                                                                                                                                                                                |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| [`@libo11y/spec`](packages/spec)             | the spec constants and tables generated from `spec/registry`, the application registry validator, and the `libo11y` bin. It also runs in browsers                                                            |
+| [`@libo11y/core`](packages/core)             | the platform-neutral core: configuration, identity, the sensitivity policy, the logger, events, exemplars and the signal pipelines                                                                           |
+| [`@libo11y/server`](packages/server)         | the Bun and Node platform: `setup`, the `AsyncLocalStorage` context manager, resource detection, OTLP exporters, runtime metrics, `instrumentServe` and `instrumentFetch`                                    |
+| [`@libo11y/test`](packages/test)             | the hermetic recorder, its assertions, and an in-process OTLP/HTTP sink                                                                                                                                      |
+| [`@libo11y/web`](packages/web)               | the browser platform: `setup` with a pluggable context manager, the browser resource, the OTLP/HTTP JSON transport with an IndexedDB retry queue, the consent gate, and `fetch`, XHR and document-load spans |
+| [`@libo11y/webext`](packages/webext)         | the Manifest V3 extension platform: `setupWorker` for the service worker, `setupContentScript` for content scripts and extension pages, and traced runtime messaging                                         |
+| [`@libo11y/rum`](packages/rum)               | browser RUM over `@libo11y/web`: `setupRum`, sessions shared across tabs, session sampling with a retention buffer, and per-view summaries. In development                                                   |
+| [`@libo11y/sourcemaps`](packages/sourcemaps) | the `libo11y-sourcemaps` command and `uploadSourceMaps`, which upload source maps to the RUM gateway (`go/o11yrum`) for symbolication. In development                                                        |
 
 `@libo11y/web` and `@libo11y/webext` first ship in `ts/v0.2.1`. `@libo11y/rum`
-has not shipped yet.
+and `@libo11y/sourcemaps` have not shipped yet.
 [docs/PARITY.md](../docs/PARITY.md) compares every capability with Go.
 
 ## Install
@@ -82,6 +83,7 @@ ts/
   packages/web/        @libo11y/web, with its Playwright specs and fixture server in browser/
   packages/webext/     @libo11y/webext, with its Playwright specs and test extension in browser/
   packages/rum/        @libo11y/rum, with its Playwright specs and fixtures in browser/
+  packages/sourcemaps/ @libo11y/sourcemaps, with the gateway end-to-end journey in src/e2e/
   examples/            bun-server and node-server, private workspace apps
   scripts/             release.ts sets the version and packs the packages; size.ts checks the bundle size budgets
   size-budget.json     the browser bundle size budgets

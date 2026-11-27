@@ -224,7 +224,8 @@ container (`O11Y_PG_TEST_DSN`).
   `TS_RELEASE_VERSION`. It checks every package is at that version, builds and packs
   the packages, checks each tarball's `exports` and `bin` targets, and
   installs the tarballs into a throwaway consumer that imports the server
-  packages under Node and Bun and runs the `libo11y` bin. The consumer
+  packages under Node and Bun and runs the `libo11y` and
+  `libo11y-sourcemaps` bins. The consumer
   then bundles every entry point of `@libo11y/web`, `@libo11y/webext`
   and `@libo11y/rum` with `bun build --target=browser` through
   `scripts/ts-browser-bundle-check.sh`, which fails when the module graph
@@ -263,7 +264,8 @@ container (`O11Y_PG_TEST_DSN`).
   under the `next` dist-tag. A smoke job waits up to ten minutes for the
   registry to serve the new version of every published package. It
   installs `@libo11y/server` and `@libo11y/test` into fresh projects
-  under Node and Bun, and runs the `libo11y` bin under Node. It installs
+  under Node and Bun, and runs the `libo11y` and `libo11y-sourcemaps`
+  bins under Node. It installs
   `@libo11y/web`, `@libo11y/webext` and `@libo11y/rum` into another fresh project and
   runs the same bundle check on them. In each of these installs, a
   package not on npm yet comes from its packed tarball. A last step

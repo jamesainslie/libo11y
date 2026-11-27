@@ -213,6 +213,14 @@ JSON
 		npx --no-install libo11y registry check "$valid"
 		bun node_modules/.bin/libo11y registry check "$valid"
 		echo "ts-release-check: libo11y registry check ok under node and bun"
+
+		node_help="$(npx --no-install libo11y-sourcemaps --help)"
+		grep -q '^usage: libo11y-sourcemaps upload' <<<"$node_help" ||
+			fail "libo11y-sourcemaps --help printed no usage under node"
+		bun_help="$(bun node_modules/.bin/libo11y-sourcemaps --help)"
+		grep -q '^usage: libo11y-sourcemaps upload' <<<"$bun_help" ||
+			fail "libo11y-sourcemaps --help printed no usage under bun"
+		echo "ts-release-check: libo11y-sourcemaps --help ok under node and bun"
 	fi
 )
 
