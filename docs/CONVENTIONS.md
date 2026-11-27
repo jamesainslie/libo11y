@@ -301,6 +301,23 @@ container (`O11Y_PG_TEST_DSN`).
      `libo11y==X.Y.Z` from PyPI into a fresh venv against an in-process
      OTLP/HTTP receiver, and creates the GitHub Release titled
      `libo11y-python vX.Y.Z` (never marked Latest, so Go keeps Latest).
+- C releases tag `c/vX.Y.Z` on the release commit. `c/build.zig.zon`,
+  `C_RELEASE_VERSION` in the `Makefile`, and the default in
+  `scripts/c-release-check.sh` move together only in a release commit. To
+  release C version `X.Y.Z`:
+  1. Move `c/CHANGELOG.md` entries into a `## [X.Y.Z] - date` section and
+     update the link references.
+  2. Set `.version = "X.Y.Z"` in `c/build.zig.zon` and `O11Y_VERSION` if
+     applicable, and set `C_RELEASE_VERSION` in the `Makefile` and the
+     default in `scripts/c-release-check.sh` to `vX.Y.Z`.
+  3. Run `make c-check` and `make c-release-check` (or `make release-check`),
+     then merge the release PR.
+  4. Tag `c/vX.Y.Z` on the merge commit and push that tag.
+  5. The release workflow (`scripts/release-tag.sh` routing `kind=c`,
+     `module=libo11y-c`) checks `c/build.zig.zon` and `c/CHANGELOG.md`,
+     runs `make c-check` and `scripts/c-release-check.sh`, and publishes the
+     GitHub Release titled `libo11y-c vX.Y.Z` (never marked Latest, so Go
+     keeps Latest) with the prebuilt archive and `SHA256SUMS`.
 - The specification versions separately: once released, each version has a
   `spec/vX.Y.Z` tag and a schema file served at its schema URL. Spec
   1.0.0 is tagged `spec/v1.0.0` on the `go/v0.1.0` commit. Before
@@ -366,6 +383,7 @@ install that version locally. Keep the two in step when adding a gate.
 | `make python-release-check` | builds wheel and sdist with `uv build`, verifies `py.typed` is included and `conformance/` and `tests/` are excluded, installs into a fresh venv, and runs a consumer smoke test against an in-process OTLP/HTTP receiver |
 | `make python-hygiene-test` | `scripts/python-hygiene.sh` against fixture trees |
 | `make c-check` | the C11 library: `zig fmt --check` and `scripts/zig-hygiene.sh` on `c/`, all C11 unit, shared conformance, wire, quickstart, and CLI suites in Debug and ReleaseSafe, plus a standalone `cc -std=c11 -Wall -Wextra -Werror -Wpedantic` link check against `libo11y.a`. CI runs it in the `c` job on Linux and macOS |
+| `make c-release-check` | validates `c/build.zig.zon` and `c/CHANGELOG.md` at `C_RELEASE_VERSION`, installs to a clean prefix, links an external C11 consumer against `libo11ytest.a` and an in-process OTLP/HTTP receiver, and runs `bin/libo11y registry check` |
 | `make vuln` | `govulncheck` on every Go module; runs last because it depends on the advisory database and the toolchain's patch level |
 
 - Go: the gates above. Standard-library advisories are fixed by the
