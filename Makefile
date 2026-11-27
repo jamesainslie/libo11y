@@ -8,7 +8,7 @@ GO_TEST_P ?= 4
 # gate runs on each module separately.
 GO_MODULES := go go/o11ygin go/o11yconnect go/o11ysql
 
-.PHONY: spec-check spec-generate spec-drift test lint vet tidy-check vuln release-check zig-release-check schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-install ts-check ts-browser-test rust-check rust-msrv zig-check zig-integrations-check zig-hygiene-test ci
+.PHONY: spec-check spec-generate spec-drift test lint vet tidy-check vuln release-check zig-release-check schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-install ts-check ts-browser-test rust-check rust-msrv zig-check zig-integrations-check zig-hygiene-test python-check python-hygiene-test ci
 
 # Validate the spec registry against the libo11y policy suite (naming,
 # ownership, sensitivity, cardinality, events, units).
@@ -174,6 +174,23 @@ zig-integrations-check:
 zig-hygiene-test:
 	scripts/zig-hygiene_test.sh
 
+# Worker count for pytest-xdist, capped at a quarter of the machine's cores.
+PYTHON_WORKERS ?= $(shell nproc 2>/dev/null | awk '{w=int($$1/4); if (w<1) w=1; print w}' || sysctl -n hw.ncpu 2>/dev/null | awk '{w=int($$1/4); if (w<1) w=1; print w}' || echo 2)
+
+# The Python package (needs uv): sync locked dependencies, format check,
+# lint, strict typecheck, tests with branch coverage, and the hygiene gate.
+python-check: python-hygiene-test
+	cd python && uv sync --frozen --all-extras --dev
+	cd python && uv run --frozen --no-sync ruff format --check src tests
+	cd python && uv run --frozen --no-sync ruff check src tests
+	cd python && uv run --frozen --no-sync pyright
+	cd python && uv run --frozen --no-sync pytest -n $(PYTHON_WORKERS) --cov=libo11y --cov-branch
+	scripts/python-hygiene.sh
+
+# Test python-hygiene.sh against fixture trees.
+python-hygiene-test:
+	scripts/python-hygiene_test.sh
+
 # vuln runs last: it depends on the advisory database and the toolchain's
 # patch level, so local runs exercise every other gate first.
-ci: lint vet test tidy-check spec-check spec-drift ts-check ts-browser-test rust-check rust-msrv zig-check schema-published-test release-notes-test release-tag-test ts-browser-bundle-test release-check vuln
+ci: lint vet test tidy-check spec-check spec-drift ts-check ts-browser-test rust-check rust-msrv zig-check python-check schema-published-test release-notes-test release-tag-test ts-browser-bundle-test release-check vuln

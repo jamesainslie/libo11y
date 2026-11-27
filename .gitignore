@@ -17,3 +17,11 @@ node_modules/
 .zig-cache/
 zig-out/
 zig-pkg/
+
+# Python virtual environments, caches, and coverage
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
