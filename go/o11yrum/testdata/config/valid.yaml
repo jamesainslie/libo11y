@@ -1,0 +1,23 @@
+# An example o11yrum gateway configuration. Every edge and limits field is
+# shown at its default.
+edge:
+  max_body_bytes: 524288
+  max_decompressed_bytes: 5242880
+  rate_limit_per_minute: 60
+  max_tracked_clients: 100000
+  trusted_proxies: ["10.0.0.0/8", "fd00::/8"]
+  forwarded_header: X-Forwarded-For
+limits:
+  max_attributes: 128
+  max_value_length: 4096
+  max_array_length: 128
+  max_span_events: 128
+  max_span_links: 128
+apps:
+  - service_name: shop-web
+    origins: ["https://Shop.Example:443", "http://localhost:5173"]
+    query_allow_list: [page, sort]
+  - service_name: shop-mobile
+    allow_missing_origin: true
+    client_token: pub-123
+    pii: allow
