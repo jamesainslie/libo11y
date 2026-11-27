@@ -22,6 +22,7 @@ const (
 	keyConnEffective    = "o11y.rum.connection.effective"
 	keyVitalRating      = "o11y.rum.vital.rating"
 	keyBrowserFamily    = "o11y.rum.browser.family"
+	keyOSName           = "os.name"
 	keyUpdateID         = "o11y.rum.app.update_id"
 	keySummarySeq       = "o11y.rum.summary.seq"
 	keySummaryTime      = "o11y.rum.summary.time_on_view"
@@ -41,7 +42,7 @@ const (
 var specKeys = []string{
 	keySessionID, keyCountry, keyPlatform, keyViewID, keyViewName, keyViewKind,
 	keyActionType, keyErrorSource, keyErrorFingerprint, keyFrustrationType,
-	keyDeviceClass, keyConnEffective, keyVitalRating, keyBrowserFamily, keyUpdateID,
+	keyDeviceClass, keyConnEffective, keyVitalRating, keyBrowserFamily, keyOSName, keyUpdateID,
 	keySummarySeq, keySummaryTime, keySummaryLoAF, keySummaryLCP, keySummaryINP,
 	keySummaryCLS, keySummaryFCP, keySummaryTTFB,
 	keySummaryErrors + "uncaught", keySummaryFrust + "rage",

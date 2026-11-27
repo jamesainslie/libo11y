@@ -10,10 +10,11 @@ import (
 type Option func(*settings)
 
 type settings struct {
-	cfg   *Config
-	sdk   *o11y.SDK
-	sinks []Sink
-	now   func() time.Time
+	cfg     *Config
+	sdk     *o11y.SDK
+	sinks   []Sink
+	now     func() time.Time
+	configs ConfigProvider
 }
 
 // WithConfig sets the gateway configuration. NewHandler requires it.
@@ -47,4 +48,10 @@ func WithClock(now func() time.Time) Option {
 			s.now = now
 		}
 	}
+}
+
+// WithConfigProvider sets where remote configuration comes from. Without
+// it the gateway serves each app's remote_config_file.
+func WithConfigProvider(p ConfigProvider) Option {
+	return func(s *settings) { s.configs = p }
 }

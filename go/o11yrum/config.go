@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -18,11 +20,30 @@ import (
 // Config is the gateway configuration, read from one YAML file. Zero
 // numeric fields take the documented defaults.
 type Config struct {
+	// Listen is the address the o11yrum-gateway command serves on.
+	// Default :8080. The library ignores it.
+	Listen string `yaml:"listen"`
+	// Environment is the gateway's own deployment.environment.name:
+	// production, staging, development or test. The o11yrum-gateway
+	// command requires it. The library ignores it.
+	Environment string `yaml:"environment"`
+	// Telemetry configures the gateway's own telemetry.
+	Telemetry TelemetryConfig `yaml:"telemetry"`
+
 	Edge   EdgeConfig   `yaml:"edge"`
 	Limits LimitsConfig `yaml:"limits"`
 	Apps   []AppConfig  `yaml:"apps"`
+	Sinks  SinksConfig  `yaml:"sinks"`
 
 	dir string // directory of the file LoadConfig read, for relative paths
+}
+
+// TelemetryConfig configures the gateway's own telemetry, which the
+// standard OTEL_* environment variables route.
+type TelemetryConfig struct {
+	// ServiceName is the gateway's own service.name. Default
+	// o11yrum-gateway.
+	ServiceName string `yaml:"service_name"`
 }
 
 // EdgeConfig holds the checks applied to every request before decoding.
@@ -39,6 +60,25 @@ type EdgeConfig struct {
 	TrustedProxies []string `yaml:"trusted_proxies"`
 	// ForwardedHeader names the forwarding header. Default X-Forwarded-For.
 	ForwardedHeader string `yaml:"forwarded_header"`
+	// Country names the header a proxy puts the client's country in.
+	Country CountryConfig `yaml:"country"`
+	// ClockSkewThreshold is the smallest difference between the gateway's
+	// clock and the client's send time that the gateway corrects
+	// timestamps for. Default 1s.
+	ClockSkewThreshold time.Duration `yaml:"clock_skew_threshold"`
+}
+
+// CountryConfig names the header carrying the client's country as an ISO
+// 3166-1 alpha-2 code, such as Cloudflare's CF-IPCountry, and the hops
+// allowed to set it.
+type CountryConfig struct {
+	// Header names the country header. Empty disables country enrichment.
+	Header string `yaml:"header"`
+	// TrustedFrom lists the CIDRs of the hop that sets the header. The
+	// header is believed only when the hop that received the client's
+	// connection is on this list. These hops also count as trusted
+	// proxies when reading the forwarding header.
+	TrustedFrom []string `yaml:"trusted_from"`
 }
 
 // LimitsConfig caps what one record may carry.
@@ -77,6 +117,10 @@ type AppConfig struct {
 	// QueryAllowList names the URL query parameters kept in url.full and
 	// url.query. Every other parameter is removed.
 	QueryAllowList []string `yaml:"query_allow_list"`
+	// RemoteConfigFile is a JSON object file served to the app's clients
+	// from /_o11y/v1/config. A relative path resolves against the
+	// configuration file's directory. Empty means the app has none.
+	RemoteConfigFile string `yaml:"remote_config_file"`
 }
 
 // PII modes.
@@ -143,6 +187,12 @@ func (c *Config) resolvePath(p string) string {
 // applyDefaults fills zero fields. Negative values are left for validate
 // to refuse.
 func (c *Config) applyDefaults() {
+	if c.Listen == "" {
+		c.Listen = ":8080"
+	}
+	if c.Telemetry.ServiceName == "" {
+		c.Telemetry.ServiceName = "o11yrum-gateway"
+	}
 	e := &c.Edge
 	setDefault(&e.MaxBodyBytes, 512<<10)
 	setDefault(&e.MaxDecompressedBytes, 5<<20)
@@ -150,6 +200,9 @@ func (c *Config) applyDefaults() {
 	setDefault(&e.MaxTrackedClients, 100000)
 	if e.ForwardedHeader == "" {
 		e.ForwardedHeader = "X-Forwarded-For"
+	}
+	if e.ClockSkewThreshold == 0 {
+		e.ClockSkewThreshold = time.Second
 	}
 	d := defaultLimits()
 	l := &c.Limits
@@ -207,6 +260,14 @@ func (c *Config) validate() error {
 			return fmt.Errorf("edge.trusted_proxies: %q is not a CIDR", s)
 		}
 	}
+	for _, s := range c.Edge.Country.TrustedFrom {
+		if _, err := netip.ParsePrefix(s); err != nil {
+			return fmt.Errorf("edge.country.trusted_from: %q is not a CIDR", s)
+		}
+	}
+	if c.Edge.ClockSkewThreshold < 0 {
+		return errors.New("edge.clock_skew_threshold must not be negative")
+	}
 	seen := make(map[string]bool, len(c.Apps))
 	for i, a := range c.Apps {
 		if a.ServiceName == "" {
@@ -259,6 +320,8 @@ func normalizeOrigin(o string) string {
 func (c *Config) clone() *Config {
 	out := *c
 	out.Edge.TrustedProxies = slices.Clone(c.Edge.TrustedProxies)
+	out.Edge.Country.TrustedFrom = slices.Clone(c.Edge.Country.TrustedFrom)
+	out.Sinks.OTLP.Headers = maps.Clone(c.Sinks.OTLP.Headers)
 	out.Apps = make([]AppConfig, len(c.Apps))
 	for i, a := range c.Apps {
 		a.Origins = slices.Clone(a.Origins)

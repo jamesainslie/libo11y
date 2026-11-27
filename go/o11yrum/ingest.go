@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"time"
 
@@ -30,27 +31,30 @@ type rejection struct {
 }
 
 // ingest runs one OTLP request through the pipeline: client address,
-// rate limit, decoding, app admission, validation and export. Each stage
-// is a method so later stages slot in without restructuring.
+// rate limit, decoding, app admission, validation, enrichment and export.
+// Each stage is a method so later stages slot in without restructuring.
 func (h *Handler) ingest(w http.ResponseWriter, r *http.Request, sig Signal) {
+	arrived := h.now()
+	rep := newBatchReport()
+	defer func() { h.tel.report(r.Context(), sig, rep) }()
+	refuse := func(corsOrigins map[string]bool, rej rejection) {
+		rep.reject(rej.reason)
+		h.reject(w, r, corsOrigins, rej)
+	}
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST, OPTIONS")
-		h.reject(w, r, h.origins, rejection{status: http.StatusMethodNotAllowed, reason: "method"})
+		refuse(h.origins, rejection{status: http.StatusMethodNotAllowed, reason: "method"})
 		return
 	}
-	key, ok := h.clientKey(r)
-	if !ok {
-		h.reject(w, r, h.origins, rejection{status: http.StatusBadRequest, reason: "client_address"})
-		return
-	}
-	if ok, wait := h.limit.allow(key); !ok {
-		h.reject(w, r, h.origins, rejection{status: http.StatusTooManyRequests, reason: "rate_limited", retryAfter: wait})
+	receiver, rej := h.edge(r)
+	if rej != nil {
+		refuse(h.origins, *rej)
 		return
 	}
 	d, err := decodeBody(sig, r.Header.Get("Content-Type"), r.Header.Get("Content-Encoding"),
 		r.Body, h.cfg.Edge.MaxBodyBytes, h.cfg.Edge.MaxDecompressedBytes)
 	if err != nil {
-		h.reject(w, r, h.origins, decodeRejection(err))
+		refuse(h.origins, decodeRejection(err))
 		return
 	}
 	service, err := batchService(sig, d)
@@ -59,18 +63,23 @@ func (h *Handler) ingest(w http.ResponseWriter, r *http.Request, sig Signal) {
 		if errors.Is(err, errMissingService) {
 			reason = "missing_service"
 		}
-		h.reject(w, r, h.origins, rejection{status: http.StatusBadRequest, reason: reason})
+		refuse(h.origins, rejection{status: http.StatusBadRequest, reason: reason})
 		return
 	}
 	if service == "" { // an empty batch
+		rep.accept(nil)
 		h.respond(w, r, h.origins, sig, d.json, nil)
 		return
 	}
+	if _, ok := h.apps[service]; ok {
+		rep.app = service
+	}
 	a, rej := h.admit(r, service)
 	if rej != nil {
-		h.reject(w, r, nil, *rej)
+		refuse(nil, *rej)
 		return
 	}
+	ci := h.clientInfo(r, receiver, arrived)
 	v := &validator{policy: a.policy, limits: h.cfg.Limits}
 	var drops dropCounts
 	var remaining int
@@ -78,37 +87,56 @@ func (h *Handler) ingest(w http.ResponseWriter, r *http.Request, sig Signal) {
 	switch sig {
 	case SignalTraces:
 		drops = v.traces(d.traces)
+		enrich(sig, d, ci)
 		remaining = d.traces.SpanCount()
 		d.traces.MarkReadOnly()
 		b.Traces = d.traces
 	case SignalLogs:
 		drops = v.logs(d.logs)
+		enrich(sig, d, ci)
 		remaining = d.logs.LogRecordCount()
 		d.logs.MarkReadOnly()
 		b.Logs = d.logs
 	}
+	rep.validated(drops, v.attrsRemoved)
 	if remaining > 0 {
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), sinkTimeout)
 		defer cancel()
 		if err := exportAll(ctx, h.sinks, b); err != nil {
 			h.log.WarnContext(ctx, "o11yrum: sink export failed",
 				slog.String("o11yrum.app", service), slog.Any("error", err))
-			h.reject(w, r, a.origins, rejection{status: http.StatusServiceUnavailable, reason: "sink", retryAfter: sinkRetryAfter})
+			refuse(a.origins, rejection{status: http.StatusServiceUnavailable, reason: "sink", retryAfter: sinkRetryAfter})
 			return
 		}
 	}
+	rep.accept(drops)
 	h.respond(w, r, a.origins, sig, d.json, drops)
 }
 
-// clientKey resolves the client address and returns its rate-limit key.
-// The address never leaves this function, which keeps the privacy
-// invariant structural: no later stage can see it.
-func (h *Handler) clientKey(r *http.Request) (uint64, bool) {
-	client, _, ok := h.trust.resolve(r)
+// edge runs the checks every endpoint applies before reading the body:
+// the client address and the rate limit. It returns the proxy hop that
+// received the client's connection, for the country header.
+func (h *Handler) edge(r *http.Request) (netip.Addr, *rejection) {
+	key, receiver, ok := h.clientKey(r)
 	if !ok {
-		return 0, false
+		return netip.Addr{}, &rejection{status: http.StatusBadRequest, reason: "client_address"}
 	}
-	return h.keyer.key(client), true
+	if ok, wait := h.limit.allow(key); !ok {
+		return netip.Addr{}, &rejection{status: http.StatusTooManyRequests, reason: "rate_limited", retryAfter: wait}
+	}
+	return receiver, nil
+}
+
+// clientKey resolves the client address and returns its rate-limit key
+// and the proxy hop that received the client's connection (invalid for a
+// direct connection). The client address never leaves this function, which
+// keeps the privacy invariant structural: no later stage can see it.
+func (h *Handler) clientKey(r *http.Request) (key uint64, receiver netip.Addr, ok bool) {
+	client, receiver, ok := h.trust.resolve(r)
+	if !ok {
+		return 0, netip.Addr{}, false
+	}
+	return h.keyer.key(client), receiver, true
 }
 
 var (
@@ -164,6 +192,13 @@ func countKey(m pcommon.Map, k string) int {
 
 // admit identifies the app and checks the request may send for it.
 func (h *Handler) admit(r *http.Request, service string) (*app, *rejection) {
+	return h.admitApp(r, service, false)
+}
+
+// admitApp identifies the app and checks the request may use it. With
+// originOptional, a request without an Origin header passes the origin
+// check, as same-origin GETs send none.
+func (h *Handler) admitApp(r *http.Request, service string, originOptional bool) (*app, *rejection) {
 	a, ok := h.apps[service]
 	if !ok {
 		return nil, &rejection{status: http.StatusForbidden, reason: "unknown_service"}
@@ -172,7 +207,7 @@ func (h *Handler) admit(r *http.Request, service string) (*app, *rejection) {
 		return nil, &rejection{status: http.StatusForbidden, reason: "disabled"}
 	}
 	switch o := normalizeOrigin(r.Header.Get("Origin")); {
-	case o == "" && !a.cfg.AllowMissingOrigin:
+	case o == "" && !a.cfg.AllowMissingOrigin && !originOptional:
 		return nil, &rejection{status: http.StatusForbidden, reason: "origin"}
 	case o != "" && !a.origins[o]:
 		return nil, &rejection{status: http.StatusForbidden, reason: "origin"}
@@ -265,7 +300,7 @@ func (h *Handler) preflight(w http.ResponseWriter, r *http.Request) {
 	setCORS(w, r, h.origins)
 	hdr := w.Header()
 	hdr.Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
-	hdr.Set("Access-Control-Allow-Headers", "Content-Type, Content-Encoding, Authorization")
+	hdr.Set("Access-Control-Allow-Headers", "Content-Type, Content-Encoding, Authorization, If-None-Match")
 	hdr.Set("Access-Control-Max-Age", "86400")
 	w.WriteHeader(http.StatusNoContent)
 }

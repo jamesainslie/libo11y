@@ -1,0 +1,40 @@
+# A complete o11yrum-gateway configuration.
+listen: 127.0.0.1:0
+environment: test
+
+telemetry:
+  service_name: o11yrum-gateway
+
+edge:
+  max_body_bytes: 524288
+  max_decompressed_bytes: 5242880
+  rate_limit_per_minute: 60
+  # The ingress controller's pod network, and Cloudflare in front of it.
+  trusted_proxies: ["10.0.0.0/8"]
+  forwarded_header: X-Forwarded-For
+  country:
+    header: CF-IPCountry
+    trusted_from: ["173.245.48.0/20", "103.21.244.0/22"]
+  clock_skew_threshold: 1s
+
+limits:
+  max_attributes: 128
+  max_value_length: 4096
+
+apps:
+  - service_name: shop-web
+    origins: ["https://shop.example"]
+    pii: drop
+    query_allow_list: [page, sort]
+    remote_config_file: remote/shop-web.json
+  - service_name: shop-mobile
+    allow_missing_origin: true
+    client_token: pub-shop-mobile
+
+sinks:
+  otlp:
+    endpoint: http://127.0.0.1:4318
+    headers:
+      X-Scope-OrgID: shop
+    timeout: 5s
+    compression: gzip
