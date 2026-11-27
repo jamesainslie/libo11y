@@ -260,3 +260,164 @@ test("hermetic mode with nothing injected sends nothing, as in @libo11y/web", as
   await open.forceFlush();
   assert.deepEqual(h.transport.requests, []);
 });
+
+test("spans export even when no other signal needs the platform", async () => {
+  const h = harness();
+  open = await setupRumWith(
+    {
+      ...OPTS,
+      consent: { initial: "granted" },
+      env: { OTEL_METRICS_EXPORTER: "none", OTEL_LOGS_EXPORTER: "none" },
+    },
+    h.deps,
+  );
+  open.tracerProvider.getTracer("app").startSpan("work").end();
+  await open.forceFlush();
+  assert.deepEqual(spanNames(h.transport), ["work"]);
+});
+
+test("an injected span exporter receives the kept spans in hermetic mode", async () => {
+  const h = harness();
+  const { InMemorySpanExporter } = await import("@opentelemetry/sdk-trace");
+  const exporter = new InMemorySpanExporter();
+  open = await setupRumWith(
+    { ...OPTS, hermetic: true, consent: { initial: "granted" }, spanExporter: exporter },
+    h.deps,
+  );
+  open.tracerProvider.getTracer("app").startSpan("work").end();
+  await open.forceFlush();
+  assert.deepEqual(
+    exporter.getFinishedSpans().map((s) => s.name),
+    ["work"],
+  );
+  assert.equal(exporter.getFinishedSpans()[0]?.attributes["session.id"], open.rum.sessionId());
+});
+
+test("a grant right after a revoke leaves RUM running", async () => {
+  const h = harness();
+  open = await setupRumWith({ ...OPTS, consent: { initial: "granted" } }, h.deps);
+  const revoked = open.consent.revoke();
+  open.consent.grant();
+  await revoked;
+  await until(() => open?.rum.sessionId() !== undefined, "a session after the grant");
+  assert.equal(runtimeOf(open)?.views.current()?.kind, "initial");
+});
+
+test("a revoke before any grant touches no storage", async () => {
+  const h = harness();
+  let opened = 0;
+  open = await setupRumWith(OPTS, {
+    ...h.deps,
+    openRetentionQueue: async (o) => {
+      opened++;
+      return createMemoryQueue(o);
+    },
+  });
+  h.storage.setItem(SESSION_STORAGE_KEY, "untouched");
+  await open.consent.revoke();
+  assert.equal(opened, 0);
+  assert.equal(h.storage.items.get(SESSION_STORAGE_KEY), "untouched");
+});
+
+test("a failing retention queue never breaks revoke or shutdown", async () => {
+  const h = harness();
+  open = await setupRumWith(
+    { ...OPTS, consent: { initial: "granted" }, rum: { sessionSampleRate: 0 } },
+    { ...h.deps, openRetentionQueue: () => Promise.reject(new Error("no IndexedDB")) },
+  );
+  open.tracerProvider.getTracer("app").startSpan("work").end();
+  await open.forceFlush();
+  await open.consent.revoke();
+  assert.equal(h.storage.items.has(SESSION_STORAGE_KEY), false);
+});
+
+test("a stored kept session sends what an earlier page left in the buffer", async () => {
+  const h = harness();
+  const queue = createMemoryQueue({});
+  const now = Date.now();
+  h.storage.setItem(
+    SESSION_STORAGE_KEY,
+    JSON.stringify({
+      v: 1,
+      id: "s-kept",
+      startedAt: now,
+      lastActivityAt: now,
+      sampled: false,
+      retained: "error",
+    }),
+  );
+  await queue.put({ signal: "traces", body: tracesBody("left", "s-kept") });
+  await queue.put({ signal: "traces", body: tracesBody("other", "s-unknown") });
+  open = await setupRumWith(
+    { ...OPTS, consent: { initial: "granted" } },
+    { ...h.deps, openRetentionQueue: async () => queue },
+  );
+  assert.equal(open.rum.sessionId(), "s-kept");
+  await until(() => spanNames(h.transport).includes("left"), "the leftover span");
+  assert.equal(spanNames(h.transport).includes("other"), false);
+  assert.equal((await queue.size()).entries, 0);
+});
+
+test("a failed setup removes RUM's listeners", async () => {
+  const h = harness();
+  const added: string[] = [];
+  const removed: string[] = [];
+  const win = new EventTarget();
+  const spy = {
+    addEventListener: (
+      t: string,
+      l: EventListenerOrEventListenerObject,
+      o?: AddEventListenerOptions | boolean,
+    ) => {
+      added.push(t);
+      win.addEventListener(t, l, o);
+    },
+    removeEventListener: (
+      t: string,
+      l: EventListenerOrEventListenerObject,
+      o?: EventListenerOptions | boolean,
+    ) => {
+      removed.push(t);
+      win.removeEventListener(t, l, o);
+    },
+    dispatchEvent: (e: Event) => win.dispatchEvent(e),
+  };
+  await assert.rejects(
+    setupRumWith(OPTS, {
+      ...h.deps,
+      window: spy,
+      web: {
+        ...h.deps.web,
+        window: spy,
+        createExporterSet: () => {
+          throw new Error("boom");
+        },
+      },
+    }),
+  );
+  assert.deepEqual(added.sort(), removed.sort());
+});
+
+function tracesBody(name: string, sessionId: string): string {
+  return JSON.stringify({
+    resourceSpans: [
+      {
+        scopeSpans: [
+          {
+            spans: [
+              {
+                name,
+                traceId: "0af7651916cd43dd8448eb211c80319c",
+                spanId: "b7ad6b7169203331",
+                kind: 1,
+                startTimeUnixNano: "1",
+                endTimeUnixNano: "2",
+                attributes: [{ key: "session.id", value: { stringValue: sessionId } }],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  });
+}

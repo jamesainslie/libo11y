@@ -2,7 +2,8 @@
  * The RUM span processor. On every span start it adds session.id, o11y.rum.view.id and user.id,
  * removes disallowed query parameters from url.full, and turns web's documentLoad span into the
  * app_load shape of the load view: it is renamed app_load and carries o11y.rum.span.shape app_load,
- * the attribute the gateway keys on. It publishes client request starts and ends on the bus for
+ * the attribute the gateway keys on. Its documentFetch child also belongs to the load view, and it
+ * is not a request of the view. It publishes client request starts and ends on the bus for
  * actions, summaries and breadcrumbs. It runs before the exporting processors, so they see the
  * attributes.
  */
@@ -24,6 +25,8 @@ import { stripQuery } from "./query.ts";
 /** The name of the app_load span shape. */
 export const APP_LOAD_SPAN = "app_load";
 const DOCUMENT_LOAD = "documentLoad";
+/** web's child of documentLoad: the document request, part of the load and not a request the view made. */
+const DOCUMENT_FETCH = "documentFetch";
 const WEB_SCOPE = "@libo11y/web";
 
 export interface RumSpanProcessorOptions {
@@ -37,8 +40,16 @@ export interface RumSpanProcessorOptions {
   readonly now: () => number;
 }
 
+function fromWeb(span: ReadableSpan, name: string): boolean {
+  return span.name === name && span.instrumentationScope.name === WEB_SCOPE;
+}
+
 function isRequest(span: ReadableSpan): boolean {
-  return span.kind === SpanKind.CLIENT && typeof span.attributes["http.request.method"] === "string";
+  return (
+    span.kind === SpanKind.CLIENT &&
+    typeof span.attributes["http.request.method"] === "string" &&
+    !fromWeb(span, DOCUMENT_FETCH)
+  );
 }
 
 export function rumSpanProcessor(opts: RumSpanProcessorOptions): SpanProcessor {
@@ -49,8 +60,8 @@ export function rumSpanProcessor(opts: RumSpanProcessorOptions): SpanProcessor {
       const session = opts.session.current();
       if (session === undefined) return;
       span.setAttribute(ATTR_SESSION_ID, session.id);
-      const appLoad = span.name === DOCUMENT_LOAD && span.instrumentationScope.name === WEB_SCOPE;
-      const view = appLoad ? opts.views.loadView() : opts.views.current();
+      const appLoad = fromWeb(span, DOCUMENT_LOAD);
+      const view = appLoad || fromWeb(span, DOCUMENT_FETCH) ? opts.views.loadView() : opts.views.current();
       if (view !== undefined) span.setAttribute(ATTR_RUM_VIEW_ID, view.id);
       const user = opts.userId();
       if (user !== undefined) span.setAttribute(ATTR_USER_ID, user);

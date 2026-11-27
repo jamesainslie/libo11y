@@ -89,3 +89,16 @@ test("without a session spans are left alone", async () => {
   assert.equal(s?.attributes["session.id"], undefined);
   assert.deepEqual(signals, []);
 });
+
+test("web's documentFetch belongs to the load view and is not a request", async () => {
+  const { tp, exporter, signals } = setup();
+  tp.getTracer("@libo11y/web")
+    .startSpan("documentFetch", {
+      kind: SpanKind.CLIENT,
+      attributes: { "http.request.method": "GET", "url.full": "https://app.test/" },
+    })
+    .end();
+  await tp.forceFlush();
+  assert.equal(exporter.getFinishedSpans()[0]?.attributes["o11y.rum.view.id"], "v0");
+  assert.deepEqual(signals, []);
+});

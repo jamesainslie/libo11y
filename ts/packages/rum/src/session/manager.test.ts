@@ -209,3 +209,15 @@ test("no session exists until the stored one has loaded", async () => {
   await starting;
   assert.equal(m.current()?.id, "stored");
 });
+
+test("a session another tab removed is replaced with this context's previous view in mind", async () => {
+  const a = setup();
+  const b = setup({ randomId: () => "b-new" }, a.shared);
+  await a.m.start();
+  await b.m.start();
+  a.m.clear();
+  assert.equal(b.m.current()?.id, "b-new");
+  const last = b.events.at(-1);
+  assert.equal(last?.type, "start");
+  assert.equal(last?.type === "start" ? last.previous?.id : undefined, "id-1");
+});

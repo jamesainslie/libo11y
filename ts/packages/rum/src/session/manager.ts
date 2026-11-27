@@ -11,7 +11,8 @@
  * On another context's change: the same ID merges (the latest lastActivityAt, retained kept once
  * set, emitting kept with local false when it newly became kept). A different ID is adopted when
  * this context has none, or when its startedAt is later, or equal with a smaller ID, emitting start
- * with local false. A removed session is forgotten, so the next current() creates one.
+ * with local false. A removed session is forgotten, so the next current() creates one, with the
+ * removed session as its previous.
  *
  * decide(id): a missing ID means the current session. The current session sends when kept and
  * buffers otherwise. Any of the last four sessions this context knew sends when it was kept and
@@ -58,6 +59,10 @@ export function createSessionManager(opts: SessionManagerOptions): SessionManage
   let ready = false;
   let lastSave = 0;
   let unsubscribe: (() => void) | undefined;
+  /** The session another context removed, so the next one starts with it as previous. */
+  let forgotten: SessionState | undefined;
+  /** Bumped by clear(), so a start() whose load resolves after a clear does nothing. */
+  let generation = 0;
 
   const emit = (e: SessionEvent): void => {
     for (const l of listeners) l(e);
@@ -75,7 +80,9 @@ export function createSessionManager(opts: SessionManagerOptions): SessionManage
   };
 
   const rotate = (t: number): SessionState => {
-    const previous = state;
+    const ended = state;
+    const previous = state ?? forgotten;
+    forgotten = undefined;
     const id = randomId();
     const sampled = sessionSampled(id, opts.sampleRate());
     const version = opts.configVersion?.();
@@ -90,7 +97,7 @@ export function createSessionManager(opts: SessionManagerOptions): SessionManage
     state = next;
     remember(next);
     save(next);
-    if (previous !== undefined) emit({ type: "end", session: previous, local: true });
+    if (ended !== undefined) emit({ type: "end", session: ended, local: true });
     emit({ type: "start", session: next, ...(previous === undefined ? {} : { previous }), local: true });
     return next;
   };
@@ -104,6 +111,7 @@ export function createSessionManager(opts: SessionManagerOptions): SessionManage
 
   const adopt = (incoming: SessionState | undefined): void => {
     if (incoming === undefined) {
+      forgotten = state ?? forgotten;
       state = undefined;
       return;
     }
@@ -134,9 +142,10 @@ export function createSessionManager(opts: SessionManagerOptions): SessionManage
     async start() {
       if (started) return;
       started = true;
+      const gen = generation;
       unsubscribe = opts.store.onChange(adopt);
       const stored = await opts.store.load();
-      if (!started) return; // cleared while loading
+      if (gen !== generation) return; // cleared while loading
       ready = true;
       if (stored !== undefined && state === undefined) {
         state = stored;
@@ -173,6 +182,8 @@ export function createSessionManager(opts: SessionManagerOptions): SessionManage
       return recent.get(id) === true ? "send" : "drop";
     },
     clear() {
+      generation++;
+      forgotten = undefined;
       state = undefined;
       recent.clear();
       started = false;

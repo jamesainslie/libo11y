@@ -92,3 +92,44 @@ test("size before first use opens nothing", async () => {
   assert.deepEqual(await buffer.size(), { entries: 0, bytes: 0 });
   assert.equal(opened, 0);
 });
+
+test("put never rejects, even when the queue cannot open", async () => {
+  const buffer = createRetentionBuffer({ open: () => Promise.reject(new Error("no IndexedDB")) });
+  await buffer.put({ signal: "logs", body: "x" });
+  await buffer.clear();
+  assert.equal(await buffer.flush(recordingDelivery()), 0);
+});
+
+test("flush drops the batches keep refuses", async () => {
+  const buffer = createRetentionBuffer({
+    open: () => openQueue({ ...RETENTION_QUEUE_DEFAULTS, indexedDB: new IDBFactory() }),
+  });
+  await buffer.put({ signal: "logs", body: "keep" });
+  await buffer.put({ signal: "logs", body: "drop" });
+  const d = recordingDelivery();
+  assert.equal(await buffer.flush(d, (b) => b.body === "keep"), 1);
+  assert.deepEqual(
+    d.sent.map((s) => s.body),
+    ["keep"],
+  );
+  assert.deepEqual(await buffer.size(), { entries: 0, bytes: 0 });
+  buffer.close();
+});
+
+test("each batch is removed as soon as it was handed over", async () => {
+  const queue = await openQueue({ ...RETENTION_QUEUE_DEFAULTS, indexedDB: new IDBFactory() });
+  const buffer = createRetentionBuffer({ open: async () => queue });
+  await buffer.put({ signal: "logs", body: "a" });
+  await buffer.put({ signal: "logs", body: "b" });
+  const sizes: number[] = [];
+  const d = recordingDelivery();
+  await buffer.flush({
+    ...d,
+    async deliver(b) {
+      sizes.push((await queue.size()).entries);
+      return d.deliver(b);
+    },
+  });
+  assert.deepEqual(sizes, [2, 1]);
+  buffer.close();
+});

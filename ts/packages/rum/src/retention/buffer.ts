@@ -1,12 +1,13 @@
 /**
  * The retention buffer (design, "What a client sends", item 4): detail of a session not yet kept,
  * in its own IndexedDB queue so a reload keeps it and every tab of the session shares it. Flushing
- * claims entries with a lease, so two tabs that both see the session become kept send each batch
- * once. Where IndexedDB is unavailable, openQueue gives a memory queue and a reload loses it. The
- * queue is opened on first use, which is always after consent was granted, so no database is
- * created before consent.
+ * claims a few entries at a time with a lease and removes each one once it is handed over, so two
+ * tabs that both see the session become kept send each batch once. Where IndexedDB is unavailable,
+ * openQueue gives a memory queue and a reload loses it. The queue is opened on first use, so a
+ * caller that uses it only after consent creates no database before consent.
  */
-import type { Delivery, PersistentQueue } from "@libo11y/web/internal";
+import type { Delivery, OtlpBatch, PersistentQueue } from "@libo11y/web/internal";
+import { diag } from "@opentelemetry/api";
 import type { RetentionBuffer } from "../contracts/retention.ts";
 
 /** The retention queue's database and bounds. setupRum's rum.retention overrides the bounds. */
@@ -22,52 +23,81 @@ export const RETENTION_QUEUE_DEFAULTS: {
   maxEntries: 1000,
 };
 
-const CLAIM_BATCH = 20;
-const LEASE_MILLIS = 30_000;
+/** Entries claimed per round. */
+const CLAIM_BATCH = 5;
+/** The lease covers a round of sends at the longest send time, plus a margin. */
+const LEASE_MARGIN_MILLIS = 30_000;
+const DEFAULT_SEND_TIMEOUT_MILLIS = 10_000;
 
 export interface RetentionBufferOptions {
   readonly open: () => Promise<PersistentQueue>;
   /** Epoch milliseconds. Default Date.now. */
   readonly now?: () => number;
+  /** The longest one send can take, the transport timeout. Default 10000. Sets the claim lease. */
+  readonly sendTimeoutMillis?: number;
 }
 
 export function createRetentionBuffer(opts: RetentionBufferOptions): RetentionBuffer {
   const now = opts.now ?? Date.now;
-  let opening: Promise<PersistentQueue> | undefined;
+  const lease = CLAIM_BATCH * (opts.sendTimeoutMillis ?? DEFAULT_SEND_TIMEOUT_MILLIS) + LEASE_MARGIN_MILLIS;
+  let opening: Promise<PersistentQueue | undefined> | undefined;
   let closed = false;
-  const queue = (): Promise<PersistentQueue> => {
-    opening ??= opts.open();
+  const queue = (): Promise<PersistentQueue | undefined> => {
+    opening ??= opts.open().catch((err: unknown) => {
+      diag.warn("o11y: rum: the retention buffer could not open", err);
+      return undefined;
+    });
     return opening;
   };
   return {
     async put(batch) {
-      if (!closed) await (await queue()).put(batch);
+      if (closed) return;
+      try {
+        await (await queue())?.put(batch);
+      } catch (err) {
+        diag.warn("o11y: rum: a retention buffer write failed", err);
+      }
     },
-    async flush(delivery: Delivery) {
+    async flush(delivery: Delivery, keep?: (batch: OtlpBatch) => boolean) {
       if (closed) return 0;
-      const q = await queue();
       let sent = 0;
-      for (;;) {
-        const entries = await q.claim(now(), CLAIM_BATCH, LEASE_MILLIS);
-        if (entries.length === 0) return sent;
-        for (const e of entries) {
-          // The delivery keeps a retryable failure in its own retry queue, so the entry is done here.
-          await delivery.deliver({ signal: e.signal, body: e.body });
-          sent++;
+      try {
+        const q = await queue();
+        if (q === undefined) return 0;
+        for (;;) {
+          const entries = await q.claim(now(), CLAIM_BATCH, lease);
+          if (entries.length === 0) return sent;
+          for (const e of entries) {
+            const batch: OtlpBatch = { signal: e.signal, body: e.body };
+            // The delivery keeps a retryable failure in its own retry queue, so the entry is done here.
+            if (keep === undefined || keep(batch)) {
+              await delivery.deliver(batch);
+              sent++;
+            }
+            await q.remove([e.id]);
+          }
         }
-        await q.remove(entries.map((e) => e.id));
+      } catch (err) {
+        diag.warn("o11y: rum: the retention flush failed", err);
+        return sent;
       }
     },
     async clear() {
-      // Opens the queue if needed: a previous page of the session may have left entries.
-      if (!closed) await (await queue()).clear();
+      if (closed) return;
+      try {
+        // Opens the queue if needed: a previous page of the session may have left entries.
+        await (await queue())?.clear();
+      } catch (err) {
+        diag.warn("o11y: rum: clearing the retention buffer failed", err);
+      }
     },
     async size() {
-      return opening === undefined ? { entries: 0, bytes: 0 } : (await opening).size();
+      const q = opening === undefined ? undefined : await opening;
+      return q === undefined ? { entries: 0, bytes: 0 } : q.size();
     },
     close() {
       closed = true;
-      void opening?.then((q) => q.close());
+      void opening?.then((q) => q?.close());
     },
   };
 }

@@ -6,13 +6,18 @@
  * activity listeners. The returned handle is web's telemetry extended in place with rum.
  *
  * The span processor reaches core as options.spanProcessor. Core treats an injected processor as
- * the traces route ("injected") and then uses no exporter the platform builds, so RUM also injects
- * a forwarding span exporter, and its createExporterSet wrapper builds web's span exporter for the
- * route traces would have had without RUM: none in hermetic mode or with OTEL_SDK_DISABLED, else
- * OTEL_TRACES_EXPORTER from the browser env. An app that injects its own spanExporter keeps it,
- * routed by session; one that injects only a spanProcessor keeps sole charge of span export.
+ * the traces route ("injected") and then uses no span exporter the platform builds, so RUM also
+ * injects a forwarding span exporter. When web hands RUM its platform options (onPlatform, before
+ * core builds anything), RUM builds the span exporter for the route traces would have had without
+ * RUM: none in hermetic mode, else OTEL_TRACES_EXPORTER from the browser env. An app that injects
+ * its own spanExporter keeps it, routed by session; one that injects only a spanProcessor keeps sole
+ * charge of span export.
+ *
+ * Consent. Closing the gate stops RUM at once, in the gate listener, so a grant that follows a
+ * revoke before the revoke hooks finish starts RUM again. The revoke hook then empties the
+ * retention buffer. A page that never had consent touches no RUM storage on revoke.
  */
-import { type ExporterSet, O11yError, type SignalReport } from "@libo11y/core";
+import { O11yError, type SignalReport } from "@libo11y/core";
 import {
   ATTR_RUM_CONFIG_VERSION,
   ATTR_RUM_CONNECTION_EFFECTIVE,
@@ -28,8 +33,10 @@ import type { WebTelemetry } from "@libo11y/web";
 import {
   browserEnv,
   type ConsentController,
+  createSpanExporter,
   type Delivery,
   defaultSetupDeps,
+  type OtlpBatch,
   openQueue,
   type PersistentQueue,
   type QueueOptions,
@@ -38,7 +45,7 @@ import {
 } from "@libo11y/web/internal";
 import { diag } from "@opentelemetry/api";
 import { type ExportResult, ExportResultCode } from "@opentelemetry/core";
-import type { SpanExporter, SpanProcessor } from "@opentelemetry/sdk-trace";
+import { ConsoleSpanExporter, type SpanExporter, type SpanProcessor } from "@opentelemetry/sdk-trace";
 import { ATTR_SESSION_ID, ATTR_USER_ID } from "./attrs.ts";
 import { createBus } from "./bus.ts";
 import type { RetentionRouting } from "./contracts/retention.ts";
@@ -47,6 +54,7 @@ import type { SessionStore } from "./contracts/session.ts";
 import type { Rum, RumSetupOptions, RumTelemetry } from "./options.ts";
 import { createRetentionBuffer, RETENTION_QUEUE_DEFAULTS } from "./retention/buffer.ts";
 import { retainingSpanExporter, withRetention } from "./retention/exporters.ts";
+import { sessionsIn } from "./retention/sessions.ts";
 import { localStorageSessionStore } from "./session/local-store.ts";
 import { createSessionManager } from "./session/manager.ts";
 import { resolveSettings } from "./settings.ts";
@@ -152,10 +160,10 @@ function forwardingSpanExporter(target: () => SpanExporter | undefined): SpanExp
 
 /** The traces route core would have resolved without RUM's injected processor and exporter. */
 function naturalTracesRoute(
-  config: { readonly hermetic: boolean; readonly sdkDisabled: boolean },
+  hermetic: boolean,
   env: Readonly<Record<string, string>>,
 ): "otlp" | "console" | "none" {
-  if (config.hermetic || config.sdkDisabled) return "none";
+  if (hermetic || (env.OTEL_SDK_DISABLED ?? "").trim().toLowerCase() === "true") return "none";
   const first = (env.OTEL_TRACES_EXPORTER ?? "")
     .split(",")
     .map((v) => v.trim().toLowerCase())
@@ -180,6 +188,9 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
           : { maxAgeMillis: rumOptions.retention.maxAgeMillis }),
       }),
     now: deps.now,
+    ...(webOptions.transport?.timeoutMillis === undefined
+      ? {}
+      : { sendTimeoutMillis: webOptions.transport.timeoutMillis }),
   });
   const session = createSessionManager({
     store: deps.sessionStore(),
@@ -246,7 +257,11 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
     }
   };
   // Buffer writes still in flight, so a flush after retention sees every batch exported before it.
+  // put never rejects.
   const puts = new Set<Promise<void>>();
+  const settled = async (): Promise<void> => {
+    await Promise.allSettled([...puts]);
+  };
   const routing: RetentionRouting = {
     decide: (id) => session.decide(id),
     buffer: (b) => {
@@ -254,11 +269,18 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
       puts.add(p);
     },
   };
+  // A buffered batch goes out only when every session it holds records of is to be sent, because
+  // the buffer is shared by every tab and may hold another session's batches.
+  const keep = (b: OtlpBatch): boolean => {
+    const ids = sessionsIn(b);
+    return ids !== undefined && [...ids].every((id) => session.decide(id) === "send");
+  };
 
   const appExporter = webOptions.spanExporter;
   // An app that injects only a processor exports spans itself, so RUM adds no exporter.
   const forward = webOptions.spanProcessor === undefined || appExporter !== undefined;
-  let spanTarget: SpanExporter | undefined;
+  let spanTarget: SpanExporter | undefined =
+    appExporter === undefined ? undefined : retainingSpanExporter(appExporter, routing);
   const webDeps: SetupDeps = {
     ...deps.web,
     createConsentController: (o) => {
@@ -267,35 +289,44 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
     },
     createHttpTransport: (o) =>
       deps.web.createHttpTransport(gatewayTransportOptions(o, resolved.clientToken, deps.now)),
-    createExporterSet: (req, d, endpoints, eo) => {
-      delivery = d;
-      if (appExporter !== undefined) {
-        spanTarget = retainingSpanExporter(appExporter, routing);
-        return withRetention(deps.web.createExporterSet(req, d, endpoints, eo), routing);
+    onPlatform: (platform, po) => {
+      delivery = po.delivery;
+      if (forward && appExporter === undefined) {
+        const route = naturalTracesRoute(webOptions.hermetic === true, browserEnv(webOptions, po.endpoints));
+        const inner =
+          route === "console"
+            ? new ConsoleSpanExporter()
+            : route === "otlp" && po.endpoints.traces !== undefined
+              ? createSpanExporter(po.delivery, po.mode === undefined ? {} : { mode: po.mode })
+              : undefined;
+        spanTarget = inner === undefined ? undefined : retainingSpanExporter(inner, routing);
       }
-      const traces = forward
-        ? naturalTracesRoute(req.config, browserEnv(webOptions, endpoints))
-        : req.config.traces;
-      const built: ExporterSet = withRetention(
-        deps.web.createExporterSet({ ...req, config: { ...req.config, traces } }, d, endpoints, eo),
-        routing,
-      );
-      if (forward) spanTarget = built.spanExporter;
-      return built;
+      deps.web.onPlatform?.(platform, po);
     },
+    // Traces are injected, so web builds no span exporter here; logs are routed by session.
+    createExporterSet: (req, d, endpoints, eo) =>
+      withRetention(deps.web.createExporterSet(req, d, endpoints, eo), routing),
     installFetchInstrumentation: (o) => deps.web.installFetchInstrumentation({ ...o, onStart }),
     installXhrInstrumentation: (o) => deps.web.installXhrInstrumentation({ ...o, onStart }),
   };
 
-  const t = await setupWithDeps(
-    {
-      ...webOptions,
-      spanProcessor: composeProcessors(processor, webOptions.spanProcessor),
-      ...(forward ? { spanExporter: forwardingSpanExporter(() => spanTarget) } : {}),
-    },
-    webDeps,
-    true,
-  );
+  let t: WebTelemetry;
+  try {
+    t = await setupWithDeps(
+      {
+        ...webOptions,
+        spanProcessor: composeProcessors(processor, webOptions.spanProcessor),
+        ...(forward ? { spanExporter: forwardingSpanExporter(() => spanTarget) } : {}),
+      },
+      webDeps,
+      true,
+    );
+  } catch (err) {
+    views.close();
+    session.close();
+    retention.close();
+    throw err;
+  }
   telemetry = t;
   const gate = controller;
   if (gate === undefined) {
@@ -338,11 +369,18 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
   // Collectors run only while consent is granted.
   const running: (() => void)[] = [];
   let starting: Promise<void> | undefined;
+  /** Consent was granted at some point in this page, so RUM may have stored something. */
+  let everStarted = false;
   const startAll = (): Promise<void> => {
+    everStarted = true;
     starting ??= (async () => {
       await session.start();
       if (!gate.recording()) return; // revoked while the session loaded
       views.begin();
+      // A kept session may find batches an earlier page of it left in the buffer.
+      if (session.kept()) {
+        flushRetention().catch((err: unknown) => diag.warn("o11y: rum: retention flush failed", err));
+      }
       for (const c of resolved.collectors) {
         if (!settings.enabled.has(c.name)) continue;
         try {
@@ -367,8 +405,8 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
 
   const flushRetention = async (): Promise<void> => {
     await t.forceFlush();
-    await Promise.all([...puts]);
-    if (delivery !== undefined && gate.recording()) await retention.flush(delivery);
+    await settled();
+    if (delivery !== undefined && gate.recording()) await retention.flush(delivery, keep);
   };
   const offSession = session.subscribe((e) => {
     if (e.type === "kept") {
@@ -392,18 +430,21 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
     }
   });
 
-  const offRevoke = gate.onRevoke(async () => {
+  const stopRecording = (): void => {
     stopAll();
     summary.reset();
     views.end();
     session.clear();
-    await Promise.all([...puts]);
-    await retention.clear();
+  };
+  const offRevoke = gate.onRevoke(async () => {
+    if (!everStarted) return;
+    await settled();
+    // A grant may already have followed the revoke; its session's records are not to be removed.
+    if (!gate.recording()) await retention.clear();
   });
   const offGate = gate.subscribe((recording) => {
-    if (recording) {
-      startAll().catch((err: unknown) => diag.warn("o11y: rum: start failed", err));
-    }
+    if (recording) startAll().catch((err: unknown) => diag.warn("o11y: rum: start failed", err));
+    else if (everStarted) stopRecording();
   });
 
   const doc = deps.document;
@@ -458,7 +499,7 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
       const report = await webShutdown(opts);
       views.close();
       session.close();
-      await Promise.all([...puts]);
+      await settled();
       retention.close();
       return report;
     })();
