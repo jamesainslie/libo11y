@@ -26,19 +26,22 @@ uv add libo11y
 
 ```python
 import logging
-from opentelemetry import trace
+from opentelemetry import metrics, trace
 import libo11y
 from libo11y.spec import Environment
 
 with libo11y.setup(
     service_name="checkout",
-    version="1.2.0",
     environment=Environment.PRODUCTION,
-) as tel:
+):
+    # Vanilla OTEL and stdlib logging from here on.
     tracer = trace.get_tracer("checkout")
+    orders = metrics.get_meter("checkout").create_counter("checkout.orders", unit="{order}")
     logger = logging.getLogger("checkout")
-    with tracer.start_as_current_span("startup"):
-        logger.info("ready", extra={"checkout.items": 3})  # correlated with the span
+
+    with tracer.start_as_current_span("checkout.place", attributes={"order.id": "ord-42"}):
+        logger.info("order placed", extra={"order.id": "ord-42"})  # correlated with the span
+        orders.add(1, {"payment.method": "card"})  # attaches trace exemplar
 ```
 
 `setup()` installs the tracer, meter, and logger providers globally, wires a structured `logging.Handler` on the root logger (JSON console + OTLP log export), installs the W3C TraceContext + Baggage propagator wrapped in the baggage egress filter, and runs the startup canary (`o11y.telemetry.configured`). Leaving the `with` block runs bounded concurrent shutdown across all three signals.

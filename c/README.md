@@ -68,20 +68,18 @@ int main(void) {
         return 0; /* run safely without telemetry */
     }
 
-    o11y_tracer_t *tracer = o11y_tracer(sdk, "checkout");
-    o11y_span_t *span = o11y_tracer_start(tracer, NULL, "POST /checkout", NULL);
+    o11y_attr_t span_attrs[] = { o11y_kv_str("order.id", "ord-42") };
+    o11y_span_start_options_t span_opts = { .attributes = span_attrs, .attributes_len = 1 };
+    o11y_span_t *span = o11y_tracer_start(o11y_tracer(sdk, "checkout"), NULL, "checkout.place", &span_opts);
     o11y_ctx_t *ctx = o11y_ctx_with_span(NULL, span);
 
-    /* Correlated structured log carrying the active trace_id and span_id. */
-    o11y_log_attr_t attrs[] = {
-        o11y_log_kv_str("order.id", "ord-42"),
-        o11y_log_kv_secret("payment.card_cvv"),
-    };
-    o11y_log_info(sdk, ctx, "order accepted", attrs, 2);
+    o11y_log_attr_t log_attrs[] = { o11y_log_kv_str("order.id", "ord-42") };
+    o11y_log_info(sdk, ctx, "order placed", log_attrs, 1); /* correlated with the span */
 
-    /* Metric with automatic trace-based exemplar attachment. */
-    o11y_counter_i64_t reqs = o11y_meter_counter_i64(o11y_meter(sdk, "checkout"), "checkout.requests", NULL);
-    o11y_counter_i64_add(reqs, ctx, 1, NULL, 0);
+    o11y_instrument_options_t counter_opts = { .unit = "{order}" };
+    o11y_counter_i64_t orders = o11y_meter_counter_i64(o11y_meter(sdk, "checkout"), "checkout.orders", &counter_opts);
+    o11y_attr_t metric_attrs[] = { o11y_kv_str("payment.method", "card") };
+    o11y_counter_i64_add(orders, ctx, 1, metric_attrs, 1); /* attaches trace exemplar */
 
     o11y_ctx_destroy(ctx);
     o11y_span_end(span);

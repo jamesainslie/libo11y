@@ -56,14 +56,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .pii_mode(PiiMode::Drop)
         .setup()?;
 
-    let _span = tracing::info_span!("checkout.place", order.id = "ord-42").entered();
-    tracing::info!(order.id = "ord-42", "order placed");
+    tracing::info_span!("checkout.place", order.id = "ord-42").in_scope(|| {
+        tracing::info!(order.id = "ord-42", "order placed");
 
-    sdk.event("checkout.order.placed", [KeyValue::new("order.id", "ord-42")]);
-    sdk.meter("checkout")
-        .u64_counter("checkout.orders")
-        .build()
-        .add(1, &[]);
+        sdk.event("checkout.order.placed", [KeyValue::new("order.id", "ord-42")]);
+        sdk.meter("checkout")
+            .u64_counter("checkout.orders")
+            .build()
+            .add(1, &[]);
+    });
 
     sdk.shutdown_on_signals().await?;
     Ok(())
