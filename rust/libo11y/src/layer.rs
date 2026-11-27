@@ -42,6 +42,7 @@ use tracing_subscriber::registry::LookupSpan;
 
 use crate::Error;
 use crate::diagnostics::{DiagnosticsLayer, ErrorHandler, is_diagnostic, reports};
+use crate::log_layer::{LogLayer, LogPipeline};
 
 /// What the layers of one SDK read.
 #[derive(Clone)]
@@ -50,6 +51,8 @@ pub(crate) struct Parts {
     pub(crate) tracer: SdkTracer,
     /// Where OpenTelemetry's diagnostics go.
     pub(crate) handler: ErrorHandler,
+    /// Where application log events go.
+    pub(crate) logs: Arc<LogPipeline>,
 }
 
 impl std::fmt::Debug for Parts {
@@ -103,6 +106,12 @@ fn span_layer_accepts(metadata: &Metadata<'_>) -> bool {
         && (metadata.is_span() || (metadata.is_event() && *metadata.level() == Level::ERROR))
 }
 
+/// Whether the log layer sees `metadata`: every non-diagnostic event, so the
+/// log layer never vetoes spans or OpenTelemetry diagnostics.
+fn log_layer_accepts(metadata: &Metadata<'_>) -> bool {
+    !is_diagnostic(metadata) && metadata.is_event()
+}
+
 /// The libo11y layers over `cell`, in stack order. A new layer is added
 /// here, and every public way to get the stack picks it up.
 pub(crate) fn layers<S>(cell: &Arc<PartsCell>) -> Vec<BoxedLayer<S>>
@@ -117,7 +126,10 @@ where
         .with_error_events_to_status(true)
         .with_error_events_to_exceptions(false)
         .with_filter(filter_fn(span_layer_accepts));
-    vec![Box::new(diagnostics), Box::new(spans)]
+    let for_logs = Arc::clone(cell);
+    let logs = LogLayer::new(move || Arc::clone(&for_logs.current().logs))
+        .with_filter(filter_fn(log_layer_accepts));
+    vec![Box::new(diagnostics), Box::new(spans), Box::new(logs)]
 }
 
 /// The cell of the global stack, once libo11y installed it.

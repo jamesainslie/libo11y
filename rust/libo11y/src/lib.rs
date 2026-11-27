@@ -32,36 +32,46 @@ pub mod appregistry;
 mod builder;
 mod buildinfo;
 mod canonical;
+mod console;
 mod detect;
 mod diagnostics;
 mod env;
 mod error;
+mod event;
 mod export;
+mod forceemit;
 mod layer;
 mod lifecycle;
+mod log_layer;
+mod logredact;
 mod logs;
 mod metrics;
 mod policy;
 mod propagation;
+mod record;
 mod resource;
 mod sanitize;
 mod sdk;
 mod setup;
 #[cfg(all(feature = "tokio", unix))]
 mod signals;
+mod summary;
 mod traces;
 mod violations;
 
 pub use appregistry::AppRegistry;
 pub use builder::Builder;
 pub use buildinfo::BuildInfo;
+pub use console::ConsoleFormat;
 pub use diagnostics::TelemetryError;
 pub use env::EnvLookup;
 pub use error::{BoxError, Error};
 pub use export::Protocol;
+pub use forceemit::{force_emit_context, is_force_emit, with_force_emit};
 pub use libo11y_spec::Environment;
 pub use libo11y_spec::Signal;
 pub use lifecycle::{DEFAULT_SHUTDOWN_TIMEOUT, FlushError, ShutdownError, SignalFailure};
+pub use log_layer::{AttrReplacer, LevelHandle, LogRecord, LogSink};
 /// The OpenTelemetry API this crate builds on, for the traits and types its
 /// own API takes and returns.
 pub use opentelemetry;
@@ -70,6 +80,7 @@ pub use opentelemetry;
 pub use opentelemetry_sdk;
 pub use policy::{Classified, Decision, MIN_PII_HASH_KEY_LEN, PiiMode, Policy, Rule, Violations};
 pub use propagation::{BoxedPropagator, Propagator};
+pub use record::{Record, record_from_context, start_record};
 pub use sdk::Sdk;
 
 /// Capture-time redaction: [`Secret`](redact::Secret), [`Masked`](redact::Masked),

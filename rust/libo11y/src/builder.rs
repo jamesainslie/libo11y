@@ -3,28 +3,34 @@
 
 use std::collections::BTreeSet;
 use std::fmt;
+use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use opentelemetry::KeyValue;
+use opentelemetry::logs::{AnyValue, LoggerProvider as _};
+use opentelemetry::{Key, KeyValue};
+use opentelemetry_sdk::logs::LogExporter;
 use opentelemetry_sdk::metrics::exporter::PushMetricExporter;
 use opentelemetry_sdk::trace::{ShouldSample, SpanExporter, SpanProcessor};
 
 use libo11y_spec::{Signal, go_quote};
 
 use crate::appregistry::merge_classes;
+use crate::console::{ConsoleFormat, ConsoleSink};
 use crate::detect::Detected;
 use crate::diagnostics::{ErrorHandler, TelemetryError, default_handler};
 use crate::export::failures::ExportFailures;
 use crate::export::{Route, Selection, SelectionInputs, SignalExport};
 use crate::layer::Parts;
 use crate::lifecycle::ShutdownCell;
+use crate::log_layer::{AttrReplacer, LevelHandle, LogPipeline, LogSink};
 use crate::logs::{PendingLog, PendingLogExporter, build_logger_provider};
 use crate::metrics::{PendingMetric, PendingMetricExporter, build_meter_provider};
 use crate::propagation::{BoxedPropagator, Propagator};
 use crate::resource::build_resource;
 use crate::sdk::{Inner, Sdk};
+use crate::summary::{SummaryInputs, build_summary};
 use crate::traces::{
     Pending, PendingSpanExporter, SamplerChoice, TraceParts, batch_config, build_tracer_provider,
     span_limits,
@@ -43,6 +49,10 @@ enum RegistrySource {
 }
 
 /// Everything the builder was told.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent builder options matching Go's settings struct"
+)]
 pub(crate) struct Settings {
     pub(crate) service_name: Option<String>,
     pub(crate) service_version: Option<String>,
@@ -64,6 +74,15 @@ pub(crate) struct Settings {
     span_processor: Option<Box<dyn SpanProcessor>>,
     metric_exporter: Option<Box<dyn PendingMetricExporter>>,
     log_exporter: Option<Box<dyn PendingLogExporter>>,
+    log_level: LevelHandle,
+    console_writer: Option<Box<dyn io::Write + Send>>,
+    console_format: ConsoleFormat,
+    console_enabled: bool,
+    log_export: bool,
+    attr_replacer: Option<AttrReplacer>,
+    extra_log_sinks: Vec<Arc<dyn LogSink>>,
+    startup_summary: bool,
+    runtime_metrics: bool,
     error_handler: Option<ErrorHandler>,
     pub(crate) tracing_default: bool,
 }
@@ -91,6 +110,15 @@ impl Default for Settings {
             span_processor: None,
             metric_exporter: None,
             log_exporter: None,
+            log_level: LevelHandle::default(),
+            console_writer: None,
+            console_format: ConsoleFormat::default(),
+            console_enabled: true,
+            log_export: true,
+            attr_replacer: None,
+            extra_log_sinks: Vec::new(),
+            startup_summary: true,
+            runtime_metrics: true,
             error_handler: None,
             tracing_default: true,
         }
@@ -108,6 +136,14 @@ impl fmt::Debug for Settings {
             .field("span_exporter", &self.span_exporter.is_some())
             .field("span_processor", &self.span_processor.is_some())
             .field("metric_exporter", &self.metric_exporter.is_some())
+            .field("log_exporter", &self.log_exporter.is_some())
+            .field("log_level", &self.log_level)
+            .field("console_format", &self.console_format)
+            .field("console_enabled", &self.console_enabled)
+            .field("log_export", &self.log_export)
+            .field("extra_log_sinks", &self.extra_log_sinks.len())
+            .field("startup_summary", &self.startup_summary)
+            .field("runtime_metrics", &self.runtime_metrics)
             .field("tracing_default", &self.tracing_default)
             .finish_non_exhaustive()
     }
@@ -287,6 +323,97 @@ impl Builder {
         self
     }
 
+    /// Sets the minimum log level for libo11y's log pipeline. Defaults to
+    /// [`tracing::Level::INFO`]. Replaces any earlier [`Builder::log_level`]
+    /// or [`Builder::log_level_handle`].
+    pub fn log_level(mut self, level: tracing::Level) -> Self {
+        self.settings.log_level = LevelHandle::new(level);
+        self
+    }
+
+    /// Sets a runtime-adjustable [`LevelHandle`] for libo11y's log pipeline.
+    /// Updating the handle via [`LevelHandle::set`] changes filtering
+    /// immediately.
+    pub fn log_level_handle(mut self, handle: LevelHandle) -> Self {
+        self.settings.log_level = handle;
+        self
+    }
+
+    /// Writes console log output to `writer` instead of standard output.
+    pub fn console_writer<W: io::Write + Send + 'static>(mut self, writer: W) -> Self {
+        self.settings.console_writer = Some(Box::new(writer));
+        self
+    }
+
+    /// Selects the console log format: [`ConsoleFormat::Json`] (the default)
+    /// or [`ConsoleFormat::Text`].
+    pub fn console_format(mut self, format: ConsoleFormat) -> Self {
+        self.settings.console_format = format;
+        self
+    }
+
+    /// Disables the console log sink.
+    pub fn without_console_log(mut self) -> Self {
+        self.settings.console_enabled = false;
+        self
+    }
+
+    /// Disables OTLP log export (the SDK builds no logger provider and reads
+    /// no `OTEL_LOGS_EXPORTER`). Calling [`Builder::with_log_exporter`]
+    /// afterwards re-enables log export, matching Go's `WithLogExporter`.
+    pub fn without_log_export(mut self) -> Self {
+        self.settings.log_export = false;
+        self
+    }
+
+    /// Exports logs through `exporter` instead of the exporter
+    /// `OTEL_LOGS_EXPORTER` and `OTEL_EXPORTER_OTLP_*` would select. Logs are
+    /// batched and classified by the sensitivity policy. Re-enables log export
+    /// if [`Builder::without_log_export`] was called earlier. A later exporter
+    /// replaces an earlier one.
+    ///
+    /// `OTEL_SDK_DISABLED=true` overrides this: no logger provider is built
+    /// and the exporter is shut down when the SDK is built.
+    pub fn with_log_exporter<E: LogExporter + 'static>(mut self, exporter: E) -> Self {
+        self.settings.log_exporter = Some(Box::new(PendingLog(exporter)));
+        self.settings.log_export = true;
+        self
+    }
+
+    /// Sets a callback that rewrites or drops leaf log attributes once at
+    /// fan-out, before per-leg sensitivity classification. Top-level
+    /// `trace_id` and `span_id` supplied by callers are dropped before this
+    /// callback runs.
+    pub fn with_attr_replacer<F>(mut self, replacer: F) -> Self
+    where
+        F: Fn(&[&str], Key, AnyValue) -> Option<(Key, AnyValue)> + Send + Sync + 'static,
+    {
+        self.settings.attr_replacer = Some(Arc::new(replacer));
+        self
+    }
+
+    /// Adds an extra structured [`LogSink`] to the log pipeline. Repeatable;
+    /// each sink classifies records independently with the sensitivity policy
+    /// and receives active span correlation.
+    pub fn with_extra_log_sink<S: LogSink + 'static>(mut self, sink: S) -> Self {
+        self.settings.extra_log_sinks.push(Arc::new(sink));
+        self
+    }
+
+    /// Suppresses the `o11y.telemetry.configured` startup summary canary
+    /// during [`Builder::setup`]. [`Sdk::effective_config`] remains available.
+    pub fn without_startup_summary(mut self) -> Self {
+        self.settings.startup_summary = false;
+        self
+    }
+
+    /// Disables process/runtime metrics collection (reported as
+    /// `o11y.config.runtime_metrics=false`).
+    pub fn without_runtime_metrics(mut self) -> Self {
+        self.settings.runtime_metrics = false;
+        self
+    }
+
     /// Sends telemetry errors, such as failed exports, and libo11y's own
     /// warnings about its configuration to `handler` instead of the default,
     /// which writes rate-limited `o11y: telemetry error` lines to standard
@@ -342,17 +469,6 @@ impl Builder {
         self
     }
 
-    /// Exports logs through `exporter`, for tests until the log layer
-    /// brings the public option.
-    #[cfg(test)]
-    pub(crate) fn log_exporter<E>(mut self, exporter: E) -> Self
-    where
-        E: opentelemetry_sdk::logs::LogExporter + 'static,
-    {
-        self.settings.log_exporter = Some(Box::new(PendingLog(exporter)));
-        self
-    }
-
     /// Resolves the options into an SDK without touching any process-global
     /// state, in the Go library's order: the PII key, the application
     /// registries and the policy, the resource, the propagator, the
@@ -401,8 +517,9 @@ impl Builder {
     }
 }
 
-/// Builds the SDK from `settings`.
-pub(crate) fn build_sdk(mut settings: Settings) -> Result<Sdk, Error> {
+/// Loads the application registries and builds the sensitivity policy from
+/// `settings`.
+fn load_policy(settings: &mut Settings) -> Result<Policy, Error> {
     if settings.pii_mode == PiiMode::Hash && settings.pii_hash_key.len() < MIN_PII_HASH_KEY_LEN {
         return Err(Error::PiiHashKey);
     }
@@ -414,7 +531,16 @@ pub(crate) fn build_sdk(mut settings: Settings) -> Result<Sdk, Error> {
         })
         .collect::<Result<Vec<_>, _>>()?;
     let classes = merge_classes(&registries)?;
-    let policy = Policy::new(settings.pii_mode, &settings.pii_hash_key, classes)?;
+    Policy::new(settings.pii_mode, &settings.pii_hash_key, classes)
+}
+
+/// Builds the SDK from `settings`.
+#[allow(
+    clippy::too_many_lines,
+    reason = "linear construction sequence in Go's newSDK order"
+)]
+pub(crate) fn build_sdk(mut settings: Settings) -> Result<Sdk, Error> {
+    let policy = load_policy(&mut settings)?;
     let env = if settings.ignore_env {
         EnvLookup::empty()
     } else {
@@ -436,7 +562,7 @@ pub(crate) fn build_sdk(mut settings: Settings) -> Result<Sdk, Error> {
             traces_injected: settings.span_exporter.is_some() || settings.span_processor.is_some(),
             metrics_injected: settings.metric_exporter.is_some(),
             logs_injected: settings.log_exporter.is_some(),
-            logs_off: false,
+            logs_off: !settings.log_export,
         },
     )?;
     let handler = settings
@@ -480,14 +606,36 @@ pub(crate) fn build_sdk(mut settings: Settings) -> Result<Sdk, Error> {
         resolved.resource.clone(),
         &env,
         exporters.logs,
+        policy.clone(),
+        violations.clone(),
         log_failures.clone(),
     );
 
+    let log_pipeline = build_log_pipeline(
+        &mut settings,
+        policy.clone(),
+        violations,
+        logger_provider.as_ref(),
+    );
+    let summary = build_summary(&SummaryInputs {
+        resource: &resolved.resource,
+        selection: &selection,
+        console_enabled: settings.console_enabled,
+        console_format: settings.console_format,
+        level: settings.log_level.level(),
+        sampler: &sampler.report,
+        propagator: &propagator,
+        runtime_metrics: settings.runtime_metrics,
+        disabled,
+        version_fallback: resolved.version_fallback,
+        env: &env,
+    });
     warn_on_disabled_value(&disabled_value, &handler);
 
     let parts = Arc::new(Parts {
         tracer: opentelemetry::trace::TracerProvider::tracer_with_scope(&tracer_provider, scope()),
-        handler: Arc::clone(&handler),
+        handler,
+        logs: Arc::clone(&log_pipeline),
     });
     Ok(Sdk(Arc::new(Inner {
         resource: resolved.resource,
@@ -496,22 +644,47 @@ pub(crate) fn build_sdk(mut settings: Settings) -> Result<Sdk, Error> {
         policy,
         propagator,
         selection,
-        sampler_report: sampler.report,
-        disabled,
+        summary,
+        startup_summary: settings.startup_summary,
         tracer_provider,
         span_failures,
         meter_provider,
         metric_failures,
         logger_provider,
         log_failures,
+        log_pipeline,
         parts,
-        handler,
-        violations,
         tracing_default: settings.tracing_default,
         global: AtomicBool::new(false),
         shutdown: ShutdownCell::default(),
         busy: Default::default(),
     })))
+}
+
+/// Assembles the unified log pipeline (console, OTLP, and extra sinks) from
+/// `settings`.
+fn build_log_pipeline(
+    settings: &mut Settings,
+    policy: Policy,
+    violations: ViolationRecorder,
+    logger_provider: Option<&opentelemetry_sdk::logs::SdkLoggerProvider>,
+) -> Arc<LogPipeline> {
+    let console = settings
+        .console_enabled
+        .then(|| match settings.console_writer.take() {
+            Some(writer) => ConsoleSink::new(writer, settings.console_format),
+            None => ConsoleSink::stdout(settings.console_format),
+        });
+    let otlp_logger = logger_provider.map(|provider| provider.logger_with_scope(scope()));
+    Arc::new(LogPipeline::new(
+        settings.log_level.clone(),
+        policy,
+        violations,
+        settings.attr_replacer.take(),
+        console,
+        otlp_logger,
+        std::mem::take(&mut settings.extra_log_sinks),
+    ))
 }
 
 /// The span and log exporters the selection names.

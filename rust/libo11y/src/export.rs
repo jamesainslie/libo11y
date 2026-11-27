@@ -54,7 +54,6 @@ pub(crate) enum Route {
 
 impl Route {
     /// The route as the effective configuration reports it.
-    #[cfg_attr(not(test), allow(dead_code, reason = "R3b's startup summary reads it"))]
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Injected => "injected",

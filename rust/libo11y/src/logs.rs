@@ -16,6 +16,9 @@ use opentelemetry_sdk::logs::{
 
 use crate::env::EnvLookup;
 use crate::export::failures::{ExportFailures, ObservedLogExporter};
+use crate::logredact::RedactingLogProcessor;
+use crate::policy::Policy;
+use crate::violations::ViolationRecorder;
 
 /// A log exporter waiting to be batched. It erases the exporter's type.
 pub(crate) trait PendingLogExporter: Send {
@@ -28,7 +31,6 @@ pub(crate) trait PendingLogExporter: Send {
     ) -> BatchLogProcessor;
 
     /// Shuts down an exporter the SDK will not use.
-    #[allow(dead_code, reason = "used once log export can be switched off")]
     fn discard(self: Box<Self>);
 }
 
@@ -82,17 +84,21 @@ pub(crate) fn batch_config(env: &EnvLookup) -> BatchConfig {
 }
 
 /// Builds the logger provider, or `None` when no log exporter was
-/// selected.
+/// selected. Registers [`RedactingLogProcessor`] before the batch processor so
+/// records from non-libo11y bridges are redacted before batching and export.
 pub(crate) fn build_logger_provider(
     resource: Resource,
     env: &EnvLookup,
     exporter: Option<Box<dyn PendingLogExporter>>,
+    policy: Policy,
+    recorder: ViolationRecorder,
     failures: ExportFailures,
 ) -> Option<SdkLoggerProvider> {
     let exporter = exporter?;
     Some(
         SdkLoggerProvider::builder()
             .with_resource(resource)
+            .with_log_processor(RedactingLogProcessor::new(policy, recorder))
             .with_log_processor(exporter.into_processor(failures, batch_config(env)))
             .build(),
     )
