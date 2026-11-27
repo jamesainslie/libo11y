@@ -17,12 +17,23 @@ import type { Span } from '@opentelemetry/api';
 import type { SpanContext } from '@opentelemetry/api';
 import type { Telemetry } from '@libo11y/core';
 import type { Tracer } from '@opentelemetry/api';
+import type { WebSetupOptions } from '@libo11y/web';
+import type { WebTelemetry } from '@libo11y/web';
 
 // @public (undocumented)
 export type CollectorName = "views" | "actions" | "errors" | "vitals" | "resources" | "long_animation_frames";
 
+export { HttpRequestInfo }
+
 // @public (undocumented)
 export type RequestStartHook = (span: Span, request: HttpRequestInfo) => void;
+
+// @public
+export interface Rum {
+    identify(userId: string | undefined): void;
+    onRequestStart(hook: RequestStartHook): () => void;
+    sessionId(): string | undefined;
+}
 
 // @public (undocumented)
 export interface RumBus {
@@ -37,6 +48,21 @@ export interface RumCollector {
     // (undocumented)
     readonly name: CollectorName;
     start(runtime: RumRuntime): () => void;
+}
+
+// @public
+export interface RumOptions {
+    readonly clientToken?: string;
+    readonly collectors?: readonly RumCollector[];
+    readonly queryAllowList?: readonly string[];
+    readonly retention?: {
+        readonly maxBytes?: number;
+        readonly maxAgeMillis?: number;
+    };
+    readonly sessionIdleMillis?: number;
+    readonly sessionMaxMillis?: number;
+    readonly sessionSampleRate?: number;
+    readonly viewName?: (url: URL) => string;
 }
 
 // @public (undocumented)
@@ -82,6 +108,12 @@ export interface RumSettings {
 }
 
 // @public
+export interface RumSetupOptions extends WebSetupOptions {
+    // (undocumented)
+    readonly rum?: RumOptions;
+}
+
+// @public
 export type RumSignal = {
     readonly type: "error";
     readonly source: RUMErrorSource;
@@ -112,6 +144,12 @@ export type RumSignal = {
     readonly label: string;
     readonly at: number;
 };
+
+// @public
+export interface RumTelemetry extends WebTelemetry {
+    // (undocumented)
+    readonly rum: Rum;
+}
 
 // @public
 export type SessionDecision = "send" | "buffer" | "drop";
@@ -159,6 +197,9 @@ export interface SessionState {
     // (undocumented)
     readonly startedAt: number;
 }
+
+// @public
+export function setupRum(options?: RumSetupOptions): Promise<RumTelemetry>;
 
 // @public (undocumented)
 export interface SummaryAccumulator {
