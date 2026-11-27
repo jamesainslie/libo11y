@@ -16,9 +16,9 @@ everything is correlated and exported over OTLP.
 | Go | Implemented | [`go/`](go/) |
 | TypeScript | Implemented for Bun, Node, browsers and Manifest V3 extensions. The browser packages first ship in `ts/v0.2.0` | [`ts/`](ts/) |
 | Zig | Implemented for Zig 0.17.1 (`zig/v0.1.0`) | [`zig/`](zig/) |
+| C | Implemented for C11 (pure C11 ABI backed by `zig/`) | [`c/`](c/) |
 | Rust | In development (coming soon) | [`rust/`](rust/) |
 | Python | In development (coming soon) | design in progress |
-| C | In development (coming soon) | C11 ABI in progress |
 | Java | Planned | [`java/`](java/) |
 
 ## Design principles
@@ -88,10 +88,11 @@ validation tables the runtime and test harness share. See [`docs/SPEC.md`](docs/
 specification and [`docs/taxonomy/`](docs/taxonomy/) for the generated
 attribute tables.
 
-The registry generates Go, TypeScript, Rust and Zig outputs: `go/spec` and
-`go/internal/spectables`, `@libo11y/spec` in
+The registry generates Go, TypeScript, Rust, Zig, Python, and C outputs:
+`go/spec` and `go/internal/spectables`, `@libo11y/spec` in
 [`ts/packages/spec`](ts/packages/spec), `rust/libo11y-spec/src/generated`,
-and `zig/src/spec/generated`.
+`zig/src/spec/generated`, `python/src/libo11y/spec/_generated`, and
+[`c/include/o11y/spec.h`](c/include/o11y/spec.h).
 Spec 1.1.0 adds the conventions for libo11y RUM, the real-user-monitoring
 product, which [`docs/RUM.md`](docs/RUM.md) describes.
 
@@ -272,6 +273,70 @@ default), owns its OTLP/HTTP and OTLP/gRPC pipeline over vendored
 exemplars, and conformance suite as Go and TypeScript. See
 [`zig/README.md`](zig/README.md) for the full Zig documentation.
 
+## Installation (C)
+
+```sh
+cd c && zig build -Doptimize=ReleaseSafe
+cc -std=c11 app.c -Ic/zig-out/include c/zig-out/lib/libo11y.a -lpthread -lm -o app
+```
+
+Requires Zig 0.17.1 to build from source, and any C11 compiler (`gcc`, `clang`)
+with POSIX libc to link. The build installs `libo11y.a` / `libo11y.so`
+(production SDK), `libo11ytest.a` (self-contained hermetic test harness and
+in-process OTLP receivers), `bin/libo11y` (`libo11y registry check`), the C11
+headers (`o11y/o11y.h`, `o11y/spec.h`, `o11y/test.h`), `pkg-config`
+(`libo11y.pc`), and CMake (`libo11yConfig.cmake`). It implements spec 1.2.0.
+
+## Quick start (C)
+
+```c
+#include <stdio.h>
+#include "o11y/o11y.h"
+
+int main(void) {
+    o11y_options_t opts = o11y_options_default();
+    opts.service_name = "checkout";
+    opts.environment = O11Y_ENVIRONMENT_PRODUCTION;
+
+    o11y_sdk_t *sdk = NULL;
+    o11y_diagnostic_t diag = {0};
+    o11y_err_t err = o11y_setup(&opts, &sdk, &diag);
+    if (err != O11Y_OK) {
+        fprintf(stderr, "telemetry disabled (%s): %s\n", o11y_err_name(err), diag.message);
+        return 0; /* run safely without telemetry */
+    }
+
+    o11y_tracer_t *tracer = o11y_tracer(sdk, "checkout");
+    o11y_span_t *span = o11y_tracer_start(tracer, NULL, "POST /checkout", NULL);
+    o11y_ctx_t *ctx = o11y_ctx_with_span(NULL, span);
+
+    /* Correlated structured log carrying the active trace_id and span_id. */
+    o11y_log_attr_t attrs[] = {
+        o11y_log_kv_str("order.id", "ord-42"),
+        o11y_log_kv_secret("payment.card_cvv"),
+    };
+    o11y_log_info(sdk, ctx, "order accepted", attrs, 2);
+
+    /* Metric with automatic trace-based exemplar attachment. */
+    o11y_counter_i64_t reqs = o11y_meter_counter_i64(o11y_meter(sdk, "checkout"), "checkout.requests", NULL);
+    o11y_counter_i64_add(reqs, ctx, 1, NULL, 0);
+
+    o11y_ctx_destroy(ctx);
+    o11y_span_end(span);
+
+    o11y_shutdown_report_t report = {0};
+    (void)o11y_shutdown(sdk, 5000, &report);
+    o11y_destroy(sdk);
+    return 0;
+}
+```
+
+libo11y C exposes an ISO C11 ABI (`extern "C"` safe for C++) over the Zig
+OTLP/HTTP and OTLP/gRPC engine, with zero external runtime dependencies beyond
+libc and pthreads. See [`c/README.md`](c/README.md) for the full C
+documentation and [`c/examples/quickstart.c`](c/examples/quickstart.c) for a
+complete runnable program.
+
 ## Versioning
 
 Each language library versions and releases independently with path-prefixed
@@ -301,6 +366,9 @@ Each Zig release is listed in [`zig/CHANGELOG.md`](zig/CHANGELOG.md) and
 published as a GitHub Release titled `libo11y-zig vX.Y.Z`.
 `make release-check` (and `make zig-release-check`) validates a consumer
 tarball build against an in-process OTLP receiver.
+
+The C11 library versions independently with `c/vX.Y.Z` tags and records its
+changes in [`c/CHANGELOG.md`](c/CHANGELOG.md). It is currently unreleased.
 
 ## License
 

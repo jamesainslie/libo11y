@@ -1,0 +1,12 @@
+prefix=/usr/local
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: libo11y
+Description: Opinionated OpenTelemetry observability SDK for C11
+Version: 0.1.0
+URL: https://github.com/jamesainslie/libo11y
+Libs: -L${libdir} -lo11y
+Libs.private: -lpthread -lm
+Cflags: -I${includedir}

@@ -1,0 +1,21 @@
+.{
+    .name = .libo11y_c,
+    .version = "0.1.0",
+    .fingerprint = 0x101f11994afc1d50,
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{
+        .libo11y = .{
+            .path = "../zig",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "include",
+        "src",
+        "cmake",
+        "examples",
+        "README.md",
+        "CHANGELOG.md",
+    },
+}

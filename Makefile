@@ -8,7 +8,7 @@ GO_TEST_P ?= 4
 # gate runs on each module separately.
 GO_MODULES := go go/o11ygin go/o11yconnect go/o11ysql
 
-.PHONY: spec-check spec-generate spec-drift test lint vet tidy-check vuln release-check zig-release-check schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-install ts-check ts-browser-test rust-check rust-msrv zig-check zig-integrations-check zig-hygiene-test python-check python-hygiene-test ci
+.PHONY: spec-check spec-generate spec-drift test lint vet tidy-check vuln release-check zig-release-check schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-install ts-check ts-browser-test rust-check rust-msrv zig-check zig-integrations-check zig-hygiene-test python-check python-hygiene-test c-check ci
 
 # Validate the spec registry against the libo11y policy suite (naming,
 # ownership, sensitivity, cardinality, events, units).
@@ -16,7 +16,7 @@ spec-check:
 	cd go && go run ./internal/specgen -root .. -check
 
 # Directories holding generated artifacts.
-GENERATED := go/spec go/internal/spectables docs/taxonomy spec/schemas ts/packages/spec/src/generated rust/libo11y-spec/src/generated zig/src/spec/generated python/src/libo11y/spec/_generated
+GENERATED := go/spec go/internal/spectables docs/taxonomy spec/schemas ts/packages/spec/src/generated rust/libo11y-spec/src/generated zig/src/spec/generated python/src/libo11y/spec/_generated c/include/o11y/spec.h
 
 # Validate the registry, then regenerate go/spec, go/internal/spectables,
 # docs/taxonomy, spec/schemas, ts/packages/spec/src/generated,
@@ -191,6 +191,19 @@ python-check: python-hygiene-test
 python-hygiene-test:
 	scripts/python-hygiene_test.sh
 
+# C11 library (c/): formatting and hygiene on the Zig ABI layer, static/shared
+# library & CLI build, full C11 unit/conformance/wire test suites in Debug and
+# ReleaseSafe, CLI verification, and standalone host C compiler static link check.
+c-check:
+	zig fmt --check --exclude c/.zig-cache --exclude c/zig-pkg --exclude c/zig-out c
+	scripts/zig-hygiene.sh c/build.zig c/src
+	cd c && zig build -j$(ZIG_BUILD_J) -Doptimize=Debug && zig build test -j$(ZIG_BUILD_J) -Doptimize=Debug
+	cd c && zig build -j$(ZIG_BUILD_J) -Doptimize=ReleaseSafe && zig build test -j$(ZIG_BUILD_J) -Doptimize=ReleaseSafe
+	c/tests/test_cli.sh c/zig-out/bin/libo11y
+	@tmp="$$(mktemp)"; \
+	cc -std=c11 -Wall -Wextra -Werror -Wpedantic -Ic/zig-out/include c/examples/quickstart.c c/zig-out/lib/libo11y.a -lpthread -lm -o "$$tmp" && "$$tmp"; \
+	rc=$$?; rm -f "$$tmp"; exit $$rc
+
 # vuln runs last: it depends on the advisory database and the toolchain's
 # patch level, so local runs exercise every other gate first.
-ci: lint vet test tidy-check spec-check spec-drift ts-check ts-browser-test rust-check rust-msrv zig-check python-check schema-published-test release-notes-test release-tag-test ts-browser-bundle-test release-check vuln
+ci: lint vet test tidy-check spec-check spec-drift ts-check ts-browser-test rust-check rust-msrv zig-check python-check c-check schema-published-test release-notes-test release-tag-test ts-browser-bundle-test release-check vuln

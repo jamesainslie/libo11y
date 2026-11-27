@@ -88,6 +88,11 @@ pub const Options = struct {
     log_exporter: ?o11y.LogExporter = null,
 
     diagnostic: ?*o11y.Diagnostic = null,
+
+    /// Internal SDK metadata overrides used by language bindings (e.g. C ABI).
+    sdk_language: []const u8 = "zig",
+    sdk_version: ?[]const u8 = null,
+    emit_process_runtime: bool = true,
 };
 
 /// One captured structured log record together with the span context active
@@ -262,6 +267,9 @@ pub fn start(gpa: Allocator, io: Io, options: Options) o11y.SetupError!*Recorder
         .metric_reader = r.metric_reader.reader(),
         .log_exporter = log_exporter,
         .diagnostic = options.diagnostic,
+        .sdk_language = options.sdk_language,
+        .sdk_version = options.sdk_version,
+        .emit_process_runtime = options.emit_process_runtime,
     });
 
     return r;

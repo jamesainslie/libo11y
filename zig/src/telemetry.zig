@@ -156,6 +156,11 @@ pub const Options = struct {
 
     /// Optional out-parameter receiving Go's diagnostic message text on error.
     diagnostic: ?*resource_mod.Diagnostic = null,
+
+    /// Internal SDK metadata overrides used by language bindings (e.g. C ABI).
+    sdk_language: []const u8 = "zig",
+    sdk_version: ?[]const u8 = null,
+    emit_process_runtime: bool = true,
 };
 
 var setup_active: std.atomic.Value(bool) = .init(false);
@@ -580,7 +585,9 @@ fn buildSdk(gpa: Allocator, io: Io, options: Options) SetupError!*Telemetry {
     defer resource_violations.deinit(gpa);
     var owned_resource = resource_mod.build(gpa, io, .{
         .env = options.env,
-        .sdk_version = build_options.version,
+        .sdk_version = options.sdk_version orelse build_options.version,
+        .sdk_language = options.sdk_language,
+        .emit_process_runtime = options.emit_process_runtime,
         .service_name = options.service_name,
         .service_version = options.service_version,
         .service_namespace = options.service_namespace,

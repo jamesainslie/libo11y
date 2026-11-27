@@ -190,6 +190,24 @@ jobs:
           version: "0.17.1"
       - run: make zig-check ZIG_BUILD_J=4
 
+  # The C11 library (c/) on Linux and macOS: static/shared build, C11 test
+  # suites, conformance vectors, wire tests, CLI check, and host C link check.
+  c:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: "0.17.1"
+      - run: make c-check ZIG_BUILD_J=4
+
   # Optional Zig integrations (o11yhttpz, o11ypg, o11ysqlite) with a live
   # PostgreSQL 17 service container. Kept separate from the default `zig` job
   # so CI proves the default build works without enabling optional lazy deps.

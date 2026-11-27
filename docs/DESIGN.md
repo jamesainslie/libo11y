@@ -25,9 +25,9 @@ All three signals are first-class and OTLP-native:
   endpoints of libo11y's own. One standard route to a scrape endpoint
   remains in Go: exporter selection is delegated to OpenTelemetry's
   autoexport, so `OTEL_METRICS_EXPORTER=prometheus` starts upstream's
-  Prometheus exporter. TypeScript and Zig reject that value.
-  Runtime metrics on by default (Zig collects semantic-convention process
-  metrics, as it has no garbage-collected runtime).
+  Prometheus exporter. TypeScript, Zig, and C reject that value.
+  Runtime metrics on by default (Zig and C collect semantic-convention process
+  metrics, as they have no garbage-collected runtime).
 - **Logs**: the language's standard structured-logging facade is the front
   door (Go: `slog`; Rust: `tracing`; Java: SLF4J). TypeScript has no such
   facade, so there the front door is the libo11y logger, and an option routes
@@ -35,7 +35,9 @@ All three signals are first-class and OTLP-native:
   the correlated front door is `sdk.logger()` taking an explicit
   `o11y.Context`, while `pub const std_options = o11y.std_options;` routes
   `std.log` into the pipeline (with optional synchronous correlation via
-  `o11y.bindThread`).
+  `o11y.bindThread`). In C, which has no standard structured logger, the front
+  door is `o11y_log_*` taking an explicit `const o11y_ctx_t *` (or `NULL`
+  outside a span).
   Records flow to both a console stream and the OTLP pipeline, both carrying
   the active trace and span identifiers.
 
@@ -132,15 +134,17 @@ libo11y honors the standard OpenTelemetry environment surface
 never invents a parallel variable for anything OTEL already specifies.
 Language implementations delegate env parsing to their OTEL SDK or contrib
 packages rather than reimplementing it, where the SDK offers a way to. In
-Zig, where libo11y owns its pipeline over vendored OTLP protobuf bindings,
-setup takes an explicit `o11y.Env` value (such as Zig 0.17's `environ_map`
-or `.hermetic`) and never reads the ambient process environment on its own.
+Zig and C, where libo11y owns its pipeline over vendored OTLP protobuf bindings,
+Zig setup takes an explicit `o11y.Env` value (such as Zig 0.17's `environ_map`
+or `.hermetic`) and never reads the ambient process environment on its own,
+while C defaults `o11y_options_t.env_mode` to `O11Y_ENV_PROCESS` and supports
+`O11Y_ENV_HERMETIC` and explicit `O11Y_ENV_PAIRS`.
 [PARITY.md](PARITY.md) lists the standard variables an implementation does
 not honor yet, such as `OTEL_PROPAGATORS`.
 
 The one exception is explicit and opt-in: a hermetic mode (Go:
 `WithoutOTELEnv`; TypeScript: `hermetic: true`; Zig: `.env = .hermetic`,
-which is the default) in which no `OTEL_*`
+which is the default; C: `env_mode = O11Y_ENV_HERMETIC`) in which no `OTEL_*`
 variable affects behavior, configuration comes only from code options and
 library defaults, and a signal with nothing injected is disabled rather
 than built from the environment. In Go, two experimental switches with no
@@ -167,6 +171,8 @@ Three complementary layers, all language-idiomatic:
 1. **Capture-time**: type-level protection so sensitive values render redacted
    wherever they are logged (Go: `slog.LogValuer`; Zig: `o11y.redact.Secret`,
    `Masked`, and `Struct` guarding `std.fmt`, `std.json`, and the logger;
+   C: `o11y_log_kv_secret`, `o11y_log_kv_masked`, `o11y_redact_secret`, and
+   `o11y_redact_mask`;
    Rust: derive with `Display`-only output; Java: annotation processor or
    wrapper types).
    Protections: `mask` (same-length X string), `redact` (literal `REDACTED`),
@@ -208,7 +214,8 @@ implementation documents these gaps with its per-signal guarantees (see
 [SPEC.md](SPEC.md), section 5). Baggage egress passes through a filter
 seam on every propagator; by default its predicate allows every key (Go
 and TypeScript expose no public option to change it yet, while Zig
-exposes `Options.baggage_egress_allow`).
+exposes `Options.baggage_egress_allow` and C exposes
+`o11y_options_t.baggage_egress_allow`).
 
 ## Testability
 
@@ -231,7 +238,7 @@ Shared cases and vectors live under `conformance/` today. They fix the
 outputs every implementation must reproduce exactly: the application
 registry check, the instance ID derivation, the PII token and endpoint
 sanitizing. The registry cases are hand-written, and Go generates the JSON
-vectors. The Go, TypeScript and Zig suites all test against them.
+vectors. The Go, TypeScript, Zig, and C suites all test against them.
 
 The OTLP payload corpus is future work. It will run each implementation's
 example app against a shared OTLP capture harness and diff normalized
