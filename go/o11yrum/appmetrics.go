@@ -3,6 +3,7 @@ package o11yrum
 import (
 	"errors"
 	"regexp"
+	"slices"
 	"sync"
 
 	"go.opentelemetry.io/collector/pdata/pcommon"
@@ -22,7 +23,7 @@ const (
 	reasonInvalidName       = "invalid_name"
 	reasonInvalidValue      = "invalid_value"
 	reasonMetricLimit       = "metric_limit"
-	reasonTooManyAttributes = "too_many_attributes"
+	reasonLabelBudget       = "label_budget"
 	reasonNoProducer        = "no_producer"
 )
 
@@ -33,8 +34,8 @@ const (
 	maxAppBounds = 64
 	// maxAppLabels caps the attributes of an app metric point.
 	maxAppLabels = 16
-	// maxAppLabelLen caps an app metric label value in bytes; longer
-	// values are truncated.
+	// maxAppLabelLen caps an app metric label in bytes. A longer key
+	// refuses the point; a longer value is truncated.
 	maxAppLabelLen = 256
 )
 
@@ -141,8 +142,9 @@ func (s *appMetricSet) room(service string, id appMetricID) bool {
 }
 
 // add takes a slot for a metric that aggregated a point. Requests racing
-// for the last slot can each aggregate a point before one takes it, so the
-// overshoot is bounded by the number of concurrent requests.
+// for the last slot can each aggregate a point before one takes it; every
+// one of them keeps its slot, so a metric in the aggregator never stops
+// updating. The overshoot is bounded by the number of concurrent requests.
 func (s *appMetricSet) add(service string, id appMetricID) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -151,9 +153,7 @@ func (s *appMetricSet) add(service string, id appMetricID) {
 		known = map[appMetricID]bool{}
 		s.known[service] = known
 	}
-	if !known[id] && len(known) < s.max {
-		known[id] = true
-	}
+	known[id] = true
 }
 
 // appMetrics re-aggregates an app's validated metrics into cumulative
@@ -244,7 +244,7 @@ func (d *deriver) appMetric(service, scope string, m pmetric.Metric, drops dropC
 			}
 			set, ok := appLabels(service, p.Attributes())
 			if !ok {
-				drops[reasonTooManyAttributes]++
+				drops[reasonLabelBudget]++
 				continue
 			}
 			count(d.agg.Add(desc, set, v))
@@ -260,9 +260,13 @@ func (d *deriver) appMetric(service, scope string, m pmetric.Metric, drops dropC
 			drops[reasonInvalidValue]++
 			continue
 		}
+		counts := p.BucketCounts().AsRaw()
+		if p.Sum() == 0 && !slices.ContainsFunc(counts, func(c uint64) bool { return c > 0 }) {
+			continue // an empty delta observed nothing
+		}
 		set, ok := appLabels(service, p.Attributes())
 		if !ok {
-			drops[reasonTooManyAttributes]++
+			drops[reasonLabelBudget]++
 			continue
 		}
 		pd := desc
@@ -276,7 +280,7 @@ func (d *deriver) appMetric(service, scope string, m pmetric.Metric, drops dropC
 			v := p.Max()
 			hi = &v
 		}
-		count(d.agg.Merge(pd, set, p.BucketCounts().AsRaw(), p.Sum(), lo, hi))
+		count(d.agg.Merge(pd, set, counts, p.Sum(), lo, hi))
 	}
 	return ""
 }
@@ -310,12 +314,15 @@ func validUnit(u string) bool {
 // appLabels are the app's service.name plus a point's remaining
 // attributes, scalars rendered as strings and cut to maxAppLabelLen bytes.
 // A client cannot set service.name or the overflow marker. It reports
-// false for a point with more than maxAppLabels labels.
+// false for a point with more than maxAppLabels labels or a key longer
+// than maxAppLabelLen.
 func appLabels(service string, attrs pcommon.Map) (attribute.Set, bool) {
 	kvs := make([]attribute.KeyValue, 0, attrs.Len()+1)
 	kvs = append(kvs, attribute.String(keyServiceName, service))
 	for k, v := range attrs.All() {
 		switch {
+		case len(k) > maxAppLabelLen:
+			return attribute.Set{}, false
 		case k == keyServiceName || k == "otel.metric.overflow":
 		case v.Type() == pcommon.ValueTypeMap || v.Type() == pcommon.ValueTypeSlice || v.Type() == pcommon.ValueTypeBytes:
 		default:

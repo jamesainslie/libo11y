@@ -187,6 +187,15 @@ func (a *Aggregator) Merge(d Desc, attrs attribute.Set, counts []uint64, sum flo
 		}
 		total += c
 	}
+	if total == 0 {
+		// An empty delta observed nothing. A sum without observations
+		// would skew every mean, and an empty one changes nothing, so it
+		// creates no series.
+		if sum != 0 {
+			return fmt.Errorf("%w: %s: a sum without observations", ErrValue, d.Name)
+		}
+		return nil
+	}
 	return a.update(d, attrs, func(p *point) error {
 		if p.count+total < p.count || !finite(p.sum+sum) {
 			return fmt.Errorf("%w: %s: the running sum or count would overflow", ErrValue, d.Name)
@@ -196,11 +205,10 @@ func (a *Aggregator) Merge(d Desc, attrs attribute.Set, counts []uint64, sum flo
 		}
 		p.count += total
 		p.sum += sum
-		// An empty delta observed nothing, so its extrema mean nothing.
-		if total > 0 && min != nil {
+		if min != nil {
 			p.observe(*min)
 		}
-		if total > 0 && max != nil {
+		if max != nil {
 			p.observe(*max)
 		}
 		return nil
@@ -304,8 +312,12 @@ type snapshot struct {
 
 // Produce renders every metric as cumulative metricdata, grouped by scope
 // in first-seen order, with points sorted by their attribute encoding.
-// Owners that define a metric the same way render as one metric. The
-// result shares nothing with the Aggregator.
+// Owners that define a metric the same way render as one metric. Owners
+// that define one name differently render as separate metrics of that
+// name: an OTLP backend keeps both, apart by service.name, while a
+// Prometheus exporter keeps one. Refusing the second definition instead
+// would let one app's clients block another app's metric. The result
+// shares nothing with the Aggregator.
 func (a *Aggregator) Produce() []metricdata.ScopeMetrics {
 	snaps := a.snapshot()
 	var out []metricdata.ScopeMetrics
@@ -328,17 +340,26 @@ func (a *Aggregator) snapshot() []snapshot {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	var snaps []snapshot
+	// byName indexes snaps by scope and name. A key holds one entry per
+	// distinct definition, which is almost always one.
+	byName := map[[2]string][]int{}
 	for _, id := range a.order {
 		m := a.metrics[id]
 		if len(m.points) == 0 {
 			continue
 		}
-		i := slices.IndexFunc(snaps, func(s snapshot) bool {
-			return s.desc.Scope == m.desc.Scope && s.desc.Name == m.desc.Name && sameDesc(s.desc, m.desc)
-		})
+		key := [2]string{m.desc.Scope, m.desc.Name}
+		i := -1
+		for _, j := range byName[key] {
+			if sameDesc(snaps[j].desc, m.desc) {
+				i = j
+				break
+			}
+		}
 		if i < 0 {
 			i = len(snaps)
 			snaps = append(snaps, snapshot{desc: m.desc})
+			byName[key] = append(byName[key], i)
 		}
 		for _, p := range m.points {
 			cp := *p

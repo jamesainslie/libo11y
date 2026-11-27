@@ -2,6 +2,7 @@ package aggregate
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"slices"
 	"sync"
@@ -348,9 +349,8 @@ func TestMergeExtrema(t *testing.T) {
 	if err := a.Merge(d, attribute.NewSet(), []uint64{0, 0}, 0, &lo, &hi); err != nil {
 		t.Fatal(err)
 	}
-	p := a.Produce()[0].Metrics[0].Data.(metricdata.Histogram[float64]).DataPoints[0]
-	if _, ok := p.Min.Value(); ok {
-		t.Fatal("extrema of an empty delta recorded")
+	if got := a.Produce(); len(got) != 0 {
+		t.Fatalf("an empty delta or a refused one left %+v", got)
 	}
 }
 
@@ -486,5 +486,35 @@ func TestHistogramBoundsMustIncrease(t *testing.T) {
 	d := Desc{Scope: "s", Name: "one", Unit: "s", Kind: Histogram}
 	if err := a.Record(d, attribute.NewSet(), 5); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestMergeEmptyDelta(t *testing.T) {
+	a := New(10, time.Now)
+	d := Desc{Scope: "s", Name: "h", Unit: "s", Kind: Histogram, Bounds: []float64{1}}
+	if err := a.Merge(d, attribute.NewSet(), []uint64{0, 0}, 2, nil, nil); !errors.Is(err, ErrValue) {
+		t.Fatalf("sum without observations: err %v", err)
+	}
+	if err := a.Merge(d, attribute.NewSet(), []uint64{0, 0}, 0, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := a.SeriesCounts()["h"]; got != 0 {
+		t.Fatalf("an empty delta made %d series", got)
+	}
+}
+
+func TestProduceManyOwners(t *testing.T) {
+	// Owners merge by scope and name; many of them stay one metric each.
+	a := New(10, time.Now)
+	for i := range 500 {
+		owner := fmt.Sprint(i)
+		for _, name := range []string{"x", "y"} {
+			d := Desc{Owner: owner, Scope: "app", Name: name, Unit: "1", Kind: Sum, Monotonic: true}
+			_ = a.Add(d, attribute.NewSet(attribute.String("service.name", owner)), 1)
+		}
+	}
+	ms := a.Produce()[0].Metrics
+	if len(ms) != 2 || len(ms[0].Data.(metricdata.Sum[float64]).DataPoints) != 500 {
+		t.Fatalf("%d metrics", len(ms))
 	}
 }

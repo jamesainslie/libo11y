@@ -320,8 +320,12 @@ func TestAppMetricBoundsCapped(t *testing.T) {
 	for i := range bounds {
 		bounds[i] = float64(i)
 	}
-	addDeltaHistogram(ms, "shop.wide", bounds, make([]uint64, len(bounds)+1), 0)
-	addDeltaHistogram(ms, "shop.ok", bounds[:maxAppBounds], make([]uint64, maxAppBounds+1), 0)
+	wide := make([]uint64, len(bounds)+1)
+	wide[0] = 1
+	ok := make([]uint64, maxAppBounds+1)
+	ok[0] = 1
+	addDeltaHistogram(ms, "shop.wide", bounds, wide, 0)
+	addDeltaHistogram(ms, "shop.ok", bounds[:maxAppBounds], ok, 0)
 	code, resp := postMetrics(t, h, md, "203.0.113.5:1000")
 	if code != 200 || resp.PartialSuccess().RejectedDataPoints() != 1 || !strings.Contains(resp.PartialSuccess().ErrorMessage(), "invalid_value=1") {
 		t.Fatalf("%d %s", code, resp.PartialSuccess().ErrorMessage())
@@ -402,8 +406,9 @@ func TestAppMetricLabelBudget(t *testing.T) {
 	}
 	addDeltaSum(ms, "shop.wide", 1, wide)
 	addDeltaSum(ms, "shop.long", 1, map[string]string{"shop.step": strings.Repeat("y", maxAppLabelLen+10)})
+	addDeltaSum(ms, "shop.longkey", 1, map[string]string{"shop." + strings.Repeat("k", maxAppLabelLen): "v"})
 	code, resp := postMetrics(t, h, md, "203.0.113.5:1000")
-	if code != 200 || resp.PartialSuccess().RejectedDataPoints() != 1 || !strings.Contains(resp.PartialSuccess().ErrorMessage(), "too_many_attributes=1") {
+	if code != 200 || resp.PartialSuccess().RejectedDataPoints() != 2 || !strings.Contains(resp.PartialSuccess().ErrorMessage(), "label_budget=2") {
 		t.Fatalf("%d %s", code, resp.PartialSuccess().ErrorMessage())
 	}
 	got := flatten(collect(t, r))
@@ -426,5 +431,48 @@ func TestAppMetricsResponseIsProtobufForProtobuf(t *testing.T) {
 	resp := pmetricotlp.NewExportResponse()
 	if err := resp.UnmarshalProto(w.Body.Bytes()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestAppMetricEmptyHistogramDeltas(t *testing.T) {
+	p := NewMetricProducer()
+	r := newManualReader(t, p)
+	cfg, err := ParseConfig([]byte("aggregation: {max_metrics_per_app: 1}\n" + testConfig))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := NewHandler(WithConfig(cfg), WithMetricProducer(p))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
+	md, ms := appMetricsBatch()
+	addDeltaHistogram(ms, "shop.empty", []float64{1}, []uint64{0, 0}, 0)  // nothing observed: ignored
+	addDeltaHistogram(ms, "shop.bogus", []float64{1}, []uint64{0, 0}, 3)  // a sum with no observations
+	addDeltaHistogram(ms, "shop.real", []float64{1}, []uint64{1, 0}, 0.5) // takes the one slot
+	code, resp := postMetrics(t, h, md, "203.0.113.5:1000")
+	if code != 200 || resp.PartialSuccess().RejectedDataPoints() != 1 || !strings.Contains(resp.PartialSuccess().ErrorMessage(), "invalid_value=1") {
+		t.Fatalf("%d %s", code, resp.PartialSuccess().ErrorMessage())
+	}
+	if got := flatten(collect(t, r)); len(got) != 1 || got["shop.real{service.name=shop-web}#count"] != 1 {
+		t.Fatalf("%v", got)
+	}
+}
+
+func TestAppMetricSetKeepsRacedMetrics(t *testing.T) {
+	// A metric that aggregated a point keeps its slot even when a racing
+	// request filled the last one, so it never freezes.
+	s := &appMetricSet{max: 1, known: map[string]map[appMetricID]bool{}}
+	a, b := appMetricID{"s", "a"}, appMetricID{"s", "b"}
+	if !s.room("svc", a) || !s.room("svc", b) {
+		t.Fatal("no room before either took the slot")
+	}
+	s.add("svc", a)
+	s.add("svc", b)
+	if !s.room("svc", a) || !s.room("svc", b) {
+		t.Fatal("a raced metric lost its slot")
+	}
+	if s.room("svc", appMetricID{"s", "c"}) {
+		t.Fatal("a new metric found room past the cap")
 	}
 }
