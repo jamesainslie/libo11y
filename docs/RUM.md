@@ -36,8 +36,8 @@ a set of new platforms under both products, not a third product.
 Four cells exist today: the Go core (`go`), the Bun and Node core
 (`@libo11y/server`), the browser core (`@libo11y/web`) and the MV3
 extension core (`@libo11y/webext`). The two browser cores first ship in
-`ts/v0.2.1`. Every other named cell is planned, including every package in
-the RUM row.
+`ts/v0.2.1`. The browser RUM cell, `@libo11y/rum`, is in development in
+`ts/packages/rum` and has not shipped. Every other named cell is planned.
 
 ## Data model
 
@@ -195,6 +195,44 @@ A view span covers getting into the view, and the view summary carries the
 time spent on it. The requests an action caused are children of its span.
 The action span links to the view it happened on, and a view the action
 caused links back to it.
+
+Clients name the spans `view <o11y.rum.view.name>`, `action
+<o11y.rum.action.type>` and `app_load`. The name is for people reading a
+trace. The gateway identifies a shape by `o11y.rum.span.shape`, never by
+the name, so every RUM span shape must set that attribute. The action name
+never goes in the span name, because span names bypass the sensitivity
+policy. On the web, `@libo11y/rum` turns the `documentLoad` span of
+`@libo11y/web` into the `app_load` shape.
+
+### Session sampling
+
+A session's detail is sent from its start when the session is
+head-sampled. Every client decides it the same way from the session ID, so
+every tab of a session and every client language agree:
+
+```
+sampled = fnv1a32(utf8(session.id)) / 2^32 < sessionSampleRate
+```
+
+`fnv1a32` is FNV-1a over 32 bits: offset basis `0x811c9dc5`, prime
+`0x01000193`, over the UTF-8 bytes of the ID, as an unsigned integer. A
+rate at or below 0, or NaN, keeps nothing. A rate at or above 1 keeps
+everything.
+
+A session that is not head-sampled still sends a view summary for every
+view. Its other records wait in a retention buffer, bounded by bytes and
+age. An error or a frustration signal keeps the session from then on, and
+the buffered records are sent. A session that ends without being kept
+drops its buffer.
+
+### The gateway wire contract
+
+Every OTLP request a RUM client sends to the gateway carries two query
+parameters, because `sendBeacon` cannot set headers:
+- `sent_at`: the client's Unix time in milliseconds when the request was
+  sent. Each retry carries its own.
+- `client_token`: the app's public client token. It identifies the app and
+  is not a secret.
 
 ### Metrics
 
