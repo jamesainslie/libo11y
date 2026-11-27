@@ -8,6 +8,25 @@ adhere to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `o11yhttp`: `WithServerTiming` adds
+  `Server-Timing: traceparent;desc="00-<trace-id>-<span-id>-<flags>"`,
+  naming the server span, to HTML responses. `@libo11y/web`'s
+  document-load instrumentation reads it and makes the server span the
+  parent of the page's `documentLoad` span, so the first page load joins
+  the backend trace. The entry is added when the handler commits the
+  headers (a final `WriteHeader`, `Write`, `Flush`, or a `ReadFrom` that
+  copies bytes, also through `http.ResponseController`) and only for a
+  `text/html` Content-Type, or no Content-Type when net/http sniffs
+  `text/html` from the first bytes written. A Server-Timing value the handler set is kept and the
+  entry follows it. Unsampled spans get an entry with flags `00`; filtered
+  requests and requests with no valid span context get none. The format
+  and HTML-only rule match `@libo11y/server`'s `serverTiming`.
+- `o11ygin`: `WithServerTiming`, the same entry on HTML responses written
+  through `c.Writer`. It names the server span otelgin started, even when a
+  handler puts a child span in `c.Request`.
+
 ## [0.3.0] - 2026-11-27
 
 ### Added

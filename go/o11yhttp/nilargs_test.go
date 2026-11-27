@@ -19,6 +19,7 @@ func nilArgOptions() map[string][]o11yhttp.Option {
 		"WithFilter nil":     {o11yhttp.WithFilter(nil)},
 		"WithIgnorePaths":    {o11yhttp.WithIgnorePaths()},
 		"WithSpanNameFormat": {o11yhttp.WithSpanNameFormatter(nil)},
+		"WithServerTiming":   {o11yhttp.WithServerTiming()},
 	}
 }
 

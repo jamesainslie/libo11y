@@ -7,7 +7,8 @@
 //
 // It offers the o11yhttp options that otelgin supports natively:
 // [WithSDK], [WithFilter], [WithIgnorePaths], and [WithSpanNameFormatter]
-// (which receives the gin.Context rather than the operation and request).
+// (which receives the gin.Context rather than the operation and request),
+// plus [WithServerTiming], which it adds around otelgin.
 // otelgin has no public-endpoint mechanism and no canonical log line, so
 // o11yhttp's WithPublicEndpoint and WithCanonicalLine have no Gin
 // counterpart.
@@ -32,11 +33,14 @@
 package o11ygin
 
 import (
+	"context"
 	"net/http"
 	"path"
 
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
 
 	o11y "github.com/jamesainslie/libo11y/go"
 )
@@ -48,6 +52,7 @@ type config struct {
 	sdk           *o11y.SDK
 	filters       []otelgin.Filter
 	nameFormatter func(*gin.Context) string
+	serverTiming  bool
 }
 
 // WithSDK binds the instrumentation to sdk's tracer provider, meter
@@ -62,7 +67,8 @@ func WithSDK(sdk *o11y.SDK) Option {
 
 // WithFilter adds a predicate; requests for which it returns false are not
 // traced or measured. All filters must pass for a request to be recorded.
-// A nil allow adds no filter.
+// A filter may run more than once per request, so it must be deterministic
+// and free of side effects. A nil allow adds no filter.
 func WithFilter(allow func(*http.Request) bool) Option {
 	return func(c *config) {
 		if allow != nil {
@@ -99,6 +105,25 @@ func WithSpanNameFormatter(format func(c *gin.Context) string) Option {
 	return func(c *config) { c.nameFormatter = format }
 }
 
+// WithServerTiming adds `Server-Timing: traceparent;desc="00-<trace-id>-<span-id>-<flags>"`
+// to HTML responses, naming the server span, as o11yhttp's WithServerTiming
+// does. A browser page instrumented with @libo11y/web makes the server span
+// the parent of its documentLoad span, so the first page load joins the
+// backend trace. An existing Server-Timing value the handler set is kept,
+// and the entry is added after it.
+//
+// The entry is added when a handler commits the response headers through
+// c.Writer (Write, WriteString, WriteHeaderNow or Flush, which c.HTML,
+// c.Data and the other renderers call), and only if the response is HTML
+// then: its Content-Type is text/html, or it has none and net/http will
+// sniff text/html from the first write. A response with no body that Gin
+// commits only after the middleware chain returns gets no entry. Unsampled
+// spans get an entry with their flags; requests excluded by [WithFilter] or
+// [WithIgnorePaths], or with no valid span context, get none.
+func WithServerTiming() Option {
+	return func(c *config) { c.serverTiming = true }
+}
+
 // Middleware returns Gin middleware that traces and measures every request,
 // naming spans from the matched route pattern (for example
 // "GET /users/:id") and adopting inbound W3C trace context and baggage.
@@ -112,12 +137,22 @@ func Middleware(operation string, opts ...Option) gin.HandlerFunc {
 	}
 
 	ginOpts := make([]otelgin.Option, 0, 5)
+	var tracerProvider trace.TracerProvider
 	if cfg.sdk != nil {
+		tracerProvider = cfg.sdk.TracerProvider()
 		ginOpts = append(ginOpts,
-			otelgin.WithTracerProvider(cfg.sdk.TracerProvider()),
 			otelgin.WithMeterProvider(cfg.sdk.MeterProvider()),
 			otelgin.WithPropagators(cfg.sdk.Propagator()),
 		)
+	}
+	if cfg.serverTiming {
+		if tracerProvider == nil {
+			tracerProvider = otel.GetTracerProvider() // what otelgin defaults to
+		}
+		tracerProvider = captureProvider{tracerProvider}
+	}
+	if tracerProvider != nil {
+		ginOpts = append(ginOpts, otelgin.WithTracerProvider(tracerProvider))
 	}
 	if len(cfg.filters) > 0 {
 		ginOpts = append(ginOpts, otelgin.WithFilter(cfg.filters...))
@@ -125,5 +160,25 @@ func Middleware(operation string, opts ...Option) gin.HandlerFunc {
 	if cfg.nameFormatter != nil {
 		ginOpts = append(ginOpts, otelgin.WithSpanNameFormatter(cfg.nameFormatter))
 	}
-	return otelgin.Middleware(operation, ginOpts...)
+	instrumented := otelgin.Middleware(operation, ginOpts...)
+	if !cfg.serverTiming {
+		return instrumented
+	}
+	return func(c *gin.Context) {
+		for _, allow := range cfg.filters {
+			if !allow(c.Request) {
+				instrumented(c) // filtered: otelgin starts no span, so there is nothing to name
+				return
+			}
+		}
+		savedWriter, savedCtx := c.Writer, c.Request.Context()
+		w := &timingWriter{ResponseWriter: savedWriter}
+		c.Writer = w
+		c.Request = c.Request.WithContext(context.WithValue(savedCtx, timingKey{}, w))
+		defer func() {
+			c.Writer = savedWriter
+			c.Request = c.Request.WithContext(savedCtx)
+		}()
+		instrumented(c)
+	}
 }

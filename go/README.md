@@ -312,7 +312,14 @@ decision. Unknown request methods are normalized to `_OTHER` (with
 the server span Error and keeps propagating. Options: `WithSDK` (bind to an
 SDK built with `New`), `WithFilter`, `WithIgnorePaths`,
 `WithSpanNameFormatter`, `WithPublicEndpoint` (on internet-facing servers,
-link rather than adopt untrusted inbound context), and `WithCanonicalLine`.
+link rather than adopt untrusted inbound context), `WithCanonicalLine`, and
+`WithServerTiming`. `WithServerTiming` adds
+`Server-Timing: traceparent;desc="00-<trace-id>-<span-id>-<flags>"` to HTML
+responses, so a page instrumented with `@libo11y/web` makes the server span
+the parent of its `documentLoad` span and the first page load joins the
+backend trace. A Server-Timing value the handler set is kept. Set
+`Content-Type` before the headers are committed; without one, the entry is
+added only when net/http sniffs `text/html` from the first bytes written.
 
 ```go
 server := grpc.NewServer(grpc.StatsHandler(o11ygrpc.ServerHandler(
@@ -338,8 +345,10 @@ router.Use(o11ygin.Middleware("api", o11ygin.WithIgnorePaths("/healthz")), gin.R
 Register the middleware before `gin.Recovery()`, so the 500 that Recovery
 writes for a panic is recorded on the span and its metrics (`gin.Default()`
 installs Recovery first, so build the router with `gin.New()`). `o11ygin`
-offers `WithSDK`, `WithFilter`, `WithIgnorePaths`, and
-`WithSpanNameFormatter` (which receives the `gin.Context`). otelgin has no
+offers `WithSDK`, `WithFilter`, `WithIgnorePaths`,
+`WithSpanNameFormatter` (which receives the `gin.Context`), and
+`WithServerTiming`, which works as in `o11yhttp` for responses written
+through `c.Writer` (`c.HTML`, `c.Data` and the other renderers). otelgin has no
 public-endpoint mechanism and no canonical log line, so `WithPublicEndpoint`
 and `WithCanonicalLine` have no Gin counterpart.
 

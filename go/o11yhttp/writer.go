@@ -7,6 +7,8 @@ import (
 	"net/http"
 
 	"github.com/felixge/httpsnoop"
+
+	"github.com/jamesainslie/libo11y/go/internal/servertiming"
 )
 
 // statusTracker records the final response status the handler committed.
@@ -101,3 +103,68 @@ func trackResponse(w http.ResponseWriter) (http.ResponseWriter, *statusTracker) 
 	})
 	return wrapped, st
 }
+
+// timingResponse wraps w so that entry is added to the Server-Timing header
+// when the handler commits the headers of an HTML response. The decision is
+// made once, at the first WriteHeader with a final status, Write, Flush or
+// ReadFrom that copies bytes, because net/http ignores header changes after
+// that. A 1xx informational WriteHeader (other than 101) does not decide:
+// net/http still accepts a final status and its headers afterwards. As with
+// trackResponse, httpsnoop keeps the optional interfaces and Unwrap visible,
+// so a Flush through http.ResponseController passes through the hook. It
+// inherits the ResponseWriter contract: no concurrent use.
+func timingResponse(w http.ResponseWriter, entry string) http.ResponseWriter {
+	decided := false
+	decide := func(body []byte, sniff bool) {
+		if decided {
+			return
+		}
+		decided = true
+		if h := w.Header(); servertiming.HTMLResponse(h, body, sniff) {
+			h.Add(servertiming.Header, entry)
+		}
+	}
+	// sniffWriter writes through w after deciding on the bytes, as the
+	// first Write of a body does.
+	sniffWriter := writerFunc(func(b []byte) (int, error) { decide(b, true); return w.Write(b) })
+	return httpsnoop.Wrap(w, httpsnoop.Hooks{
+		WriteHeader: func(next httpsnoop.WriteHeaderFunc) httpsnoop.WriteHeaderFunc {
+			return func(code int) {
+				if code >= 200 || code == http.StatusSwitchingProtocols {
+					decide(nil, false)
+				}
+				next(code)
+			}
+		},
+		Write: func(next httpsnoop.WriteFunc) httpsnoop.WriteFunc {
+			return func(b []byte) (int, error) { decide(b, true); return next(b) }
+		},
+		ReadFrom: func(next httpsnoop.ReadFromFunc) httpsnoop.ReadFromFunc {
+			// net/http's ReadFrom copies the first sniff-length bytes with
+			// Write before handing the rest to the connection, so an empty
+			// source commits nothing and the copied bytes are sniffed. Do the
+			// same, so the decision sees what net/http sees.
+			return func(src io.Reader) (int64, error) {
+				if decided {
+					return next(src)
+				}
+				buf := make([]byte, servertiming.SniffLen)
+				n, err := io.CopyBuffer(sniffWriter, io.LimitReader(src, servertiming.SniffLen), buf)
+				if err != nil || n < servertiming.SniffLen {
+					return n, err
+				}
+				rest, err := next(src)
+				return n + rest, err
+			}
+		},
+		Flush: func(next httpsnoop.FlushFunc) httpsnoop.FlushFunc {
+			return func() { decide(nil, false); next() }
+		},
+	})
+}
+
+// writerFunc adapts a function to io.Writer. It deliberately has no
+// ReadFrom, so io.CopyBuffer writes through it.
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(b []byte) (int, error) { return f(b) }
