@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"fmt"
 	"io"
@@ -11,10 +12,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
 )
 
 func TestVersionFlag(t *testing.T) {
@@ -285,5 +289,163 @@ func TestServerLogRedactsPeerAddress(t *testing.T) {
 		if !strings.Contains(got, keep) {
 			t.Errorf("the server log lost %q:\n%s", keep, got)
 		}
+	}
+}
+
+// viewSummaryBody is one valid o11y.rum.view.summary for shop-web, as
+// OTLP/JSON.
+const viewSummaryBody = `{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"shop-web"}}]},` +
+	`"scopeLogs":[{"logRecords":[{"eventName":"o11y.rum.view.summary","attributes":[` +
+	`{"key":"o11y.rum.platform","value":{"stringValue":"web"}},` +
+	`{"key":"o11y.rum.view.name","value":{"stringValue":"/"}},` +
+	`{"key":"o11y.rum.view.kind","value":{"stringValue":"initial"}},` +
+	`{"key":"o11y.rum.view.id","value":{"stringValue":"v0"}},` +
+	`{"key":"session.id","value":{"stringValue":"s1"}},` +
+	`{"key":"o11y.rum.summary.seq","value":{"intValue":"0"}},` +
+	`{"key":"o11y.rum.summary.time_on_view","value":{"doubleValue":1.5}}]}]}]}]}`
+
+// metricsCollector records the names of the metrics posted to /v1/metrics
+// and accepts everything else.
+type metricsCollector struct {
+	mu    sync.Mutex
+	names map[string]bool
+	errs  []error
+}
+
+func (c *metricsCollector) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	defer w.WriteHeader(http.StatusOK)
+	if r.URL.Path != "/v1/metrics" {
+		return
+	}
+	var body io.Reader = r.Body
+	if r.Header.Get("Content-Encoding") == "gzip" {
+		zr, err := gzip.NewReader(r.Body)
+		if err != nil {
+			c.fail(err)
+			return
+		}
+		body = zr
+	}
+	raw, err := io.ReadAll(body)
+	if err != nil {
+		c.fail(err)
+		return
+	}
+	req := pmetricotlp.NewExportRequest()
+	if err := req.UnmarshalProto(raw); err != nil {
+		c.fail(err)
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	rms := req.Metrics().ResourceMetrics()
+	for i := range rms.Len() {
+		sms := rms.At(i).ScopeMetrics()
+		for j := range sms.Len() {
+			ms := sms.At(j).Metrics()
+			for k := range ms.Len() {
+				c.names[ms.At(k).Name()] = true
+			}
+		}
+	}
+}
+
+func (c *metricsCollector) fail(err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.errs = append(c.errs, err)
+}
+
+func (c *metricsCollector) seen(name string) (bool, []error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.names[name], slices.Clone(c.errs)
+}
+
+// TestFallbackProducerRegistered runs the command with its own metrics
+// going to an OTLP collector and checks that the metrics the gateway
+// derives from a view summary leave the process with them, both through
+// the fallback producer and when OTEL_METRICS_PRODUCERS names o11yrum.
+func TestFallbackProducerRegistered(t *testing.T) {
+	for name, producers := range map[string]string{"fallback": "", "named": "o11yrum"} {
+		t.Run(name, func(t *testing.T) {
+			collector := &metricsCollector{names: map[string]bool{}}
+			srv := httptest.NewServer(collector)
+			defer srv.Close()
+			t.Setenv("OTEL_TRACES_EXPORTER", "none")
+			t.Setenv("OTEL_LOGS_EXPORTER", "none")
+			t.Setenv("OTEL_METRICS_EXPORTER", "otlp")
+			t.Setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf")
+			t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", srv.URL)
+			t.Setenv("OTEL_METRIC_EXPORT_INTERVAL", "200")
+			t.Setenv("OTEL_METRICS_PRODUCERS", producers)
+			cfg := writeConfig(t, srv.URL)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			pr, pw := io.Pipe()
+			defer func() { _ = pw.Close() }()
+			done := make(chan int, 1)
+			go func() { done <- run(ctx, []string{"-config", cfg}, io.Discard, pw) }()
+			base := "http://" + waitForListening(t, pr)
+
+			req, err := http.NewRequest(http.MethodPost, base+"/_o11y/v1/logs", strings.NewReader(viewSummaryBody))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Origin", "https://shop.example")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			respBody, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusOK || strings.Contains(string(respBody), "rejected") {
+				t.Fatalf("logs: status %d body %s", resp.StatusCode, respBody)
+			}
+
+			deadline := time.Now().Add(10 * time.Second)
+			for {
+				ok, errs := collector.seen("o11y.rum.views")
+				if len(errs) > 0 {
+					t.Fatalf("the collector could not decode a metrics request: %v", errs)
+				}
+				if ok {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("no o11y.rum.views reached the collector within 10s")
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+			cancel()
+			select {
+			case code := <-done:
+				if code != 0 {
+					t.Fatalf("exit %d", code)
+				}
+			case <-time.After(30 * time.Second):
+				t.Fatal("the gateway did not shut down")
+			}
+		})
+	}
+}
+
+func TestProducersEnvMustNameO11yrum(t *testing.T) {
+	quietTelemetry(t)
+	for _, producers := range []string{"prometheus", "none", "o11yrum ,prometheus"} {
+		t.Run(producers, func(t *testing.T) {
+			t.Setenv("OTEL_METRICS_PRODUCERS", producers)
+			// A broken check would serve until the deadline instead of failing.
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			var errOut bytes.Buffer
+			if code := run(ctx, []string{"-config", writeConfig(t, "http://127.0.0.1:1")}, io.Discard, &errOut); code != 1 {
+				t.Fatalf("code %d: %s", code, errOut.String())
+			}
+			if !strings.Contains(errOut.String(), "OTEL_METRICS_PRODUCERS") || !strings.Contains(errOut.String(), "o11yrum") {
+				t.Errorf("stderr %q, want it to name OTEL_METRICS_PRODUCERS and o11yrum", errOut.String())
+			}
+		})
 	}
 }
