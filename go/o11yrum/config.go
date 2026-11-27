@@ -20,12 +20,30 @@ import (
 // Config is the gateway configuration, read from one YAML file. Zero
 // numeric fields take the documented defaults.
 type Config struct {
+	// Listen is the address the o11yrum-gateway command serves on.
+	// Default :8080. The library ignores it.
+	Listen string `yaml:"listen"`
+	// Environment is the gateway's own deployment.environment.name:
+	// production, staging, development or test. The o11yrum-gateway
+	// command requires it. The library ignores it.
+	Environment string `yaml:"environment"`
+	// Telemetry configures the gateway's own telemetry.
+	Telemetry TelemetryConfig `yaml:"telemetry"`
+
 	Edge   EdgeConfig   `yaml:"edge"`
 	Limits LimitsConfig `yaml:"limits"`
 	Apps   []AppConfig  `yaml:"apps"`
 	Sinks  SinksConfig  `yaml:"sinks"`
 
 	dir string // directory of the file LoadConfig read, for relative paths
+}
+
+// TelemetryConfig configures the gateway's own telemetry, which the
+// standard OTEL_* environment variables route.
+type TelemetryConfig struct {
+	// ServiceName is the gateway's own service.name. Default
+	// o11yrum-gateway.
+	ServiceName string `yaml:"service_name"`
 }
 
 // EdgeConfig holds the checks applied to every request before decoding.
@@ -169,6 +187,12 @@ func (c *Config) resolvePath(p string) string {
 // applyDefaults fills zero fields. Negative values are left for validate
 // to refuse.
 func (c *Config) applyDefaults() {
+	if c.Listen == "" {
+		c.Listen = ":8080"
+	}
+	if c.Telemetry.ServiceName == "" {
+		c.Telemetry.ServiceName = "o11yrum-gateway"
+	}
 	e := &c.Edge
 	setDefault(&e.MaxBodyBytes, 512<<10)
 	setDefault(&e.MaxDecompressedBytes, 5<<20)

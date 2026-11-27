@@ -127,3 +127,20 @@ func TestLoadConfigMissingFile(t *testing.T) {
 		t.Fatal("LoadConfig of a missing file succeeded")
 	}
 }
+
+func TestParseConfigCommandSettings(t *testing.T) {
+	cfg, err := ParseConfig([]byte("apps:\n  - {service_name: a, origins: [\"https://a\"]}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Listen != ":8080" || cfg.Telemetry.ServiceName != "o11yrum-gateway" || cfg.Environment != "" {
+		t.Errorf("listen %q telemetry %+v environment %q", cfg.Listen, cfg.Telemetry, cfg.Environment)
+	}
+	cfg, err = ParseConfig([]byte("listen: 127.0.0.1:9000\nenvironment: staging\ntelemetry: {service_name: rum-gw}\napps:\n  - {service_name: a, origins: [\"https://a\"]}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Listen != "127.0.0.1:9000" || cfg.Telemetry.ServiceName != "rum-gw" || cfg.Environment != "staging" {
+		t.Errorf("listen %q telemetry %+v environment %q", cfg.Listen, cfg.Telemetry, cfg.Environment)
+	}
+}
