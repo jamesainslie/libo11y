@@ -42,7 +42,7 @@ func flatten(sms []metricdata.ScopeMetrics) map[string]float64 {
 func seriesKey(name string, kvs []attribute.KeyValue) string {
 	parts := make([]string, len(kvs))
 	for i, kv := range kvs {
-		parts[i] = string(kv.Key) + "=" + kv.Value.Emit()
+		parts[i] = string(kv.Key) + "=" + kv.Value.String()
 	}
 	return name + "{" + strings.Join(parts, ",") + "}"
 }

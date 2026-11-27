@@ -68,6 +68,13 @@ cd go && go test -run TestVectors -update-vectors .
 The flag exists only in the root package, so give it with `.` as shown.
 Do not combine it with `./...`.
 
+`go/o11yrum` keeps its own vectors, because the gateway is a separate
+module. Regenerate them from that module:
+
+```sh
+cd go/o11yrum && go test -run TestVectors -update-vectors .
+```
+
 ### `pii-hash.json`
 
 PII tokens under the hash mode. It has two fields:
@@ -128,6 +135,57 @@ credential is never echoed. The output is Go's `url.URL.String()`. It
 lowercases only the scheme and escapes the path, and it normalizes nothing
 else. A WHATWG `URL` parser would lowercase the host, drop default ports,
 resolve dot segments and apply IDNA, so a port must not use one.
+
+### `rum-view-summary-metrics.json`
+
+The metrics the RUM gateway derives from `o11y.rum.view.summary` events,
+as the "Derived metrics" and "Vital ratings" sections of
+[SPEC.md](../docs/SPEC.md) define them. The file has four fields:
+- `scope` is the instrumentation scope of the derived metrics.
+- `bounds` maps a unit to the histogram bucket bounds of the vitals with
+  that unit: `s` for LCP, INP, FCP and TTFB, and `1` for CLS. Every rating
+  threshold is one of the bounds.
+- `thresholds` maps each vital metric to its good and poor bounds.
+- `cases` lists the cases.
+
+Each case has these fields:
+- `name` describes the case.
+- `service` is the `service.name` of the app the gateway admitted the
+  request for.
+- `resource` holds the resource attributes of the request, including any
+  the gateway filled in, such as `o11y.rum.browser.family` and
+  `geo.country.iso_code`.
+- `summaries` lists the view summaries the request carried, in order.
+- `metrics` lists every data point a fresh gateway holds after deriving
+  from those summaries.
+
+Summary and resource values are plain JSON. A reader converts each value
+to the registry type of its key: `int` keys to integers, `double` keys to
+floats, and every other key to a string.
+
+Each metric has a `name`, a `kind` (`sum` or `histogram`), a `unit`, its
+`attributes` and a `sum`. A histogram also has `count`, `min`, `max` and
+`bucket_counts`, against the bounds for its unit. Points are cumulative.
+Bucket `i` holds values above bound `i-1` and at or below bound `i`, and
+the last bucket holds values above the last bound.
+
+The rules the cases pin down:
+- Every point carries the `service.name` of the app, whatever the
+  resource says.
+- A metric takes only the labels the specification lists for it. A label
+  the summary and resource do not carry is left out, not set empty.
+- `o11y.rum.views` counts a summary only when `o11y.rum.summary.seq` is 0.
+- Counts of zero and absent counts add no point.
+- The gateway computes `o11y.rum.vital.rating`. A value at the good bound
+  is `good`, a value at the poor bound is `needs-improvement`, and a value
+  above it is `poor`.
+
+Metrics within a case are sorted by name, then by the attribute set's
+encoding: `key=value` pairs sorted by key and joined by commas, with any
+`,`, `=` or `\` in a value escaped by a backslash. The strings compare
+byte by byte.
+
+RUM clients can use the `summaries` arrays as golden view summaries.
 
 ## `rum-summary/`
 

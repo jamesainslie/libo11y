@@ -28,3 +28,18 @@ adheres to [Semantic Versioning](https://semver.org/).
 - The `o11yrum-gateway` command: one YAML configuration file, its own
   telemetry through the libo11y core and the standard `OTEL_*` variables,
   `/healthz` and `/readyz`, `-check-config`, and graceful shutdown.
+- `MetricProducer` and `WithMetricProducer`: the gateway derives the nine
+  standard RUM metrics from `o11y.rum.view.summary` events once the sinks
+  accept the batch, rates each vital against the specification's
+  thresholds, labels every point with the app's `service.name`, and exposes
+  the cumulative results to any OpenTelemetry metric reader.
+- Operator-defined metrics in the app configuration (`metrics`): counters
+  and histograms over one event, filtered by `where` and grouped only by
+  attributes the specification classifies bounded or enum.
+- `POST /_o11y/v1/metrics`: app metrics sent as delta sums and delta
+  explicit-bucket histograms are re-aggregated under the app's
+  `service.name`, without the resource or any unbounded attribute.
+- The `aggregation` configuration section: `max_series_per_metric`
+  (default 2000, with an overflow series per app past it) and
+  `max_metrics_per_app` (default 200).
+- The self-telemetry gauge `o11yrum.aggregator.series`.
