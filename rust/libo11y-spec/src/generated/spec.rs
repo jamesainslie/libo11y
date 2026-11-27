@@ -343,7 +343,7 @@ pub enum RumVitalAttributionLoadState {
     DomInteractive,
     /// The value `dom-content-loaded`.
     ///
-    /// DOMContentLoaded had fired.
+    /// The DOM content loaded event had fired.
     DomContentLoaded,
     /// The value `complete`.
     ///

@@ -86,7 +86,7 @@ groups:
           members:
             - {id: loading, value: "loading", stability: development, brief: The document was loading.}
             - {id: dom_interactive, value: "dom-interactive", stability: development, brief: The DOM was interactive.}
-            - {id: dom_content_loaded, value: "dom-content-loaded", stability: development, brief: DOMContentLoaded had fired.}
+            - {id: dom_content_loaded, value: "dom-content-loaded", stability: development, brief: The DOM content loaded event had fired.}
             - {id: complete, value: "complete", stability: development, brief: The document had loaded.}
         stability: development
         brief: INP and CLS attribution. The document's load state when the interaction or shift happened.

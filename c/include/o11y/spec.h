@@ -94,7 +94,7 @@ typedef enum o11y_cardinality {
 #define O11Y_RUM_VITAL_ATTRIBUTION_LOAD_STATE_LOADING "loading"
 /* The DOM was interactive. */
 #define O11Y_RUM_VITAL_ATTRIBUTION_LOAD_STATE_DOM_INTERACTIVE "dom-interactive"
-/* DOMContentLoaded had fired. */
+/* The DOM content loaded event had fired. */
 #define O11Y_RUM_VITAL_ATTRIBUTION_LOAD_STATE_DOM_CONTENT_LOADED "dom-content-loaded"
 /* The document had loaded. */
 #define O11Y_RUM_VITAL_ATTRIBUTION_LOAD_STATE_COMPLETE "complete"
