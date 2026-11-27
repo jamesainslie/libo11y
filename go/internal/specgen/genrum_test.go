@@ -26,7 +26,7 @@ func TestGenRUMSpecFromRealRegistry(t *testing.T) {
 		`"o11y.rum.vital.rating": {"good", "needs-improvement", "poor"},`,
 		`"o11y.rum.view.summary": {`,
 		`"o11y.telemetry.configured": {"o11y.config"},`,
-		`"view": {"o11y.rum.platform", "o11y.rum.view.name", "o11y.rum.view.id", "o11y.rum.view.kind", "session.id"},`,
+		`"view": {"o11y.rum.span.shape", "o11y.rum.platform", "o11y.rum.view.name", "o11y.rum.view.id", "o11y.rum.view.kind", "session.id"},`,
 		`"o11y.rum.vital.lcp": {Instrument: "histogram", Unit: "s",`,
 	} {
 		if !strings.Contains(src, want) {
