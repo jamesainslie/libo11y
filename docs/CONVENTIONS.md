@@ -17,6 +17,8 @@ libo11y/
   java/          Java/Maven module (planned)
   zig/           Zig package (zig/v0.1.0), published through the
                  root build.zig and build.zig.zon shim
+  python/        Python package (python/v0.1.0), published to PyPI as
+                 libo11y with optional extras
   c/             C11 library (pure C11 ABI backed by zig/)
 ```
 
@@ -140,10 +142,36 @@ POSIX libc (`-lpthread -lm` on Linux).
 - **Commits and releases.** Commits use `c: <type>: <description>` and release
   tags use `c/vX.Y.Z`.
 
+## Python toolchain
+
+The Python package in `python/` targets CPython 3.12, 3.13, and 3.14 on
+`opentelemetry-sdk==1.45.*` and uses `uv` with a committed `python/uv.lock`.
+CI installs `uv` with `astral-sh/setup-uv` pinned by commit and runs
+`make python-check` on Linux and macOS across Python 3.12, 3.13, and 3.14,
+plus a `python-integrations` job on Linux against a PostgreSQL 17 service
+container (`O11Y_PG_TEST_DSN`).
+
+- **Formatting and linting.** `ruff format --check src tests` and
+  `ruff check src tests` enforce formatting and lint rules with zero
+  warnings.
+- **Type checking.** `pyright` runs in strict mode (`typeCheckingMode =
+  "strict"`) over `src` and `tests`, and the package ships a PEP 561
+  `py.typed` marker.
+- **Tests.** `pytest -n $(PYTHON_WORKERS) --cov=libo11y --cov-branch` runs
+  unit, shared `conformance/`, OTLP HTTP/gRPC wire, integration, and
+  Hypothesis property suites in parallel (`PYTHON_WORKERS` caps xdist
+  workers to a quarter of the machine's cores).
+- **Hygiene gate.** `scripts/python-hygiene.sh` (tested by
+  `make python-hygiene-test`) rejects `print(...)`, `builtins.print(...)`,
+  `breakpoint()`, bare `except:`, and `except BaseException:` outside tests.
+- **Prose and commits.** Never use the em dash character anywhere in Python
+  sources, docs, or commit messages. Commits use
+  `python: <type>: <description>` and release tags use `python/vX.Y.Z`.
+
 ## Versioning and releases
 
 - Independent per-language versioning, path-prefixed tags: `go/v0.1.0`,
-  `ts/v0.1.1`, `zig/v0.1.0`, `c/v0.1.0`, `rust/v0.1.0`.
+  `ts/v0.1.1`, `zig/v0.1.0`, `python/v0.1.0`, `c/v0.1.0`, `rust/v0.1.0`.
 - Semantic versioning per language ecosystem norms.
 - No lockstep releases across languages. A change to shared docs never
   forces a release.
@@ -250,6 +278,29 @@ POSIX libc (`-lpthread -lm` on Linux).
      keeps Latest), and runs a live `zig-smoke` job fetching
      `git+https://github.com/jamesainslie/libo11y#zig/vX.Y.Z` into a fresh
      consumer against an in-process OTLP receiver.
+- Python releases publish one PyPI distribution (`libo11y`, with optional
+  extras) from a `python/vX.Y.Z` tag. `python/pyproject.toml`,
+  `python/uv.lock`, `PYTHON_RELEASE_VERSION` in the `Makefile`, and the
+  default in `scripts/python-release-check.sh` move together only in a
+  release commit. To release Python version `X.Y.Z`:
+  1. Move `python/CHANGELOG.md` entries into a `## [X.Y.Z] - date` section
+     and update the link references.
+  2. Set `version = "X.Y.Z"` in `python/pyproject.toml`, run `cd python &&
+     uv lock`, and set `PYTHON_RELEASE_VERSION` in the `Makefile` and the
+     default in `scripts/python-release-check.sh` to `vX.Y.Z`.
+  3. Run `make python-check` and `make release-check` (or
+     `make python-release-check`), then merge the release PR.
+  4. Tag `python/vX.Y.Z` on the merge commit and push that tag.
+  5. The release workflow (`scripts/release-tag.sh` routing `kind=python`,
+     `module=libo11y`) checks `python/pyproject.toml` and
+     `python/CHANGELOG.md`, runs `make python-check` and
+     `scripts/python-release-check.sh`, builds sdist and wheel with `uv
+     build`, publishes to PyPI with `pypa/gh-action-pypi-publish@release/v1`
+     using OIDC trusted publishing and PEP 740 attestations (no PyPI token
+     stored in the repository), runs a `pypi-smoke` job installing
+     `libo11y==X.Y.Z` from PyPI into a fresh venv against an in-process
+     OTLP/HTTP receiver, and creates the GitHub Release titled
+     `libo11y-python vX.Y.Z` (never marked Latest, so Go keeps Latest).
 - The specification versions separately: once released, each version has a
   `spec/vX.Y.Z` tag and a schema file served at its schema URL. Spec
   1.0.0 is tagged `spec/v1.0.0` on the `go/v0.1.0` commit. Before
@@ -278,7 +329,7 @@ OTEL specification catches up.
 ## Commit messages
 
 `<area>: <type>: <description>` all lowercase, where area is one of `go`,
-`ts`, `spec`, `rust`, `java`, `zig`, `c`, `docs`, `general`, and type follows
+`ts`, `spec`, `rust`, `java`, `zig`, `python`, `c`, `docs`, `general`, and type follows
 Conventional Commits (`feat`, `fix`, `docs`, `refactor`, `test`, `chore`,
 `build`, `ci`, `perf`, `revert`) or names a Keep a Changelog category
 (`change`, `removed`).
@@ -304,13 +355,16 @@ install that version locally. Keep the two in step when adding a gate.
 | `make ts-check` | the TypeScript workspace: Biome, tsc, the build, the API reports, and every unit suite under Bun and Node |
 | `make ts-browser-test` | the `@libo11y/web` and `@libo11y/webext` browser suites under Playwright and headless Chromium. It needs Playwright's Chromium for the pinned version, which CI installs with `bun x --no-install playwright install --with-deps chromium` in `ts/`. CI runs it in the separate `ts-browser` job |
 | `make ts-browser-bundle-test` | `scripts/ts-browser-bundle-check.sh` against fixture packages (needs bun). CI runs it in the `ts` job after `make ts-check` |
-| `make release-check` | the Go release sequence, packing and a consumer smoke test of the TypeScript packages (including the browser bundle check), and the Zig consumer tarball smoke test (needs a clean tree) |
+| `make release-check` | the Go release sequence, packing and a consumer smoke test of the TypeScript packages (including the browser bundle check), the Zig consumer tarball smoke test, and the Python wheel/sdist build and consumer smoke test (needs a clean tree) |
 | `make release-notes-test`, `make release-tag-test` | the release workflow's scripts: changelog sections become release notes, and each release tag routes to its kind, module and version |
 | `make schema-published-test` | the schema URL check against a loopback HTTP server |
 | `make zig-check` | the Zig package: `zig fmt --check`, the tests through the root shim in Debug and ReleaseSafe (`ZIG_BUILD_J` caps the job count), and the hygiene check. CI runs it in the `zig` job on Linux and macOS |
 | `make zig-integrations-check` | optional Zig integrations (`-Dhttpz=true -Dpg=true -Dsqlite=true`) in Debug and ReleaseSafe; CI runs it in `zig-integrations` against PostgreSQL 17 |
 | `make zig-release-check` | archives HEAD, fetches it with `zig fetch --save` into an isolated consumer, runs it against an in-process OTLP receiver, and verifies no `conformance/`, `zig/test/`, or lazy deps were fetched (needs a clean tree) |
 | `make zig-hygiene-test` | `scripts/zig-hygiene.sh` against fixture trees |
+| `make python-check` | the Python package: `uv sync --frozen --all-extras --dev`, `ruff format --check`, `ruff check`, strict `pyright`, `pytest` with branch coverage (`PYTHON_WORKERS` caps xdist workers), and the hygiene check. CI runs it in the `python` job on Linux and macOS across Python 3.12, 3.13, and 3.14; `python-integrations` also runs `tests/test_dbapi.py` against PostgreSQL 17 |
+| `make python-release-check` | builds wheel and sdist with `uv build`, verifies `py.typed` is included and `conformance/` and `tests/` are excluded, installs into a fresh venv, and runs a consumer smoke test against an in-process OTLP/HTTP receiver |
+| `make python-hygiene-test` | `scripts/python-hygiene.sh` against fixture trees |
 | `make c-check` | the C11 library: `zig fmt --check` and `scripts/zig-hygiene.sh` on `c/`, all C11 unit, shared conformance, wire, quickstart, and CLI suites in Debug and ReleaseSafe, plus a standalone `cc -std=c11 -Wall -Wextra -Werror -Wpedantic` link check against `libo11y.a`. CI runs it in the `c` job on Linux and macOS |
 | `make vuln` | `govulncheck` on every Go module; runs last because it depends on the advisory database and the toolchain's patch level |
 
@@ -335,6 +389,14 @@ install that version locally. Keep the two in step when adding a gate.
   include the shared conformance suite, which reads `conformance/` at run
   time from `-Dconformance-dir`. It defaults to the repository's
   directory, and the published package leaves it out.
+- Python: CPython 3.12, 3.13, and 3.14 managed by `uv` (`python/uv.lock`).
+  CI runs `make python-check` on Linux and macOS across all three versions
+  and `tests/test_dbapi.py` against PostgreSQL 17 in `python-integrations`.
+  The gate runs `ruff format --check`, `ruff check`, strict `pyright`,
+  `pytest` with branch coverage and xdist, and `scripts/python-hygiene.sh`
+  (rejecting `print`, `breakpoint`, bare `except:`, and `except
+  BaseException:` outside tests). The tests include the shared conformance
+  suite under `conformance/`, which the published wheel and sdist omit.
 - C: built with Zig 0.17.1 and linked with any C11 compiler (`gcc`, `clang`).
   CI runs `make c-check` on Linux and macOS (Zig formatting and hygiene on
   `c/src`, all C11 unit, conformance, wire, and CLI tests in Debug and

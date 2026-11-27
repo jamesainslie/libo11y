@@ -137,6 +137,26 @@ prerelease=true
 EOF
 )" zig/v1.0.0-rc.1
 
+expect_route "routes the python distribution" "$(
+	cat <<'EOF'
+kind=python
+dir=python
+module=libo11y
+version=0.1.0
+prerelease=false
+EOF
+)" python/v0.1.0
+
+expect_route "marks a python prerelease" "$(
+	cat <<'EOF'
+kind=python
+dir=python
+module=libo11y
+version=0.2.0-rc.1
+prerelease=true
+EOF
+)" python/v0.2.0-rc.1
+
 expect_failure "refuses a spec tag" 1 "spec/v1.2.0 is not a release tag" spec/v1.2.0
 expect_failure "refuses an unknown go submodule" 1 "is not a release tag" go/o11yfoo/v1.0.0
 expect_failure "refuses a tag without the v" 1 "is not a release tag" ts/0.1.0
@@ -144,6 +164,9 @@ expect_failure "refuses a nested ts path" 1 "is not a release tag" ts/core/v0.1.
 expect_failure "refuses a zig tag without the v" 1 "is not a release tag" zig/0.1.0
 expect_failure "refuses a nested zig path" 1 "is not a release tag" zig/foo/v0.1.0
 expect_failure "refuses a two-part zig version" 1 "1.2 is not a semantic version" zig/v1.2
+expect_failure "refuses a python tag without the v" 1 "is not a release tag" python/0.1.0
+expect_failure "refuses a nested python path" 1 "is not a release tag" python/foo/v0.1.0
+expect_failure "refuses a two-part python version" 1 "1.2 is not a semantic version" python/v1.2
 expect_failure "refuses a two-part version" 1 "1.2 is not a semantic version" ts/v1.2
 expect_failure "refuses a leading zero" 1 "01.0.0 is not a semantic version" ts/v01.0.0
 expect_failure "refuses build metadata" 1 "is not a semantic version" ts/v0.1.0+build.5

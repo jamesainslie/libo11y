@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "libo11y"
-version = "0.0.0"
+version = "0.1.0"
 description = "Opinionated, elegant observability for Python built purely on OpenTelemetry."
 readme = "README.md"
 license = "Apache-2.0"

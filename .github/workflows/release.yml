@@ -19,8 +19,14 @@
 # Release titled `libo11y-zig vX.Y.Z` (never marked Latest), and runs a live
 # consumer smoke test fetching `git+https://github.com/<repo>#zig/vX.Y.Z`.
 #
+# A python/vX.Y.Z tag validates python/pyproject.toml, python/CHANGELOG.md,
+# the Python test suite, and a throwaway wheel/sdist consumer check, builds
+# and publishes `libo11y` to PyPI through OIDC trusted publishing with
+# attestations, runs a live PyPI consumer smoke test, and then publishes the
+# GitHub Release titled `libo11y-python vX.Y.Z` (never marked Latest).
+#
 # scripts/release-tag.sh routes the tag. The verify job's kind output (go,
-# ts or zig) selects the jobs and steps that run.
+# ts, zig or python) selects the jobs and steps that run.
 name: release
 
 on:
@@ -32,6 +38,7 @@ on:
       - "go/o11ysql/v*"
       - "ts/v*"
       - "zig/v*"
+      - "python/v*"
 
 permissions:
   contents: read
@@ -68,7 +75,7 @@ jobs:
         run: |
           # The script explains a refused tag on stderr.
           if ! scripts/release-tag.sh "$TAG" >"$RUNNER_TEMP/release-tag.out"; then
-            echo "::error::$TAG is not a release tag with a semantic version (go/vX.Y.Z, go/<submodule>/vX.Y.Z, ts/vX.Y.Z or zig/vX.Y.Z)"
+            echo "::error::$TAG is not a release tag with a semantic version (go/vX.Y.Z, go/<submodule>/vX.Y.Z, ts/vX.Y.Z, zig/vX.Y.Z or python/vX.Y.Z)"
             exit 1
           fi
           cat "$RUNNER_TEMP/release-tag.out" >>"$GITHUB_OUTPUT"
@@ -194,6 +201,37 @@ jobs:
           VERSION: ${{ steps.tag.outputs.version }}
           ZIG_BUILD_J: "4"
         run: scripts/zig-release-check.sh "v$VERSION"
+
+      # The Python branch. python/pyproject.toml must carry the tag's version
+      # and python/CHANGELOG.md must hold its release notes.
+      - name: Require python/pyproject.toml at the tag's version
+        if: steps.tag.outputs.kind == 'python'
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          got="$(sed -nE 's/^version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' python/pyproject.toml | head -n 1)"
+          if [[ "$got" != "$VERSION" ]]; then
+            echo "::error::python/pyproject.toml is at version ${got:-unset}, not $VERSION"
+            exit 1
+          fi
+      - name: Check the Python changelog has release notes
+        if: steps.tag.outputs.kind == 'python'
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: scripts/release-notes.sh "$VERSION" python/CHANGELOG.md
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        if: steps.tag.outputs.kind == 'python'
+        with:
+          enable-cache: true
+          cache-dependency-glob: python/uv.lock
+          python-version: "3.13"
+      - if: steps.tag.outputs.kind == 'python'
+        run: make python-check PYTHON_WORKERS=2
+      - name: Build and validate the Python wheel and sdist as an external consumer
+        if: steps.tag.outputs.kind == 'python'
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: scripts/python-release-check.sh "v$VERSION"
 
   release:
     needs: verify
@@ -528,3 +566,90 @@ jobs:
           VERSION: ${{ needs.verify.outputs.version }}
           ZIG_BUILD_J: "4"
         run: scripts/zig-release-check.sh "v$VERSION" --url "git+https://github.com/${GITHUB_REPOSITORY}#${TAG}"
+
+  publish-pypi:
+    needs: verify
+    if: needs.verify.outputs.kind == 'python'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      # OIDC identity authenticates to PyPI through trusted publishing and
+      # signs PEP 740 digital attestations. No PyPI token is stored.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          enable-cache: false
+          python-version: "3.13"
+      - name: Build sdist and wheel
+        run: uv build --out-dir dist python
+      - name: Publish to PyPI with trusted publishing and attestations
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          attestations: true
+          skip-existing: true
+
+  pypi-smoke:
+    needs: [verify, publish-pypi]
+    if: needs.verify.outputs.kind == 'python'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          enable-cache: false
+          python-version: "3.13"
+      - name: Wait for PyPI to serve libo11y at the released version
+        run: |
+          for attempt in $(seq 1 20); do
+            if curl -fsS "https://pypi.org/pypi/libo11y/${VERSION}/json" >/dev/null 2>&1; then
+              exit 0
+            fi
+            echo "attempt $attempt: PyPI does not serve libo11y $VERSION yet" >&2
+            sleep 30
+          done
+          echo "::error::PyPI did not serve libo11y $VERSION"
+          exit 1
+      - name: Install from PyPI into a fresh venv and run consumer smoke test
+        run: scripts/python-release-check.sh "v$VERSION" --from-pypi
+
+  release-python:
+    needs: [verify, pypi-smoke]
+    if: needs.verify.outputs.kind == 'python'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.verify.outputs.version }}
+          PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+        run: |
+          notes="$RUNNER_TEMP/release-notes.md"
+          scripts/release-notes.sh "$VERSION" python/CHANGELOG.md >"$notes"
+          title="libo11y-python v$VERSION"
+          # The Go main module's release stays the repository's Latest release.
+          if gh release view "$TAG" >/dev/null; then
+            echo "$TAG already has a release; replacing its title and notes"
+            gh release edit "$TAG" --title "$title" --notes-file "$notes" --prerelease="$PRERELEASE" --latest=false
+          else
+            gh release create "$TAG" --title "$title" --notes-file "$notes" --verify-tag --prerelease="$PRERELEASE" --latest=false
+          fi
