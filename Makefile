@@ -176,6 +176,7 @@ zig-hygiene-test:
 
 # Worker count for pytest-xdist, capped at a quarter of the machine's cores.
 PYTHON_WORKERS ?= $(shell nproc 2>/dev/null | awk '{w=int($$1/4); if (w<1) w=1; print w}' || sysctl -n hw.ncpu 2>/dev/null | awk '{w=int($$1/4); if (w<1) w=1; print w}' || echo 2)
+PYTHON_LD_PATH := $(if $(wildcard /run/current-system/sw/share/nix-ld/lib),LD_LIBRARY_PATH=/run/current-system/sw/share/nix-ld/lib$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH},)
 
 # The Python package (needs uv): sync locked dependencies, format check,
 # lint, strict typecheck, tests with branch coverage, and the hygiene gate.
@@ -184,7 +185,7 @@ python-check: python-hygiene-test
 	cd python && uv run --frozen --no-sync ruff format --check src tests
 	cd python && uv run --frozen --no-sync ruff check src tests
 	cd python && uv run --frozen --no-sync pyright
-	cd python && uv run --frozen --no-sync pytest -n $(PYTHON_WORKERS) --cov=libo11y --cov-branch
+	cd python && $(PYTHON_LD_PATH) uv run --frozen --no-sync pytest -n $(PYTHON_WORKERS) --cov=libo11y --cov-branch
 	scripts/python-hygiene.sh
 
 # Test python-hygiene.sh against fixture trees.
