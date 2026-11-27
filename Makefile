@@ -65,8 +65,9 @@ RUST_MSRV ?= 1.88
 
 # The workspace must build on RUST_MSRV. Needs rustup with that toolchain
 # installed (rustup toolchain install $(RUST_MSRV)); CI installs it.
+# libo11y-sqlx is excluded because sqlx 0.9.0 requires Rust 1.94.
 rust-msrv:
-	cd rust && cargo +$(RUST_MSRV) check --workspace --all-targets --all-features -j $(RUST_JOBS)
+	cd rust && cargo +$(RUST_MSRV) check --workspace --exclude libo11y-sqlx --all-targets --all-features -j $(RUST_JOBS)
 
 vet:
 	@set -e; for m in $(GO_MODULES); do echo "go vet: $$m"; (cd $$m && go vet ./...); done

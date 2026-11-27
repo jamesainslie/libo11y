@@ -72,6 +72,8 @@ pub(crate) struct Settings {
     pii_hash_key: Vec<u8>,
     registries: Vec<RegistrySource>,
     propagators: Vec<BoxedPropagator>,
+    #[cfg(test)]
+    baggage_egress: Option<crate::propagation::BaggageAllow>,
     detected: Option<Detected>,
     sampler: Option<Box<dyn ShouldSample>>,
     span_exporter: Option<Box<dyn PendingSpanExporter>>,
@@ -112,6 +114,8 @@ impl Default for Settings {
             pii_hash_key: Vec::new(),
             registries: Vec::new(),
             propagators: Vec::new(),
+            #[cfg(test)]
+            baggage_egress: None,
             detected: None,
             sampler: None,
             span_exporter: None,
@@ -541,6 +545,16 @@ impl Builder {
         self
     }
 
+    /// Sets the baggage egress predicate, for tests.
+    #[cfg(test)]
+    pub(crate) fn baggage_egress<F>(mut self, allow: F) -> Self
+    where
+        F: Fn(&str) -> bool + Send + Sync + 'static,
+    {
+        self.settings.baggage_egress = Some(Arc::new(allow));
+        self
+    }
+
     /// Resolves the options into an SDK without touching any process-global
     /// state, in the Go library's order: the PII key, the application
     /// registries and the policy, the resource, the propagator, the
@@ -626,7 +640,11 @@ pub(crate) fn build_sdk(mut settings: Settings) -> Result<Sdk, Error> {
         .take()
         .unwrap_or_else(Detected::from_system);
     let resolved = build_resource(&settings, &policy, &env, &detected)?;
-    let propagator = Propagator::resolve(std::mem::take(&mut settings.propagators), &env, None)?;
+    #[cfg(test)]
+    let egress = settings.baggage_egress.take();
+    #[cfg(not(test))]
+    let egress = None;
+    let propagator = Propagator::resolve(std::mem::take(&mut settings.propagators), &env, egress)?;
     let selection = Selection::resolve(
         &env,
         SelectionInputs {
