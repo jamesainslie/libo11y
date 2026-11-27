@@ -164,6 +164,7 @@ var SensitivityOf = map[attribute.Key]Sensitivity{
 	"o11y.rule":                                   Public,
 	"o11y.rum.action.name":                        Internal,
 	"o11y.rum.action.type":                        Public,
+	"o11y.rum.app.update_id":                      Public,
 	"o11y.rum.browser.family":                     Public,
 	"o11y.rum.config.version":                     Public,
 	"o11y.rum.connection.effective":               Public,

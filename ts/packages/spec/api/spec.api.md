@@ -171,6 +171,9 @@ export const ATTR_RUM_ACTION_NAME = "o11y.rum.action.name";
 export const ATTR_RUM_ACTION_TYPE = "o11y.rum.action.type";
 
 // @public (undocumented)
+export const ATTR_RUM_APP_UPDATE_ID = "o11y.rum.app.update_id";
+
+// @public (undocumented)
 export const ATTR_RUM_BROWSER_FAMILY = "o11y.rum.browser.family";
 
 // @public (undocumented)

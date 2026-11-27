@@ -5,6 +5,7 @@ import {
   APP_RESERVED_NAMESPACES,
   ATTR_LOG_SOURCE,
   ATTR_OUTCOME,
+  ATTR_RUM_APP_UPDATE_ID,
   ATTR_RUM_SUMMARY_ERRORS_UNHANDLED_REJECTION,
   ATTR_RUM_SUMMARY_LCP_VALUE,
   ATTR_RUM_SUMMARY_SEQ,
@@ -117,4 +118,9 @@ test("the view summary event (spec 1.3.0)", () => {
   for (const key of ["o11y.rum.summary.seq", "o11y.rum.summary.time_on_view", "o11y.rum.view.id"]) {
     assert.ok(required.includes(key), `missing ${key}`);
   }
+});
+
+test("the over-the-air update ID (spec 1.3.0)", () => {
+  assert.equal(ATTR_RUM_APP_UPDATE_ID, "o11y.rum.app.update_id");
+  assert.equal(SENSITIVITY_OF.get(ATTR_RUM_APP_UPDATE_ID), "public");
 });

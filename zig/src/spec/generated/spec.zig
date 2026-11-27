@@ -875,6 +875,8 @@ pub const attr = struct {
     pub const rum_replay_segment = "o11y.rum.replay.segment";
     /// The `o11y.rum.config.version` attribute key.
     pub const rum_config_version = "o11y.rum.config.version";
+    /// The `o11y.rum.app.update_id` attribute key.
+    pub const rum_app_update_id = "o11y.rum.app.update_id";
     /// The `o11y.rum.browser.family` attribute key.
     pub const rum_browser_family = "o11y.rum.browser.family";
 

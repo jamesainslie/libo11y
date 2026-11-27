@@ -375,6 +375,7 @@ pub static SENSITIVITY: &[(&str, Sensitivity)] = &[
     ("o11y.rule", Sensitivity::Public),
     ("o11y.rum.action.name", Sensitivity::Internal),
     ("o11y.rum.action.type", Sensitivity::Public),
+    ("o11y.rum.app.update_id", Sensitivity::Public),
     ("o11y.rum.browser.family", Sensitivity::Public),
     ("o11y.rum.config.version", Sensitivity::Public),
     ("o11y.rum.connection.effective", Sensitivity::Public),

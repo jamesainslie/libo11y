@@ -280,6 +280,7 @@ typedef enum o11y_cardinality {
 #define O11Y_ATTR_RUM_SESSION_RETAINED "o11y.rum.session.retained"
 #define O11Y_ATTR_RUM_REPLAY_SEGMENT "o11y.rum.replay.segment"
 #define O11Y_ATTR_RUM_CONFIG_VERSION "o11y.rum.config.version"
+#define O11Y_ATTR_RUM_APP_UPDATE_ID "o11y.rum.app.update_id"
 #define O11Y_ATTR_RUM_BROWSER_FAMILY "o11y.rum.browser.family"
 
 /* Upstream attribute keys copied from the pinned registry snapshot */

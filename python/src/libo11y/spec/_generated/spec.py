@@ -220,6 +220,7 @@ ATTR_RUM_VITAL_RATING: Final[str] = "o11y.rum.vital.rating"
 ATTR_RUM_SESSION_RETAINED: Final[str] = "o11y.rum.session.retained"
 ATTR_RUM_REPLAY_SEGMENT: Final[str] = "o11y.rum.replay.segment"
 ATTR_RUM_CONFIG_VERSION: Final[str] = "o11y.rum.config.version"
+ATTR_RUM_APP_UPDATE_ID: Final[str] = "o11y.rum.app.update_id"
 ATTR_RUM_BROWSER_FAMILY: Final[str] = "o11y.rum.browser.family"
 
 # Upstream attribute keys copied from the pinned registry snapshot.

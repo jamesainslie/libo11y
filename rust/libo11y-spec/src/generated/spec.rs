@@ -1189,6 +1189,8 @@ pub mod attr {
     pub const RUM_REPLAY_SEGMENT: &str = "o11y.rum.replay.segment";
     /// The `o11y.rum.config.version` attribute key.
     pub const RUM_CONFIG_VERSION: &str = "o11y.rum.config.version";
+    /// The `o11y.rum.app.update_id` attribute key.
+    pub const RUM_APP_UPDATE_ID: &str = "o11y.rum.app.update_id";
     /// The `o11y.rum.browser.family` attribute key.
     pub const RUM_BROWSER_FAMILY: &str = "o11y.rum.browser.family";
 

@@ -208,6 +208,16 @@ groups:
         examples: ["2026-11-18.1"]
         annotations: {o11y.sensitivity: public, o11y.cardinality: bounded}
 
+      - id: o11y.rum.app.update_id
+        type: string
+        stability: development
+        brief: >
+          Identifier of the over-the-air update a mobile app runs, such as an
+          Expo Updates update ID. Absent when the app runs its embedded bundle.
+          Source maps for the update are looked up by service.version and this ID.
+        examples: ["0d1f5a4e-6b7c-4d8e-9f01-23456789abcd"]
+        annotations: {o11y.sensitivity: public, o11y.cardinality: bounded}
+
   - id: registry.o11y.rum.browser
     type: attribute_group
     display_name: libo11y RUM Browser Attributes

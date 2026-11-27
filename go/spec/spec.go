@@ -256,6 +256,7 @@ const (
 	RUMSessionRetainedKey                 attribute.Key = "o11y.rum.session.retained"
 	RUMReplaySegmentKey                   attribute.Key = "o11y.rum.replay.segment"
 	RUMConfigVersionKey                   attribute.Key = "o11y.rum.config.version"
+	RUMAppUpdateIDKey                     attribute.Key = "o11y.rum.app.update_id"
 	RUMBrowserFamilyKey                   attribute.Key = "o11y.rum.browser.family"
 )
 
@@ -457,6 +458,9 @@ func RUMReplaySegment(v int64) attribute.KeyValue { return RUMReplaySegmentKey.I
 
 // RUMConfigVersion returns the o11y.rum.config.version attribute.
 func RUMConfigVersion(v string) attribute.KeyValue { return RUMConfigVersionKey.String(v) }
+
+// RUMAppUpdateID returns the o11y.rum.app.update_id attribute.
+func RUMAppUpdateID(v string) attribute.KeyValue { return RUMAppUpdateIDKey.String(v) }
 
 // RUMBrowserFamily returns the o11y.rum.browser.family attribute.
 func RUMBrowserFamily(v string) attribute.KeyValue { return RUMBrowserFamilyKey.String(v) }

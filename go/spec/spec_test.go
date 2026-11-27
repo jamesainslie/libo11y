@@ -123,3 +123,11 @@ func TestViewSummaryMinted(t *testing.T) {
 		}
 	}
 }
+
+// TestAppUpdateIDMinted pins o11y.rum.app.update_id (spec 1.3.0), the
+// over-the-air update a mobile app runs.
+func TestAppUpdateIDMinted(t *testing.T) {
+	if kv := spec.RUMAppUpdateID("0d1f5a4e"); kv.Key != "o11y.rum.app.update_id" || kv.Value.AsString() != "0d1f5a4e" {
+		t.Errorf("RUMAppUpdateID = %v, want o11y.rum.app.update_id=0d1f5a4e", kv)
+	}
+}

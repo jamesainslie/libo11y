@@ -216,6 +216,7 @@ export const ATTR_RUM_VITAL_RATING = "o11y.rum.vital.rating";
 export const ATTR_RUM_SESSION_RETAINED = "o11y.rum.session.retained";
 export const ATTR_RUM_REPLAY_SEGMENT = "o11y.rum.replay.segment";
 export const ATTR_RUM_CONFIG_VERSION = "o11y.rum.config.version";
+export const ATTR_RUM_APP_UPDATE_ID = "o11y.rum.app.update_id";
 export const ATTR_RUM_BROWSER_FAMILY = "o11y.rum.browser.family";
 
 // Upstream attribute keys copied from the pinned registry snapshot.
