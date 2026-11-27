@@ -21,6 +21,16 @@ import type { WebSetupOptions } from '@libo11y/web';
 import type { WebTelemetry } from '@libo11y/web';
 
 // @public
+export function actions(opts?: ActionsOptions): RumCollector;
+
+// @public (undocumented)
+export interface ActionsOptions {
+    readonly capMillis?: number;
+    readonly frustration?: boolean;
+    readonly idleMillis?: number;
+}
+
+// @public
 export interface AddErrorOptions {
     readonly componentStack?: string;
     readonly source?: "custom" | "boundary";

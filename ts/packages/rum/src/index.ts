@@ -1,6 +1,8 @@
 /**
  * libo11y RUM for browsers: setupRum over @libo11y/web, and the collectors it runs.
  */
+
+export { type ActionsOptions, actions } from "./actions/collector.ts";
 export type * from "./contracts/runtime.ts";
 export type {
   SessionDecision,

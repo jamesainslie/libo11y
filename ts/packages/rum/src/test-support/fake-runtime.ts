@@ -39,7 +39,7 @@ export interface FakeElement {
 function simpleMatch(el: ElementSpec, selector: string): boolean {
   return selector.split(",").some((raw) => {
     const part = raw.trim();
-    const attr = /^\[([a-z-]+)(?:=["']?([^"'\]]*)["']?)?\]$/.exec(part);
+    const attr = /^\[([a-z0-9-]+)(?:=["']?([^"'\]]*)["']?)?\]$/.exec(part);
     if (attr !== null) {
       const v = el.attrs?.[attr[1] ?? ""];
       return v !== undefined && (attr[2] === undefined || v === attr[2]);
@@ -115,6 +115,8 @@ export interface FakeEnv {
   cssEscape(s: string): string;
   /** Whether a text selection is collapsed (or absent). Default true. */
   selectionCollapsed: boolean;
+  /** True while a text selection is not collapsed. */
+  selecting(): boolean;
   advance(ms: number): void;
   /** Runs one queued animation frame. */
   frame(): void;
@@ -124,8 +126,10 @@ export interface FakeEnv {
   mutate(): void;
   /** Observers connected now. */
   observing(): number;
-  /** Dispatches a click on window whose target is an element built from spec, at timeStamp. */
+  /** Dispatches a click on window whose target is an element built from spec, at timeStamp (default now). */
   click(spec: ElementSpec, timeStamp?: number): void;
+  /** Dispatches a keydown of key on window whose target is an element built from spec. */
+  key(key: string, spec: ElementSpec, timeStamp?: number): void;
   /** Dispatches a type event on window with the given extra properties. */
   dispatch(type: string, props: Record<string, unknown>): void;
 }
@@ -191,6 +195,7 @@ function fakeEnv(clock: ManualTimers): FakeEnv {
     history,
     cssEscape: (s) => s.replace(/["\\]/g, "\\$&"),
     selectionCollapsed: true,
+    selecting: () => !env.selectionCollapsed,
     advance: (ms) => clock.advance(ms),
     frame: () => frames.shift()?.(),
     task: () => tasks.shift()?.(),
@@ -200,6 +205,9 @@ function fakeEnv(clock: ManualTimers): FakeEnv {
     observing: () => [...FakeMutationObserver.instances].filter((o) => o.connected).length,
     click(spec, timeStamp = clock.now()) {
       dispatch("click", { target: fakeElement(spec), timeStamp });
+    },
+    key(key, spec, timeStamp = clock.now()) {
+      dispatch("keydown", { key, target: fakeElement(spec), timeStamp, repeat: false });
     },
     dispatch,
   };
