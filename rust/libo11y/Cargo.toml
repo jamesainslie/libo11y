@@ -18,8 +18,11 @@ default = ["otlp-http", "otlp-grpc", "tokio", "log"]
 # OTLP over HTTP (http/protobuf and http/json) through upstream's exporters
 # and a blocking reqwest client with TLS through rustls.
 otlp-http = [
+    "dep:flate2",
     "dep:opentelemetry-otlp",
+    "dep:prost",
     "dep:reqwest",
+    "dep:serde_json",
     "opentelemetry-otlp/http-proto",
     "opentelemetry-otlp/http-json",
     "opentelemetry-otlp/reqwest-blocking-client",
@@ -30,6 +33,8 @@ otlp-grpc = [
     "dep:opentelemetry-otlp",
     "dep:tonic",
     "dep:tokio",
+    "opentelemetry-proto/gen-tonic",
+    "tonic/gzip",
     "opentelemetry-otlp/grpc-tonic",
     "opentelemetry-otlp/tls-aws-lc",
     "opentelemetry-otlp/tls-webpki-roots",
@@ -43,6 +48,7 @@ log = ["dep:tracing-log"]
 libo11y-macros.workspace = true
 libo11y-redact.workspace = true
 libo11y-spec.workspace = true
+flate2 = { version = "1.1.11", optional = true }
 gethostname = "1.1.0"
 hmac = "0.13.0"
 # Pinned: appregistry/yaml.rs works around this exact release's panics and
@@ -50,9 +56,12 @@ hmac = "0.13.0"
 libyaml-safer = "=0.3.0"
 opentelemetry = { version = "0.33.1", default-features = false, features = ["logs", "metrics", "trace", "internal-logs"] }
 opentelemetry-otlp = { version = "0.33.1", default-features = false, optional = true, features = ["trace", "logs", "internal-logs"] }
+opentelemetry-proto = { version = "0.33.1", default-features = false, features = ["gen-tonic-messages", "metrics", "with-serde", "internal-logs"] }
 opentelemetry-stdout = { version = "0.33.1", default-features = false, features = ["trace", "logs"] }
-opentelemetry_sdk = { version = "0.33.1", default-features = false, features = ["logs", "metrics", "trace", "internal-logs"] }
+opentelemetry_sdk = { version = "0.33.1", default-features = false, features = ["logs", "metrics", "trace", "internal-logs", "spec_unstable_metrics_views"] }
+prost = { version = "0.14.5", default-features = false, features = ["std"], optional = true }
 reqwest = { version = "0.13.5", default-features = false, optional = true, features = ["blocking", "rustls"] }
+serde_json = { workspace = true, optional = true }
 sha2 = "0.11.1"
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", default-features = false, optional = true, features = ["rt", "sync"] }
@@ -67,11 +76,14 @@ uuid = { version = "1.26.1", default-features = false, features = ["std", "v4", 
 signal-hook = { version = "0.4.6", default-features = false, optional = true, features = ["iterator"] }
 
 [dev-dependencies]
-opentelemetry_sdk = { version = "0.33.1", default-features = false, features = ["logs", "metrics", "trace", "testing"] }
+flate2 = "1.1.11"
+opentelemetry_sdk = { version = "0.33.1", default-features = false, features = ["logs", "metrics", "trace", "testing", "spec_unstable_metrics_views"] }
+prost = { version = "0.14.5", default-features = false, features = ["std"] }
 rcgen = { version = "0.14.10", default-features = false, features = ["aws_lc_rs", "pem"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
-tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "time"] }
+tokio = { version = "1.54.1", features = ["io-util", "macros", "net", "rt-multi-thread", "time"] }
+tonic = { version = "0.14.9", features = ["gzip", "router", "server", "transport"] }
 
 [lints]
 workspace = true

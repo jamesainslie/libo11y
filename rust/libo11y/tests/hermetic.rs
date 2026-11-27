@@ -34,6 +34,8 @@ const AMBIENT: &[(&str, &str)] = &[
     ),
     ("OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT", "1"),
     ("OTEL_BSP_MAX_QUEUE_SIZE", "0"),
+    ("OTEL_METRICS_EXEMPLAR_FILTER", "always_on"),
+    ("OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE", "delta"),
 ];
 
 #[test]

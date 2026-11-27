@@ -54,6 +54,7 @@ fn exporter_variables_build_or_fail_as_go_does() {
     ];
     for vars in ok {
         let sdk = with_env(vars)
+            .without_runtime_metrics()
             .build()
             .unwrap_or_else(|err| panic!("{vars:?}: {err}"));
         sdk.shutdown_with_timeout(std::time::Duration::from_secs(1))

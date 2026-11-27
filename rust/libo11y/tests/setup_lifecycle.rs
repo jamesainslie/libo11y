@@ -8,10 +8,10 @@ mod common;
 use std::collections::HashMap;
 
 use opentelemetry::trace::{Span as _, TraceContextExt as _, Tracer as _, TracerProvider as _};
-use opentelemetry_sdk::metrics::InMemoryMetricExporter;
+use opentelemetry::{Context, KeyValue};
 
 use common::{Spans, hermetic};
-use libo11y::{Environment, Error, Sdk};
+use libo11y::{Environment, Error, MemoryMetricSink, Sdk};
 
 /// Whether the global tracer records spans.
 fn global_tracer_records() -> bool {
@@ -30,6 +30,29 @@ fn global_inject(sdk: &Sdk) -> HashMap<String, String> {
     carrier
 }
 
+fn assert_global_metric(metrics: &MemoryMetricSink) {
+    let metric = metrics
+        .requests()
+        .into_iter()
+        .flat_map(|r| r.resource_metrics)
+        .flat_map(|rm| rm.scope_metrics)
+        .flat_map(|sm| sm.metrics)
+        .find(|m| m.name == "global.counter")
+        .expect("the global meter provider is the SDK's");
+    let Some(opentelemetry_proto::tonic::metrics::v1::metric::Data::Sum(sum)) = metric.data else {
+        panic!("expected sum");
+    };
+    let dp = &sum.data_points[0];
+    assert_eq!(
+        dp.attributes.len(),
+        1,
+        "secret and PII dropped on global meter"
+    );
+    assert_eq!(dp.attributes[0].key, "route");
+    assert_eq!(dp.exemplars.len(), 1, "exemplar attached via global meter");
+    assert!(!dp.exemplars[0].trace_id.is_empty());
+}
+
 #[test]
 fn the_global_lifecycle() {
     // A failed setup installs nothing and releases the guard.
@@ -46,36 +69,39 @@ fn the_global_lifecycle() {
 
     // Setup installs every global.
     let first_spans = Spans::default();
-    let metrics = InMemoryMetricExporter::default();
+    let metrics = MemoryMetricSink::new();
     let first = hermetic("first")
+        .without_runtime_metrics()
         .with_span_exporter(first_spans.clone())
-        .with_metric_exporter(metrics.clone())
+        .with_metric_sink(metrics.clone())
         .setup()
         .expect("setup after a failed setup");
     assert!(global_tracer_records());
     assert!(tracing::dispatcher::has_been_set());
     assert!(global_inject(&first).contains_key("traceparent"));
-    opentelemetry::global::meter("probe")
-        .u64_counter("global.counter")
-        .build()
-        .add(1, &[]);
+    {
+        let span = opentelemetry::global::tracer("probe").start("first-global");
+        let cx = Context::current_with_span(span);
+        let _guard = cx.clone().attach();
+        opentelemetry::global::meter("probe")
+            .u64_counter("global.counter")
+            .build()
+            .add(
+                1,
+                &[
+                    KeyValue::new("route", "/ok"),
+                    KeyValue::new("http.request.header.authorization", "secret"),
+                    KeyValue::new("host.ip", "10.0.0.1"),
+                ],
+            );
+        cx.span().end();
+    }
     tracing::info_span!("first-tracing").in_scope(|| {});
-    opentelemetry::global::tracer("probe")
-        .start("first-global")
-        .end();
     first.force_flush().expect("flush");
     let names = first_spans.names();
     assert!(names.contains(&"first-tracing".to_owned()), "{names:?}");
     assert!(names.contains(&"first-global".to_owned()), "{names:?}");
-    assert!(
-        metrics
-            .get_finished_metrics()
-            .expect("metrics")
-            .iter()
-            .flat_map(opentelemetry_sdk::metrics::data::ResourceMetrics::scope_metrics)
-            .any(|sm| sm.metrics().any(|m| m.name() == "global.counter")),
-        "the global meter provider is the SDK's"
-    );
+    assert_global_metric(&metrics);
 
     // One global SDK at a time.
     let err = hermetic("second").setup().expect_err("already set up");
