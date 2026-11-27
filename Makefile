@@ -8,7 +8,7 @@ GO_TEST_P ?= 4
 # gate runs on each module separately.
 GO_MODULES := go go/o11ygin go/o11yconnect go/o11ysql
 
-.PHONY: spec-check spec-generate spec-drift test lint vet tidy-check vuln release-check zig-release-check python-release-check schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-install ts-check ts-browser-test rust-check rust-msrv zig-check zig-integrations-check zig-hygiene-test python-check python-hygiene-test c-check ci
+.PHONY: spec-check spec-generate spec-drift test lint vet tidy-check vuln release-check zig-release-check python-release-check rust-release-check rust-release-check-test schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-install ts-check ts-browser-test rust-check rust-msrv zig-check zig-integrations-check zig-hygiene-test python-check python-hygiene-test c-check ci
 
 # Validate the spec registry against the libo11y policy suite (naming,
 # ownership, sensitivity, cardinality, events, units).
@@ -105,6 +105,10 @@ ZIG_RELEASE_VERSION ?= v0.1.0
 # validates. Moves only in a release commit.
 PYTHON_RELEASE_VERSION ?= v0.1.0
 
+# The lockstep version every publishable Rust crate in rust/ carries, which
+# rust-release-check.sh validates. Moves only in a release commit.
+RUST_RELEASE_VERSION ?= v0.0.0
+
 # Validate the Zig package at ZIG_RELEASE_VERSION as an external consumer
 # fetches and runs it against an in-process OTLP receiver.
 # Needs a clean working tree and zig 0.17.1.
@@ -117,20 +121,32 @@ zig-release-check:
 python-release-check:
 	scripts/python-release-check.sh $(PYTHON_RELEASE_VERSION)
 
+# Validate the Rust workspace at RUST_RELEASE_VERSION: lockstep versions,
+# exact internal dependency pins, crates.io metadata, changelog, publish
+# order, and package file listings.
+rust-release-check:
+	scripts/rust-release-check.sh $(RUST_RELEASE_VERSION)
+
+# Test rust-release-check.sh against fixture workspaces.
+rust-release-check-test:
+	scripts/rust-release-check_test.sh
+
 # Validate the release sequence (go/RELEASE_VERSION and
 # go/<sub>/RELEASE_VERSION for every Go submodule, o11ygin, o11yconnect
 # and o11ysql, on HEAD) against a throwaway local remote. Then build and
 # pack the TypeScript packages at TS_RELEASE_VERSION, install the
 # tarballs into a throwaway consumer under Node and Bun, bundle the
 # browser packages for the browser, validate the Zig consumer tarball at
-# ZIG_RELEASE_VERSION, and validate the Python wheel and sdist at
-# PYTHON_RELEASE_VERSION.
+# ZIG_RELEASE_VERSION, validate the Python wheel and sdist at
+# PYTHON_RELEASE_VERSION, and validate the Rust workspace at
+# RUST_RELEASE_VERSION.
 # Needs a clean working tree.
 release-check:
 	scripts/release-check.sh $(RELEASE_VERSION)
 	scripts/ts-release-check.sh $(TS_RELEASE_VERSION)
 	scripts/zig-release-check.sh $(ZIG_RELEASE_VERSION)
 	scripts/python-release-check.sh $(PYTHON_RELEASE_VERSION)
+	scripts/rust-release-check.sh $(RUST_RELEASE_VERSION)
 
 # Release step, not a ci gate (it needs the network): confirm the schema URL
 # serves spec/schemas/<version> byte for byte before tagging spec/vX.Y.Z.
@@ -220,4 +236,4 @@ c-check:
 
 # vuln runs last: it depends on the advisory database and the toolchain's
 # patch level, so local runs exercise every other gate first.
-ci: lint vet test tidy-check spec-check spec-drift ts-check ts-browser-test rust-check rust-msrv zig-check python-check c-check schema-published-test release-notes-test release-tag-test ts-browser-bundle-test release-check vuln
+ci: lint vet test tidy-check spec-check spec-drift ts-check ts-browser-test rust-check rust-msrv zig-check python-check c-check schema-published-test release-notes-test release-tag-test rust-release-check-test ts-browser-bundle-test release-check vuln

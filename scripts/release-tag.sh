@@ -11,11 +11,12 @@
 #   ts/vX.Y.Z                    every @libo11y/* package, at one version
 #   zig/vX.Y.Z                   the libo11y Zig package (libo11y-zig)
 #   python/vX.Y.Z                the libo11y Python distribution on PyPI
+#   rust/vX.Y.Z                  every libo11y Rust crate, at one version
 #
 # Prints one key=value line each, for $GITHUB_OUTPUT:
-#   kind        go, ts, zig or python
-#   dir         the released directory: go, go/<sub>, ts, zig or python
-#   module      the Go module path, @libo11y for TypeScript, libo11y-zig for Zig, or libo11y for Python
+#   kind        go, ts, zig, python or rust
+#   dir         the released directory: go, go/<sub>, ts, zig, python or rust
+#   module      the Go module path, @libo11y for TypeScript, libo11y-zig for Zig, libo11y for Python, or libo11y-rust for Rust
 #   version     X.Y.Z[-prerelease], without the v
 #   prerelease  true when the version has a -prerelease suffix
 # and a one-line summary on stderr. Exits 1 for a tag that is not a release
@@ -49,8 +50,12 @@ python/v*)
 	kind=python
 	dir=python
 	;;
+rust/v*)
+	kind=rust
+	dir=rust
+	;;
 *)
-	echo "release-tag: $tag is not a release tag (go/vX.Y.Z, go/<submodule>/vX.Y.Z, ts/vX.Y.Z, zig/vX.Y.Z or python/vX.Y.Z)" >&2
+	echo "release-tag: $tag is not a release tag (go/vX.Y.Z, go/<submodule>/vX.Y.Z, ts/vX.Y.Z, zig/vX.Y.Z, python/vX.Y.Z or rust/vX.Y.Z)" >&2
 	exit 1
 	;;
 esac
@@ -80,6 +85,9 @@ zig)
 	;;
 python)
 	module="libo11y"
+	;;
+rust)
+	module="libo11y-rust"
 	;;
 esac
 
