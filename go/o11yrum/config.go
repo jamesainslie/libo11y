@@ -102,6 +102,10 @@ type AggregationConfig struct {
 	// Measurements past it go to an overflow series per app, marked
 	// otel.metric.overflow=true. Default 2000.
 	MaxSeriesPerMetric int `yaml:"max_series_per_metric"`
+	// MaxMetricsPerApp caps the distinct metrics one app may send to
+	// /_o11y/v1/metrics. Data points of further metrics are dropped as
+	// metric_limit. Default 200.
+	MaxMetricsPerApp int `yaml:"max_metrics_per_app"`
 }
 
 // AppConfig registers one app, identified by its service.name.
@@ -223,6 +227,7 @@ func (c *Config) applyDefaults() {
 	setDefault(&l.MaxSpanEvents, d.MaxSpanEvents)
 	setDefault(&l.MaxSpanLinks, d.MaxSpanLinks)
 	setDefault(&c.Aggregation.MaxSeriesPerMetric, 2000)
+	setDefault(&c.Aggregation.MaxMetricsPerApp, 200)
 	for i := range c.Apps {
 		if c.Apps[i].PII == "" {
 			c.Apps[i].PII = piiDrop
@@ -258,6 +263,7 @@ func (c *Config) validate() error {
 		{"limits.max_span_events", int64(c.Limits.MaxSpanEvents)},
 		{"limits.max_span_links", int64(c.Limits.MaxSpanLinks)},
 		{"aggregation.max_series_per_metric", int64(c.Aggregation.MaxSeriesPerMetric)},
+		{"aggregation.max_metrics_per_app", int64(c.Aggregation.MaxMetricsPerApp)},
 	} {
 		if f.v <= 0 {
 			return fmt.Errorf("%s must be positive", f.name)

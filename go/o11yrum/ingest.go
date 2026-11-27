@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"maps"
 	"math"
 	"net/http"
 	"net/netip"
@@ -12,6 +13,7 @@ import (
 
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
+	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 )
 
@@ -97,6 +99,13 @@ func (h *Handler) ingest(w http.ResponseWriter, r *http.Request, sig Signal) {
 		remaining = d.logs.LogRecordCount()
 		d.logs.MarkReadOnly()
 		b.Logs = d.logs
+	case SignalMetrics:
+		// App metrics never reach the sinks: they are re-aggregated into
+		// the gateway's own metrics, or dropped without a producer.
+		drops = v.metrics(d.metrics)
+		if h.derive != nil {
+			maps.Copy(drops, h.derive.appMetrics(service, d.metrics))
+		}
 	}
 	rep.validated(drops, v.attrsRemoved)
 	if remaining > 0 {
@@ -262,6 +271,13 @@ func (h *Handler) respond(w http.ResponseWriter, r *http.Request, corsOrigins ma
 			tr.PartialSuccess().SetErrorMessage(drops.message())
 		}
 		resp = tr
+	case SignalMetrics:
+		mr := pmetricotlp.NewExportResponse()
+		if n := drops.total(); n > 0 {
+			mr.PartialSuccess().SetRejectedDataPoints(n)
+			mr.PartialSuccess().SetErrorMessage(drops.message())
+		}
+		resp = mr
 	default:
 		lr := plogotlp.NewExportResponse()
 		if n := drops.total(); n > 0 {

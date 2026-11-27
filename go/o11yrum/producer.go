@@ -83,7 +83,8 @@ func newDeriver(p *MetricProducer, sdk *o11y.SDK, cfg *Config, now func() time.T
 	if err := p.bind(agg); err != nil {
 		return nil, nil, errors.Join(err, unregister())
 	}
-	return &deriver{agg: agg, defs: compileMetrics(cfg.Apps)}, unregister, nil
+	apps := &appMetricSet{max: cfg.Aggregation.MaxMetricsPerApp, known: map[string]map[appMetricID]bool{}}
+	return &deriver{agg: agg, defs: compileMetrics(cfg.Apps), apps: apps}, unregister, nil
 }
 
 // registerSeriesGauge reports the number of attribute sets each derived

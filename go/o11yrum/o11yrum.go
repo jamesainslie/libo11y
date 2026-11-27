@@ -133,6 +133,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.ingest(w, r, SignalLogs)
 	case pathPrefix + "config":
 		h.serveConfig(w, r)
+	case pathPrefix + "metrics":
+		h.ingest(w, r, SignalMetrics)
 	default:
 		http.NotFound(w, r)
 	}

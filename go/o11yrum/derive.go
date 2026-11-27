@@ -56,6 +56,8 @@ type deriver struct {
 	agg *aggregate.Aggregator
 	// defs holds each app's operator-defined metrics, by service.name.
 	defs map[string][]operatorMetric
+	// apps bounds the metrics each app sends to /_o11y/v1/metrics.
+	apps *appMetricSet
 }
 
 // logs derives the standard metrics from every view summary in ld, and
