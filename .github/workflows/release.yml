@@ -283,12 +283,12 @@ jobs:
   release:
     needs: verify
     if: needs.verify.outputs.kind == 'go'
-    runs-on: blacksmith-4vcpu-ubuntu-2604
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: write
     steps:
-      - uses: useblacksmith/checkout@v1
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Publish the GitHub Release
@@ -319,7 +319,7 @@ jobs:
 
   proxy:
     needs: [verify, release]
-    runs-on: blacksmith-4vcpu-ubuntu-2604
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
       MODULE: ${{ needs.verify.outputs.module }}
@@ -363,7 +363,7 @@ jobs:
   publish-npm:
     needs: verify
     if: needs.verify.outputs.kind == 'ts'
-    runs-on: blacksmith-4vcpu-ubuntu-2604
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
       contents: read
@@ -371,7 +371,7 @@ jobs:
       # publishing and signs each package's provenance.
       id-token: write
     steps:
-      - uses: useblacksmith/checkout@v1
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: oven-sh/setup-bun@v2
@@ -433,12 +433,12 @@ jobs:
   # published packages install from the registry.
   release-ts:
     needs: [verify, npm-smoke]
-    runs-on: blacksmith-4vcpu-ubuntu-2604
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: write
     steps:
-      - uses: useblacksmith/checkout@v1
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Publish the GitHub Release
@@ -462,7 +462,7 @@ jobs:
 
   npm-smoke:
     needs: [verify, publish-npm]
-    runs-on: blacksmith-4vcpu-ubuntu-2604
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
       VERSION: ${{ needs.verify.outputs.version }}
@@ -472,7 +472,7 @@ jobs:
     steps:
       # No cache, and only scripts/ checked out: every package comes from
       # the registry, into consumers outside the checkout.
-      - uses: useblacksmith/checkout@v1
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
           sparse-checkout: scripts
@@ -567,12 +567,12 @@ jobs:
   zig-release:
     needs: verify
     if: needs.verify.outputs.kind == 'zig'
-    runs-on: blacksmith-4vcpu-ubuntu-2604
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: write
     steps:
-      - uses: useblacksmith/checkout@v1
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Publish the GitHub Release
@@ -597,10 +597,10 @@ jobs:
   zig-smoke:
     needs: [verify, zig-release]
     if: needs.verify.outputs.kind == 'zig'
-    runs-on: blacksmith-4vcpu-ubuntu-2604
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: useblacksmith/checkout@v1
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
           sparse-checkout: scripts
@@ -704,7 +704,7 @@ jobs:
   publish-rust:
     needs: verify
     if: needs.verify.outputs.kind == 'rust'
-    runs-on: blacksmith-4vcpu-ubuntu-2604
+    runs-on: ubuntu-latest
     timeout-minutes: 40
     permissions:
       contents: read
@@ -712,7 +712,7 @@ jobs:
       # publish token via trusted publishing (no long-lived token stored).
       id-token: write
     steps:
-      - uses: useblacksmith/checkout@v1
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, 2026-10-16
@@ -794,7 +794,7 @@ jobs:
   smoke-rust:
     needs: [verify, publish-rust]
     if: needs.verify.outputs.kind == 'rust'
-    runs-on: blacksmith-4vcpu-ubuntu-2604
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
       VERSION: ${{ needs.verify.outputs.version }}
@@ -891,12 +891,12 @@ jobs:
   release-rust:
     needs: [verify, smoke-rust]
     if: needs.verify.outputs.kind == 'rust'
-    runs-on: blacksmith-4vcpu-ubuntu-2604
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: write
     steps:
-      - uses: useblacksmith/checkout@v1
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Publish the GitHub Release
