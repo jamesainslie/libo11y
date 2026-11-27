@@ -43,11 +43,13 @@ platform instead:
 ```sh
 npm install @libo11y/web      # pages
 npm install @libo11y/webext   # Manifest V3 service workers, content scripts and extension pages
+npm install @libo11y/rum      # RUM over @libo11y/web (in development)
 ```
 
 The [web README](packages/web/README.md) and the
 [webext README](packages/webext/README.md) cover consent, endpoints and
-CORS, and offline delivery.
+CORS, and offline delivery. The [rum README](packages/rum/README.md)
+covers sessions, sampling and retention.
 
 ## Quick start
 

@@ -225,8 +225,8 @@ container (`O11Y_PG_TEST_DSN`).
   the packages, checks each tarball's `exports` and `bin` targets, and
   installs the tarballs into a throwaway consumer that imports the server
   packages under Node and Bun and runs the `libo11y` bin. The consumer
-  then bundles every entry point of `@libo11y/web` and `@libo11y/webext`
-  with `bun build --target=browser` through
+  then bundles every entry point of `@libo11y/web`, `@libo11y/webext`
+  and `@libo11y/rum` with `bun build --target=browser` through
   `scripts/ts-browser-bundle-check.sh`, which fails when the module graph
   holds a Node builtin or a Bun polyfill for one. Like `RELEASE_VERSION`,
   `TS_RELEASE_VERSION` moves only in a release commit, together with the
@@ -264,7 +264,7 @@ container (`O11Y_PG_TEST_DSN`).
   registry to serve the new version of every published package. It
   installs `@libo11y/server` and `@libo11y/test` into fresh projects
   under Node and Bun, and runs the `libo11y` bin under Node. It installs
-  `@libo11y/web` and `@libo11y/webext` into another fresh project and
+  `@libo11y/web`, `@libo11y/webext` and `@libo11y/rum` into another fresh project and
   runs the same bundle check on them. In each of these installs, a
   package not on npm yet comes from its packed tarball. A last step
   installs every package not on npm yet from its tarball, with its other
@@ -409,7 +409,7 @@ install that version locally. Keep the two in step when adding a gate.
 | `make spec-check`, `make spec-drift` | registry policy checks and generated-artifact drift |
 | `make ts-check` | the TypeScript workspace: Biome, tsc, the build, the API reports, and every unit suite under Bun and Node |
 | `make ts-browser-test` | the browser suites under Playwright: `@libo11y/web` and `@libo11y/webext` in headless Chromium, and `@libo11y/rum` and its adapters in headless Chromium, Firefox and WebKit (projects `rum-chromium`, `rum-firefox` and `rum-webkit`). It needs Playwright's browsers for the pinned version, which CI installs with `bun x --no-install playwright install --with-deps chromium firefox webkit` in `ts/`. A host with only Chromium runs `bun run test:browser --project=web --project=webext --project=rum-chromium`. CI runs it in the separate `ts-browser` job |
-| `make ts-size` | the browser bundle size budgets in `ts/size-budget.json`. CI runs it in the `ts` job and writes the table to the job summary |
+| `make ts-size` | the browser bundle size budgets in `ts/size-budget.json`. CI runs the same check, `bun scripts/size.ts --check --summary`, in the `ts` job and writes the table to the job summary |
 | `make ts-browser-bundle-test` | `scripts/ts-browser-bundle-check.sh` against fixture packages (needs bun). CI runs it in the `ts` job after `make ts-check` |
 | `make release-check` | the Go release sequence, packing and a consumer smoke test of the TypeScript packages (including the browser bundle check), the Zig consumer tarball smoke test, and the Python wheel/sdist build and consumer smoke test (needs a clean tree) |
 | `make release-notes-test`, `make release-tag-test` | the release workflow's scripts: changelog sections become release notes, and each release tag routes to its kind, module and version |

@@ -53,7 +53,8 @@ minutes without activity (`rum.sessionIdleMillis`) or 4 hours after it
 started (`rum.sessionMaxMillis`). The next record after that starts a new
 session. `telemetry.rum.sessionId()` returns the current session's ID.
 
-`telemetry.rum.identify(userId)` sets `user.id` on later spans and events.
+`telemetry.rum.identify(userId)` sets `user.id` on later spans and on the
+events collectors emit. View summaries and session events do not carry it.
 Pass a pseudonymous ID, never an email address: `identify` refuses a value
 with an at sign.
 
@@ -63,7 +64,8 @@ with an at sign.
 the start. The decision is a hash of the session ID, so every tab agrees.
 `docs/RUM.md` in the repository gives the formula.
 
-Every consented session sends one `o11y.rum.view.summary` per view, so
+Every consented session sends `o11y.rum.view.summary` records for every
+view, each with the counts and time since the view's previous summary, so
 counts and rates stay exact at any sample rate. A session that was not
 sampled keeps its other records in a retention buffer in IndexedDB, at
 most 2 MiB and 15 minutes old by default (`rum.retention`). When an error

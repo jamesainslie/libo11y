@@ -37,9 +37,10 @@ export interface Rum {
   /** The current session's ID, or undefined while consent is not granted. */
   sessionId(): string | undefined;
   /**
-   * Sets user.id on every later span and event, or clears it with undefined. Pass a pseudonymous
-   * ID that your application registry classifies internal. Throws O11yError INVALID_OPTION for a
-   * value that contains an at sign, because an email address is never an ID.
+   * Sets user.id on every later span and collector event, or clears it with undefined. View
+   * summaries and session events do not carry it. Pass a pseudonymous ID that your application
+   * registry classifies internal. Throws O11yError INVALID_OPTION for a value that contains an at
+   * sign, because an email address is never an ID.
    */
   identify(userId: string | undefined): void;
   /** Adds a hook run on every fetch and XHR client span right after it starts. Returns its removal. */
