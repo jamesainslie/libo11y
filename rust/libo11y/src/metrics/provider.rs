@@ -27,8 +27,8 @@ use opentelemetry_sdk::metrics::SdkMeterProvider;
 
 use crate::Policy;
 use crate::metrics::exemplar::{
-    ExemplarFilter, ExemplarRegistry, ExemplarSample, ExemplarValue, ReservoirSpec, StoredExemplar,
-    default_fixed_reservoir_size,
+    ExemplarFilter, ExemplarRegistry, ExemplarSample, ExemplarValue, ReservoirSpec, ScopeKey,
+    StoredExemplar, default_fixed_reservoir_size,
 };
 
 /// Default explicit histogram bucket boundaries from the OpenTelemetry
@@ -160,9 +160,14 @@ impl Libo11yMeterProvider {
 impl MeterProvider for Libo11yMeterProvider {
     fn meter_with_scope(&self, scope: InstrumentationScope) -> Meter {
         let inner_meter = self.inner.sdk.meter_with_scope(scope.clone());
+        let scope_key = ScopeKey {
+            name: scope.name().to_owned(),
+            version: scope.version().unwrap_or_default().to_owned(),
+            schema_url: scope.schema_url().unwrap_or_default().to_owned(),
+        };
         let provider = Libo11yInstrumentProvider {
             inner_meter,
-            scope_name: scope.name().to_owned(),
+            scope_key,
             provider: self.clone(),
         };
         Meter::new(Arc::new(provider))
@@ -228,7 +233,7 @@ fn classify_metric_attrs<'a>(
 
 struct Libo11yInstrumentProvider {
     inner_meter: Meter,
-    scope_name: String,
+    scope_key: ScopeKey,
     provider: Libo11yMeterProvider,
 }
 
@@ -249,7 +254,7 @@ impl Libo11yInstrumentProvider {
     ) -> WrappedSyncInstrument<I> {
         WrappedSyncInstrument {
             inner,
-            scope_name: self.scope_name.clone(),
+            scope_key: self.scope_key.clone(),
             instrument_name: name,
             spec,
             provider: Arc::clone(&self.provider.inner),
@@ -342,7 +347,7 @@ impl IntoExemplarValue for f64 {
 
 struct WrappedSyncInstrument<I> {
     inner: I,
-    scope_name: String,
+    scope_key: ScopeKey,
     instrument_name: String,
     spec: ReservoirSpec,
     provider: Arc<ProviderInner>,
@@ -382,7 +387,7 @@ where
                     attributes: kept.as_ref().to_vec(),
                 };
                 self.provider.exemplars.offer(
-                    &self.scope_name,
+                    &self.scope_key,
                     &self.instrument_name,
                     &self.spec,
                     &sample,

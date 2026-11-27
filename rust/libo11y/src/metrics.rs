@@ -201,23 +201,26 @@ pub(crate) fn build_meter_provider(
 
     let mut builder = SdkMeterProvider::builder().with_resource(parts.resource);
 
-    // Register explicit histogram bucket views.
-    for rule in &parts.histogram_rules {
-        let pattern = rule.pattern.clone();
-        let boundaries = rule.boundaries.clone();
+    // Register a single combined view for explicit histogram bucket rules so
+    // the last matching rule wins, agreeing with `Libo11yMeterProvider`.
+    if !parts.histogram_rules.is_empty() {
+        let rules = parts.histogram_rules.clone();
         builder = builder.with_view(move |inst: &Instrument| {
-            if inst.kind() == InstrumentKind::Histogram && wildcard_match(&pattern, inst.name()) {
-                Stream::builder()
-                    .with_aggregation(Aggregation::ExplicitBucketHistogram {
-                        boundaries: boundaries.clone(),
-                        record_min_max: true,
-                    })
-                    .with_cardinality_limit(DEFAULT_CARDINALITY_LIMIT)
-                    .build()
-                    .ok()
-            } else {
-                None
+            if inst.kind() != InstrumentKind::Histogram {
+                return None;
             }
+            let rule = rules
+                .iter()
+                .rev()
+                .find(|rule| wildcard_match(&rule.pattern, inst.name()))?;
+            Stream::builder()
+                .with_aggregation(Aggregation::ExplicitBucketHistogram {
+                    boundaries: rule.boundaries.clone(),
+                    record_min_max: true,
+                })
+                .with_cardinality_limit(DEFAULT_CARDINALITY_LIMIT)
+                .build()
+                .ok()
         });
     }
 

@@ -691,6 +691,29 @@ impl fmt::Debug for OtlpGrpcMetricSink {
     }
 }
 
+/// Normalizes a gRPC endpoint so schemeless `host:port` values get `http://`
+/// when `insecure` is set, else `https://`. Unix sockets (`unix:`) and
+/// endpoints that already carry a `scheme://` prefix before `/`, `?`, or `#`
+/// are returned unchanged.
+#[cfg_attr(
+    not(feature = "otlp-grpc"),
+    allow(dead_code, reason = "used by OTLP gRPC sink")
+)]
+pub(crate) fn normalize_grpc_endpoint(raw: &str, insecure: bool) -> String {
+    if raw.starts_with("unix:") {
+        return raw.to_owned();
+    }
+    let authority_end = raw.find(['/', '?', '#']).unwrap_or(raw.len());
+    if raw
+        .find("://")
+        .is_some_and(|pos| pos > 0 && pos < authority_end)
+    {
+        return raw.to_owned();
+    }
+    let scheme = if insecure { "http://" } else { "https://" };
+    format!("{scheme}{raw}")
+}
+
 #[cfg(feature = "otlp-grpc")]
 impl OtlpGrpcMetricSink {
     /// Builds an OTLP/gRPC metric sink lazily on the current Tokio runtime.
@@ -701,11 +724,15 @@ impl OtlpGrpcMetricSink {
         let tls = export.tls.load()?;
         let insecure = resolve_insecure(env);
 
-        let mut endpoint = tonic::transport::Endpoint::from_shared(export.endpoint.clone())?
-            .timeout(export.timeout);
-        if !insecure
-            && !export.endpoint.starts_with("unix:")
-            && (tls.is_some() || export.endpoint.starts_with("https://"))
+        let endpoint_str = normalize_grpc_endpoint(&export.endpoint, insecure);
+        let mut endpoint =
+            tonic::transport::Endpoint::from_shared(endpoint_str.clone())?.timeout(export.timeout);
+        if !endpoint_str.starts_with("unix:")
+            && (tls.is_some()
+                || endpoint
+                    .uri()
+                    .scheme_str()
+                    .is_some_and(|s| s.eq_ignore_ascii_case("https")))
         {
             endpoint =
                 endpoint.tls_config(crate::export::tls::TlsMaterial::tonic_config(tls.as_ref()))?;
@@ -907,5 +934,33 @@ mod tests {
             "{output}"
         );
         assert!(output.contains("span_id=cdcdcdcdcdcdcdcd"), "{output}");
+    }
+
+    #[test]
+    fn grpc_endpoint_normalization_handles_schemeless_unix_and_schemes() {
+        assert_eq!(
+            normalize_grpc_endpoint("collector.example:4317", false),
+            "https://collector.example:4317"
+        );
+        assert_eq!(
+            normalize_grpc_endpoint("collector.example:4317", true),
+            "http://collector.example:4317"
+        );
+        assert_eq!(
+            normalize_grpc_endpoint("http://localhost:4317", false),
+            "http://localhost:4317"
+        );
+        assert_eq!(
+            normalize_grpc_endpoint("https://collector.example:4317", true),
+            "https://collector.example:4317"
+        );
+        assert_eq!(
+            normalize_grpc_endpoint("unix:///tmp/otel.sock", false),
+            "unix:///tmp/otel.sock"
+        );
+        assert_eq!(
+            normalize_grpc_endpoint("collector.example:4317/path://ignored", false),
+            "https://collector.example:4317/path://ignored"
+        );
     }
 }

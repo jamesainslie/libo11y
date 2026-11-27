@@ -451,6 +451,122 @@ fn view_filtered_exemplar_attributes_never_leak_secrets_or_pii() {
 }
 
 #[test]
+fn last_matching_histogram_buckets_rule_wins_for_both_sdk_and_exemplars() {
+    let sink = MemoryMetricSink::new();
+    let sdk = hermetic("hist-precedence")
+        .without_runtime_metrics()
+        .with_histogram_buckets("http.*", vec![1.0, 5.0])
+        .with_histogram_buckets("http.server.*", vec![0.1, 0.5, 1.0])
+        .with_metric_sink(sink.clone())
+        .build()
+        .expect("SDK");
+
+    let hist = sdk
+        .meter("svc")
+        .f64_histogram("http.server.duration")
+        .build();
+    let (cx1, tid1, _) = sampled_cx(0x701, 0x801);
+    let (cx2, tid2, _) = sampled_cx(0x702, 0x802);
+
+    // Under the first rule ([1.0, 5.0]), both 0.05 and 0.3 fall in bucket 0.
+    // Under the last matching rule ([0.1, 0.5, 1.0]), they occupy distinct buckets 0 and 1.
+    {
+        let _g = cx1.attach();
+        hist.record(0.05, &[]);
+    }
+    {
+        let _g = cx2.attach();
+        hist.record(0.3, &[]);
+    }
+
+    sdk.force_flush().expect("flush");
+    let reqs = sink.requests();
+    let dps = histogram_points(last_metric(&reqs, "http.server.duration"));
+    assert_eq!(dps[0].explicit_bounds, vec![0.1, 0.5, 1.0]);
+    assert_eq!(dps[0].bucket_counts, vec![1, 1, 0, 0]);
+    assert_eq!(dps[0].exemplars.len(), 2);
+    assert_eq!(dps[0].exemplars[0].trace_id, tid1);
+    assert_eq!(dps[0].exemplars[1].trace_id, tid2);
+    sdk.shutdown().expect("shutdown");
+}
+
+#[test]
+fn scopes_with_same_name_but_different_version_or_schema_keep_distinct_exemplars() {
+    use opentelemetry::InstrumentationScope;
+    use opentelemetry::metrics::MeterProvider as _;
+
+    let sink = MemoryMetricSink::new();
+    let sdk = hermetic("scope-identity")
+        .without_runtime_metrics()
+        .with_metric_sink(sink.clone())
+        .build()
+        .expect("SDK");
+
+    let scope_v1 = InstrumentationScope::builder("shared")
+        .with_version("1.0")
+        .with_schema_url("https://example.test/v1")
+        .build();
+    let scope_v2 = InstrumentationScope::builder("shared")
+        .with_version("2.0")
+        .with_schema_url("https://example.test/v2")
+        .build();
+
+    let c1 = sdk
+        .meter_provider()
+        .meter_with_scope(scope_v1)
+        .u64_counter("hits")
+        .build();
+    let c2 = sdk
+        .meter_provider()
+        .meter_with_scope(scope_v2)
+        .u64_counter("hits")
+        .build();
+
+    let (cx1, tid1, _) = sampled_cx(0x901, 0xa01);
+    let (cx2, tid2, _) = sampled_cx(0x902, 0xa02);
+    {
+        let _g = cx1.attach();
+        c1.add(1, &[]);
+    }
+    {
+        let _g = cx2.attach();
+        c2.add(2, &[]);
+    }
+
+    sdk.force_flush().expect("flush");
+    let reqs = sink.requests();
+
+    let mut seen = std::collections::HashMap::new();
+    for sm in reqs
+        .iter()
+        .flat_map(|r| &r.resource_metrics)
+        .flat_map(|rm| &rm.scope_metrics)
+    {
+        let scope = sm.scope.as_ref().expect("scope");
+        if scope.name == "shared" {
+            let metric = sm.metrics.iter().find(|m| m.name == "hits").expect("hits");
+            let dps = number_points(metric);
+            assert_eq!(dps[0].exemplars.len(), 1);
+            seen.insert(
+                (scope.version.clone(), sm.schema_url.clone()),
+                dps[0].exemplars[0].trace_id.clone(),
+            );
+        }
+    }
+    assert_eq!(
+        seen.get(&("1.0".to_owned(), "https://example.test/v1".to_owned()))
+            .map(Vec::as_slice),
+        Some(tid1.as_slice())
+    );
+    assert_eq!(
+        seen.get(&("2.0".to_owned(), "https://example.test/v2".to_owned()))
+            .map(Vec::as_slice),
+        Some(tid2.as_slice())
+    );
+    sdk.shutdown().expect("shutdown");
+}
+
+#[test]
 fn multiple_readers_have_independent_exemplar_stores() {
     let sink_a = MemoryMetricSink::new();
     let sink_b = MemoryMetricSink::new();
@@ -945,6 +1061,82 @@ mod grpc_wire {
         assert_eq!(dps[0].exemplars.len(), 1);
         assert_eq!(dps[0].exemplars[0].trace_id, tid);
         assert_eq!(dps[0].exemplars[0].span_id, sid);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn otlp_grpc_schemeless_endpoint_honors_insecure_flag() {
+        let service = MockMetricsService::default();
+        let received = Arc::clone(&service.received);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let incoming = tokio_stream_from_listener(listener);
+
+        let server = tokio::spawn(async move {
+            tonic::transport::Server::builder()
+                .add_service(MetricsServiceServer::new(service))
+                .serve_with_incoming(incoming)
+                .await
+                .expect("serve");
+        });
+
+        // Schemeless host:port + INSECURE=true must normalize to http:// and connect plaintext.
+        let schemeless = addr.to_string();
+        let sdk = Sdk::builder()
+            .service_name("grpc-schemeless")
+            .environment(Environment::Test)
+            .without_runtime_metrics()
+            .env_lookup(EnvLookup::from_pairs([
+                ("OTEL_TRACES_EXPORTER", "none"),
+                ("OTEL_LOGS_EXPORTER", "none"),
+                ("OTEL_METRICS_EXPORTER", "otlp"),
+                ("OTEL_EXPORTER_OTLP_METRICS_PROTOCOL", "grpc"),
+                ("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", schemeless.as_str()),
+                ("OTEL_EXPORTER_OTLP_METRICS_INSECURE", "true"),
+            ]))
+            .with_error_handler(|_| {})
+            .build()
+            .expect("SDK");
+
+        sdk.meter("grpc-svc")
+            .u64_counter("grpc.schemeless")
+            .build()
+            .add(1, &[]);
+
+        let sdk_for_flush = sdk.clone();
+        tokio::task::spawn_blocking(move || sdk_for_flush.force_flush())
+            .await
+            .expect("join")
+            .expect("flush");
+        sdk.shutdown_async().await.expect("shutdown");
+        server.abort();
+
+        assert!(
+            !received.lock().expect("lock").is_empty(),
+            "expected gRPC export on schemeless endpoint"
+        );
+
+        // Schemeless endpoint without INSECURE builds lazily with https:// + TLS.
+        let tls_sdk = Sdk::builder()
+            .service_name("grpc-schemeless-tls")
+            .environment(Environment::Test)
+            .without_runtime_metrics()
+            .env_lookup(EnvLookup::from_pairs([
+                ("OTEL_TRACES_EXPORTER", "none"),
+                ("OTEL_LOGS_EXPORTER", "none"),
+                ("OTEL_METRICS_EXPORTER", "otlp"),
+                ("OTEL_EXPORTER_OTLP_METRICS_PROTOCOL", "grpc"),
+                (
+                    "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+                    "collector.example:4317",
+                ),
+            ]))
+            .with_error_handler(|_| {})
+            .build()
+            .expect("schemeless TLS gRPC SDK builds lazily");
+        tls_sdk.shutdown_async().await.expect("shutdown");
     }
 
     /// Minimal `futures_core::Stream` wrapper over `tokio::net::TcpListener` so

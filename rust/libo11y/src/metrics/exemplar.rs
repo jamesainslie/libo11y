@@ -358,10 +358,18 @@ impl Reservoir {
     }
 }
 
+/// Identifies an instrumentation scope by name, version, and schema URL.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub(crate) struct ScopeKey {
+    pub(crate) name: String,
+    pub(crate) version: String,
+    pub(crate) schema_url: String,
+}
+
 /// Identifies a metric stream within a reader's exemplar store.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct MetricKey {
-    pub(crate) scope: String,
+    pub(crate) scope: ScopeKey,
     pub(crate) name: String,
 }
 
@@ -376,8 +384,9 @@ impl AttrKey {
             .iter()
             .map(|kv| (kv.key.as_str().to_owned(), canonical_attr_value(&kv.value)))
             .collect();
-        pairs.sort();
-        // Last value wins for duplicate keys, matching OTel attribute set semantics.
+        // Stable key-only sort keeps duplicate keys in insertion order so the
+        // last value wins below, matching OpenTelemetry attribute set semantics.
+        pairs.sort_by(|a, b| a.0.cmp(&b.0));
         let mut deduped: Vec<(String, String)> = Vec::with_capacity(pairs.len());
         for (k, v) in pairs {
             if let Some(last) = deduped.last_mut()
@@ -418,41 +427,70 @@ impl ExemplarStore {
     }
 
     /// Offers a sample for `(scope, name)` with the given reservoir strategy.
+    ///
+    /// Bounds distinct attribute sets per stream in a collection window to
+    /// [`DEFAULT_CARDINALITY_LIMIT`](crate::metrics::DEFAULT_CARDINALITY_LIMIT);
+    /// existing attribute sets continue updating when at capacity.
     pub(crate) fn offer(
         &self,
-        scope: &str,
+        scope: &ScopeKey,
         name: &str,
         spec: &ReservoirSpec,
         sample: StoredExemplar,
     ) {
         let attr_key = AttrKey::from_slice(&sample.attributes);
         let metric_key = MetricKey {
-            scope: scope.to_owned(),
+            scope: scope.clone(),
             name: name.to_owned(),
         };
         let mut streams = self.streams.lock().unwrap_or_else(PoisonError::into_inner);
         let by_attr = streams.entry(metric_key).or_default();
-        let reservoir = by_attr
-            .entry(attr_key)
-            .or_insert_with(|| Reservoir::from_spec(spec));
-        reservoir.offer(sample);
+        if let Some(reservoir) = by_attr.get_mut(&attr_key) {
+            reservoir.offer(sample);
+        } else if by_attr.len() < crate::metrics::DEFAULT_CARDINALITY_LIMIT {
+            let mut reservoir = Reservoir::from_spec(spec);
+            reservoir.offer(sample);
+            by_attr.insert(attr_key, reservoir);
+        }
     }
 
     /// Drains all exemplars collected since the last call, grouped by
-    /// `(scope, metric_name)`.
+    /// `(scope, metric_name)`, and clears all stream entries so memory does
+    /// not grow across collection windows.
     pub(crate) fn collect(&self) -> HashMap<MetricKey, Vec<StoredExemplar>> {
-        let mut streams = self.streams.lock().unwrap_or_else(PoisonError::into_inner);
+        let drained = {
+            let mut streams = self.streams.lock().unwrap_or_else(PoisonError::into_inner);
+            std::mem::take(&mut *streams)
+        };
         let mut out: HashMap<MetricKey, Vec<StoredExemplar>> = HashMap::new();
-        for (metric_key, by_attr) in streams.iter_mut() {
+        for (metric_key, mut by_attr) in drained {
             let mut collected = Vec::new();
             for reservoir in by_attr.values_mut() {
                 collected.extend(reservoir.collect());
             }
             if !collected.is_empty() {
-                out.insert(metric_key.clone(), collected);
+                out.insert(metric_key, collected);
             }
         }
         out
+    }
+
+    #[cfg(test)]
+    fn tracked_attr_count(&self, scope: &ScopeKey, name: &str) -> usize {
+        let streams = self.streams.lock().unwrap_or_else(PoisonError::into_inner);
+        let key = MetricKey {
+            scope: scope.clone(),
+            name: name.to_owned(),
+        };
+        streams.get(&key).map_or(0, HashMap::len)
+    }
+
+    #[cfg(test)]
+    fn stream_count(&self) -> usize {
+        self.streams
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
     }
 }
 
@@ -487,7 +525,7 @@ impl ExemplarRegistry {
     /// Offers a sample to every registered reader store.
     pub(crate) fn offer(
         &self,
-        scope: &str,
+        scope: &ScopeKey,
         name: &str,
         spec: &ReservoirSpec,
         sample: &StoredExemplar,
@@ -635,14 +673,22 @@ mod tests {
         assert_eq!(second[0].sample.value, ExemplarValue::Int(99));
     }
 
+    fn scope(name: &str) -> ScopeKey {
+        ScopeKey {
+            name: name.to_owned(),
+            ..ScopeKey::default()
+        }
+    }
+
     #[test]
     fn per_reader_registry_stores_are_independent() {
         let registry = ExemplarRegistry::default();
         let store_a = registry.register();
         let store_b = registry.register();
         let spec = ReservoirSpec::FixedSize(4);
+        let scope = scope("svc");
         let sample = stored(ExemplarValue::Int(7), vec![KeyValue::new("k", "v")]);
-        registry.offer("svc", "requests", &spec, &sample);
+        registry.offer(&scope, "requests", &spec, &sample);
 
         let a_collected = store_a.collect();
         assert_eq!(a_collected.len(), 1);
@@ -654,8 +700,59 @@ mod tests {
         assert!(store_b.collect().is_empty());
 
         registry.unregister(&store_a);
-        registry.offer("svc", "requests", &spec, &sample);
+        registry.offer(&scope, "requests", &spec, &sample);
         assert!(store_a.collect().is_empty());
         assert_eq!(store_b.collect().len(), 1);
+    }
+
+    #[test]
+    fn store_clears_streams_on_collect_and_bounds_cardinality() {
+        let store = ExemplarStore::new();
+        let scope = scope("svc");
+        let spec = ReservoirSpec::FixedSize(2);
+        let limit = crate::metrics::DEFAULT_CARDINALITY_LIMIT;
+
+        for i in 0..(limit + 50) {
+            store.offer(
+                &scope,
+                "high_card",
+                &spec,
+                stored(
+                    ExemplarValue::Int(i64::try_from(i).expect("fits")),
+                    vec![KeyValue::new("id", i.to_string())],
+                ),
+            );
+        }
+        assert_eq!(store.tracked_attr_count(&scope, "high_card"), limit);
+
+        // Existing attribute set still updates even when at cardinality limit.
+        store.offer(
+            &scope,
+            "high_card",
+            &spec,
+            stored(ExemplarValue::Int(999_999), vec![KeyValue::new("id", "0")]),
+        );
+        assert_eq!(store.tracked_attr_count(&scope, "high_card"), limit);
+
+        let drained = store.collect();
+        assert_eq!(store.stream_count(), 0);
+        let samples = &drained[&MetricKey {
+            scope: scope.clone(),
+            name: "high_card".to_owned(),
+        }];
+        assert!(
+            samples
+                .iter()
+                .any(|s| s.sample.value == ExemplarValue::Int(999_999)),
+            "existing key must still receive samples at capacity"
+        );
+    }
+
+    #[test]
+    fn attr_key_uses_last_value_wins_for_duplicate_keys() {
+        // Lexicographically "z" > "a", so a full-tuple sort would wrongly keep "z".
+        let dup = AttrKey::from_slice(&[KeyValue::new("k", "z"), KeyValue::new("k", "a")]);
+        let single = AttrKey::from_slice(&[KeyValue::new("k", "a")]);
+        assert_eq!(dup, single);
     }
 }
