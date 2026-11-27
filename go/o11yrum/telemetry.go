@@ -22,6 +22,7 @@ const (
 	telOutcome = "o11yrum.outcome"
 	telReason  = "o11yrum.reason"
 	telSink    = "o11yrum.sink"
+	telResult  = "o11yrum.result"
 )
 
 // Batch outcomes and the reason recorded for a batch that was not refused.

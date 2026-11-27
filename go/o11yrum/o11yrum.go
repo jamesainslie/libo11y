@@ -102,6 +102,9 @@ func NewHandler(opts ...Option) (*Handler, error) {
 	if h.store, err = objectStore(cfg, s.store); err != nil {
 		return nil, err
 	}
+	if h.store != nil {
+		h.symbols = newSymbolicator(h.store, cfg.Symbolication, cfg.Limits.MaxValueLength, h.tel, s.now)
+	}
 	for _, ac := range cfg.Apps {
 		a := &app{cfg: ac, origins: map[string]bool{}, policy: newAttrPolicy(ac, cfg.Limits), namespace: ac.namespace()}
 		for _, o := range ac.Origins {
