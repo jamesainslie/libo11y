@@ -8,6 +8,10 @@
 // readiness at /readyz, and drains in-flight requests on SIGINT or
 // SIGTERM. When the configuration sets no sinks.otlp.endpoint, batches go
 // to OTEL_EXPORTER_OTLP_ENDPOINT if that is set.
+//
+// The metrics the gateway derives leave with its own metrics, through the
+// reader OTEL_METRICS_EXPORTER selects. When OTEL_METRICS_PRODUCERS is
+// set it must include o11yrum.
 package main
 
 import (
@@ -79,6 +83,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fail := func(err error) int {
 		_, _ = fmt.Fprintln(stderr, "o11yrum-gateway:", err)
 		return 1
+	}
+	if err := checkProducersEnv(); err != nil {
+		return fail(err)
 	}
 	cfg, sink, err := load(*configPath)
 	if err != nil {
@@ -187,6 +194,10 @@ func parseOTLPHeaders(raw string) (map[string]string, error) {
 
 // serve runs the gateway until ctx ends, then drains it.
 func serve(ctx context.Context, cfg *o11yrum.Config, sink *o11yrum.OTLPSink, stderr io.Writer) (err error) {
+	// The producer is registered before o11y.New builds the metric reader,
+	// which asks autoexport for its producers.
+	producer := o11yrum.NewMetricProducer()
+	registerProducer(producer)
 	sdk, err := o11y.New(ctx,
 		o11y.WithServiceName(cfg.Telemetry.ServiceName),
 		o11y.WithServiceVersion(version),
@@ -201,7 +212,7 @@ func serve(ctx context.Context, cfg *o11yrum.Config, sink *o11yrum.OTLPSink, std
 			err = fmt.Errorf("telemetry shutdown: %w", serr)
 		}
 	}()
-	opts := []o11yrum.Option{o11yrum.WithConfig(cfg), o11yrum.WithSDK(sdk)}
+	opts := []o11yrum.Option{o11yrum.WithConfig(cfg), o11yrum.WithSDK(sdk), o11yrum.WithMetricProducer(producer)}
 	if sink != nil {
 		defer func() { _ = sink.Close() }()
 		opts = append(opts, o11yrum.WithSinks(sink))

@@ -17,6 +17,7 @@ apps:
   - service_name: shop-web
     origins: ["https://Shop.Example:443", "http://localhost:5173"]
     query_allow_list: [page, sort]
+    app_metric_labels: [shop.checkout.step]
   - service_name: shop-mobile
     allow_missing_origin: true
     client_token: pub-123

@@ -144,3 +144,43 @@ func TestParseConfigCommandSettings(t *testing.T) {
 		t.Errorf("listen %q telemetry %+v environment %q", cfg.Listen, cfg.Telemetry, cfg.Environment)
 	}
 }
+
+func TestAppMetricLabelsValidation(t *testing.T) {
+	app := func(labels string) string {
+		return "apps:\n  - {service_name: shop-web, origins: [\"https://a\"], pii: allow, app_metric_labels: " + labels + "}\n"
+	}
+	for name, tc := range map[string]struct{ labels, want string }{
+		"pii":             {"[device.id]", "app shop-web: app_metric_labels: device.id is classified PII"},
+		"secret":          {"[http.request.header.authorization]", "http.request.header.authorization is classified secret"},
+		"secret any case": {"[http.request.header.Cookie]", "http.request.header.Cookie is classified secret"},
+		"unbounded":       {"[session.id]", "app_metric_labels: session.id is unbounded"},
+		"unbounded tmpl":  {"[o11y.label.step]", "o11y.label.step is unbounded"},
+		"unminted o11y":   {"[o11y.shop.step]", "o11y.shop.step is not defined by the specification"},
+		"gateway owned":   {"[service.name]", "service.name is set by the gateway"},
+		"overflow marker": {"[otel.metric.overflow]", "otel.metric.overflow is set by the gateway"},
+		"client address":  {"[client.address]", "client.address is set by the gateway"},
+		"empty":           {"[\"\"]", "app_metric_labels: empty key"},
+		"too long":        {"[shop." + strings.Repeat("k", maxAppLabelLen) + "]", "longer than 256 bytes"},
+		"duplicate":       {"[shop.step, shop.step]", "duplicate key shop.step"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := ParseConfig([]byte(app(tc.labels)))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want it to mention %q", err, tc.want)
+			}
+		})
+	}
+	cfg, err := ParseConfig([]byte(app("[shop.step, shop.plan, o11y.rum.platform]")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Apps[0].AppMetricLabels; !slices.Equal(got, []string{"shop.step", "shop.plan", "o11y.rum.platform"}) {
+		t.Fatalf("app_metric_labels %v", got)
+	}
+	// The handler keeps its own copy.
+	c := cfg.clone()
+	c.Apps[0].AppMetricLabels[0] = "changed"
+	if cfg.Apps[0].AppMetricLabels[0] != "shop.step" {
+		t.Error("clone shares app_metric_labels")
+	}
+}

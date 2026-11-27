@@ -10,7 +10,8 @@ import (
 	"go.opentelemetry.io/otel/metric/noop"
 )
 
-// scopeName is the instrumentation scope of the gateway's own telemetry.
+// scopeName is the instrumentation scope of the gateway's own telemetry
+// and of the metrics it derives.
 const scopeName = "github.com/jamesainslie/libo11y/go/o11yrum"
 
 // Self-telemetry attribute keys. Only the specification may mint o11y.*

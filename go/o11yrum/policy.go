@@ -22,6 +22,8 @@ type attrPolicy struct {
 	maxValueLen int
 	maxArrayLen int
 	queryAllow  map[string]bool
+	// metricLabels is the app's app_metric_labels.
+	metricLabels map[string]bool
 }
 
 // gatewayOwned lists keys only the gateway sets, or that would carry the
@@ -43,12 +45,17 @@ func newAttrPolicy(app AppConfig, lim LimitsConfig) attrPolicy {
 	for _, k := range app.QueryAllowList {
 		allow[k] = true
 	}
+	labels := make(map[string]bool, len(app.AppMetricLabels))
+	for _, k := range app.AppMetricLabels {
+		labels[k] = true
+	}
 	return attrPolicy{
-		allowPII:    app.PII == piiAllow,
-		maxAttrs:    lim.MaxAttributes,
-		maxValueLen: lim.MaxValueLength,
-		maxArrayLen: lim.MaxArrayLength,
-		queryAllow:  allow,
+		allowPII:     app.PII == piiAllow,
+		metricLabels: labels,
+		maxAttrs:     lim.MaxAttributes,
+		maxValueLen:  lim.MaxValueLength,
+		maxArrayLen:  lim.MaxArrayLength,
+		queryAllow:   allow,
 	}
 }
 
@@ -213,12 +220,29 @@ func nonNegative(v pcommon.Value) bool {
 // isTemplateKey reports whether k is <template>.<name> for a registry
 // template attribute.
 func isTemplateKey(k string) bool {
+	_, ok := templateOf(k)
+	return ok
+}
+
+// templateOf returns the registry template attribute k instantiates.
+func templateOf(k string) (string, bool) {
 	for _, t := range rumspec.Templates {
 		if len(k) > len(t)+1 && strings.HasPrefix(k, t+".") {
-			return true
+			return t, true
 		}
 	}
-	return false
+	return "", false
+}
+
+// specClasses returns the sensitivity and cardinality the specification
+// gives k. A template instance, such as o11y.label.step, takes its
+// template's classes.
+func specClasses(k string) (rumspec.Sensitivity, rumspec.Cardinality) {
+	key := sensitivityKey(k)
+	if t, ok := templateOf(k); ok {
+		key = t
+	}
+	return rumspec.Sensitivities[key], rumspec.Cardinalities[key]
 }
 
 // truncateUTF8 cuts s to at most n bytes without splitting a rune.
@@ -280,4 +304,21 @@ func removeUserinfo(s string) string {
 		return s
 	}
 	return scheme + "://" + rest[at+1:]
+}
+
+// metricLabel reports whether an app metric point keeps the attribute k:
+// the specification classifies it bounded or enum, or the app lists it in
+// app_metric_labels. Keys the specification classifies PII, secret or
+// unbounded are never kept, whatever the app's pii mode, because a label
+// is copied into every series the gateway exports.
+func (p attrPolicy) metricLabel(k string) bool {
+	sens, card := specClasses(k)
+	switch {
+	case sens == rumspec.PII || sens == rumspec.Secret || card == rumspec.Unbounded:
+		return false
+	case card == rumspec.Enum || card == rumspec.Bounded:
+		return true
+	default:
+		return p.metricLabels[k]
+	}
 }

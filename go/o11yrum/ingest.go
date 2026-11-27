@@ -12,6 +12,7 @@ import (
 
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
+	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 )
 
@@ -97,6 +98,17 @@ func (h *Handler) ingest(w http.ResponseWriter, r *http.Request, sig Signal) {
 		remaining = d.logs.LogRecordCount()
 		d.logs.MarkReadOnly()
 		b.Logs = d.logs
+	case SignalMetrics:
+		// App metrics never reach the sinks: they are re-aggregated into
+		// the gateway's own metrics, or dropped without a producer.
+		drops = v.metrics(d.metrics)
+		if h.derive == nil {
+			drops[reasonNoProducer] += metricPoints(d.metrics)
+			break
+		}
+		for reason, n := range h.derive.appMetrics(service, d.metrics) {
+			drops[reason] += n
+		}
 	}
 	rep.validated(drops, v.attrsRemoved)
 	if remaining > 0 {
@@ -108,6 +120,9 @@ func (h *Handler) ingest(w http.ResponseWriter, r *http.Request, sig Signal) {
 			refuse(a.origins, rejection{status: http.StatusServiceUnavailable, reason: "sink", retryAfter: sinkRetryAfter})
 			return
 		}
+		// Derivation runs only once the sinks hold the batch: a 503 makes
+		// the client retry it, and counting it first would count it twice.
+		h.derived(b)
 	}
 	rep.accept(drops)
 	h.respond(w, r, a.origins, sig, d.json, drops)
@@ -259,6 +274,13 @@ func (h *Handler) respond(w http.ResponseWriter, r *http.Request, corsOrigins ma
 			tr.PartialSuccess().SetErrorMessage(drops.message())
 		}
 		resp = tr
+	case SignalMetrics:
+		mr := pmetricotlp.NewExportResponse()
+		if n := drops.total(); n > 0 {
+			mr.PartialSuccess().SetRejectedDataPoints(n)
+			mr.PartialSuccess().SetErrorMessage(drops.message())
+		}
+		resp = mr
 	default:
 		lr := plogotlp.NewExportResponse()
 		if n := drops.total(); n > 0 {

@@ -27,3 +27,38 @@ The gateway's own telemetry follows the standard `OTEL_*` variables.
 
 The config endpoint shares the ingest rate limit, so a page load that
 fetches its configuration spends one request of the client's budget.
+
+## Derived metrics
+
+The gateway derives the standard RUM metrics from view summaries,
+evaluates each app's `metrics` definitions, and re-aggregates the app
+metrics browsers post to `/_o11y/v1/metrics`. The command exports them
+with its own metrics, through the reader `OTEL_METRICS_EXPORTER` selects.
+Its producer is registered as `o11yrum` and as the fallback, so leave
+`OTEL_METRICS_PRODUCERS` unset, or include `o11yrum` in it. The command
+refuses to start when the variable is set without it. With
+`OTEL_METRICS_EXPORTER=none`, the derived metrics are not exported at all.
+The derived metrics are always cumulative.
+`OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE` changes only the
+gateway's own metrics.
+
+## App metric labels
+
+An app metric point keeps only the labels the specification classifies
+bounded or enum, such as `o11y.rum.platform` and `os.name`. Every other
+label is dropped, and the point is still counted. An app lists its own
+label keys in `app_metric_labels` to keep them:
+
+```yaml
+apps:
+  - service_name: shop-web
+    origins: ["https://shop.example"]
+    app_metric_labels: [shop.checkout.step, shop.plan]
+```
+
+List only keys with a bounded set of values, because each distinct value
+becomes its own series. A point may carry at most 16 labels, a key may be
+at most 256 bytes, and longer values are cut to 256 bytes. Keys the
+specification classifies PII, secret or unbounded, such as `session.id`,
+are always dropped, whatever the app's `pii` mode, and a configuration
+that lists one fails to load.

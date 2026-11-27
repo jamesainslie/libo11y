@@ -15,6 +15,8 @@ type settings struct {
 	sinks   []Sink
 	now     func() time.Time
 	configs ConfigProvider
+
+	producer *MetricProducer
 }
 
 // WithConfig sets the gateway configuration. NewHandler requires it.

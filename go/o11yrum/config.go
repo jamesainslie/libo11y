@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/jamesainslie/libo11y/go/o11yrum/internal/rumspec"
 )
 
 // Config is the gateway configuration, read from one YAML file. Zero
@@ -30,10 +32,11 @@ type Config struct {
 	// Telemetry configures the gateway's own telemetry.
 	Telemetry TelemetryConfig `yaml:"telemetry"`
 
-	Edge   EdgeConfig   `yaml:"edge"`
-	Limits LimitsConfig `yaml:"limits"`
-	Apps   []AppConfig  `yaml:"apps"`
-	Sinks  SinksConfig  `yaml:"sinks"`
+	Edge        EdgeConfig        `yaml:"edge"`
+	Limits      LimitsConfig      `yaml:"limits"`
+	Apps        []AppConfig       `yaml:"apps"`
+	Aggregation AggregationConfig `yaml:"aggregation"`
+	Sinks       SinksConfig       `yaml:"sinks"`
 
 	dir string // directory of the file LoadConfig read, for relative paths
 }
@@ -95,6 +98,18 @@ type LimitsConfig struct {
 	MaxSpanLinks int `yaml:"max_span_links"`
 }
 
+// AggregationConfig bounds the metrics the gateway derives.
+type AggregationConfig struct {
+	// MaxSeriesPerMetric caps the attribute sets one app may hold in one
+	// derived metric. Measurements past it go to the app's overflow series,
+	// marked otel.metric.overflow=true. Default 2000.
+	MaxSeriesPerMetric int `yaml:"max_series_per_metric"`
+	// MaxMetricsPerApp caps the distinct metrics one app may send to
+	// /_o11y/v1/metrics. Data points of further metrics are dropped as
+	// metric_limit. Default 200.
+	MaxMetricsPerApp int `yaml:"max_metrics_per_app"`
+}
+
 // AppConfig registers one app, identified by its service.name.
 type AppConfig struct {
 	// ServiceName is the resource service.name the app sends.
@@ -121,6 +136,15 @@ type AppConfig struct {
 	// from /_o11y/v1/config. A relative path resolves against the
 	// configuration file's directory. Empty means the app has none.
 	RemoteConfigFile string `yaml:"remote_config_file"`
+	// Metrics are operator-defined metrics derived from the app's events.
+	Metrics []MetricDefinition `yaml:"metrics"`
+	// AppMetricLabels lists the data point attributes, beyond those the
+	// specification classifies bounded or enum, that the app's metrics
+	// keep. Every other attribute of an app metric point is dropped. A
+	// listed key must have a bounded set of values. Keys the specification
+	// classifies PII, secret or unbounded are refused here and dropped
+	// whatever the pii mode.
+	AppMetricLabels []string `yaml:"app_metric_labels"`
 }
 
 // PII modes.
@@ -211,6 +235,8 @@ func (c *Config) applyDefaults() {
 	setDefault(&l.MaxArrayLength, d.MaxArrayLength)
 	setDefault(&l.MaxSpanEvents, d.MaxSpanEvents)
 	setDefault(&l.MaxSpanLinks, d.MaxSpanLinks)
+	setDefault(&c.Aggregation.MaxSeriesPerMetric, 2000)
+	setDefault(&c.Aggregation.MaxMetricsPerApp, 200)
 	for i := range c.Apps {
 		if c.Apps[i].PII == "" {
 			c.Apps[i].PII = piiDrop
@@ -218,6 +244,7 @@ func (c *Config) applyDefaults() {
 		for j, o := range c.Apps[i].Origins {
 			c.Apps[i].Origins[j] = normalizeOrigin(o)
 		}
+		applyMetricDefaults(c.Apps[i].Metrics)
 	}
 }
 
@@ -244,6 +271,8 @@ func (c *Config) validate() error {
 		{"limits.max_array_length", int64(c.Limits.MaxArrayLength)},
 		{"limits.max_span_events", int64(c.Limits.MaxSpanEvents)},
 		{"limits.max_span_links", int64(c.Limits.MaxSpanLinks)},
+		{"aggregation.max_series_per_metric", int64(c.Aggregation.MaxSeriesPerMetric)},
+		{"aggregation.max_metrics_per_app", int64(c.Aggregation.MaxMetricsPerApp)},
 	} {
 		if f.v <= 0 {
 			return fmt.Errorf("%s must be positive", f.name)
@@ -288,8 +317,11 @@ func (c *Config) validate() error {
 		if a.PII != piiDrop && a.PII != piiAllow {
 			return fmt.Errorf("app %s: pii %q must be drop or allow", a.ServiceName, a.PII)
 		}
+		if err := validateAppMetricLabels(a); err != nil {
+			return fmt.Errorf("app %s: app_metric_labels: %w", a.ServiceName, err)
+		}
 	}
-	return nil
+	return validateMetrics(c.Apps)
 }
 
 // validOrigin reports whether o is a bare scheme://host[:port].
@@ -326,7 +358,39 @@ func (c *Config) clone() *Config {
 	for i, a := range c.Apps {
 		a.Origins = slices.Clone(a.Origins)
 		a.QueryAllowList = slices.Clone(a.QueryAllowList)
+		a.AppMetricLabels = slices.Clone(a.AppMetricLabels)
+		a.Metrics = cloneMetrics(a.Metrics)
 		out.Apps[i] = a
 	}
 	return &out
+}
+
+// validateAppMetricLabels refuses an allow-list entry the gateway would
+// drop anyway, so an operator learns at load time instead of from missing
+// labels.
+func validateAppMetricLabels(a AppConfig) error {
+	seen := make(map[string]bool, len(a.AppMetricLabels))
+	for _, k := range a.AppMetricLabels {
+		sens, card := specClasses(k)
+		switch {
+		case k == "":
+			return errors.New("empty key")
+		case len(k) > maxAppLabelLen:
+			return fmt.Errorf("%.32s... is longer than %d bytes", k, maxAppLabelLen)
+		case seen[k]:
+			return fmt.Errorf("duplicate key %s", k)
+		case gatewayOwned[k] || k == keyServiceName || k == keyOverflow:
+			return fmt.Errorf("%s is set by the gateway", k)
+		case sens == rumspec.Secret:
+			return fmt.Errorf("%s is classified secret by the specification and is always dropped", k)
+		case sens == rumspec.PII:
+			return fmt.Errorf("%s is classified PII by the specification and is always dropped", k)
+		case card == rumspec.Unbounded:
+			return fmt.Errorf("%s is unbounded by the specification and is always dropped", k)
+		case strings.HasPrefix(k, "o11y.") && rumspec.Types[k] == "" && !isTemplateKey(k):
+			return fmt.Errorf("%s is not defined by the specification, which alone mints o11y.* keys", k)
+		}
+		seen[k] = true
+	}
+	return nil
 }

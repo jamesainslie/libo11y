@@ -1,0 +1,1485 @@
+{
+  "scope": "github.com/jamesainslie/libo11y/go/o11yrum",
+  "bounds": {
+    "1": [
+      0.01,
+      0.025,
+      0.05,
+      0.075,
+      0.1,
+      0.15,
+      0.2,
+      0.25,
+      0.3,
+      0.4,
+      0.5,
+      0.75,
+      1
+    ],
+    "s": [
+      0.1,
+      0.2,
+      0.3,
+      0.5,
+      0.8,
+      1,
+      1.2,
+      1.5,
+      1.8,
+      2,
+      2.5,
+      3,
+      4,
+      5,
+      7.5,
+      10,
+      15,
+      20,
+      30
+    ]
+  },
+  "thresholds": {
+    "o11y.rum.vital.cls": [
+      0.1,
+      0.25
+    ],
+    "o11y.rum.vital.fcp": [
+      1.8,
+      3
+    ],
+    "o11y.rum.vital.inp": [
+      0.2,
+      0.5
+    ],
+    "o11y.rum.vital.lcp": [
+      2.5,
+      4
+    ],
+    "o11y.rum.vital.ttfb": [
+      0.8,
+      1.8
+    ]
+  },
+  "cases": [
+    {
+      "name": "initial web view with every vital and count",
+      "service": "shop-web",
+      "resource": {
+        "geo.country.iso_code": "DE",
+        "o11y.rum.browser.family": "chrome"
+      },
+      "summaries": [
+        {
+          "o11y.rum.connection.effective": "4g",
+          "o11y.rum.device.class": "desktop",
+          "o11y.rum.platform": "web",
+          "o11y.rum.summary.cls.value": 0.05,
+          "o11y.rum.summary.errors.csp": 0,
+          "o11y.rum.summary.errors.network": 1,
+          "o11y.rum.summary.errors.uncaught": 2,
+          "o11y.rum.summary.fcp.value": 1.2,
+          "o11y.rum.summary.frustrations.dead": 3,
+          "o11y.rum.summary.frustrations.error": 0,
+          "o11y.rum.summary.frustrations.rage": 1,
+          "o11y.rum.summary.inp.value": 0.15,
+          "o11y.rum.summary.lcp.value": 1.8,
+          "o11y.rum.summary.long_animation_frames": 4,
+          "o11y.rum.summary.requests": 12,
+          "o11y.rum.summary.seq": 0,
+          "o11y.rum.summary.time_on_view": 4.5,
+          "o11y.rum.summary.ttfb.value": 0.4,
+          "o11y.rum.view.id": "view-1",
+          "o11y.rum.view.kind": "initial",
+          "o11y.rum.view.name": "/documents/$docId",
+          "session.id": "session-1"
+        }
+      ],
+      "metrics": [
+        {
+          "name": "o11y.rum.browser.long_animation_frames",
+          "kind": "sum",
+          "unit": "{frame}",
+          "attributes": {
+            "o11y.rum.view.name": "/documents/$docId",
+            "service.name": "shop-web"
+          },
+          "sum": 4
+        },
+        {
+          "name": "o11y.rum.errors",
+          "kind": "sum",
+          "unit": "{error}",
+          "attributes": {
+            "o11y.rum.error.source": "network",
+            "o11y.rum.platform": "web",
+            "o11y.rum.view.name": "/documents/$docId",
+            "service.name": "shop-web"
+          },
+          "sum": 1
+        },
+        {
+          "name": "o11y.rum.errors",
+          "kind": "sum",
+          "unit": "{error}",
+          "attributes": {
+            "o11y.rum.error.source": "uncaught",
+            "o11y.rum.platform": "web",
+            "o11y.rum.view.name": "/documents/$docId",
+            "service.name": "shop-web"
+          },
+          "sum": 2
+        },
+        {
+          "name": "o11y.rum.frustrations",
+          "kind": "sum",
+          "unit": "{signal}",
+          "attributes": {
+            "o11y.rum.frustration.type": "dead",
+            "o11y.rum.platform": "web",
+            "o11y.rum.view.name": "/documents/$docId",
+            "service.name": "shop-web"
+          },
+          "sum": 3
+        },
+        {
+          "name": "o11y.rum.frustrations",
+          "kind": "sum",
+          "unit": "{signal}",
+          "attributes": {
+            "o11y.rum.frustration.type": "rage",
+            "o11y.rum.platform": "web",
+            "o11y.rum.view.name": "/documents/$docId",
+            "service.name": "shop-web"
+          },
+          "sum": 1
+        },
+        {
+          "name": "o11y.rum.views",
+          "kind": "sum",
+          "unit": "{view}",
+          "attributes": {
+            "o11y.rum.device.class": "desktop",
+            "o11y.rum.platform": "web",
+            "o11y.rum.view.kind": "initial",
+            "o11y.rum.view.name": "/documents/$docId",
+            "service.name": "shop-web"
+          },
+          "sum": 1
+        },
+        {
+          "name": "o11y.rum.vital.cls",
+          "kind": "histogram",
+          "unit": "1",
+          "attributes": {
+            "geo.country.iso_code": "DE",
+            "o11y.rum.browser.family": "chrome",
+            "o11y.rum.connection.effective": "4g",
+            "o11y.rum.device.class": "desktop",
+            "o11y.rum.view.name": "/documents/$docId",
+            "o11y.rum.vital.rating": "good",
+            "service.name": "shop-web"
+          },
+          "sum": 0.05,
+          "count": 1,
+          "min": 0.05,
+          "max": 0.05,
+          "bucket_counts": [
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "name": "o11y.rum.vital.fcp",
+          "kind": "histogram",
+          "unit": "s",
+          "attributes": {
+            "geo.country.iso_code": "DE",
+            "o11y.rum.browser.family": "chrome",
+            "o11y.rum.connection.effective": "4g",
+            "o11y.rum.device.class": "desktop",
+            "o11y.rum.view.name": "/documents/$docId",
+            "o11y.rum.vital.rating": "good",
+            "service.name": "shop-web"
+          },
+          "sum": 1.2,
+          "count": 1,
+          "min": 1.2,
+          "max": 1.2,
+          "bucket_counts": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "name": "o11y.rum.vital.inp",
+          "kind": "histogram",
+          "unit": "s",
+          "attributes": {
+            "geo.country.iso_code": "DE",
+            "o11y.rum.browser.family": "chrome",
+            "o11y.rum.connection.effective": "4g",
+            "o11y.rum.device.class": "desktop",
+            "o11y.rum.view.name": "/documents/$docId",
+            "o11y.rum.vital.rating": "good",
+            "service.name": "shop-web"
+          },
+          "sum": 0.15,
+          "count": 1,
+          "min": 0.15,
+          "max": 0.15,
+          "bucket_counts": [
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "name": "o11y.rum.vital.lcp",
+          "kind": "histogram",
+          "unit": "s",
+          "attributes": {
+            "geo.country.iso_code": "DE",
+            "o11y.rum.browser.family": "chrome",
+            "o11y.rum.connection.effective": "4g",
+            "o11y.rum.device.class": "desktop",
+            "o11y.rum.view.name": "/documents/$docId",
+            "o11y.rum.vital.rating": "good",
+            "service.name": "shop-web"
+          },
+          "sum": 1.8,
+          "count": 1,
+          "min": 1.8,
+          "max": 1.8,
+          "bucket_counts": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "name": "o11y.rum.vital.ttfb",
+          "kind": "histogram",
+          "unit": "s",
+          "attributes": {
+            "geo.country.iso_code": "DE",
+            "o11y.rum.browser.family": "chrome",
+            "o11y.rum.connection.effective": "4g",
+            "o11y.rum.device.class": "desktop",
+            "o11y.rum.view.name": "/documents/$docId",
+            "o11y.rum.vital.rating": "good",
+            "service.name": "shop-web"
+          },
+          "sum": 0.4,
+          "count": 1,
+          "min": 0.4,
+          "max": 0.4,
+          "bucket_counts": [
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "name": "two summaries of one view count the view once",
+      "service": "shop-web",
+      "resource": {
+        "geo.country.iso_code": "DE",
+        "o11y.rum.browser.family": "chrome"
+      },
+      "summaries": [
+        {
+          "o11y.rum.device.class": "mobile",
+          "o11y.rum.platform": "web",
+          "o11y.rum.summary.cls.value": 0.02,
+          "o11y.rum.summary.errors.uncaught": 1,
+          "o11y.rum.summary.fcp.value": 1,
+          "o11y.rum.summary.frustrations.rage": 1,
+          "o11y.rum.summary.inp.value": 0.1,
+          "o11y.rum.summary.lcp.value": 2,
+          "o11y.rum.summary.long_animation_frames": 2,
+          "o11y.rum.summary.seq": 0,
+          "o11y.rum.summary.time_on_view": 4.5,
+          "o11y.rum.summary.ttfb.value": 0.3,
+          "o11y.rum.view.id": "view-1",
+          "o11y.rum.view.kind": "initial",
+          "o11y.rum.view.name": "/cart",
+          "session.id": "session-1"
+        },
+        {
+          "o11y.rum.device.class": "mobile",
+          "o11y.rum.platform": "web",
+          "o11y.rum.summary.errors.uncaught": 2,
+          "o11y.rum.summary.frustrations.rage": 1,
+          "o11y.rum.summary.long_animation_frames": 1,
+          "o11y.rum.summary.seq": 1,
+          "o11y.rum.summary.time_on_view": 4.5,
+          "o11y.rum.view.id": "view-1",
+          "o11y.rum.view.kind": "initial",
+          "o11y.rum.view.name": "/cart",
+          "session.id": "session-1"
+        }
+      ],
+      "metrics": [
+        {
+          "name": "o11y.rum.browser.long_animation_frames",
+          "kind": "sum",
+          "unit": "{frame}",
+          "attributes": {
+            "o11y.rum.view.name": "/cart",
+            "service.name": "shop-web"
+          },
+          "sum": 3
+        },
+        {
+          "name": "o11y.rum.errors",
+          "kind": "sum",
+          "unit": "{error}",
+          "attributes": {
+            "o11y.rum.error.source": "uncaught",
+            "o11y.rum.platform": "web",
+            "o11y.rum.view.name": "/cart",
+            "service.name": "shop-web"
+          },
+          "sum": 3
+        },
+        {
+          "name": "o11y.rum.frustrations",
+          "kind": "sum",
+          "unit": "{signal}",
+          "attributes": {
+            "o11y.rum.frustration.type": "rage",
+            "o11y.rum.platform": "web",
+            "o11y.rum.view.name": "/cart",
+            "service.name": "shop-web"
+          },
+          "sum": 2
+        },
+        {
+          "name": "o11y.rum.views",
+          "kind": "sum",
+          "unit": "{view}",
+          "attributes": {
+            "o11y.rum.device.class": "mobile",
+            "o11y.rum.platform": "web",
+            "o11y.rum.view.kind": "initial",
+            "o11y.rum.view.name": "/cart",
+            "service.name": "shop-web"
+          },
+          "sum": 1
+        },
+        {
+          "name": "o11y.rum.vital.cls",
+          "kind": "histogram",
+          "unit": "1",
+          "attributes": {
+            "geo.country.iso_code": "DE",
+            "o11y.rum.browser.family": "chrome",
+            "o11y.rum.device.class": "mobile",
+            "o11y.rum.view.name": "/cart",
+            "o11y.rum.vital.rating": "good",
+            "service.name": "shop-web"
+          },
+          "sum": 0.02,
+          "count": 1,
+          "min": 0.02,
+          "max": 0.02,
+          "bucket_counts": [
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "name": "o11y.rum.vital.fcp",
+          "kind": "histogram",
+          "unit": "s",
+          "attributes": {
+            "geo.country.iso_code": "DE",
+            "o11y.rum.browser.family": "chrome",
+            "o11y.rum.device.class": "mobile",
+            "o11y.rum.view.name": "/cart",
+            "o11y.rum.vital.rating": "good",
+            "service.name": "shop-web"
+          },
+          "sum": 1,
+          "count": 1,
+          "min": 1,
+          "max": 1,
+          "bucket_counts": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "name": "o11y.rum.vital.inp",
+          "kind": "histogram",
+          "unit": "s",
+          "attributes": {
+            "geo.country.iso_code": "DE",
+            "o11y.rum.browser.family": "chrome",
+            "o11y.rum.device.class": "mobile",
+            "o11y.rum.view.name": "/cart",
+            "o11y.rum.vital.rating": "good",
+            "service.name": "shop-web"
+          },
+          "sum": 0.1,
+          "count": 1,
+          "min": 0.1,
+          "max": 0.1,
+          "bucket_counts": [
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "name": "o11y.rum.vital.lcp",
+          "kind": "histogram",
+          "unit": "s",
+          "attributes": {
+            "geo.country.iso_code": "DE",
+            "o11y.rum.browser.family": "chrome",
+            "o11y.rum.device.class": "mobile",
+            "o11y.rum.view.name": "/cart",
+            "o11y.rum.vital.rating": "good",
+            "service.name": "shop-web"
+          },
+          "sum": 2,
+          "count": 1,
+          "min": 2,
+          "max": 2,
+          "bucket_counts": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "name": "o11y.rum.vital.ttfb",
+          "kind": "histogram",
+          "unit": "s",
+          "attributes": {
+            "geo.country.iso_code": "DE",
+            "o11y.rum.browser.family": "chrome",
+            "o11y.rum.device.class": "mobile",
+            "o11y.rum.view.name": "/cart",
+            "o11y.rum.vital.rating": "good",
+            "service.name": "shop-web"
+          },
+          "sum": 0.3,
+          "count": 1,
+          "min": 0.3,
+          "max": 0.3,
+          "bucket_counts": [
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "name": "every vital at its good bound is good",
+      "service": "shop-web",
+      "resource": {
+        "geo.country.iso_code": "DE",
+        "o11y.rum.browser.family": "chrome"
+      },
+      "summaries": [
+        {
+          "o11y.rum.platform": "web",
+          "o11y.rum.summary.cls.value": 0.1,
+          "o11y.rum.summary.fcp.value": 1.8,
+          "o11y.rum.summary.inp.value": 0.2,
+          "o11y.rum.summary.lcp.value": 2.5,
+          "o11y.rum.summary.seq": 0,
+          "o11y.rum.summary.time_on_view": 4.5,
+          "o11y.rum.summary.ttfb.value": 0.8,
+          "o11y.rum.view.id": "view-1",
+          "o11y.rum.view.kind": "initial",
+          "o11y.rum.view.name": "/",
+          "session.id": "session-1"
+        }
+      ],
+      "metrics": [
+        {
+          "name": "o11y.rum.views",
+          "kind": "sum",
+          "unit": "{view}",
+          "attributes": {
+            "o11y.rum.platform": "web",
+            "o11y.rum.view.kind": "initial",
+            "o11y.rum.view.name": "/",
+            "service.name": "shop-web"
+          },
+          "sum": 1
+        },
+        {
+          "name": "o11y.rum.vital.cls",
+          "kind": "histogram",
+          "unit": "1",
+          "attributes": {
+            "geo.country.iso_code": "DE",
+            "o11y.rum.browser.family": "chrome",
+            "o11y.rum.view.name": "/",
+            "o11y.rum.vital.rating": "good",
+            "service.name": "shop-web"
+          },
+          "sum": 0.1,
+          "count": 1,
+          "min": 0.1,
+          "max": 0.1,
+          "bucket_counts": [
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "name": "o11y.rum.vital.fcp",
+          "kind": "histogram",
+          "unit": "s",
+          "attributes": {
+            "geo.country.iso_code": "DE",
+            "o11y.rum.browser.family": "chrome",
+            "o11y.rum.view.name": "/",
+            "o11y.rum.vital.rating": "good",
+            "service.name": "shop-web"
+          },
+          "sum": 1.8,
+          "count": 1,
+          "min": 1.8,
+          "max": 1.8,
+          "bucket_counts": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "name": "o11y.rum.vital.inp",
+          "kind": "histogram",
+          "unit": "s",
+          "attributes": {
+            "geo.country.iso_code": "DE",
+            "o11y.rum.browser.family": "chrome",
+            "o11y.rum.view.name": "/",
+            "o11y.rum.vital.rating": "good",
+            "service.name": "shop-web"
+          },
+          "sum": 0.2,
+          "count": 1,
+          "min": 0.2,
+          "max": 0.2,
+          "bucket_counts": [
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "name": "o11y.rum.vital.lcp",
+          "kind": "histogram",
+          "unit": "s",
+          "attributes": {
+            "geo.country.iso_code": "DE",
+            "o11y.rum.browser.family": "chrome",
+            "o11y.rum.view.name": "/",
+            "o11y.rum.vital.rating": "good",
+            "service.name": "shop-web"
+          },
+          "sum": 2.5,
+          "count": 1,
+          "min": 2.5,
+          "max": 2.5,
+          "bucket_counts": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "name": "o11y.rum.vital.ttfb",
+          "kind": "histogram",
+          "unit": "s",
+          "attributes": {
+            "geo.country.iso_code": "DE",
+            "o11y.rum.browser.family": "chrome",
+            "o11y.rum.view.name": "/",
+            "o11y.rum.vital.rating": "good",
+            "service.name": "shop-web"
+          },
+          "sum": 0.8,
+          "count": 1,
+          "min": 0.8,
+          "max": 0.8,
+          "bucket_counts": [
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "name": "every vital at its poor bound needs improvement",
+      "service": "shop-web",
+      "resource": {
+        "geo.country.iso_code": "DE",
+        "o11y.rum.browser.family": "chrome"
+      },
+      "summaries": [
+        {
+          "o11y.rum.platform": "web",
+          "o11y.rum.summary.cls.value": 0.25,
+          "o11y.rum.summary.fcp.value": 3,
+          "o11y.rum.summary.inp.value": 0.5,
+          "o11y.rum.summary.lcp.value": 4,
+          "o11y.rum.summary.seq": 0,
+          "o11y.rum.summary.time_on_view": 4.5,
+          "o11y.rum.summary.ttfb.value": 1.8,
+          "o11y.rum.view.id": "view-1",
+          "o11y.rum.view.kind": "initial",
+          "o11y.rum.view.name": "/",
+          "session.id": "session-1"
+        }
+      ],
+      "metrics": [
+        {
+          "name": "o11y.rum.views",
+          "kind": "sum",
+          "unit": "{view}",
+          "attributes": {
+            "o11y.rum.platform": "web",
+            "o11y.rum.view.kind": "initial",
+            "o11y.rum.view.name": "/",
+            "service.name": "shop-web"
+          },
+          "sum": 1
+        },
+        {
+          "name": "o11y.rum.vital.cls",
+          "kind": "histogram",
+          "unit": "1",
+          "attributes": {
+            "geo.country.iso_code": "DE",
+            "o11y.rum.browser.family": "chrome",
+            "o11y.rum.view.name": "/",
+            "o11y.rum.vital.rating": "needs-improvement",
+            "service.name": "shop-web"
+          },
+          "sum": 0.25,
+          "count": 1,
+          "min": 0.25,
+          "max": 0.25,
+          "bucket_counts": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "name": "o11y.rum.vital.fcp",
+          "kind": "histogram",
+          "unit": "s",
+          "attributes": {
+            "geo.country.iso_code": "DE",
+            "o11y.rum.browser.family": "chrome",
+            "o11y.rum.view.name": "/",
+            "o11y.rum.vital.rating": "needs-improvement",
+            "service.name": "shop-web"
+          },
+          "sum": 3,
+          "count": 1,
+          "min": 3,
+          "max": 3,
+          "bucket_counts": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "name": "o11y.rum.vital.inp",
+          "kind": "histogram",
+          "unit": "s",
+          "attributes": {
+            "geo.country.iso_code": "DE",
+            "o11y.rum.browser.family": "chrome",
+            "o11y.rum.view.name": "/",
+            "o11y.rum.vital.rating": "needs-improvement",
+            "service.name": "shop-web"
+          },
+          "sum": 0.5,
+          "count": 1,
+          "min": 0.5,
+          "max": 0.5,
+          "bucket_counts": [
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "name": "o11y.rum.vital.lcp",
+          "kind": "histogram",
+          "unit": "s",
+          "attributes": {
+            "geo.country.iso_code": "DE",
+            "o11y.rum.browser.family": "chrome",
+            "o11y.rum.view.name": "/",
+            "o11y.rum.vital.rating": "needs-improvement",
+            "service.name": "shop-web"
+          },
+          "sum": 4,
+          "count": 1,
+          "min": 4,
+          "max": 4,
+          "bucket_counts": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "name": "o11y.rum.vital.ttfb",
+          "kind": "histogram",
+          "unit": "s",
+          "attributes": {
+            "geo.country.iso_code": "DE",
+            "o11y.rum.browser.family": "chrome",
+            "o11y.rum.view.name": "/",
+            "o11y.rum.vital.rating": "needs-improvement",
+            "service.name": "shop-web"
+          },
+          "sum": 1.8,
+          "count": 1,
+          "min": 1.8,
+          "max": 1.8,
+          "bucket_counts": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "name": "every vital just above its poor bound is poor",
+      "service": "shop-web",
+      "resource": {
+        "geo.country.iso_code": "DE",
+        "o11y.rum.browser.family": "chrome"
+      },
+      "summaries": [
+        {
+          "o11y.rum.platform": "web",
+          "o11y.rum.summary.cls.value": 0.250000001,
+          "o11y.rum.summary.fcp.value": 3.000000001,
+          "o11y.rum.summary.inp.value": 0.500000001,
+          "o11y.rum.summary.lcp.value": 4.000000001,
+          "o11y.rum.summary.seq": 0,
+          "o11y.rum.summary.time_on_view": 4.5,
+          "o11y.rum.summary.ttfb.value": 1.800000001,
+          "o11y.rum.view.id": "view-1",
+          "o11y.rum.view.kind": "initial",
+          "o11y.rum.view.name": "/",
+          "session.id": "session-1"
+        }
+      ],
+      "metrics": [
+        {
+          "name": "o11y.rum.views",
+          "kind": "sum",
+          "unit": "{view}",
+          "attributes": {
+            "o11y.rum.platform": "web",
+            "o11y.rum.view.kind": "initial",
+            "o11y.rum.view.name": "/",
+            "service.name": "shop-web"
+          },
+          "sum": 1
+        },
+        {
+          "name": "o11y.rum.vital.cls",
+          "kind": "histogram",
+          "unit": "1",
+          "attributes": {
+            "geo.country.iso_code": "DE",
+            "o11y.rum.browser.family": "chrome",
+            "o11y.rum.view.name": "/",
+            "o11y.rum.vital.rating": "poor",
+            "service.name": "shop-web"
+          },
+          "sum": 0.250000001,
+          "count": 1,
+          "min": 0.250000001,
+          "max": 0.250000001,
+          "bucket_counts": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "name": "o11y.rum.vital.fcp",
+          "kind": "histogram",
+          "unit": "s",
+          "attributes": {
+            "geo.country.iso_code": "DE",
+            "o11y.rum.browser.family": "chrome",
+            "o11y.rum.view.name": "/",
+            "o11y.rum.vital.rating": "poor",
+            "service.name": "shop-web"
+          },
+          "sum": 3.000000001,
+          "count": 1,
+          "min": 3.000000001,
+          "max": 3.000000001,
+          "bucket_counts": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "name": "o11y.rum.vital.inp",
+          "kind": "histogram",
+          "unit": "s",
+          "attributes": {
+            "geo.country.iso_code": "DE",
+            "o11y.rum.browser.family": "chrome",
+            "o11y.rum.view.name": "/",
+            "o11y.rum.vital.rating": "poor",
+            "service.name": "shop-web"
+          },
+          "sum": 0.500000001,
+          "count": 1,
+          "min": 0.500000001,
+          "max": 0.500000001,
+          "bucket_counts": [
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "name": "o11y.rum.vital.lcp",
+          "kind": "histogram",
+          "unit": "s",
+          "attributes": {
+            "geo.country.iso_code": "DE",
+            "o11y.rum.browser.family": "chrome",
+            "o11y.rum.view.name": "/",
+            "o11y.rum.vital.rating": "poor",
+            "service.name": "shop-web"
+          },
+          "sum": 4.000000001,
+          "count": 1,
+          "min": 4.000000001,
+          "max": 4.000000001,
+          "bucket_counts": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        {
+          "name": "o11y.rum.vital.ttfb",
+          "kind": "histogram",
+          "unit": "s",
+          "attributes": {
+            "geo.country.iso_code": "DE",
+            "o11y.rum.browser.family": "chrome",
+            "o11y.rum.view.name": "/",
+            "o11y.rum.vital.rating": "poor",
+            "service.name": "shop-web"
+          },
+          "sum": 1.800000001,
+          "count": 1,
+          "min": 1.800000001,
+          "max": 1.800000001,
+          "bucket_counts": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "name": "soft navigation without vitals or device class",
+      "service": "shop-web",
+      "resource": {
+        "o11y.rum.browser.family": "firefox"
+      },
+      "summaries": [
+        {
+          "o11y.rum.platform": "web",
+          "o11y.rum.summary.errors.unhandled_rejection": 1,
+          "o11y.rum.summary.seq": 0,
+          "o11y.rum.summary.time_on_view": 4.5,
+          "o11y.rum.view.id": "view-2",
+          "o11y.rum.view.kind": "soft",
+          "o11y.rum.view.name": "/orders/$orderId",
+          "session.id": "session-1"
+        }
+      ],
+      "metrics": [
+        {
+          "name": "o11y.rum.errors",
+          "kind": "sum",
+          "unit": "{error}",
+          "attributes": {
+            "o11y.rum.error.source": "unhandled_rejection",
+            "o11y.rum.platform": "web",
+            "o11y.rum.view.name": "/orders/$orderId",
+            "service.name": "shop-web"
+          },
+          "sum": 1
+        },
+        {
+          "name": "o11y.rum.views",
+          "kind": "sum",
+          "unit": "{view}",
+          "attributes": {
+            "o11y.rum.platform": "web",
+            "o11y.rum.view.kind": "soft",
+            "o11y.rum.view.name": "/orders/$orderId",
+            "service.name": "shop-web"
+          },
+          "sum": 1
+        }
+      ]
+    },
+    {
+      "name": "react native screen without a browser family",
+      "service": "shop-app",
+      "resource": {
+        "geo.country.iso_code": "US"
+      },
+      "summaries": [
+        {
+          "o11y.rum.device.class": "mobile",
+          "o11y.rum.platform": "react_native",
+          "o11y.rum.summary.errors.anr": 1,
+          "o11y.rum.summary.frustrations.dead": 1,
+          "o11y.rum.summary.seq": 0,
+          "o11y.rum.summary.time_on_view": 4.5,
+          "o11y.rum.summary.ttfb.value": 0.9,
+          "o11y.rum.view.id": "view-1",
+          "o11y.rum.view.kind": "screen",
+          "o11y.rum.view.name": "Checkout",
+          "session.id": "session-1"
+        }
+      ],
+      "metrics": [
+        {
+          "name": "o11y.rum.errors",
+          "kind": "sum",
+          "unit": "{error}",
+          "attributes": {
+            "o11y.rum.error.source": "anr",
+            "o11y.rum.platform": "react_native",
+            "o11y.rum.view.name": "Checkout",
+            "service.name": "shop-app"
+          },
+          "sum": 1
+        },
+        {
+          "name": "o11y.rum.frustrations",
+          "kind": "sum",
+          "unit": "{signal}",
+          "attributes": {
+            "o11y.rum.frustration.type": "dead",
+            "o11y.rum.platform": "react_native",
+            "o11y.rum.view.name": "Checkout",
+            "service.name": "shop-app"
+          },
+          "sum": 1
+        },
+        {
+          "name": "o11y.rum.views",
+          "kind": "sum",
+          "unit": "{view}",
+          "attributes": {
+            "o11y.rum.device.class": "mobile",
+            "o11y.rum.platform": "react_native",
+            "o11y.rum.view.kind": "screen",
+            "o11y.rum.view.name": "Checkout",
+            "service.name": "shop-app"
+          },
+          "sum": 1
+        },
+        {
+          "name": "o11y.rum.vital.ttfb",
+          "kind": "histogram",
+          "unit": "s",
+          "attributes": {
+            "geo.country.iso_code": "US",
+            "o11y.rum.device.class": "mobile",
+            "o11y.rum.view.name": "Checkout",
+            "o11y.rum.vital.rating": "needs-improvement",
+            "service.name": "shop-app"
+          },
+          "sum": 0.9,
+          "count": 1,
+          "min": 0.9,
+          "max": 0.9,
+          "bucket_counts": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "name": "a summary with every count absent counts only the view",
+      "service": "shop-web",
+      "resource": {},
+      "summaries": [
+        {
+          "o11y.rum.platform": "webext",
+          "o11y.rum.summary.seq": 0,
+          "o11y.rum.summary.time_on_view": 4.5,
+          "o11y.rum.view.id": "view-1",
+          "o11y.rum.view.kind": "initial",
+          "o11y.rum.view.name": "popup",
+          "session.id": "session-1"
+        }
+      ],
+      "metrics": [
+        {
+          "name": "o11y.rum.views",
+          "kind": "sum",
+          "unit": "{view}",
+          "attributes": {
+            "o11y.rum.platform": "webext",
+            "o11y.rum.view.kind": "initial",
+            "o11y.rum.view.name": "popup",
+            "service.name": "shop-web"
+          },
+          "sum": 1
+        }
+      ]
+    }
+  ]
+}

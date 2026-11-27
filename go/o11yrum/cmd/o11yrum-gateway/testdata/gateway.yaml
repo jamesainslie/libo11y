@@ -27,6 +27,9 @@ apps:
     pii: drop
     query_allow_list: [page, sort]
     remote_config_file: remote/shop-web.json
+    # App metric labels kept beyond those the specification classifies
+    # bounded or enum. Each must have a bounded set of values.
+    app_metric_labels: [shop.checkout.step]
   - service_name: shop-mobile
     allow_missing_origin: true
     client_token: pub-shop-mobile
