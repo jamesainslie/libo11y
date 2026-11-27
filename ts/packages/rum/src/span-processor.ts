@@ -108,11 +108,13 @@ export function rumSpanProcessor(opts: RumSpanProcessorOptions): SpanProcessor {
       const spanId = span.spanContext().spanId;
       if (!announced.delete(spanId)) return;
       const status = span.attributes["http.response.status_code"];
+      const errorType = span.attributes["error.type"];
       const at = opts.now();
       opts.bus.publish({
         type: "request-end",
         spanId,
         ...(typeof status === "number" ? { status } : {}),
+        ...(typeof status !== "number" && typeof errorType === "string" ? { errorType } : {}),
         at,
       });
       const rpc = span.attributes["rpc.method"];

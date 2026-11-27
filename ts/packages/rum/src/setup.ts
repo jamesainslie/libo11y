@@ -220,8 +220,9 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
   const bus = createBus();
   // The breadcrumb ring every error carries (decision P18): actions, view starts and requests.
   const crumbs = createBreadcrumbs();
+  // A request that ends after a revoke must not leave a breadcrumb for the next grant.
   bus.subscribe((s) => {
-    if (s.type === "breadcrumb") crumbs.add(s.kind, s.label, s.at);
+    if (s.type === "breadcrumb" && controller?.recording() === true) crumbs.add(s.kind, s.label, s.at);
   });
   /** The open action, so requests started meanwhile become its children (decision P10). */
   let active: Span | undefined;
@@ -410,11 +411,15 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
   let starting: Promise<void> | undefined;
   /** Consent was granted at some point in this page, so RUM may have stored something. */
   let everStarted = false;
+  /** Bumped by stopAll, so a start whose session load outlived a revoke does nothing. */
+  let generation = 0;
   const startAll = (): Promise<void> => {
     everStarted = true;
+    const gen = generation;
     starting ??= (async () => {
       await session.start();
-      if (!gate.recording()) return; // revoked while the session loaded
+      // Revoked while the session loaded, and maybe granted again: that later start runs instead.
+      if (gen !== generation || !gate.recording()) return;
       views.begin();
       // A kept session may find batches an earlier page of it left in the buffer.
       if (session.kept()) {
@@ -432,6 +437,7 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
     return starting;
   };
   const stopAll = (): void => {
+    generation++;
     while (running.length > 0) {
       try {
         running.pop()?.();

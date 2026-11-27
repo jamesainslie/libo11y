@@ -8,7 +8,7 @@
  * unhandledrejection is unhandled_rejection, read from event.reason. A securitypolicyviolation is
  * csp, type CSPViolation, message "<directive> blocked <blocked origin, or inline, eval or the
  * like>". A request that ends without a status is network, type NetworkError, message "<METHOD>
- * <host> failed". With console on, console.error is console: the arguments rendered (errors by
+ * <host> failed", unless the app aborted it (error.type AbortError from fetch, abort from XHR). With console on, console.error is console: the arguments rendered (errors by
  * their message, the first error giving the type and stack, else type ConsoleError), and the
  * original console.error always runs. Every error goes through recordError. An error raised while
  * one is being recorded is not recorded again. Stop removes the listeners and restores
@@ -29,6 +29,9 @@ export interface ErrorsEnv {
   readonly window: EventTarget;
   readonly console?: { error(...args: unknown[]): void };
 }
+
+/** The error.type values of a request the app aborted, which is not a failure. */
+const ABORTED: ReadonlySet<string> = new Set(["AbortError", "abort"]);
 
 /** An Error-like value recordError reads as is, so the type and message are exactly these. */
 class Described extends Error {
@@ -150,7 +153,7 @@ export function errorsWith(opts: ErrorsOptions, env: ErrorsEnv): RumCollector {
         else if (s.type === "request-end") {
           const r = requests.get(s.spanId);
           requests.delete(s.spanId);
-          if (r !== undefined && s.status === undefined) {
+          if (r !== undefined && s.status === undefined && !ABORTED.has(s.errorType ?? "")) {
             record("network", new Described("NetworkError", `${r.method} ${host(r.url)} failed`), s.at);
           }
         }

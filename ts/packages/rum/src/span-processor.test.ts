@@ -148,3 +148,20 @@ test("a span that names its view and session keeps them", async () => {
   assert.equal(s?.attributes["o11y.rum.view.id"], "v-old");
   assert.equal(s?.attributes["session.id"], "s-old");
 });
+
+test("a request that ends without a response carries its error.type to the bus", async () => {
+  const { tp, signals } = setup();
+  tp.getTracer("@libo11y/web")
+    .startSpan("GET", {
+      kind: SpanKind.CLIENT,
+      attributes: {
+        "http.request.method": "GET",
+        "url.full": "https://api.test/q",
+        "error.type": "AbortError",
+      },
+    })
+    .end();
+  await tp.forceFlush();
+  const end = signals.find((s) => s.type === "request-end");
+  assert.equal(end?.type === "request-end" ? end.errorType : undefined, "AbortError");
+});

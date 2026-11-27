@@ -105,8 +105,12 @@ export function createViewTracker(opts: ViewTrackerOptions): ViewTracker & { clo
       if (load?.id === viewId) load = { ...load, spanContext: ctx };
     },
     begin() {
+      if (current !== undefined) return;
       // The initial view starts at time origin: a view covers getting into it from navigation start.
-      if (current === undefined) start({ kind: opts.prerendered() ? "prerender" : "initial", startTime: 0 });
+      // A later begin (consent granted again) is a new session on a page already loaded, so its
+      // view is soft and starts now (decision P14).
+      if (load === undefined) start({ kind: opts.prerendered() ? "prerender" : "initial", startTime: 0 });
+      else start({ kind: "soft", name: load.name });
     },
     end() {
       endCurrent();

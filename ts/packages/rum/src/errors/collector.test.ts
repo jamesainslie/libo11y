@@ -143,3 +143,19 @@ test("an error logged while recording an error is not recorded again", () => {
   stop();
   assert.deepEqual(rt.counts, ["errors.console"]);
 });
+
+test("an aborted request is not a network error", () => {
+  const rt = fakeRuntime();
+  const stop = errorsWith({}, { window: new EventTarget() }).start(rt);
+  for (const [id, errorType] of [
+    ["f", "AbortError"],
+    ["x", "abort"],
+  ] as const) {
+    rt.bus.publish({ type: "request-start", spanId: id, method: "GET", url: "https://api.test/x", at: 1 });
+    rt.bus.publish({ type: "request-end", spanId: id, errorType, at: 2 });
+  }
+  rt.bus.publish({ type: "request-start", spanId: "t", method: "GET", url: "https://api.test/x", at: 3 });
+  rt.bus.publish({ type: "request-end", spanId: "t", errorType: "timeout", at: 4 });
+  stop();
+  assert.deepEqual(rt.counts, ["errors.network"]);
+});

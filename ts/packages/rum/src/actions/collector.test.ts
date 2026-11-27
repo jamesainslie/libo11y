@@ -276,3 +276,17 @@ test("frustration false detects nothing", () => {
   assert.deepEqual(rt.counts, []);
   stop();
 });
+
+test("an error long after a click, while a key press is open, is not an error click", () => {
+  const { rt, env, stop } = setup();
+  env.click({ tagName: "BUTTON", id: "save" });
+  env.mutate();
+  env.advance(20_000);
+  env.key("Enter", { tagName: "BUTTON", id: "other" });
+  rt.bus.publish({ type: "error", source: "network", at: rt.now() });
+  stop();
+  assert.deepEqual(
+    rt.counts.filter((c) => c === "frustrations.error"),
+    [],
+  );
+});

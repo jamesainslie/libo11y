@@ -160,3 +160,30 @@ test("start passes its cause into the start event", () => {
   assert.equal(e?.type, "start");
   assert.deepEqual(e?.type === "start" ? e.cause : undefined, CTX);
 });
+
+test("begin after an end starts a soft view now, not another initial view", () => {
+  let t = 0;
+  const summary = createSummaryAccumulator({
+    platform: "web",
+    emit: () => {},
+    now: () => t,
+    visible: () => true,
+  });
+  const tracker = createViewTracker({
+    session: fakeSession(),
+    summary,
+    viewName: defaultViewName,
+    location: () => "https://app.test/documents/42",
+    now: () => t,
+    prerendered: () => false,
+  });
+  tracker.begin();
+  assert.equal(tracker.current()?.kind, "initial");
+  t = 60_000;
+  tracker.end();
+  t = 120_000;
+  tracker.begin();
+  assert.equal(tracker.current()?.kind, "soft");
+  assert.equal(tracker.current()?.startTime, 120_000);
+  assert.equal(tracker.loadView()?.kind, "initial", "the load view is still the page's load");
+});

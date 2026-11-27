@@ -169,6 +169,7 @@ export type RumSignal = {
     readonly type: "request-end";
     readonly spanId: string;
     readonly status?: number;
+    readonly errorType?: string;
     readonly at: number;
 } | {
     readonly type: "mutation";

@@ -111,6 +111,8 @@ export function actionsWith(opts: ActionsOptions, env: ActionsEnv): RumCollector
     name: "actions",
     start(rt: RumRuntime) {
       let current: OpenAction | undefined;
+      /** The span of the last click, so an error counts against it only while its own action is open. */
+      let lastClickSpan: Span | undefined;
       let observer: MutationObserverLike | undefined;
       /** The observer stays connected until then, or while an action is open. */
       let watchUntil = 0;
@@ -195,6 +197,7 @@ export function actionsWith(opts: ActionsOptions, env: ActionsEnv): RumCollector
             (target as HTMLElement).isContentEditable !== true &&
             target.closest("a")?.getAttribute("href") == null &&
             !env.selecting();
+          lastClickSpan = span;
           detector.click(selector, start, eligible);
         }
         return el;
@@ -233,7 +236,7 @@ export function actionsWith(opts: ActionsOptions, env: ActionsEnv): RumCollector
         else if (s.type === "mutation") {
           a?.settle.activity(s.at);
           detector?.activity(s.at);
-        } else if (s.type === "error") detector?.error(s.at, a !== undefined);
+        } else if (s.type === "error") detector?.error(s.at, a?.type === "click" && a.span === lastClickSpan);
       });
       const offViews = rt.views.subscribe((e) => {
         if (e.type !== "start") return;

@@ -310,7 +310,8 @@ test("a grant right after a revoke leaves RUM running", async () => {
   open.consent.grant();
   await revoked;
   await until(() => open?.rum.sessionId() !== undefined, "a session after the grant");
-  assert.equal(runtimeOf(open)?.views.current()?.kind, "initial");
+  // The page already loaded under the first grant, so the new session's view is soft (P14).
+  assert.equal(runtimeOf(open)?.views.current()?.kind, "soft");
 });
 
 test("a revoke before any grant touches no storage", async () => {
@@ -657,4 +658,68 @@ test("two tabs that rotate a session at once emit one session.end for it", async
     await tabA.shutdown();
     await tabB.shutdown();
   }
+});
+
+test("a request that ends after a revoke leaves no breadcrumb for the next grant", async () => {
+  const h = harness();
+  open = await setupRumWith({ ...OPTS, consent: { initial: "granted" } }, h.deps);
+  const rt = runtimeOf(open);
+  assert.ok(rt);
+  await open.consent.revoke();
+  rt.bus.publish({ type: "breadcrumb", kind: "fetch", label: "GET api.test 200", at: 1 });
+  open.consent.grant();
+  await until(() => open?.rum.sessionId() !== undefined, "the session");
+  assert.equal(
+    rt.breadcrumbs().some((c) => c.startsWith("fetch")),
+    false,
+  );
+});
+
+test("a revoke and a grant while the session loads start the collectors once", async () => {
+  const h = harness();
+  let release: (() => void) | undefined;
+  const gateLoad = new Promise<void>((r) => {
+    release = r;
+  });
+  const base = h.deps.sessionStore;
+  const deps: RumDeps = {
+    ...h.deps,
+    sessionStore: () => {
+      const s = base();
+      return {
+        ...s,
+        load: async () => {
+          await gateLoad;
+          return s.load();
+        },
+      };
+    },
+  };
+  let starts = 0;
+  open = await setupRumWith(
+    {
+      ...OPTS,
+      rum: {
+        collectors: [
+          {
+            name: "errors",
+            start: () => {
+              starts++;
+              return () => {};
+            },
+          },
+        ],
+      },
+    },
+    deps,
+  );
+  open.consent.grant();
+  await new Promise((r) => setTimeout(r, 0));
+  await open.consent.revoke();
+  open.consent.grant();
+  await new Promise((r) => setTimeout(r, 0));
+  release?.();
+  await until(() => starts > 0, "the collector start");
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(starts, 1);
 });

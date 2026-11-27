@@ -30,7 +30,14 @@ export type RumSignal =
       readonly url: string;
       readonly at: number;
     }
-  | { readonly type: "request-end"; readonly spanId: string; readonly status?: number; readonly at: number }
+  | {
+      readonly type: "request-end";
+      readonly spanId: string;
+      readonly status?: number;
+      /** The span's error.type when it ended without a response, such as AbortError or abort. */
+      readonly errorType?: string;
+      readonly at: number;
+    }
   | { readonly type: "mutation"; readonly at: number }
   | { readonly type: "breadcrumb"; readonly kind: string; readonly label: string; readonly at: number };
 
