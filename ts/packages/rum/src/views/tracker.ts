@@ -1,8 +1,11 @@
 /**
- * The view tracker. R3a tracks the load view only: the initial (or prerender) view at begin, a
- * bfcache_restore view on a persisted pageshow, and a soft view of the same name when the session
- * changes (decision P14). Every view opens in the summary accumulator and closes when it ends.
+ * The view tracker: the initial (or prerender) view at begin, a bfcache_restore view on a
+ * persisted pageshow, a soft view of the same name when the session changes (decision P14), and
+ * the soft views views() and the router adapters start. Every view opens in the summary
+ * accumulator and closes when it ends. views() records the view spans and attaches their contexts.
  */
+
+import type { SpanContext } from "@opentelemetry/api";
 import type { SessionManager } from "../contracts/session.ts";
 import type { SummaryAccumulator } from "../contracts/summary.ts";
 import type { ViewEvent, ViewStartOptions, ViewState, ViewTracker } from "../contracts/views.ts";
@@ -30,6 +33,7 @@ export function createViewTracker(opts: ViewTrackerOptions): ViewTracker & { clo
   const listeners = new Set<(e: ViewEvent) => void>();
   let current: ViewState | undefined;
   let load: ViewState | undefined;
+  let appLoad: SpanContext | undefined;
   const emit = (e: ViewEvent): void => {
     for (const l of listeners) l(e);
   };
@@ -57,7 +61,12 @@ export function createViewTracker(opts: ViewTrackerOptions): ViewTracker & { clo
     current = view;
     if (LOAD_KINDS.has(view.kind)) load = view;
     opts.summary.open(view);
-    emit({ type: "start", view, ...(previous === undefined ? {} : { previous }) });
+    emit({
+      type: "start",
+      view,
+      ...(previous === undefined ? {} : { previous }),
+      ...(o.cause === undefined ? {} : { cause: o.cause }),
+    });
     return view;
   };
 
@@ -84,8 +93,17 @@ export function createViewTracker(opts: ViewTrackerOptions): ViewTracker & { clo
       opts.summary.rename(current.id, name);
       emit({ type: "rename", view: current });
     },
-    rendered() {},
-    appLoadStarted() {},
+    rendered() {
+      if (current !== undefined) emit({ type: "rendered", view: current });
+    },
+    appLoadStarted(ctx) {
+      appLoad = ctx;
+    },
+    appLoad: () => appLoad,
+    attachSpan(viewId, ctx) {
+      if (current?.id === viewId) current = { ...current, spanContext: ctx };
+      if (load?.id === viewId) load = { ...load, spanContext: ctx };
+    },
     begin() {
       // The initial view starts at time origin: a view covers getting into it from navigation start.
       if (current === undefined) start({ kind: opts.prerendered() ? "prerender" : "initial", startTime: 0 });

@@ -10,6 +10,13 @@ export type {
 } from "./contracts/session.ts";
 export type { SummaryAccumulator, SummaryCountKey, SummaryView, VitalName } from "./contracts/summary.ts";
 export type { ViewEvent, ViewStartOptions, ViewState, ViewTracker } from "./contracts/views.ts";
-export type { HttpRequestInfo, Rum, RumOptions, RumSetupOptions, RumTelemetry } from "./options.ts";
+export type {
+  AddErrorOptions,
+  HttpRequestInfo,
+  Rum,
+  RumOptions,
+  RumSetupOptions,
+  RumTelemetry,
+} from "./options.ts";
 export { setupRum } from "./setup.ts";
 export { VERSION } from "./version.ts";

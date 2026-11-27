@@ -74,7 +74,7 @@ test("client request spans lose disallowed query parameters and reach the bus", 
   assert.equal(exporter.getFinishedSpans()[0]?.attributes["url.full"], "https://api.test/q?page=1");
   assert.deepEqual(
     signals.map((s) => s.type),
-    ["request-start", "request-end"],
+    ["request-start", "request-end", "breadcrumb"],
   );
   const start = signals[0];
   assert.equal(start?.type === "request-start" ? start.url : "", "https://api.test/q?page=1");
@@ -101,4 +101,39 @@ test("web's documentFetch belongs to the load view and is not a request", async 
   await tp.forceFlush();
   assert.equal(exporter.getFinishedSpans()[0]?.attributes["o11y.rum.view.id"], "v0");
   assert.deepEqual(signals, []);
+});
+
+test("a finished request leaves a breadcrumb of its method, host and status, never its path", async () => {
+  const { tp, signals } = setup();
+  const t = tp.getTracer("@libo11y/web");
+  t.startSpan("GET", {
+    kind: SpanKind.CLIENT,
+    attributes: {
+      "http.request.method": "GET",
+      "url.full": "https://api.test/docs/42",
+      "server.address": "api.test",
+      "http.response.status_code": 200,
+    },
+  }).end();
+  t.startSpan("POST", {
+    kind: SpanKind.CLIENT,
+    attributes: { "http.request.method": "POST", "url.full": "https://api.test/sign" },
+  }).end();
+  t.startSpan("rpc", {
+    kind: SpanKind.CLIENT,
+    attributes: {
+      "http.request.method": "POST",
+      "url.full": "https://api.test/docs.v1.Docs/Get",
+      "rpc.method": "docs.v1.Docs/Get",
+    },
+  }).end();
+  await tp.forceFlush();
+  assert.deepEqual(
+    signals.filter((s) => s.type === "breadcrumb"),
+    [
+      { type: "breadcrumb", kind: "fetch", label: "GET api.test 200", at: 5 },
+      { type: "breadcrumb", kind: "fetch", label: "POST api.test failed", at: 5 },
+      { type: "breadcrumb", kind: "rpc", label: "docs.v1.Docs/Get", at: 5 },
+    ],
+  );
 });

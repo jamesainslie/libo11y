@@ -4,7 +4,8 @@
  * app_load shape of the load view: it is renamed app_load and carries o11y.rum.span.shape app_load,
  * the attribute the gateway keys on. Its documentFetch child also belongs to the load view, and it
  * is not a request of the view. It publishes client request starts and ends on the bus for
- * actions, summaries and breadcrumbs. It runs before the exporting processors, so they see the
+ * actions, summaries and errors, and a breadcrumb for each finished request: "fetch <METHOD> <host>
+ * <status or failed>", or "rpc <method>" for a span with rpc.method, never a path (decision P18). It runs before the exporting processors, so they see the
  * attributes.
  */
 import {
@@ -42,6 +43,17 @@ export interface RumSpanProcessorOptions {
 
 function fromWeb(span: ReadableSpan, name: string): boolean {
   return span.name === name && span.instrumentationScope.name === WEB_SCOPE;
+}
+
+function hostOf(span: ReadableSpan): string {
+  const address = span.attributes["server.address"];
+  if (typeof address === "string" && address !== "") return address;
+  const full = span.attributes["url.full"];
+  try {
+    return typeof full === "string" ? new URL(full).hostname : "";
+  } catch {
+    return "";
+  }
 }
 
 function isRequest(span: ReadableSpan): boolean {
@@ -92,12 +104,24 @@ export function rumSpanProcessor(opts: RumSpanProcessorOptions): SpanProcessor {
       const spanId = span.spanContext().spanId;
       if (!announced.delete(spanId)) return;
       const status = span.attributes["http.response.status_code"];
+      const at = opts.now();
       opts.bus.publish({
         type: "request-end",
         spanId,
         ...(typeof status === "number" ? { status } : {}),
-        at: opts.now(),
+        at,
       });
+      const rpc = span.attributes["rpc.method"];
+      opts.bus.publish(
+        rpc === undefined
+          ? {
+              type: "breadcrumb",
+              kind: "fetch",
+              label: `${String(span.attributes["http.request.method"])} ${hostOf(span)} ${typeof status === "number" ? status : "failed"}`,
+              at,
+            }
+          : { type: "breadcrumb", kind: "rpc", label: String(rpc), at },
+      );
     },
     forceFlush: () => Promise.resolve(),
     shutdown: () => Promise.resolve(),

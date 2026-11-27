@@ -29,7 +29,7 @@ import {
   EVENT_RUM_VIEW_SUMMARY,
   RUM_CONNECTION_EFFECTIVE_VALUES,
 } from "@libo11y/spec";
-import type { WebTelemetry } from "@libo11y/web";
+import { createContextManager, type WebTelemetry } from "@libo11y/web";
 import {
   browserEnv,
   type ConsentController,
@@ -43,14 +43,18 @@ import {
   type SetupDeps,
   setupWithDeps,
 } from "@libo11y/web/internal";
-import { diag } from "@opentelemetry/api";
+import { diag, type Span } from "@opentelemetry/api";
 import { type ExportResult, ExportResultCode } from "@opentelemetry/core";
 import { ConsoleSpanExporter, type SpanExporter, type SpanProcessor } from "@opentelemetry/sdk-trace";
+import { recordInstantAction } from "./actions/record.ts";
 import { ATTR_SESSION_ID, ATTR_USER_ID } from "./attrs.ts";
 import { createBus } from "./bus.ts";
+import { rumContextManager } from "./context-manager.ts";
 import type { RetentionRouting } from "./contracts/retention.ts";
 import type { RequestStartHook, RumRuntime, RumSettings } from "./contracts/runtime.ts";
 import type { SessionStore } from "./contracts/session.ts";
+import { createBreadcrumbs } from "./errors/breadcrumbs.ts";
+import { recordError } from "./errors/record.ts";
 import type { Rum, RumSetupOptions, RumTelemetry } from "./options.ts";
 import { createRetentionBuffer, RETENTION_QUEUE_DEFAULTS } from "./retention/buffer.ts";
 import { retainingSpanExporter, withRetention } from "./retention/exporters.ts";
@@ -201,6 +205,13 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
     now: deps.now,
   });
   const bus = createBus();
+  // The breadcrumb ring every error carries (decision P18): actions, view starts and requests.
+  const crumbs = createBreadcrumbs();
+  bus.subscribe((s) => {
+    if (s.type === "breadcrumb") crumbs.add(s.kind, s.label, s.at);
+  });
+  /** The open action, so requests started meanwhile become its children (decision P10). */
+  let active: Span | undefined;
   const hooks = new Set<RequestStartHook>();
   let userId: string | undefined;
   let telemetry: WebTelemetry | undefined;
@@ -237,6 +248,10 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
     now: deps.perfNow,
     prerendered: deps.prerendered,
     ...(deps.window === undefined ? {} : { window: deps.window }),
+  });
+  views.subscribe((e) => {
+    if (e.type === "start")
+      bus.publish({ type: "breadcrumb", kind: "view", label: e.view.name, at: e.view.startTime });
   });
   const processor = rumSpanProcessor({
     platform: "web",
@@ -320,6 +335,8 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
       {
         ...webOptions,
         spanProcessor: composeProcessors(processor, webOptions.spanProcessor),
+        contextManager: () =>
+          rumContextManager((webOptions.contextManager ?? createContextManager)(), () => active),
         ...(forward ? { spanExporter: forwardingSpanExporter(() => spanTarget) } : {}),
       },
       webDeps,
@@ -368,6 +385,11 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
       hooks.add(hook);
       return () => hooks.delete(hook);
     },
+    activeAction: () => active,
+    setActiveAction(span) {
+      active = span;
+    },
+    breadcrumbs: () => crumbs.snapshot(deps.perfNow()),
   };
 
   // Collectors run only while consent is granted.
@@ -436,6 +458,8 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
 
   const stopRecording = (): void => {
     stopAll();
+    active = undefined;
+    crumbs.clear();
     summary.reset();
     views.end();
     session.clear();
@@ -482,6 +506,33 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
       userId = id;
     },
     onRequestStart: (hook) => runtime.onRequestStart(hook),
+    startView(o) {
+      if (!gate.recording()) return;
+      const cause = active?.isRecording() === true ? active.spanContext() : undefined;
+      views.start({
+        kind: "soft",
+        ...(o?.name === undefined ? {} : { name: o.name }),
+        ...(cause === undefined ? {} : { cause }),
+      });
+    },
+    setViewName(name) {
+      if (gate.recording()) views.rename(name);
+    },
+    viewRendered() {
+      if (gate.recording()) views.rendered();
+    },
+    addAction(name) {
+      if (gate.recording()) recordInstantAction(runtime, "custom", name);
+    },
+    addError(error, o) {
+      if (!gate.recording()) return;
+      recordError(
+        runtime,
+        o?.source ?? "custom",
+        error,
+        o?.componentStack === undefined ? {} : { componentStack: o.componentStack },
+      );
+    },
   };
 
   const handle = t as WebTelemetry & { readonly rum: Rum };

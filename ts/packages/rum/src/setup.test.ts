@@ -454,3 +454,115 @@ test("app Meter API metrics export with delta temporality, as the gateway requir
   assert.ok(temporalities.length >= 2);
   assert.deepEqual(new Set(temporalities), new Set([1]));
 });
+
+test("rum.addError retains an unkept session and sends the error with its breadcrumbs", async () => {
+  const h = harness();
+  open = await setupRumWith(
+    { ...OPTS, consent: { initial: "granted" }, rum: { sessionSampleRate: 0 } },
+    h.deps,
+  );
+  open.rum.addAction("Save");
+  open.rum.addError(new Error("x"));
+  await until(() => sentEvents(h.transport).includes("o11y.rum.error"), "the error");
+  const err = logRecords(h.transport).find((r) => r["event.name"] === "o11y.rum.error");
+  assert.equal(err?.["o11y.rum.error.source"], "custom");
+  assert.equal(err?.["exception.message"], "x");
+  const crumbs = String(err?.["o11y.rum.error.breadcrumbs"]).split("\n");
+  assert.match(crumbs[0] ?? "", /^view \/documents\/\$id -\d+ms$/);
+  assert.match(crumbs[1] ?? "", /^custom Save -\d+ms$/);
+  assert.equal(runtimeOf(open)?.session.kept(), true);
+});
+
+test("rum.addError with a boundary source and component stack", async () => {
+  const h = harness();
+  open = await setupRumWith({ ...OPTS, consent: { initial: "granted" } }, h.deps);
+  open.rum.addError("bad", { source: "boundary", componentStack: "\n  at Doc" });
+  await open.forceFlush();
+  const err = logRecords(h.transport).find((r) => r["event.name"] === "o11y.rum.error");
+  assert.equal(err?.["o11y.rum.error.source"], "boundary");
+  assert.equal(err?.["exception.stacktrace"], "\n\n  at Doc");
+});
+
+test("the Rum methods record nothing while consent is pending", async () => {
+  const h = harness();
+  open = await setupRumWith(OPTS, h.deps);
+  open.rum.addError(new Error("x"));
+  open.rum.addAction("Save");
+  open.rum.startView({ name: "/x" });
+  open.rum.setViewName("/y");
+  open.rum.viewRendered();
+  await open.forceFlush();
+  assert.deepEqual(h.transport.requests, []);
+  assert.equal(h.storage.items.size, 0);
+});
+
+test("rum.addAction records an instant action span", async () => {
+  const h = harness();
+  open = await setupRumWith({ ...OPTS, consent: { initial: "granted" } }, h.deps);
+  open.rum.addAction("Save");
+  await open.forceFlush();
+  assert.ok(spanNames(h.transport).includes("action custom"));
+});
+
+test("startView, setViewName and viewRendered drive the view tracker", async () => {
+  const h = harness();
+  open = await setupRumWith({ ...OPTS, consent: { initial: "granted" } }, h.deps);
+  const rt = runtimeOf(open);
+  assert.ok(rt);
+  const seen: string[] = [];
+  rt.views.subscribe((e) => seen.push(`${e.type} ${e.view.name}`));
+  const action = rt.tracer.startSpan("action click");
+  rt.setActiveAction(action);
+  let cause: string | undefined;
+  rt.views.subscribe((e) => {
+    if (e.type === "start") cause = e.cause?.spanId;
+  });
+  open.rum.startView({ name: "/docs/$docId" });
+  open.rum.setViewName("/docs/$id");
+  open.rum.viewRendered();
+  open.rum.startView();
+  assert.deepEqual(seen, [
+    "end /documents/$id",
+    "start /docs/$docId",
+    "rename /docs/$id",
+    "rendered /docs/$id",
+    "end /docs/$id",
+    "start /documents/$id",
+  ]);
+  assert.equal(cause, action.spanContext().spanId);
+  assert.equal(rt.views.current()?.kind, "soft");
+  action.end();
+});
+
+test("a span started while an action is open is its child", async () => {
+  const h = harness();
+  open = await setupRumWith({ ...OPTS, consent: { initial: "granted" } }, h.deps);
+  const rt = runtimeOf(open);
+  assert.ok(rt);
+  const action = rt.tracer.startSpan("action click");
+  rt.setActiveAction(action);
+  const child = open.tracerProvider.getTracer("app").startSpan("GET");
+  assert.equal(
+    (child as unknown as { parentSpanContext?: { spanId: string } }).parentSpanContext?.spanId,
+    action.spanContext().spanId,
+  );
+  rt.setActiveAction(undefined);
+  const root = open.tracerProvider.getTracer("app").startSpan("GET");
+  assert.equal((root as unknown as { parentSpanContext?: unknown }).parentSpanContext, undefined);
+  child.end();
+  root.end();
+  action.end();
+});
+
+test("revoking consent forgets the breadcrumbs and the open action", async () => {
+  const h = harness();
+  open = await setupRumWith({ ...OPTS, consent: { initial: "granted" } }, h.deps);
+  const rt = runtimeOf(open);
+  assert.ok(rt);
+  open.rum.addAction("Save");
+  rt.setActiveAction(rt.tracer.startSpan("action click"));
+  assert.ok(rt.breadcrumbs().length > 0);
+  await open.consent.revoke();
+  assert.deepEqual(rt.breadcrumbs(), []);
+  assert.equal(rt.activeAction(), undefined);
+});

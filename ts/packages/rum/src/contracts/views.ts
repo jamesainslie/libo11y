@@ -1,4 +1,4 @@
-/** Contract, frozen by R3a. Views: a page or route. performance.now() times. */
+/** Contract, frozen by R3a, extended by R3b. Views: a page or route. performance.now() times. */
 import type { RUMViewKind } from "@libo11y/spec";
 import type { SpanContext } from "@opentelemetry/api";
 
@@ -15,8 +15,16 @@ export interface ViewState {
 }
 
 export type ViewEvent =
-  | { readonly type: "start"; readonly view: ViewState; readonly previous?: ViewState }
+  | {
+      readonly type: "start";
+      readonly view: ViewState;
+      readonly previous?: ViewState;
+      /** The action that caused the view, from ViewStartOptions.cause. */
+      readonly cause?: SpanContext;
+    }
   | { readonly type: "rename"; readonly view: ViewState }
+  /** The routed content of the view rendered (rendered()). */
+  | { readonly type: "rendered"; readonly view: ViewState }
   | { readonly type: "end"; readonly view: ViewState };
 
 export interface ViewStartOptions {
@@ -36,10 +44,14 @@ export interface ViewTracker {
   /** Ends the current view and starts another. */
   start(opts: ViewStartOptions): ViewState;
   rename(name: string): void;
-  /** The routed view rendered: its span ends at the next paint (R3b). A no-op in R3a. */
+  /** The routed view rendered: emits rendered for the current view, whose span ends at the next paint. */
   rendered(): void;
-  /** The span processor reports web's documentLoad span here, so the initial view span can be its child (R3b). */
+  /** The span processor reports web's documentLoad span here, so the initial view span can be its child. */
   appLoadStarted(ctx: SpanContext): void;
+  /** The context appLoadStarted reported, once it has. */
+  appLoad(): SpanContext | undefined;
+  /** Records the view span's context on the view, so actions on the view can link to it. */
+  attachSpan(viewId: string, ctx: SpanContext): void;
   /** Starts the load view. Called once the session exists. */
   begin(): void;
   /** Ends the current view without starting another (hide is not an end; revoke and shutdown are). */
