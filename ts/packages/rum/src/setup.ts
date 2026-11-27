@@ -28,6 +28,7 @@ import {
   EVENT_RUM_SESSION_START,
   EVENT_RUM_VIEW_SUMMARY,
   RUM_CONNECTION_EFFECTIVE_VALUES,
+  type RUMSessionRetained,
 } from "@libo11y/spec";
 import { createContextManager, type WebTelemetry } from "@libo11y/web";
 import {
@@ -83,6 +84,8 @@ export interface RumDeps {
   readonly connection: () => string | undefined;
   readonly document: (EventTarget & { readonly visibilityState?: string }) | undefined;
   readonly window: EventTarget | undefined;
+  /** Install the telemetry globally, as setup does. Default true; tests that run two tabs in one process pass false. */
+  readonly install?: boolean;
 }
 
 /** The real dependencies of a page. */
@@ -144,6 +147,16 @@ function composeProcessors(first: SpanProcessor, second: SpanProcessor | undefin
 }
 
 const SUCCESS: ExportResult = { code: ExportResultCode.SUCCESS };
+
+/** A kept session this tab ended, and the session its rotation started. */
+interface EndingSession {
+  readonly id: string;
+  readonly retained: RUMSessionRetained;
+  successor: string | undefined;
+}
+
+/** How long a tab that ended a session waits to hear whether another tab's rotation won. */
+export const SESSION_END_ELECTION_MILLIS = 500;
 
 /** A span exporter that hands every batch to the target set later, and succeeds while there is none. */
 function forwardingSpanExporter(target: () => SpanExporter | undefined): SpanExporter {
@@ -340,7 +353,7 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
         ...(forward ? { spanExporter: forwardingSpanExporter(() => spanTarget) } : {}),
       },
       webDeps,
-      true,
+      deps.install !== false,
     );
   } catch (err) {
     views.close();
@@ -434,10 +447,19 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
     await settled();
     if (delivery !== undefined && gate.recording()) await retention.flush(delivery, keep);
   };
+  // Session end (decision P13): when tabs rotate an expired session at the same moment, each ends
+  // it and starts a session of its own, then all adopt the same newest one. The tab whose session
+  // won emits o11y.rum.session.end, so it is emitted once: each tab waits SESSION_END_ELECTION_MILLIS
+  // for the others' broadcasts and emits only if its successor is still the current session. An
+  // unkept session that ends removes only its own records from the shared retention buffer.
+  const endTimers = new Set<ReturnType<typeof setTimeout>>();
+  let endingSession: EndingSession | undefined;
   const offSession = session.subscribe((e) => {
     if (e.type === "kept") {
       flushRetention().catch((err: unknown) => diag.warn("o11y: rum: retention flush failed", err));
     } else if (e.type === "start" && e.local) {
+      if (endingSession !== undefined && e.previous?.id === endingSession.id)
+        endingSession.successor = e.session.id;
       t.event(EVENT_RUM_SESSION_START, {
         [ATTR_SESSION_ID]: e.session.id,
         [ATTR_RUM_PLATFORM]: "web",
@@ -446,13 +468,27 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
           : { [ATTR_RUM_CONFIG_VERSION]: e.session.configVersion }),
       });
     } else if (e.type === "end" && e.local) {
-      if (e.session.retained === undefined) void retention.clear();
-      else {
-        t.event(EVENT_RUM_SESSION_END, {
-          [ATTR_SESSION_ID]: e.session.id,
-          [ATTR_RUM_SESSION_RETAINED]: e.session.retained,
-        });
+      const ended = e.session;
+      if (ended.retained === undefined) {
+        void (async () => {
+          await settled();
+          await retention.discard((b) => sessionsIn(b)?.has(ended.id) === true);
+        })();
+        return;
       }
+      const candidate: EndingSession = { id: ended.id, retained: ended.retained, successor: undefined };
+      endingSession = candidate;
+      const timer = setTimeout(() => {
+        endTimers.delete(timer);
+        if (endingSession === candidate) endingSession = undefined;
+        if (!gate.recording() || candidate.successor === undefined) return;
+        if (session.current()?.id !== candidate.successor) return; // another tab's rotation won
+        t.event(EVENT_RUM_SESSION_END, {
+          [ATTR_SESSION_ID]: candidate.id,
+          [ATTR_RUM_SESSION_RETAINED]: candidate.retained,
+        });
+      }, SESSION_END_ELECTION_MILLIS);
+      endTimers.add(timer);
     }
   });
 
@@ -551,6 +587,8 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
       offGate();
       offRevoke();
       offSession();
+      for (const timer of endTimers) clearTimeout(timer);
+      endTimers.clear();
       const report = await webShutdown(opts);
       views.close();
       session.close();

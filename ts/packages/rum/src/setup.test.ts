@@ -5,10 +5,13 @@ import {
   createMemoryQueue,
   defaultSetupDeps,
   type HttpTransportOptions,
+  type PersistentQueue,
   type SetupDeps,
 } from "@libo11y/web/internal";
 import { createFakeTransport, type FakeTransport } from "../../web/src/test-support/index.ts";
 import type { RumSetupOptions, RumTelemetry } from "./options.ts";
+import { RETENTION_QUEUE_DEFAULTS } from "./retention/buffer.ts";
+import { sessionsIn } from "./retention/sessions.ts";
 import { localStorageSessionStore, SESSION_STORAGE_KEY } from "./session/local-store.ts";
 import { type RumDeps, runtimeOf, setupRumWith } from "./setup.ts";
 import { createChannelHub, createFakeStorage } from "./test-support/fake-storage.ts";
@@ -29,10 +32,17 @@ interface Harness {
   readonly deps: RumDeps;
 }
 
-function harness(): Harness {
+interface Shared {
+  readonly storage?: ReturnType<typeof createFakeStorage>;
+  readonly hub?: ReturnType<typeof createChannelHub>;
+  readonly now?: () => number;
+  readonly retentionQueue?: PersistentQueue;
+}
+
+function harness(shared: Shared = {}): Harness {
   const transport = createFakeTransport();
-  const storage = createFakeStorage();
-  const hub = createChannelHub();
+  const storage = shared.storage ?? createFakeStorage();
+  const hub = shared.hub ?? createChannelHub();
   const document = new FakeDocument();
   const window = new EventTarget();
   const transportOptions: HttpTransportOptions[] = [];
@@ -57,9 +67,9 @@ function harness(): Harness {
     transportOptions,
     deps: {
       web,
-      openRetentionQueue: async (o) => createMemoryQueue(o),
+      openRetentionQueue: async (o) => shared.retentionQueue ?? createMemoryQueue(o),
       sessionStore: () => localStorageSessionStore({ storage, channel: hub.channel() }),
-      now: Date.now,
+      now: shared.now ?? Date.now,
       perfNow: () => performance.now(),
       location: () => "https://app.test/documents/7",
       prerendered: () => false,
@@ -565,4 +575,86 @@ test("revoking consent forgets the breadcrumbs and the open action", async () =>
   await open.consent.revoke();
   assert.deepEqual(rt.breadcrumbs(), []);
   assert.equal(rt.activeAction(), undefined);
+});
+
+const IDLE = 900_000;
+
+test("an unkept session that ends removes only its own records from the shared buffer", async () => {
+  let now = 1_000_000;
+  const retentionQueue = createMemoryQueue({
+    ...RETENTION_QUEUE_DEFAULTS,
+    maxAgeMillis: 10 * IDLE,
+    now: () => now,
+  });
+  const other = JSON.stringify({
+    resourceLogs: [
+      {
+        scopeLogs: [
+          { logRecords: [{ attributes: [{ key: "session.id", value: { stringValue: "other" } }] }] },
+        ],
+      },
+    ],
+  });
+  await retentionQueue.put({ signal: "logs", body: other });
+  const h = harness({ now: () => now, retentionQueue });
+  open = await setupRumWith(
+    { ...OPTS, consent: { initial: "granted" }, rum: { sessionSampleRate: 0 } },
+    h.deps,
+  );
+  const ended = open.rum.sessionId();
+  assert.ok(ended);
+  open.tracerProvider.getTracer("app").startSpan("work").end();
+  await open.forceFlush();
+  await new Promise((r) => setTimeout(r, 0));
+  const held = async (): Promise<string[]> => {
+    const entries = await retentionQueue.claim(now, 100, 0);
+    return entries.flatMap((e) => [...(sessionsIn(e) ?? [])]).sort();
+  };
+  assert.ok((await held()).includes(ended), "the session's detail is buffered");
+  now += IDLE;
+  open.tracerProvider.getTracer("app").startSpan("after").end();
+  runtimeOf(open)?.session.touch();
+  assert.notEqual(open.rum.sessionId(), ended);
+  const deadline = Date.now() + 2000;
+  while ((await held()).includes(ended)) {
+    if (Date.now() > deadline) assert.fail("the ended session's records were not removed");
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  assert.ok((await held()).includes("other"), "another session's records stay");
+});
+
+test("two tabs that rotate a session at once emit one session.end for it", async () => {
+  let now = 1_000_000;
+  const storage = createFakeStorage();
+  const hub = createChannelHub({ async: true });
+  const a = harness({ storage, hub, now: () => now });
+  const b = harness({ storage, hub, now: () => now });
+  const tabA = await setupRumWith(
+    { ...OPTS, consent: { initial: "granted" } },
+    { ...a.deps, install: false },
+  );
+  const tabB = await setupRumWith(
+    { ...OPTS, consent: { initial: "granted" } },
+    { ...b.deps, install: false },
+  );
+  try {
+    await new Promise((r) => setTimeout(r, 10));
+    const first = tabA.rum.sessionId();
+    assert.equal(tabB.rum.sessionId(), first, "the tabs share the session");
+    now += IDLE;
+    // Both tabs see the session expired before either hears of the other's rotation.
+    runtimeOf(tabA)?.session.touch();
+    runtimeOf(tabB)?.session.touch();
+    await until(() => tabA.rum.sessionId() === tabB.rum.sessionId(), "the tabs to agree on a session");
+    await new Promise((r) => setTimeout(r, 700));
+    await Promise.all([tabA.forceFlush(), tabB.forceFlush()]);
+    const ends = [...logRecords(a.transport), ...logRecords(b.transport)].filter(
+      (r) => r["event.name"] === "o11y.rum.session.end",
+    );
+    assert.equal(ends.length, 1);
+    assert.equal(ends[0]?.["session.id"], first);
+  } finally {
+    await tabA.shutdown();
+    await tabB.shutdown();
+  }
 });
