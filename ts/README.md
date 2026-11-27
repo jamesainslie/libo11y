@@ -20,7 +20,7 @@ each release.
 | [`@libo11y/web`](packages/web)       | the browser platform: `setup` with a pluggable context manager, the browser resource, the OTLP/HTTP JSON transport with an IndexedDB retry queue, the consent gate, and `fetch`, XHR and document-load spans |
 | [`@libo11y/webext`](packages/webext) | the Manifest V3 extension platform: `setupWorker` for the service worker, `setupContentScript` for content scripts and extension pages, and traced runtime messaging                                         |
 
-`@libo11y/web` and `@libo11y/webext` first ship in `ts/v0.2.0`.
+`@libo11y/web` and `@libo11y/webext` first ship in `ts/v0.2.1`.
 [docs/PARITY.md](../docs/PARITY.md) compares every capability with Go.
 
 ## Install

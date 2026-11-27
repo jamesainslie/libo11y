@@ -35,7 +35,7 @@ a set of new platforms under both products, not a third product.
 Four cells exist today: the Go core (`go`), the Bun and Node core
 (`@libo11y/server`), the browser core (`@libo11y/web`) and the MV3
 extension core (`@libo11y/webext`). The two browser cores first ship in
-`ts/v0.2.0`. Every other named cell is planned, including every package in
+`ts/v0.2.1`. Every other named cell is planned, including every package in
 the RUM row.
 
 ## Data model

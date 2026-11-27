@@ -95,7 +95,7 @@ RELEASE_VERSION ?= v0.3.0
 # validates. Like RELEASE_VERSION, it moves only in a release commit,
 # together with the packages' versions (bun scripts/release.ts version).
 # The packages stay at 0.0.0 until the first TypeScript release.
-TS_RELEASE_VERSION ?= v0.2.0
+TS_RELEASE_VERSION ?= v0.2.1
 
 # The version the Zig package manifests (build.zig.zon and zig/build.zig.zon)
 # carry, which zig-release-check.sh validates. Moves only in a release commit.

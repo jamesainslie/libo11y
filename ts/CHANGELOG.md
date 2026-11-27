@@ -9,6 +9,8 @@ adhere to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-27
+
 ### Added
 
 - `@libo11y/core`: `OTEL_PROPAGATORS` selects the propagators when the
@@ -42,6 +44,11 @@ adhere to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- The 0.2.0 release never reached npm, because each package's trusted
+  publisher allowed only staged publishing and the release workflow
+  publishes directly. 0.2.1 is the first version of `@libo11y/web` and
+  `@libo11y/webext` on npm. For every package it carries 0.2.0's changes
+  together with the entries below.
 - `@libo11y/core`: `OTEL_PROPAGATORS` is now read, where earlier versions
   ignored it. **Migration:** a process that already sets the variable changes on
   upgrade. A value that names anything but `tracecontext`, `baggage` or
@@ -400,7 +407,8 @@ adhere to [Semantic Versioning](https://semver.org/).
   protobuf. `decodeOtlpProtobuf` and `normalizeOtlp` decode and compare
   bodies directly.
 
-[Unreleased]: https://github.com/jamesainslie/libo11y/compare/ts/v0.2.0...HEAD
+[Unreleased]: https://github.com/jamesainslie/libo11y/compare/ts/v0.2.1...HEAD
+[0.2.1]: https://github.com/jamesainslie/libo11y/compare/ts/v0.2.0...ts/v0.2.1
 [0.2.0]: https://github.com/jamesainslie/libo11y/compare/ts/v0.1.2...ts/v0.2.0
 [0.1.2]: https://github.com/jamesainslie/libo11y/compare/ts/v0.1.1...ts/v0.1.2
 [0.1.1]: https://github.com/jamesainslie/libo11y/compare/ts/v0.1.0...ts/v0.1.1

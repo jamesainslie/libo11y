@@ -9,8 +9,10 @@ SDK 3.x. It has no runtime dependencies beyond OpenTelemetry and
 Core does not detect resources, build exporters or carry async context by
 itself. A runtime package supplies those as a `Platform`. On Bun and Node
 that package is [`@libo11y/server`](https://github.com/jamesainslie/libo11y/tree/main/ts/packages/server), which exports `setup` and
-`createTelemetry` with its platform already bound. A browser platform is
-planned for `ts/v0.2.0`.
+`createTelemetry` with its platform already bound. In a browser it is
+[`@libo11y/web`](https://github.com/jamesainslie/libo11y/tree/main/ts/packages/web),
+and in a Manifest V3 extension
+[`@libo11y/webext`](https://github.com/jamesainslie/libo11y/tree/main/ts/packages/webext).
 
 ```sh
 npm install @libo11y/server @libo11y/core @opentelemetry/api
