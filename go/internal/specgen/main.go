@@ -2,8 +2,9 @@
 // at spec/registry: the public go/spec package (typed keys, enums, event
 // names, version constants), the go/internal/spectables validation tables,
 // the docs/taxonomy markdown, the TypeScript @libo11y/spec, Rust
-// libo11y-spec and Zig o11y.spec generated modules, and the OpenTelemetry
-// schema file at spec/schemas/<version>. Run via `make spec-generate`.
+// libo11y-spec and Zig o11y.spec generated modules, the OpenTelemetry
+// schema file at spec/schemas/<version>, and the o11yrum gateway's
+// go/o11yrum/internal/rumspec tables. Run via `make spec-generate`.
 // Every artifact is rendered in memory first and nothing is written unless
 // all of them render.
 //
@@ -444,6 +445,10 @@ func render(m *model) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	rumSpec, err := genRUMSpec(m)
+	if err != nil {
+		return nil, err
+	}
 	schemas, err := genSchemas(m)
 	if err != nil {
 		return nil, err
@@ -503,6 +508,7 @@ func render(m *model) (map[string]string, error) {
 	goSources := []struct{ rel, src string }{
 		{"go/spec/spec.go", genSpec(m)},
 		{"go/internal/spectables/tables.go", tables},
+		{rumSpecPath, rumSpec},
 	}
 	for _, g := range goSources {
 		formatted, err := format.Source([]byte(g.src))
