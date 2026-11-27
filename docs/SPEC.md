@@ -417,7 +417,8 @@ Counts and time on view are deltas since the previous summary of the same
 view, so the summaries of one view add up. An absent count means zero. The
 rule `libo11y_rum_summary_coverage` keeps the per-source and per-type
 counts in step with the two enums. It fails when a member has no count and
-when a count names a value the enum does not have.
+when a count names a value the enum does not have. It also fails when the
+registry no longer defines one of the two enums.
 
 ### Derived metrics
 

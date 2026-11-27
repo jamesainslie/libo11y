@@ -1,6 +1,7 @@
 package main
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -938,25 +939,64 @@ func TestRUMSummaryCoverageComplete(t *testing.T) {
 		"o11y.rum.summary.errors.uncaught", "o11y.rum.summary.errors.csp", "o11y.rum.summary.frustrations.rage"))
 }
 
-// TestRUMSummaryCoverageMissingMember pins that an enum member without a
-// count is reported against the count attribute it lacks.
-func TestRUMSummaryCoverageMissingMember(t *testing.T) {
-	got := summaryCoverage(t, summaryEnums+summaryGroup(
-		"o11y.rum.summary.errors.uncaught", "o11y.rum.summary.frustrations.rage"))
-	if len(got) != 1 || got[0].Attr != "o11y.rum.summary.errors.csp" ||
-		got[0].Group != "registry.o11y.rum.summary" || got[0].Category != "rum" {
-		t.Fatalf("libo11y_rum_summary_coverage violations = %v, want one for o11y.rum.summary.errors.csp", got)
-	}
-}
-
-// TestRUMSummaryCoverageUnknownMember pins that a count for a value the
-// enum does not have is reported.
-func TestRUMSummaryCoverageUnknownMember(t *testing.T) {
-	got := summaryCoverage(t, summaryEnums+summaryGroup(
-		"o11y.rum.summary.errors.uncaught", "o11y.rum.summary.errors.csp",
-		"o11y.rum.summary.errors.bogus", "o11y.rum.summary.frustrations.rage"))
-	if len(got) != 1 || got[0].Attr != "o11y.rum.summary.errors.bogus" {
-		t.Fatalf("libo11y_rum_summary_coverage violations = %v, want one for o11y.rum.summary.errors.bogus", got)
+// TestRUMSummaryCoverageViolations pins what libo11y_rum_summary_coverage
+// reports, in order: missing counts in enum member order, then unknown
+// counts in registry order, for each enum in turn.
+func TestRUMSummaryCoverageViolations(t *testing.T) {
+	complete := []string{"o11y.rum.summary.errors.uncaught", "o11y.rum.summary.errors.csp", "o11y.rum.summary.frustrations.rage"}
+	for name, tc := range map[string]struct {
+		doc       string
+		wantAttrs []string
+	}{
+		"missing error count": {
+			doc:       summaryEnums + summaryGroup("o11y.rum.summary.errors.uncaught", "o11y.rum.summary.frustrations.rage"),
+			wantAttrs: []string{"o11y.rum.summary.errors.csp"},
+		},
+		"missing frustration count": {
+			doc:       summaryEnums + summaryGroup("o11y.rum.summary.errors.uncaught", "o11y.rum.summary.errors.csp"),
+			wantAttrs: []string{"o11y.rum.summary.frustrations.rage"},
+		},
+		"unknown count": {
+			doc:       summaryEnums + summaryGroup(append(complete, "o11y.rum.summary.errors.bogus")...),
+			wantAttrs: []string{"o11y.rum.summary.errors.bogus"},
+		},
+		"missing then unknown": {
+			doc: summaryEnums + summaryGroup(
+				"o11y.rum.summary.errors.bogus", "o11y.rum.summary.errors.csp",
+				"o11y.rum.summary.frustrations.nope", "o11y.rum.summary.frustrations.rage"),
+			wantAttrs: []string{"o11y.rum.summary.errors.uncaught", "o11y.rum.summary.errors.bogus", "o11y.rum.summary.frustrations.nope"},
+		},
+		"enum defined twice reports a missing count once": {
+			doc: summaryEnums + summaryGroup("o11y.rum.summary.errors.uncaught", "o11y.rum.summary.frustrations.rage") +
+				"  - id: registry.o11y.rum.again\n    type: attribute_group\n    attributes:\n" +
+				"      - id: o11y.rum.error.source\n        type:\n          members:\n" +
+				"            - {id: csp, value: \"csp\", stability: development, brief: C.}\n" +
+				"        annotations: {o11y.sensitivity: public, o11y.cardinality: enum}\n",
+			wantAttrs: []string{"o11y.rum.summary.errors.csp"},
+		},
+		"counts split across duplicated summary groups": {
+			doc: summaryEnums + summaryGroup("o11y.rum.summary.errors.uncaught") +
+				summaryGroup("o11y.rum.summary.errors.csp", "o11y.rum.summary.frustrations.rage"),
+		},
+		"enum absent": {
+			doc: strings.SplitAfter(summaryEnums, "annotations: {o11y.sensitivity: public, o11y.cardinality: enum}\n")[0] +
+				summaryGroup("o11y.rum.summary.errors.uncaught", "o11y.rum.summary.errors.csp"),
+			wantAttrs: []string{"o11y.rum.frustration.type"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := summaryCoverage(t, tc.doc)
+			var attrs []string
+			for _, v := range got {
+				if v.Group != "registry.o11y.rum.summary" || v.Category != "rum" {
+					t.Errorf("violation %v, want group registry.o11y.rum.summary and category rum", v)
+				}
+				attrs = append(attrs, v.Attr)
+			}
+			if !slices.Equal(attrs, tc.wantAttrs) {
+				t.Errorf("libo11y_rum_summary_coverage attributes = %v, want %v", attrs, tc.wantAttrs)
+			}
+		})
 	}
 }
 

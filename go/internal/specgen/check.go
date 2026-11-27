@@ -203,8 +203,9 @@ func isRUMSpanGroup(g group) bool {
 
 // checkGroups validates registry groups against the libo11y policy suite:
 // naming, namespace ownership, references, sensitivity and cardinality
-// classification, stability and requirement enums, event discipline, and
-// metric naming, instrument, and unit rules. It runs as a second pass over
+// classification, stability and requirement enums, event discipline,
+// metric naming, instrument, and unit rules, and RUM view summary
+// coverage. It runs as a second pass over
 // the prebuilt idx, which carries the cross-group facts the per-attribute
 // rules consult. Registry-wide findings are reported once per attribute,
 // and a duplicated group ID once per ID.
@@ -234,25 +235,32 @@ var rumSummaryCounts = []struct{ enum, prefix string }{
 // with the enums they break down: one count per member value, and no count
 // for a value the enum does not have. The gateway turns each count into a
 // metric point labelled with the member, so a missing count drops a label
-// value and an extra one invents it. The rule applies only when the
-// registry defines the summary group.
+// value and an extra one invents it. An enum the registry no longer defines
+// is reported once under its own name, because its pairing in
+// rumSummaryCounts is then stale. The rule applies only when the registry
+// defines the summary group, and it reads the attributes of every group
+// with that ID, so a duplicated group (libo11y_group_duplicate) adds no
+// findings of its own.
 func checkRUMSummaryCoverage(groups []group) []violation {
-	var summary *group
+	var found bool
+	var summary []attr
 	members := map[string][]string{}
-	for i := range groups {
-		g := &groups[i]
+	for _, g := range groups {
 		if g.ID == rumSummaryGroup {
-			summary = g
+			found = true
+			summary = append(summary, g.Attributes...)
 		}
 		for _, a := range g.Attributes {
-			members[a.ID] = append(members[a.ID], enumValues(a)...)
+			if a.ID != "" {
+				members[a.ID] = append(members[a.ID], enumValues(a)...)
+			}
 		}
 	}
-	if summary == nil {
+	if !found {
 		return nil
 	}
 	defined := map[string]bool{}
-	for _, a := range summary.Attributes {
+	for _, a := range summary {
 		defined[a.ID] = true
 	}
 	var violations []violation
@@ -260,14 +268,22 @@ func checkRUMSummaryCoverage(groups []group) []violation {
 		violations = append(violations, violation{RuleID: "libo11y_rum_summary_coverage", Category: "rum", Group: rumSummaryGroup, Attr: name})
 	}
 	for _, c := range rumSummaryCounts {
+		if len(members[c.enum]) == 0 {
+			fail(c.enum)
+			continue
+		}
 		want := map[string]bool{}
 		for _, v := range members[c.enum] {
-			want[c.prefix+v] = true
-			if !defined[c.prefix+v] {
-				fail(c.prefix + v)
+			key := c.prefix + v
+			if want[key] {
+				continue
+			}
+			want[key] = true
+			if !defined[key] {
+				fail(key)
 			}
 		}
-		for _, a := range summary.Attributes {
+		for _, a := range summary {
 			if strings.HasPrefix(a.ID, c.prefix) && !want[a.ID] {
 				fail(a.ID)
 			}

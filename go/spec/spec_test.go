@@ -111,7 +111,7 @@ func TestViewSummaryMinted(t *testing.T) {
 		t.Errorf("RUMSummaryLCPValue(1.8) = %v, want a double o11y.rum.summary.lcp.value", kv)
 	}
 	if spec.RUMSummaryErrorsUnhandledRejectionKey != "o11y.rum.summary.errors.unhandled_rejection" {
-		t.Errorf("RUMSummaryErrorsUnhandledRejectionKey = %q", spec.RUMSummaryErrorsUnhandledRejectionKey)
+		t.Errorf("RUMSummaryErrorsUnhandledRejectionKey = %q, want o11y.rum.summary.errors.unhandled_rejection", spec.RUMSummaryErrorsUnhandledRejectionKey)
 	}
 	info, ok := spectables.Events[spec.EventRUMViewSummary]
 	if !ok {
