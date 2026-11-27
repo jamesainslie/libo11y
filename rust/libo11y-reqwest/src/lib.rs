@@ -246,7 +246,7 @@ impl SpanGuard {
         let error_type = classify_error(err);
         let span = self.cx.span();
         span.set_attribute(KeyValue::new("error.type", error_type));
-        span.set_status(Status::error(err.to_string()));
+        span.set_status(Status::error(error_type));
 
         let elapsed = self.start.elapsed().as_secs_f64();
         {

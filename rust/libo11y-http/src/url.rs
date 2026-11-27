@@ -155,6 +155,7 @@ fn parse_host_port(raw: &str) -> (&str, Option<u16>) {
         return (raw, None);
     }
     if let Some((host, port_str)) = raw.rsplit_once(':')
+        && !host.contains(':')
         && let Ok(port) = port_str.parse::<u16>()
     {
         return (host, Some(port));

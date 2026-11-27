@@ -293,7 +293,7 @@ impl RequestState {
         let extracted_cx = config
             .sdk
             .propagator()
-            .extract(&HeaderExtractor(&parts.headers));
+            .extract_with_context(&OtelContext::new(), &HeaderExtractor(&parts.headers));
 
         let mut span_builder = SpanBuilder::from_name(span_name)
             .with_kind(SpanKind::Server)
@@ -401,7 +401,7 @@ impl RequestState {
         let elapsed = self.start.elapsed().as_secs_f64();
         {
             let _guard = self.cx.clone().attach();
-            self.record_duration(elapsed, Some(500), Some("panic"));
+            self.record_duration(elapsed, None, Some("panic"));
             self.emit_canonical(500, Outcome::Failure, elapsed);
         }
         span.end();

@@ -8,8 +8,9 @@
 //! - `\c` matches literal character `c`.
 //! - Any other character matches itself literally.
 //!
-//! Malformed patterns (for example unclosed `[`, reversed range `[z-a]`, or a
-//! trailing `\`) never match.
+//! Malformed patterns (for example unclosed `[`, empty `[]`, or a trailing `\`)
+//! never match. Reversed ranges like `[z-a]` are empty ranges, matching Go's
+//! `path.Match`.
 
 /// Reports whether `name` matches the shell-style `pattern` using Go's
 /// `path.Match` rules. A malformed pattern never matches and returns `false`.
@@ -207,9 +208,6 @@ fn match_char_class(mut chunk: &str, s_char: Option<char>) -> Result<(&str, bool
         let hi = if let Some(after_dash) = chunk.strip_prefix('-') {
             let (hi, rest) = get_esc(after_dash)?;
             chunk = rest;
-            if hi < lo {
-                return Err(BadPattern);
-            }
             hi
         } else {
             lo
@@ -308,6 +306,9 @@ mod tests {
             ("/debug/*", "/debug/vars", Ok(true)),
             ("/debug/*", "/debug/pprof/heap", Ok(false)),
             ("/api/*/health", "/api/v1/health", Ok(true)),
+            ("[z-a]", "m", Ok(false)),
+            ("[^z-a]", "m", Ok(true)),
+            ("[a-cz-a]", "b", Ok(true)),
         ];
 
         for &(pattern, name, want) in cases {
