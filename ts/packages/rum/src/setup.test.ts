@@ -5,10 +5,13 @@ import {
   createMemoryQueue,
   defaultSetupDeps,
   type HttpTransportOptions,
+  type PersistentQueue,
   type SetupDeps,
 } from "@libo11y/web/internal";
 import { createFakeTransport, type FakeTransport } from "../../web/src/test-support/index.ts";
 import type { RumSetupOptions, RumTelemetry } from "./options.ts";
+import { RETENTION_QUEUE_DEFAULTS } from "./retention/buffer.ts";
+import { sessionsIn } from "./retention/sessions.ts";
 import { localStorageSessionStore, SESSION_STORAGE_KEY } from "./session/local-store.ts";
 import { type RumDeps, runtimeOf, setupRumWith } from "./setup.ts";
 import { createChannelHub, createFakeStorage } from "./test-support/fake-storage.ts";
@@ -29,10 +32,17 @@ interface Harness {
   readonly deps: RumDeps;
 }
 
-function harness(): Harness {
+interface Shared {
+  readonly storage?: ReturnType<typeof createFakeStorage>;
+  readonly hub?: ReturnType<typeof createChannelHub>;
+  readonly now?: () => number;
+  readonly retentionQueue?: PersistentQueue;
+}
+
+function harness(shared: Shared = {}): Harness {
   const transport = createFakeTransport();
-  const storage = createFakeStorage();
-  const hub = createChannelHub();
+  const storage = shared.storage ?? createFakeStorage();
+  const hub = shared.hub ?? createChannelHub();
   const document = new FakeDocument();
   const window = new EventTarget();
   const transportOptions: HttpTransportOptions[] = [];
@@ -57,9 +67,9 @@ function harness(): Harness {
     transportOptions,
     deps: {
       web,
-      openRetentionQueue: async (o) => createMemoryQueue(o),
+      openRetentionQueue: async (o) => shared.retentionQueue ?? createMemoryQueue(o),
       sessionStore: () => localStorageSessionStore({ storage, channel: hub.channel() }),
-      now: Date.now,
+      now: shared.now ?? Date.now,
       perfNow: () => performance.now(),
       location: () => "https://app.test/documents/7",
       prerendered: () => false,
@@ -300,7 +310,8 @@ test("a grant right after a revoke leaves RUM running", async () => {
   open.consent.grant();
   await revoked;
   await until(() => open?.rum.sessionId() !== undefined, "a session after the grant");
-  assert.equal(runtimeOf(open)?.views.current()?.kind, "initial");
+  // The page already loaded under the first grant, so the new session's view is soft (P14).
+  assert.equal(runtimeOf(open)?.views.current()?.kind, "soft");
 });
 
 test("a revoke before any grant touches no storage", async () => {
@@ -421,3 +432,294 @@ function tracesBody(name: string, sessionId: string): string {
     ],
   });
 }
+
+test("app Meter API metrics export with delta temporality, as the gateway requires", async () => {
+  const h = harness();
+  open = await setupRumWith({ ...OPTS, consent: { initial: "granted" } }, h.deps);
+  open.meterProvider.getMeter("app").createCounter("app.clicks").add(2);
+  open.meterProvider.getMeter("app").createHistogram("app.wait").record(1);
+  await open.forceFlush();
+  const temporalities = h.transport.requests
+    .filter((r) => r.signal === "metrics")
+    .flatMap((r) => {
+      const body = JSON.parse(r.body) as {
+        resourceMetrics: {
+          scopeMetrics: {
+            metrics: {
+              name: string;
+              sum?: { aggregationTemporality: number };
+              histogram?: { aggregationTemporality: number };
+            }[];
+          }[];
+        }[];
+      };
+      return body.resourceMetrics.flatMap((rm) =>
+        rm.scopeMetrics.flatMap((sm) =>
+          sm.metrics
+            .filter((m) => m.name.startsWith("app."))
+            .map((m) => (m.sum ?? m.histogram)?.aggregationTemporality),
+        ),
+      );
+    });
+  // OTLP AGGREGATION_TEMPORALITY_DELTA is 1, CUMULATIVE 2.
+  assert.ok(temporalities.length >= 2);
+  assert.deepEqual(new Set(temporalities), new Set([1]));
+});
+
+test("rum.addError retains an unkept session and sends the error with its breadcrumbs", async () => {
+  const h = harness();
+  open = await setupRumWith(
+    { ...OPTS, consent: { initial: "granted" }, rum: { sessionSampleRate: 0 } },
+    h.deps,
+  );
+  open.rum.addAction("Save");
+  open.rum.addError(new Error("x"));
+  await until(() => sentEvents(h.transport).includes("o11y.rum.error"), "the error");
+  const err = logRecords(h.transport).find((r) => r["event.name"] === "o11y.rum.error");
+  assert.equal(err?.["o11y.rum.error.source"], "custom");
+  assert.equal(err?.["exception.message"], "x");
+  const crumbs = String(err?.["o11y.rum.error.breadcrumbs"]).split("\n");
+  assert.match(crumbs[0] ?? "", /^view \/documents\/\$id -\d+ms$/);
+  assert.match(crumbs[1] ?? "", /^custom Save -\d+ms$/);
+  assert.equal(runtimeOf(open)?.session.kept(), true);
+});
+
+test("rum.addError with a boundary source and component stack", async () => {
+  const h = harness();
+  open = await setupRumWith({ ...OPTS, consent: { initial: "granted" } }, h.deps);
+  open.rum.addError("bad", { source: "boundary", componentStack: "\n  at Doc" });
+  await open.forceFlush();
+  const err = logRecords(h.transport).find((r) => r["event.name"] === "o11y.rum.error");
+  assert.equal(err?.["o11y.rum.error.source"], "boundary");
+  assert.equal(err?.["exception.stacktrace"], "\n\n  at Doc");
+});
+
+test("the Rum methods record nothing while consent is pending", async () => {
+  const h = harness();
+  open = await setupRumWith(OPTS, h.deps);
+  open.rum.addError(new Error("x"));
+  open.rum.addAction("Save");
+  open.rum.startView({ name: "/x" });
+  open.rum.setViewName("/y");
+  open.rum.viewRendered();
+  await open.forceFlush();
+  assert.deepEqual(h.transport.requests, []);
+  assert.equal(h.storage.items.size, 0);
+});
+
+test("rum.addAction records an instant action span", async () => {
+  const h = harness();
+  open = await setupRumWith({ ...OPTS, consent: { initial: "granted" } }, h.deps);
+  open.rum.addAction("Save");
+  await open.forceFlush();
+  assert.ok(spanNames(h.transport).includes("action custom"));
+});
+
+test("startView, setViewName and viewRendered drive the view tracker", async () => {
+  const h = harness();
+  open = await setupRumWith({ ...OPTS, consent: { initial: "granted" } }, h.deps);
+  const rt = runtimeOf(open);
+  assert.ok(rt);
+  const seen: string[] = [];
+  rt.views.subscribe((e) => seen.push(`${e.type} ${e.view.name}`));
+  const action = rt.tracer.startSpan("action click");
+  rt.setActiveAction(action);
+  let cause: string | undefined;
+  rt.views.subscribe((e) => {
+    if (e.type === "start") cause = e.cause?.spanId;
+  });
+  open.rum.startView({ name: "/docs/$docId" });
+  open.rum.setViewName("/docs/$id");
+  open.rum.viewRendered();
+  open.rum.startView();
+  assert.deepEqual(seen, [
+    "end /documents/$id",
+    "start /docs/$docId",
+    "rename /docs/$id",
+    "rendered /docs/$id",
+    "end /docs/$id",
+    "start /documents/$id",
+  ]);
+  assert.equal(cause, action.spanContext().spanId);
+  assert.equal(rt.views.current()?.kind, "soft");
+  action.end();
+});
+
+test("a span started while an action is open is its child", async () => {
+  const h = harness();
+  open = await setupRumWith({ ...OPTS, consent: { initial: "granted" } }, h.deps);
+  const rt = runtimeOf(open);
+  assert.ok(rt);
+  const action = rt.tracer.startSpan("action click");
+  rt.setActiveAction(action);
+  const child = open.tracerProvider.getTracer("app").startSpan("GET");
+  assert.equal(
+    (child as unknown as { parentSpanContext?: { spanId: string } }).parentSpanContext?.spanId,
+    action.spanContext().spanId,
+  );
+  rt.setActiveAction(undefined);
+  const root = open.tracerProvider.getTracer("app").startSpan("GET");
+  assert.equal((root as unknown as { parentSpanContext?: unknown }).parentSpanContext, undefined);
+  child.end();
+  root.end();
+  action.end();
+});
+
+test("revoking consent forgets the breadcrumbs and the open action", async () => {
+  const h = harness();
+  open = await setupRumWith({ ...OPTS, consent: { initial: "granted" } }, h.deps);
+  const rt = runtimeOf(open);
+  assert.ok(rt);
+  open.rum.addAction("Save");
+  rt.setActiveAction(rt.tracer.startSpan("action click"));
+  assert.ok(rt.breadcrumbs().length > 0);
+  await open.consent.revoke();
+  assert.deepEqual(rt.breadcrumbs(), []);
+  assert.equal(rt.activeAction(), undefined);
+});
+
+const IDLE = 900_000;
+
+test("an unkept session that ends removes only its own records from the shared buffer", async () => {
+  let now = 1_000_000;
+  const retentionQueue = createMemoryQueue({
+    ...RETENTION_QUEUE_DEFAULTS,
+    maxAgeMillis: 10 * IDLE,
+    now: () => now,
+  });
+  const other = JSON.stringify({
+    resourceLogs: [
+      {
+        scopeLogs: [
+          { logRecords: [{ attributes: [{ key: "session.id", value: { stringValue: "other" } }] }] },
+        ],
+      },
+    ],
+  });
+  await retentionQueue.put({ signal: "logs", body: other });
+  const h = harness({ now: () => now, retentionQueue });
+  open = await setupRumWith(
+    { ...OPTS, consent: { initial: "granted" }, rum: { sessionSampleRate: 0 } },
+    h.deps,
+  );
+  const ended = open.rum.sessionId();
+  assert.ok(ended);
+  open.tracerProvider.getTracer("app").startSpan("work").end();
+  await open.forceFlush();
+  await new Promise((r) => setTimeout(r, 0));
+  const held = async (): Promise<string[]> => {
+    const entries = await retentionQueue.claim(now, 100, 0);
+    return entries.flatMap((e) => [...(sessionsIn(e) ?? [])]).sort();
+  };
+  assert.ok((await held()).includes(ended), "the session's detail is buffered");
+  now += IDLE;
+  open.tracerProvider.getTracer("app").startSpan("after").end();
+  runtimeOf(open)?.session.touch();
+  assert.notEqual(open.rum.sessionId(), ended);
+  const deadline = Date.now() + 2000;
+  while ((await held()).includes(ended)) {
+    if (Date.now() > deadline) assert.fail("the ended session's records were not removed");
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  assert.ok((await held()).includes("other"), "another session's records stay");
+});
+
+test("two tabs that rotate a session at once emit one session.end for it", async () => {
+  let now = 1_000_000;
+  const storage = createFakeStorage();
+  const hub = createChannelHub({ async: true });
+  const a = harness({ storage, hub, now: () => now });
+  const b = harness({ storage, hub, now: () => now });
+  const tabA = await setupRumWith(
+    { ...OPTS, consent: { initial: "granted" } },
+    { ...a.deps, install: false },
+  );
+  const tabB = await setupRumWith(
+    { ...OPTS, consent: { initial: "granted" } },
+    { ...b.deps, install: false },
+  );
+  try {
+    await new Promise((r) => setTimeout(r, 10));
+    const first = tabA.rum.sessionId();
+    assert.equal(tabB.rum.sessionId(), first, "the tabs share the session");
+    now += IDLE;
+    // Both tabs see the session expired before either hears of the other's rotation.
+    runtimeOf(tabA)?.session.touch();
+    runtimeOf(tabB)?.session.touch();
+    await until(() => tabA.rum.sessionId() === tabB.rum.sessionId(), "the tabs to agree on a session");
+    await new Promise((r) => setTimeout(r, 700));
+    await Promise.all([tabA.forceFlush(), tabB.forceFlush()]);
+    const ends = [...logRecords(a.transport), ...logRecords(b.transport)].filter(
+      (r) => r["event.name"] === "o11y.rum.session.end",
+    );
+    assert.equal(ends.length, 1);
+    assert.equal(ends[0]?.["session.id"], first);
+  } finally {
+    await tabA.shutdown();
+    await tabB.shutdown();
+  }
+});
+
+test("a request that ends after a revoke leaves no breadcrumb for the next grant", async () => {
+  const h = harness();
+  open = await setupRumWith({ ...OPTS, consent: { initial: "granted" } }, h.deps);
+  const rt = runtimeOf(open);
+  assert.ok(rt);
+  await open.consent.revoke();
+  rt.bus.publish({ type: "breadcrumb", kind: "fetch", label: "GET api.test 200", at: 1 });
+  open.consent.grant();
+  await until(() => open?.rum.sessionId() !== undefined, "the session");
+  assert.equal(
+    rt.breadcrumbs().some((c) => c.startsWith("fetch")),
+    false,
+  );
+});
+
+test("a revoke and a grant while the session loads start the collectors once", async () => {
+  const h = harness();
+  let release: (() => void) | undefined;
+  const gateLoad = new Promise<void>((r) => {
+    release = r;
+  });
+  const base = h.deps.sessionStore;
+  const deps: RumDeps = {
+    ...h.deps,
+    sessionStore: () => {
+      const s = base();
+      return {
+        ...s,
+        load: async () => {
+          await gateLoad;
+          return s.load();
+        },
+      };
+    },
+  };
+  let starts = 0;
+  open = await setupRumWith(
+    {
+      ...OPTS,
+      rum: {
+        collectors: [
+          {
+            name: "errors",
+            start: () => {
+              starts++;
+              return () => {};
+            },
+          },
+        ],
+      },
+    },
+    deps,
+  );
+  open.consent.grant();
+  await new Promise((r) => setTimeout(r, 0));
+  await open.consent.revoke();
+  open.consent.grant();
+  await new Promise((r) => setTimeout(r, 0));
+  release?.();
+  await until(() => starts > 0, "the collector start");
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(starts, 1);
+});

@@ -196,6 +196,11 @@ time spent on it. The requests an action caused are children of its span.
 The action span links to the view it happened on, and a view the action
 caused links back to it.
 
+An action span ends at the time of its last activity: its start, the end
+of a request it caused, or a DOM change. The client detects the end once
+no request is pending and 100 ms passed without activity, so the idle wait
+is not part of the duration. A new action ends the open one at once.
+
 Clients name the spans `view <o11y.rum.view.name>`, `action
 <o11y.rum.action.type>` and `app_load`. The name is for people reading a
 trace. The gateway identifies a shape by `o11y.rum.span.shape`, never by
@@ -233,6 +238,15 @@ parameters, because `sendBeacon` cannot set headers:
   sent. Each retry carries its own.
 - `client_token`: the app's public client token. It identifies the app and
   is not a secret.
+
+App metrics from the Meter API export with delta temporality. The gateway
+accepts only delta sums and delta explicit-bucket histograms.
+
+When several tabs of a session find it expired at the same moment, each
+ends it and starts a session of its own, and then all of them adopt the
+newest one. Only the tab whose new session won sends
+`o11y.rum.session.end`. A session that ends without being kept removes
+only its own records from the shared retention buffer.
 
 ### Metrics
 
@@ -279,7 +293,7 @@ so the registry does not register it.
 
 | Event | Records | Required attributes | Optional attributes |
 |---|---|---|---|
-| `o11y.rum.error` | an error RUM captured | `o11y.rum.error.source`, `exception.type`, `session.id`, `o11y.rum.view.id` | `o11y.rum.error.fingerprint` |
+| `o11y.rum.error` | an error RUM captured | `o11y.rum.error.source`, `exception.type`, `session.id`, `o11y.rum.view.id` | `o11y.rum.error.fingerprint`, `o11y.rum.error.breadcrumbs` |
 | `o11y.rum.frustration` | a frustration signal on a UI element | `o11y.rum.frustration.type`, `session.id`, `o11y.rum.view.id` | `o11y.rum.element.selector` |
 | `o11y.rum.session.start` | the start of a session | `session.id`, `o11y.rum.platform` | none |
 | `o11y.rum.session.end` | the end of a session | `session.id`, `o11y.rum.session.retained` | none |

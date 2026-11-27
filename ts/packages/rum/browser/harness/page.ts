@@ -90,6 +90,9 @@ export interface SinkSpan {
   readonly parentSpanId?: string;
   readonly attributes: Record<string, unknown>;
   readonly links: { traceId: string; spanId: string }[];
+  /** Epoch milliseconds. */
+  readonly start: number;
+  readonly end: number;
 }
 
 /** Every span the sink received, flattened. */
@@ -107,6 +110,8 @@ export function spans(requests: readonly SinkRequest[]): SinkSpan[] {
             parentSpanId?: string;
             attributes?: OtlpAttribute[];
             links?: { traceId: string; spanId: string }[];
+            startTimeUnixNano?: string | number;
+            endTimeUnixNano?: string | number;
           }[];
         }[];
       }[];
@@ -123,6 +128,8 @@ export function spans(requests: readonly SinkRequest[]): SinkSpan[] {
               : { parentSpanId: s.parentSpanId }),
             attributes: attributes(s.attributes),
             links: (s.links ?? []).map((l) => ({ traceId: l.traceId, spanId: l.spanId })),
+            start: Number(BigInt(s.startTimeUnixNano ?? 0) / 1_000_000n),
+            end: Number(BigInt(s.endTimeUnixNano ?? 0) / 1_000_000n),
           });
         }
       }

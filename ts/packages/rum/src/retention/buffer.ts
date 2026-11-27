@@ -82,6 +82,21 @@ export function createRetentionBuffer(opts: RetentionBufferOptions): RetentionBu
         return sent;
       }
     },
+    async discard(match) {
+      if (closed) return 0;
+      try {
+        const q = await queue();
+        if (q === undefined) return 0;
+        // A zero lease leaves every entry this claim reads claimable by other contexts at once.
+        const entries = await q.claim(now(), RETENTION_QUEUE_DEFAULTS.maxEntries, 0);
+        const ids = entries.filter((e) => match({ signal: e.signal, body: e.body })).map((e) => e.id);
+        if (ids.length > 0) await q.remove(ids);
+        return ids.length;
+      } catch (err) {
+        diag.warn("o11y: rum: discarding from the retention buffer failed", err);
+        return 0;
+      }
+    },
     async clear() {
       if (closed) return;
       try {

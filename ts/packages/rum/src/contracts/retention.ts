@@ -1,4 +1,4 @@
-/** Contract, frozen by R3a. The retention buffer for sessions not yet kept. */
+/** Contract, frozen by R3a, extended by R3b. The retention buffer for sessions not yet kept. */
 import type { Delivery, OtlpBatch, QueueSize } from "@libo11y/web/internal";
 import type { SessionDecision } from "./session.ts";
 
@@ -12,6 +12,12 @@ export interface RetentionBuffer {
   flush(delivery: Delivery, keep?: (batch: OtlpBatch) => boolean): Promise<number>;
   /** Removes every stored batch. Never rejects. */
   clear(): Promise<void>;
+  /**
+   * Removes the stored batches match accepts, leaving the others claimable at once, so an ended
+   * unkept session removes its own records and no other tab's. Batches another context is sending
+   * are not seen. Resolves with the batches removed. Never rejects.
+   */
+  discard(match: (batch: OtlpBatch) => boolean): Promise<number>;
   size(): Promise<QueueSize>;
   close(): void;
 }

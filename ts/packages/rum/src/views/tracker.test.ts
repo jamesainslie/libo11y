@@ -118,3 +118,72 @@ test("without a session nothing is tracked", () => {
   tracker.end();
   assert.equal(summaries.length, 0);
 });
+
+const CTX = { traceId: "a".repeat(32), spanId: "b".repeat(16), traceFlags: 1 };
+
+test("rendered emits rendered for the current view", () => {
+  const { tracker, events } = setup();
+  tracker.rendered();
+  assert.equal(events.length, 0, "nothing without a view");
+  tracker.begin();
+  tracker.rendered();
+  assert.deepEqual(
+    events.map((e) => e.type),
+    ["start", "rendered"],
+  );
+  assert.equal(events[1]?.view.id, tracker.current()?.id);
+});
+
+test("appLoad returns the context appLoadStarted reported", () => {
+  const { tracker } = setup();
+  assert.equal(tracker.appLoad(), undefined);
+  tracker.appLoadStarted(CTX);
+  assert.deepEqual(tracker.appLoad(), CTX);
+});
+
+test("attachSpan records the span context on the current and the load view", () => {
+  const { tracker } = setup();
+  tracker.begin();
+  const id = tracker.current()?.id ?? "";
+  tracker.attachSpan("other", CTX);
+  assert.equal(tracker.current()?.spanContext, undefined);
+  tracker.attachSpan(id, CTX);
+  assert.deepEqual(tracker.current()?.spanContext, CTX);
+  assert.deepEqual(tracker.loadView()?.spanContext, CTX);
+});
+
+test("start passes its cause into the start event", () => {
+  const { tracker, events } = setup();
+  tracker.begin();
+  tracker.start({ kind: "soft", name: "/x", cause: CTX });
+  const e = events.at(-1);
+  assert.equal(e?.type, "start");
+  assert.deepEqual(e?.type === "start" ? e.cause : undefined, CTX);
+});
+
+test("begin after an end starts a soft view now, not another initial view", () => {
+  let t = 0;
+  const summary = createSummaryAccumulator({
+    platform: "web",
+    emit: () => {},
+    now: () => t,
+    visible: () => true,
+  });
+  const tracker = createViewTracker({
+    session: fakeSession(),
+    summary,
+    viewName: defaultViewName,
+    location: () => "https://app.test/documents/42",
+    now: () => t,
+    prerendered: () => false,
+  });
+  tracker.begin();
+  assert.equal(tracker.current()?.kind, "initial");
+  t = 60_000;
+  tracker.end();
+  t = 120_000;
+  tracker.begin();
+  assert.equal(tracker.current()?.kind, "soft");
+  assert.equal(tracker.current()?.startTime, 120_000);
+  assert.equal(tracker.loadView()?.kind, "initial", "the load view is still the page's load");
+});

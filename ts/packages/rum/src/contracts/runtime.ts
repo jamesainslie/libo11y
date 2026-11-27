@@ -1,5 +1,5 @@
 /**
- * Contract, frozen by R3a. What every collector receives. Collectors are created by factories such
+ * Contract, frozen by R3a, extended by R3b. What every collector receives. Collectors are created by factories such
  * as views() and run only while consent is granted: start is called on grant, the returned stop
  * on revoke and shutdown.
  */
@@ -30,7 +30,14 @@ export type RumSignal =
       readonly url: string;
       readonly at: number;
     }
-  | { readonly type: "request-end"; readonly spanId: string; readonly status?: number; readonly at: number }
+  | {
+      readonly type: "request-end";
+      readonly spanId: string;
+      readonly status?: number;
+      /** The span's error.type when it ended without a response, such as AbortError or abort. */
+      readonly errorType?: string;
+      readonly at: number;
+    }
   | { readonly type: "mutation"; readonly at: number }
   | { readonly type: "breadcrumb"; readonly kind: string; readonly label: string; readonly at: number };
 
@@ -72,6 +79,11 @@ export interface RumRuntime {
   emit(name: string, attrs?: LogAttributes, ctx?: Context): void;
   /** Adds a hook run on every fetch and XHR client span right after it starts. */
   onRequestStart(hook: RequestStartHook): () => void;
+  /** The open action's span, while one is open. Requests started meanwhile become its children (R3b). */
+  activeAction(): Span | undefined;
+  setActiveAction(span: Span | undefined): void;
+  /** The last breadcrumbs, oldest first, as "<kind> <label> -<age>ms" (R3b). */
+  breadcrumbs(): readonly string[];
 }
 
 export interface RumCollector {

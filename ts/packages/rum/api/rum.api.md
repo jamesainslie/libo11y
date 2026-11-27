@@ -20,8 +20,32 @@ import type { Tracer } from '@opentelemetry/api';
 import type { WebSetupOptions } from '@libo11y/web';
 import type { WebTelemetry } from '@libo11y/web';
 
+// @public
+export function actions(opts?: ActionsOptions): RumCollector;
+
+// @public (undocumented)
+export interface ActionsOptions {
+    readonly capMillis?: number;
+    readonly frustration?: boolean;
+    readonly idleMillis?: number;
+}
+
+// @public
+export interface AddErrorOptions {
+    readonly componentStack?: string;
+    readonly source?: "custom" | "boundary";
+}
+
 // @public (undocumented)
 export type CollectorName = "views" | "actions" | "errors" | "vitals" | "resources" | "long_animation_frames";
+
+// @public
+export function errors(opts?: ErrorsOptions): RumCollector;
+
+// @public (undocumented)
+export interface ErrorsOptions {
+    readonly console?: boolean;
+}
 
 export { HttpRequestInfo }
 
@@ -30,9 +54,16 @@ export type RequestStartHook = (span: Span, request: HttpRequestInfo) => void;
 
 // @public
 export interface Rum {
+    addAction(name: string): void;
+    addError(error: unknown, opts?: AddErrorOptions): void;
     identify(userId: string | undefined): void;
     onRequestStart(hook: RequestStartHook): () => void;
     sessionId(): string | undefined;
+    setViewName(name: string): void;
+    startView(opts?: {
+        readonly name?: string;
+    }): void;
+    viewRendered(): void;
 }
 
 // @public (undocumented)
@@ -67,6 +98,8 @@ export interface RumOptions {
 
 // @public (undocumented)
 export interface RumRuntime {
+    activeAction(): Span | undefined;
+    breadcrumbs(): readonly string[];
     // (undocumented)
     readonly bus: RumBus;
     emit(name: string, attrs?: LogAttributes, ctx?: Context): void;
@@ -78,6 +111,8 @@ export interface RumRuntime {
     readonly platform: RUMPlatform;
     // (undocumented)
     readonly session: SessionManager;
+    // (undocumented)
+    setActiveAction(span: Span | undefined): void;
     // (undocumented)
     settings(): RumSettings;
     // (undocumented)
@@ -134,6 +169,7 @@ export type RumSignal = {
     readonly type: "request-end";
     readonly spanId: string;
     readonly status?: number;
+    readonly errorType?: string;
     readonly at: number;
 } | {
     readonly type: "mutation";
@@ -238,13 +274,27 @@ export type ViewEvent = {
     readonly type: "start";
     readonly view: ViewState;
     readonly previous?: ViewState;
+    readonly cause?: SpanContext;
 } | {
     readonly type: "rename";
+    readonly view: ViewState;
+}
+/** The routed content of the view rendered (rendered()). */
+| {
+    readonly type: "rendered";
     readonly view: ViewState;
 } | {
     readonly type: "end";
     readonly view: ViewState;
 };
+
+// @public
+export function views(opts?: ViewsOptions): RumCollector;
+
+// @public (undocumented)
+export interface ViewsOptions {
+    readonly history?: boolean;
+}
 
 // @public (undocumented)
 export interface ViewStartOptions {
@@ -270,7 +320,9 @@ export interface ViewState {
 
 // @public (undocumented)
 export interface ViewTracker {
+    appLoad(): SpanContext | undefined;
     appLoadStarted(ctx: SpanContext): void;
+    attachSpan(viewId: string, ctx: SpanContext): void;
     begin(): void;
     // (undocumented)
     current(): ViewState | undefined;

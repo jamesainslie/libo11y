@@ -45,6 +45,30 @@ export interface Rum {
   identify(userId: string | undefined): void;
   /** Adds a hook run on every fetch and XHR client span right after it starts. Returns its removal. */
   onRequestStart(hook: RequestStartHook): () => void;
+  /**
+   * Ends the current view and starts a soft view now, for router adapters. The name defaults to
+   * the view name of the current URL. An open action becomes the view's cause.
+   */
+  startView(opts?: { readonly name?: string }): void;
+  /** Names the current view, such as with its route template. Never pass a raw URL. */
+  setViewName(name: string): void;
+  /** The current view's routed content rendered: its view span ends at the next paint. */
+  viewRendered(): void;
+  /** Records a custom action, such as a programmatic save. name is a label, never user data. */
+  addAction(name: string): void;
+  /**
+   * Records an error the application caught. Use source boundary, with the component stack, for
+   * a UI framework's error boundary. Default source custom.
+   */
+  addError(error: unknown, opts?: AddErrorOptions): void;
+}
+
+/** Options for Rum.addError. */
+export interface AddErrorOptions {
+  /** Default custom. */
+  readonly source?: "custom" | "boundary";
+  /** The UI framework's component stack, appended to the stack trace. */
+  readonly componentStack?: string;
 }
 
 /** Browser telemetry with RUM. */
