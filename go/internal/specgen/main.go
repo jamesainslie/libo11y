@@ -495,6 +495,11 @@ func render(m *model) (map[string]string, error) {
 	outputs[pySpecPath] = pySpec
 	outputs[pyTablesPath] = pyTables
 	outputs[pyGoPrintPath] = genPyGoPrint()
+	cSpec, err := genCSpec(m)
+	if err != nil {
+		return nil, err
+	}
+	outputs[cSpecHeaderPath] = cSpec
 	goSources := []struct{ rel, src string }{
 		{"go/spec/spec.go", genSpec(m)},
 		{"go/internal/spectables/tables.go", tables},

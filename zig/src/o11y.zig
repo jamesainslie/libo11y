@@ -56,6 +56,18 @@ pub const detached = @import("detached.zig");
 /// trace context propagation.
 pub const proc = @import("proc.zig");
 
+/// Kubernetes pod identity (`service.instance.id`) derivation.
+pub const identity = @import("identity.zig");
+
+/// Canonical PII rendering and keyed HMAC-SHA256 tokenization.
+pub const pii = @import("pii.zig");
+
+/// OTLP endpoint URL sanitization for startup summaries.
+pub const endpoint = @import("endpoint.zig");
+
+/// Application attribute registry YAML loader and validator.
+pub const appregistry = @import("appregistry/appregistry.zig");
+
 // Core lifecycle & setup.
 pub const setup = telemetry_mod.setup;
 pub const init = telemetry_mod.init;

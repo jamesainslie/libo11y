@@ -104,6 +104,8 @@ pub const IdentityError = error{
 pub const ResourceOptions = struct {
     env: Env = .hermetic,
     sdk_version: []const u8,
+    sdk_language: []const u8 = "zig",
+    emit_process_runtime: bool = true,
     service_name: ?[]const u8 = null,
     service_version: ?[]const u8 = null,
     service_namespace: ?[]const u8 = null,
@@ -156,7 +158,7 @@ pub fn build(
 
     // 2. Telemetry SDK attributes.
     try raw.append(arena, attribute.kv("telemetry.sdk.name", "libo11y"));
-    try raw.append(arena, attribute.kv("telemetry.sdk.language", "zig"));
+    try raw.append(arena, attribute.kv("telemetry.sdk.language", options.sdk_language));
     try raw.append(arena, attribute.kv("telemetry.sdk.version", options.sdk_version));
 
     // 3. Host detector (host.name).
@@ -168,8 +170,10 @@ pub fn build(
     } else |_| {}
 
     // 4. Process runtime attributes.
-    try raw.append(arena, attribute.kv(spec.attr.process_runtime_name, "zig"));
-    try raw.append(arena, attribute.kv(spec.attr.process_runtime_version, builtin.zig_version_string));
+    if (options.emit_process_runtime) {
+        try raw.append(arena, attribute.kv(spec.attr.process_runtime_name, "zig"));
+        try raw.append(arena, attribute.kv(spec.attr.process_runtime_version, builtin.zig_version_string));
+    }
 
     // 5. Container ID (best-effort on Linux).
     if (detectContainerId(io, arena)) |cid| {

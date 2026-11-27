@@ -17,6 +17,7 @@ libo11y/
   java/          Java/Maven module (planned)
   zig/           Zig package (zig/v0.1.0), published through the
                  root build.zig and build.zig.zon shim
+  c/             C11 library (pure C11 ABI backed by zig/)
 ```
 
 Each language directory is self-contained: its own build, tests, lint
@@ -39,7 +40,8 @@ module itself. Make targets from the repository root:
 - `make spec-generate` validates first, then regenerates `go/spec`,
   `go/internal/spectables`, `docs/taxonomy`,
   `ts/packages/spec/src/generated`, `rust/libo11y-spec/src/generated`,
-  `zig/src/spec/generated`, and the OpenTelemetry schema files under
+  `zig/src/spec/generated`, `python/src/libo11y/spec/_generated`,
+  `c/include/o11y/spec.h`, and the OpenTelemetry schema files under
   `spec/schemas` from the registry. An invalid registry
   generates nothing. Generated files are never edited by hand.
 - `make spec-drift` fails if generated artifacts are stale or if the
@@ -115,10 +117,33 @@ Linux with a PostgreSQL 17 service container.
   sources, docs, or commit messages. Commits use `zig: <type>: <description>`
   and release tags use `zig/vX.Y.Z`.
 
+## C toolchain
+
+The C11 library in `c/` exposes a pure ISO C11 public ABI (`o11y/o11y.h`,
+`o11y/spec.h`, `o11y/test.h`, C++ `extern "C"` safe) backed by `zig/` and
+built with Zig `0.17.1`. Consumers linking the built `libo11y.a` / `libo11y.so`
+(or `libo11ytest.a` in tests) need only a C11 compiler (`gcc`, `clang`) and
+POSIX libc (`-lpthread -lm` on Linux).
+
+- **Packaging.** `cd c && zig build -Doptimize=ReleaseSafe` installs static
+  and shared libraries (`libo11y.a` with bundled compiler-rt, `libo11y.so`/`.dylib`),
+  the self-contained test archive (`libo11ytest.a`), the `libo11y registry check`
+  CLI (`bin/libo11y`), headers under `include/o11y/`, `lib/pkgconfig/libo11y.pc`,
+  and `lib/cmake/libo11y/libo11yConfig.cmake`.
+- **Tests and gates.** `make c-check` runs `zig fmt --check` over `c/build.zig`,
+  `c/build.zig.zon`, and `c/src`, runs `scripts/zig-hygiene.sh c/build.zig c/src`,
+  builds and executes all C11 unit, shared `conformance/`, OTLP HTTP/gRPC wire,
+  and quickstart suites in both `Debug` and `ReleaseSafe`, runs `c/tests/test_cli.sh`,
+  and links a standalone C11 program against `libo11y.a` with
+  `cc -std=c11 -Wall -Wextra -Werror -Wpedantic`. CI runs `make c-check` in
+  the `c` job on Linux and macOS.
+- **Commits and releases.** Commits use `c: <type>: <description>` and release
+  tags use `c/vX.Y.Z`.
+
 ## Versioning and releases
 
 - Independent per-language versioning, path-prefixed tags: `go/v0.1.0`,
-  `ts/v0.1.1`, `zig/v0.1.0`, `rust/v0.1.0`.
+  `ts/v0.1.1`, `zig/v0.1.0`, `c/v0.1.0`, `rust/v0.1.0`.
 - Semantic versioning per language ecosystem norms.
 - No lockstep releases across languages. A change to shared docs never
   forces a release.
@@ -253,7 +278,7 @@ OTEL specification catches up.
 ## Commit messages
 
 `<area>: <type>: <description>` all lowercase, where area is one of `go`,
-`ts`, `spec`, `rust`, `java`, `zig`, `docs`, `general`, and type follows
+`ts`, `spec`, `rust`, `java`, `zig`, `c`, `docs`, `general`, and type follows
 Conventional Commits (`feat`, `fix`, `docs`, `refactor`, `test`, `chore`,
 `build`, `ci`, `perf`, `revert`) or names a Keep a Changelog category
 (`change`, `removed`).
@@ -286,6 +311,7 @@ install that version locally. Keep the two in step when adding a gate.
 | `make zig-integrations-check` | optional Zig integrations (`-Dhttpz=true -Dpg=true -Dsqlite=true`) in Debug and ReleaseSafe; CI runs it in `zig-integrations` against PostgreSQL 17 |
 | `make zig-release-check` | archives HEAD, fetches it with `zig fetch --save` into an isolated consumer, runs it against an in-process OTLP receiver, and verifies no `conformance/`, `zig/test/`, or lazy deps were fetched (needs a clean tree) |
 | `make zig-hygiene-test` | `scripts/zig-hygiene.sh` against fixture trees |
+| `make c-check` | the C11 library: `zig fmt --check` and `scripts/zig-hygiene.sh` on `c/`, all C11 unit, shared conformance, wire, quickstart, and CLI suites in Debug and ReleaseSafe, plus a standalone `cc -std=c11 -Wall -Wextra -Werror -Wpedantic` link check against `libo11y.a`. CI runs it in the `c` job on Linux and macOS |
 | `make vuln` | `govulncheck` on every Go module; runs last because it depends on the advisory database and the toolchain's patch level |
 
 - Go: the gates above. Standard-library advisories are fixed by the
@@ -309,3 +335,8 @@ install that version locally. Keep the two in step when adding a gate.
   include the shared conformance suite, which reads `conformance/` at run
   time from `-Dconformance-dir`. It defaults to the repository's
   directory, and the published package leaves it out.
+- C: built with Zig 0.17.1 and linked with any C11 compiler (`gcc`, `clang`).
+  CI runs `make c-check` on Linux and macOS (Zig formatting and hygiene on
+  `c/src`, all C11 unit, conformance, wire, and CLI tests in Debug and
+  ReleaseSafe, and a strict `-std=c11 -Wall -Wextra -Werror -Wpedantic`
+  standalone link check).
