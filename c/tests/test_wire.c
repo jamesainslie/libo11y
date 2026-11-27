@@ -7,8 +7,10 @@
  *   - OTLP/gRPC over TLS (ALPN h2) + mutual TLS (mTLS)
  */
 
+#define _DARWIN_C_SOURCE
 #define _POSIX_C_SOURCE 200809L
 
+#include <stdlib.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
