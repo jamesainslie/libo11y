@@ -138,7 +138,6 @@ impl Propagator {
     /// The propagators as the effective configuration reports them: their
     /// fields in configured order, each once, `none` for the none
     /// propagator, and `custom` for propagators that name no fields.
-    #[cfg_attr(not(test), allow(dead_code, reason = "R3b's startup summary reads it"))]
     pub(crate) fn reported_fields(&self) -> &str {
         &self.0.reported
     }

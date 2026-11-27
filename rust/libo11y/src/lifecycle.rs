@@ -75,6 +75,16 @@ impl SignalFailure {
         )
     }
 
+    /// Low-cardinality `error.type` classification for `o11y.telemetry.dropped`.
+    pub(crate) const fn error_type(&self) -> &'static str {
+        match &self.kind {
+            FailureKind::Errors(_) => "export_error",
+            FailureKind::TimedOut(_) => "timeout",
+            FailureKind::StillRunning => "still_running",
+            FailureKind::Panicked => "panic",
+        }
+    }
+
     /// The errors the provider returned and the export failures recorded
     /// while the call ran, the provider's own first.
     pub fn errors(&self) -> impl Iterator<Item = &(dyn std::error::Error + Send + Sync + 'static)> {

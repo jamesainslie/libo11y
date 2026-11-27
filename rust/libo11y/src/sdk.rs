@@ -19,7 +19,6 @@ use tracing_subscriber::registry::LookupSpan;
 
 use libo11y_spec::Signal;
 
-use crate::diagnostics::ErrorHandler;
 use crate::export::Selection;
 use crate::export::failures::ExportFailures;
 use crate::layer::{Parts, PartsCell, layers};
@@ -27,8 +26,9 @@ use crate::lifecycle::{
     DEFAULT_SHUTDOWN_TIMEOUT, FlushError, Op, ShutdownCell, ShutdownError, SignalFailure, Step,
     run_steps,
 };
+use crate::log_layer::LogPipeline;
 use crate::propagation::Propagator;
-use crate::violations::ViolationRecorder;
+use crate::summary::Summary;
 use crate::{Builder, Policy, Violations};
 
 /// A configured libo11y SDK: tracer and meter providers that share one
@@ -49,31 +49,20 @@ pub(crate) struct Inner {
     pub(crate) version_fallback: bool,
     pub(crate) policy: Policy,
     pub(crate) propagator: Propagator,
-    /// Each signal's resolved export, which the effective configuration
-    /// reports and the metric exporter reads.
-    #[allow(
-        dead_code,
-        reason = "the startup summary and the metric exporter read it"
-    )]
+    /// Each signal's resolved export, which the metric exporter reads.
+    #[allow(dead_code, reason = "the metric exporter reads it")]
     pub(crate) selection: Selection,
-    /// The sampler as the effective configuration names it.
-    #[allow(dead_code, reason = "the startup summary reads it")]
-    pub(crate) sampler_report: String,
-    /// `OTEL_SDK_DISABLED` switched the SDK off.
-    #[allow(dead_code, reason = "the startup summary reads it")]
-    pub(crate) disabled: bool,
+    pub(crate) summary: Summary,
+    pub(crate) startup_summary: bool,
     pub(crate) tracer_provider: SdkTracerProvider,
     pub(crate) span_failures: ExportFailures,
     pub(crate) meter_provider: SdkMeterProvider,
     pub(crate) metric_failures: ExportFailures,
     pub(crate) logger_provider: Option<SdkLoggerProvider>,
     pub(crate) log_failures: ExportFailures,
+    pub(crate) log_pipeline: Arc<LogPipeline>,
     /// What the `tracing` layers read.
     pub(crate) parts: Arc<Parts>,
-    #[allow(dead_code, reason = "the log legs report through it")]
-    pub(crate) handler: ErrorHandler,
-    #[allow(dead_code, reason = "the log legs count their violations on it")]
-    pub(crate) violations: ViolationRecorder,
     /// Whether setup installs the global `tracing` default.
     pub(crate) tracing_default: bool,
     /// Whether this SDK is the process's global one, whose shutdown
@@ -147,8 +136,8 @@ impl Sdk {
     }
 
     /// The logger provider behind the OTLP log leg, when logs are exported.
-    #[allow(dead_code, reason = "the log layer and its accessor build on it")]
-    pub(crate) fn logger_provider(&self) -> Option<&SdkLoggerProvider> {
+    #[must_use]
+    pub fn logger_provider(&self) -> Option<&SdkLoggerProvider> {
         self.0.logger_provider.as_ref()
     }
 
@@ -300,16 +289,15 @@ impl Sdk {
     }
 
     /// Reports a signal that failed to shut down as an
-    /// `o11y.telemetry.dropped` event to the log sinks still running. The
-    /// log legs fill this in.
-    #[allow(clippy::unused_self, reason = "the log legs emit through self")]
-    fn emit_dropped(&self, _failure: &SignalFailure) {}
+    /// `o11y.telemetry.dropped` event to the log sinks still running.
+    fn emit_dropped(&self, failure: &SignalFailure) {
+        self.emit_dropped_event(failure);
+    }
 
     /// Stops an SDK that setup is discarding: nothing in it is worth
     /// flushing, so the providers are told to stop at once, on a detached
     /// thread so the caller does not wait, and a later shutdown reports a
     /// clean, finished one.
-    #[allow(dead_code, reason = "the startup canary discards an SDK it rejects")]
     pub(crate) fn abandon(&self) {
         if !self.0.shutdown.claim_finished() {
             return;
@@ -566,7 +554,7 @@ mod tests {
         let gate = Arc::clone(gate);
         match signal {
             Signal::Traces => hermetic().with_span_exporter(FailingSpans(gate)),
-            Signal::Logs => hermetic().log_exporter(FailingLogs(gate)),
+            Signal::Logs => hermetic().with_log_exporter(FailingLogs(gate)),
             _ => hermetic().with_metric_exporter(FailingMetrics(gate)),
         }
         .build()
@@ -582,7 +570,7 @@ mod tests {
         let _release = OpenOnDrop(gate.clone());
         let spans = KeptSpans::default();
         let sdk = hermetic()
-            .log_exporter(HangingLogs(gate))
+            .with_log_exporter(HangingLogs(gate))
             .with_span_exporter(spans.clone())
             .build()
             .expect("SDK");
@@ -614,7 +602,7 @@ mod tests {
         let gate = Gate::default();
         let release = OpenOnDrop(gate.clone());
         let sdk = hermetic()
-            .log_exporter(HangingLogs(gate))
+            .with_log_exporter(HangingLogs(gate))
             .build()
             .expect("SDK");
         emit(&sdk, Signal::Logs, 1);

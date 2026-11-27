@@ -213,6 +213,11 @@ pub enum Error {
         "o11y: a global tracing subscriber is already set: set up with Builder::without_tracing_default and add Sdk::tracing_layer to that subscriber"
     )]
     ForeignTracingSubscriber,
+
+    /// The startup canary event (`o11y.telemetry.configured`) was rejected by
+    /// the log pipeline during [`Builder::setup`](crate::Builder::setup).
+    #[error("o11y: startup canary rejected by log pipeline: {0}")]
+    StartupCanary(#[source] BoxError),
 }
 
 impl Error {
@@ -325,6 +330,10 @@ mod tests {
         assert_eq!(
             Error::BuildingResource("x".into()).to_string(),
             "o11y: building resource: x"
+        );
+        assert_eq!(
+            Error::StartupCanary("disk full".into()).to_string(),
+            "o11y: startup canary rejected by log pipeline: disk full"
         );
     }
 }

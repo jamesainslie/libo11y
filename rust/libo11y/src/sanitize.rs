@@ -20,10 +20,6 @@ const WITHHELD: &str = "unparseable";
 /// ends the authority early, so any `@` other than one userinfo separator,
 /// and any `@` that survives into the output, withholds the whole value
 /// rather than echoing part of a secret.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the startup summary reads it once it exists")
-)]
 pub(crate) fn sanitize_endpoint(raw: &str) -> String {
     let schemeless = !raw.contains("://");
     let input = if schemeless {

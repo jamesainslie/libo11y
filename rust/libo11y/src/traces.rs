@@ -192,7 +192,6 @@ impl fmt::Debug for dyn PendingSpanExporter {
 pub(crate) struct SamplerChoice {
     pub(crate) sampler: Box<dyn ShouldSample>,
     /// The `OTEL_TRACES_SAMPLER` name, or the explicit sampler's debug form.
-    #[cfg_attr(not(test), allow(dead_code, reason = "R3b's startup summary reads it"))]
     pub(crate) report: String,
 }
 

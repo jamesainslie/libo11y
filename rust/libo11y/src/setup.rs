@@ -88,12 +88,15 @@ pub(crate) fn setup(settings: Settings) -> Result<Sdk, Error> {
 
 /// The startup canary: the effective configuration, forced through every
 /// log sink before any global is installed, so a sink that rejects it fails
-/// setup instead of dropping records later. The log legs fill this in; a
-/// rejection abandons `sdk` and returns the error.
-#[allow(
-    clippy::unnecessary_wraps,
-    reason = "the canary can fail once it emits"
-)]
-fn startup_canary(_sdk: &Sdk) -> Result<(), Error> {
+/// setup instead of dropping records later. A rejection abandons `sdk` and
+/// returns [`Error::StartupCanary`].
+fn startup_canary(sdk: &Sdk) -> Result<(), Error> {
+    if !sdk.0.startup_summary {
+        return Ok(());
+    }
+    if let Err(err) = sdk.emit_startup_summary() {
+        sdk.abandon();
+        return Err(Error::StartupCanary(err));
+    }
     Ok(())
 }
