@@ -53,7 +53,7 @@ defaults:
 
 jobs:
   verify:
-    runs-on: blacksmith-4vcpu-ubuntu-2604
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     outputs:
       kind: ${{ steps.tag.outputs.kind }}
@@ -64,7 +64,7 @@ jobs:
       # The ts branch only: every package name, space separated.
       packages: ${{ steps.packages.outputs.names }}
     steps:
-      - uses: useblacksmith/checkout@v1
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
