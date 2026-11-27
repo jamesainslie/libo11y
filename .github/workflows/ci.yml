@@ -260,6 +260,38 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: make python-check PYTHON_WORKERS=2
 
+  # Python DB-API integration against a live PostgreSQL 17 service container.
+  python-integrations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: libo11y_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres -d libo11y_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: python/uv.lock
+          python-version: "3.13"
+      - name: Run Python DB-API PostgreSQL integration tests
+        env:
+          O11Y_PG_TEST_DSN: postgresql://postgres:postgres@127.0.0.1:5432/libo11y_test
+        run: cd python && uv sync --frozen --all-extras --dev && uv run --frozen --no-sync pytest tests/test_dbapi.py
+
   vuln:
     runs-on: ubuntu-latest
     timeout-minutes: 15

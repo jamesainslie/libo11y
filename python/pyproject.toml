@@ -74,6 +74,7 @@ dev = [
     "fastapi>=0.115",
     "flask>=3.1",
     "django>=5.1",
+    "psycopg[binary]>=3.2",
 ]
 
 [tool.hatch.build.targets.wheel]
