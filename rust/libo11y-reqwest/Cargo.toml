@@ -1,0 +1,33 @@
+[package]
+name = "libo11y-reqwest"
+description = "reqwest-middleware instrumentation for libo11y: W3C context propagation, HTTP client spans, and exemplar-linked duration metrics."
+readme = "README.md"
+keywords = ["observability", "opentelemetry", "reqwest", "http", "libo11y"]
+categories = ["web-programming::http-client"]
+include = ["src/**/*.rs", "README.md", "LICENSE"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+async-trait = "0.1.92"
+http = "1.5.0"
+libo11y.workspace = true
+libo11y-http.workspace = true
+opentelemetry = { version = "0.33.1", default-features = false, features = ["metrics", "trace"] }
+reqwest = { version = "0.13.5", default-features = false }
+reqwest-middleware = "0.5.2"
+
+[dev-dependencies]
+http-body-util = "0.1.5"
+hyper = { version = "1.12.0", features = ["http1", "server"] }
+hyper-util = { version = "0.1.21", features = ["http1", "tokio"] }
+libo11y-test.workspace = true
+tokio = { version = "1.54.1", features = ["macros", "net", "rt-multi-thread"] }
+tracing.workspace = true
+
+[lints]
+workspace = true
