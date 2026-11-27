@@ -222,6 +222,26 @@ jobs:
           O11YPG_TEST_DSN: postgres://postgres:postgres@127.0.0.1:5432/libo11y_test
         run: make zig-integrations-check ZIG_BUILD_J=4
 
+  # The Python package on Linux and macOS across Python 3.12, 3.13 and 3.14.
+  python:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: python/uv.lock
+          python-version: ${{ matrix.python }}
+      - run: make python-check PYTHON_WORKERS=2
+
   vuln:
     runs-on: ubuntu-latest
     timeout-minutes: 15

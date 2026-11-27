@@ -215,3 +215,12 @@ P0 comes first, and P1 and P2 follow it in order. P3 follows P2. P4 to P7 follow
 - **Environment reads in the SDK.** A new SDK version can add a read that hermetic mode does not cover. The hostile-environment test and the inventory in P2 catch the reads in the pinned version, and the test runs again on every SDK upgrade.
 - **Connect Python.** Both Connect libraries are pre-1.0. If neither has stable interceptors, `connect` waits for upstream and the owner decides whether `python/v0.1.0` ships without it.
 - **YAML fidelity.** PyYAML implements YAML 1.1, and the Go validator uses yaml.v3. libo11y resolves tags itself and uses PyYAML only to compose nodes. The conformance cases and the property tests gate the difference.
+
+## P0 spike amendments
+
+Recorded during P0 (2026-11-27):
+
+- **PyYAML composer vs conformance cases.** PyYAML's pure-Python `SafeLoader` (`yaml.scanner.Scanner.ESCAPE_REPLACEMENTS`) differs from Go's `yaml.v3` in two double-quoted escapes: it accepts `\/` (which `yaml.v3` rejects in `escape-slash.yaml`) and rejects `\'` (which `yaml.v3` accepts in `escape-quote.yaml`). Subclassing PyYAML's pure-Python loader to drop `\/`, add `\'`, reject surrogate escapes and non-1.1 `%YAML` directives, and building our own lazy alias-aware AST from PyYAML's event stream (enforcing `yaml.v3`'s alias expansion budget against `alias-bomb.yaml`) handles all 46 conformance YAML cases cleanly with `PyYAML` as the sole YAML dependency.
+- **Connect RPC library.** `connectrpc` 0.13.0 (`github.com/connectrpc/connect-py`, updated 2026-10) is selected over `connect-python` 0.9.0 (`github.com/connectrpc/connect-python`, last updated 2026-03). `connectrpc` provides typed async and sync interceptors (`UnaryInterceptor`, `ServerStreamInterceptor`, `ClientStreamInterceptor`, `BidiStreamInterceptor`, `MetadataInterceptor` and their `Sync` counterparts), ASGI and WSGI applications, and sync/async clients, and coexists cleanly with `opentelemetry-sdk==1.45.*`.
+- **`grpcio` wheels.** `grpcio` 1.85.4 ships `manylinux` (`x86_64`, `aarch64`) and `macosx_11_0_universal2` wheels for CPython 3.12, 3.13 and 3.14.
+- **`uv` on NixOS.** The host has `nix-ld` enabled and home-manager provides `python3` 3.13.13, `uv` 0.11.21, `ruff` 0.15.14 and `pyright` 1.1.411. `uv` discovers the home-manager Python and creates/runs virtual environments cleanly.
