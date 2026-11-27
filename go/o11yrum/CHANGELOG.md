@@ -38,11 +38,18 @@ adheres to [Semantic Versioning](https://semver.org/).
   attributes the specification classifies bounded or enum.
 - `POST /_o11y/v1/metrics`: app metrics sent as delta sums and delta
   explicit-bucket histograms are re-aggregated under the app's
-  `service.name`, without the resource or any unbounded attribute. Each
-  app's metrics are its own. A point may carry at most 16 labels with keys
-  of at most 256 bytes, longer values are cut to 256 bytes, and a
-  histogram may have at most 64 bounds.
+  `service.name`, without the resource. A point keeps only the labels the
+  specification classifies bounded or enum, plus the keys its app lists in
+  `app_metric_labels`. Keys the specification classifies PII, secret or
+  unbounded are always dropped, and a configuration that lists one is
+  refused. Each app's metrics are its own. A point may carry at most 16
+  labels with keys of at most 256 bytes, longer values are cut to 256
+  bytes, and a histogram may have at most 64 bounds.
 - The `aggregation` configuration section: `max_series_per_metric`
   (default 2000 for each app, with an overflow series per app past it) and
   `max_metrics_per_app` (default 200).
 - The self-telemetry gauge `o11yrum.aggregator.series`.
+- The `o11yrum-gateway` command exports the derived metrics with its own,
+  through the metric reader `OTEL_METRICS_EXPORTER` selects. It registers
+  its producer as `o11yrum` and as the fallback producer, and refuses to
+  start when `OTEL_METRICS_PRODUCERS` is set without `o11yrum`.
