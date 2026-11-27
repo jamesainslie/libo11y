@@ -9,6 +9,7 @@ members = [
     "libo11y-redact",
     "libo11y-reqwest",
     "libo11y-spec",
+    "libo11y-sqlx",
     "libo11y-test",
 ]
 
@@ -30,6 +31,7 @@ libo11y-macros = { version = "=0.0.0", path = "libo11y-macros" }
 libo11y-redact = { version = "=0.0.0", path = "libo11y-redact" }
 libo11y-reqwest = { version = "=0.0.0", path = "libo11y-reqwest" }
 libo11y-spec = { version = "=0.0.0", path = "libo11y-spec" }
+libo11y-sqlx = { version = "=0.0.0", path = "libo11y-sqlx" }
 libo11y-test = { version = "=0.0.0", path = "libo11y-test" }
 proc-macro2 = { version = "1.0.107", default-features = false, features = ["proc-macro"] }
 quote = { version = "1.0.47", default-features = false, features = ["proc-macro"] }

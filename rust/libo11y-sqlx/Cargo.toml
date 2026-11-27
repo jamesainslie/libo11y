@@ -1,0 +1,39 @@
+[package]
+name = "libo11y-sqlx"
+description = "OpenTelemetry SQLx instrumentation for libo11y: sanitized db.query.text, parented client spans, db.client.operation.duration with exemplars, and pool metrics."
+readme = "README.md"
+keywords = ["observability", "opentelemetry", "sqlx", "sql", "libo11y"]
+categories = ["database", "development-tools::debugging"]
+include = ["src/**/*.rs", "README.md", "LICENSE"]
+version.workspace = true
+edition.workspace = true
+# sqlx 0.9.0 requires Rust 1.94.
+rust-version = "1.94"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[features]
+default = ["sqlite"]
+# SQLite driver support for sqlx.
+sqlite = ["sqlx/sqlite"]
+# PostgreSQL driver support for sqlx.
+postgres = ["sqlx/postgres"]
+# MySQL and MariaDB driver support for sqlx.
+mysql = ["sqlx/mysql"]
+
+[dependencies]
+futures-core = { version = "0.3.34", default-features = false, features = ["std"] }
+futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
+libo11y.workspace = true
+opentelemetry = { version = "0.33.1", default-features = false, features = ["metrics", "trace"] }
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio"] }
+
+[dev-dependencies]
+libo11y-test.workspace = true
+opentelemetry_sdk = { version = "0.33.1", default-features = false, features = ["metrics", "trace"] }
+tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread"] }
+tracing.workspace = true
+
+[lints]
+workspace = true
