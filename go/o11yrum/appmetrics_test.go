@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -90,7 +91,7 @@ func TestAppMetricSumMerged(t *testing.T) {
 	p := NewMetricProducer()
 	r := newManualReader(t, p)
 	sink := &recordingSink{}
-	h := newProducerHandler(t, p, WithSinks(sink))
+	h := newLabelHandler(t, p, []string{"shop.step"}, WithSinks(sink))
 	for i, remote := range []string{"203.0.113.5:1000", "203.0.113.6:1000"} {
 		md, ms := appMetricsBatch()
 		md.ResourceMetrics().At(0).Resource().Attributes().PutStr("service.instance.id", "browser-"+remote)
@@ -235,7 +236,8 @@ func TestAppMetricCountPerApp(t *testing.T) {
 func TestAppMetricUnboundedAttributesRemoved(t *testing.T) {
 	p := NewMetricProducer()
 	r := newManualReader(t, p)
-	h := newProducerHandler(t, p)
+	// Listing a key never brings back the unbounded ones.
+	h := newLabelHandler(t, p, []string{"shop.step"})
 	md, ms := appMetricsBatch()
 	m := addDeltaSum(ms, "shop.cart.adds", 1, map[string]string{
 		"shop.step":             "checkout",
@@ -258,7 +260,7 @@ func TestAppMetricUnboundedAttributesRemoved(t *testing.T) {
 func TestAppMetricNonStringAttributes(t *testing.T) {
 	p := NewMetricProducer()
 	r := newManualReader(t, p)
-	h := newProducerHandler(t, p)
+	h := newLabelHandler(t, p, []string{"shop.items", "shop.member"})
 	md, ms := appMetricsBatch()
 	m := addDeltaSum(ms, "shop.cart.adds", 1, nil)
 	m.Sum().DataPoints().At(0).Attributes().PutInt("shop.items", 3)
@@ -396,23 +398,28 @@ func TestAppMetricSlotTakenOnlyBySuccess(t *testing.T) {
 }
 
 func TestAppMetricLabelBudget(t *testing.T) {
+	// The caps apply to listed labels too. A key too long to list is
+	// dropped as unlisted, and the point keeps its other labels.
 	p := NewMetricProducer()
 	r := newManualReader(t, p)
-	h := newProducerHandler(t, p)
-	md, ms := appMetricsBatch()
 	wide := map[string]string{}
+	listed := []string{"shop.step"}
 	for i := range maxAppLabels + 1 {
-		wide["shop.k"+strings.Repeat("x", i)] = "v"
+		k := "shop.k" + strings.Repeat("x", i)
+		wide[k] = "v"
+		listed = append(listed, k)
 	}
+	h := newLabelHandler(t, p, listed)
+	md, ms := appMetricsBatch()
 	addDeltaSum(ms, "shop.wide", 1, wide)
 	addDeltaSum(ms, "shop.long", 1, map[string]string{"shop.step": strings.Repeat("y", maxAppLabelLen+10)})
 	addDeltaSum(ms, "shop.longkey", 1, map[string]string{"shop." + strings.Repeat("k", maxAppLabelLen): "v"})
 	code, resp := postMetrics(t, h, md, "203.0.113.5:1000")
-	if code != 200 || resp.PartialSuccess().RejectedDataPoints() != 2 || !strings.Contains(resp.PartialSuccess().ErrorMessage(), "label_budget=2") {
+	if code != 200 || resp.PartialSuccess().RejectedDataPoints() != 1 || !strings.Contains(resp.PartialSuccess().ErrorMessage(), "label_budget=1") {
 		t.Fatalf("%d %s", code, resp.PartialSuccess().ErrorMessage())
 	}
 	got := flatten(collect(t, r))
-	if got["shop.long{service.name=shop-web,shop.step="+strings.Repeat("y", maxAppLabelLen)+"}"] != 1 || len(got) != 1 {
+	if got["shop.long{service.name=shop-web,shop.step="+strings.Repeat("y", maxAppLabelLen)+"}"] != 1 || got["shop.longkey{service.name=shop-web}"] != 1 || len(got) != 2 {
 		t.Fatalf("%v", got)
 	}
 }
@@ -474,5 +481,126 @@ func TestAppMetricSetKeepsRacedMetrics(t *testing.T) {
 	}
 	if s.room("svc", appMetricID{"s", "c"}) {
 		t.Fatal("a new metric found room past the cap")
+	}
+}
+
+// newLabelHandler returns a handler whose shop-web app lists labels in
+// app_metric_labels, built with opts.
+func newLabelHandler(t *testing.T, p *MetricProducer, labels []string, opts ...Option) *Handler {
+	t.Helper()
+	cfg, err := ParseConfig([]byte(testConfig))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Apps[0].AppMetricLabels = labels
+	h, err := NewHandler(append([]Option{WithConfig(cfg), WithMetricProducer(p)}, opts...)...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
+	return h
+}
+
+func TestAppMetricUnclassifiedLabelsDropped(t *testing.T) {
+	// Without an allow-list an app metric keeps only the labels the
+	// specification classifies bounded or enum. The point still counts.
+	p := NewMetricProducer()
+	r := newManualReader(t, p)
+	h := newProducerHandler(t, p)
+	md, ms := appMetricsBatch()
+	addDeltaSum(ms, "shop.cart.adds", 1, map[string]string{
+		"shop.step":         "checkout",
+		"o11y.rum.platform": "web",
+		"os.name":           "iOS",
+		"o11y.label.step":   "pay", // a template the specification classifies unbounded
+	})
+	if code, resp := postMetrics(t, h, md, "203.0.113.5:1000"); code != 200 || resp.PartialSuccess().RejectedDataPoints() != 0 {
+		t.Fatalf("%d %s", code, resp.PartialSuccess().ErrorMessage())
+	}
+	got := flatten(collect(t, r))
+	want := map[string]float64{"shop.cart.adds{o11y.rum.platform=web,os.name=iOS,service.name=shop-web}": 1}
+	if !maps.Equal(got, want) {
+		t.Fatalf("got %v want %v", got, want)
+	}
+}
+
+func TestAppMetricLabelAllowList(t *testing.T) {
+	p := NewMetricProducer()
+	r := newManualReader(t, p)
+	h := newLabelHandler(t, p, []string{"shop.step", "shop.plan"})
+	md, ms := appMetricsBatch()
+	addDeltaSum(ms, "shop.cart.adds", 1, map[string]string{
+		"shop.step":         "checkout",
+		"shop.plan":         "pro",
+		"shop.unlisted":     "x",
+		"session.id":        "s1",
+		"o11y.rum.platform": "web",
+	})
+	addDeltaHistogram(ms, "shop.checkout.duration", []float64{1}, []uint64{1, 0}, 0.5).
+		Histogram().DataPoints().At(0).Attributes().PutStr("shop.step", "pay")
+	if code, resp := postMetrics(t, h, md, "203.0.113.5:1000"); code != 200 || resp.PartialSuccess().RejectedDataPoints() != 0 {
+		t.Fatalf("%d %s", code, resp.PartialSuccess().ErrorMessage())
+	}
+	got := flatten(collect(t, r))
+	want := map[string]float64{
+		"shop.cart.adds{o11y.rum.platform=web,service.name=shop-web,shop.plan=pro,shop.step=checkout}": 1,
+		"shop.checkout.duration{service.name=shop-web,shop.step=pay}#count":                            1,
+	}
+	if !maps.Equal(got, want) {
+		t.Fatalf("got %v want %v", got, want)
+	}
+}
+
+func TestAppMetricAllowListIsPerApp(t *testing.T) {
+	// shop-web's allow-list does not apply to shop-mobile.
+	p := NewMetricProducer()
+	r := newManualReader(t, p)
+	h := newLabelHandler(t, p, []string{"shop.step"})
+	md, ms := appMetricsBatch()
+	md.ResourceMetrics().At(0).Resource().Attributes().PutStr("service.name", "shop-mobile")
+	addDeltaSum(ms, "shop.cart.adds", 1, map[string]string{"shop.step": "checkout"})
+	body, err := pmetricotlp.NewExportRequestFromMetrics(md).MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := send(h, http.MethodPost, "/_o11y/v1/metrics?client_token=pub-123", "application/json", "", "203.0.113.6:1000", body); w.Code != 200 {
+		t.Fatalf("status %d", w.Code)
+	}
+	if got := flatten(collect(t, r)); got["shop.cart.adds{service.name=shop-mobile}"] != 1 || len(got) != 1 {
+		t.Fatalf("%v", got)
+	}
+}
+
+func TestAppMetricDroppedLabelsCounted(t *testing.T) {
+	cfg, err := ParseConfig([]byte(testConfig))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Apps[0].AppMetricLabels = []string{"shop.step"}
+	// The resource loses its per-browser attributes either way.
+	base := &validator{policy: newAttrPolicy(cfg.Apps[0], cfg.Limits), limits: cfg.Limits}
+	bmd, bms := appMetricsBatch()
+	addDeltaSum(bms, "shop.cart.adds", 1, nil)
+	base.metrics(bmd)
+	v := &validator{policy: newAttrPolicy(cfg.Apps[0], cfg.Limits), limits: cfg.Limits}
+	md, ms := appMetricsBatch()
+	addDeltaSum(ms, "shop.cart.adds", 1, map[string]string{"shop.step": "a", "shop.other": "b", "session.id": "s1", "o11y.rum.platform": "web"})
+	v.metrics(md)
+	attrs := ms.At(0).Sum().DataPoints().At(0).Attributes().AsRaw()
+	if want := map[string]any{"shop.step": "a", "o11y.rum.platform": "web"}; !maps.Equal(attrs, want) {
+		t.Fatalf("attributes %v want %v", attrs, want)
+	}
+	if n := v.attrsRemoved - base.attrsRemoved; n != 2 {
+		t.Fatalf("point attributes removed %d, want 2", n)
+	}
+}
+
+func TestAppLabelsRefusesLongKey(t *testing.T) {
+	// The validator drops such a key before appLabels sees it, since no
+	// allow-list may name it. appLabels still refuses one on its own.
+	attrs := pcommon.NewMap()
+	attrs.PutStr("shop."+strings.Repeat("k", maxAppLabelLen), "v")
+	if _, ok := appLabels("shop-web", attrs); ok {
+		t.Fatal("appLabels accepted a key longer than maxAppLabelLen")
 	}
 }

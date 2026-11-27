@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/jamesainslie/libo11y/go/o11yrum/internal/rumspec"
 )
 
 // Config is the gateway configuration, read from one YAML file. Zero
@@ -136,6 +138,13 @@ type AppConfig struct {
 	RemoteConfigFile string `yaml:"remote_config_file"`
 	// Metrics are operator-defined metrics derived from the app's events.
 	Metrics []MetricDefinition `yaml:"metrics"`
+	// AppMetricLabels lists the data point attributes, beyond those the
+	// specification classifies bounded or enum, that the app's metrics
+	// keep. Every other attribute of an app metric point is dropped. A
+	// listed key must have a bounded set of values. Keys the specification
+	// classifies PII, secret or unbounded are refused here and dropped
+	// whatever the pii mode.
+	AppMetricLabels []string `yaml:"app_metric_labels"`
 }
 
 // PII modes.
@@ -308,6 +317,9 @@ func (c *Config) validate() error {
 		if a.PII != piiDrop && a.PII != piiAllow {
 			return fmt.Errorf("app %s: pii %q must be drop or allow", a.ServiceName, a.PII)
 		}
+		if err := validateAppMetricLabels(a); err != nil {
+			return fmt.Errorf("app %s: app_metric_labels: %w", a.ServiceName, err)
+		}
 	}
 	return validateMetrics(c.Apps)
 }
@@ -346,8 +358,39 @@ func (c *Config) clone() *Config {
 	for i, a := range c.Apps {
 		a.Origins = slices.Clone(a.Origins)
 		a.QueryAllowList = slices.Clone(a.QueryAllowList)
+		a.AppMetricLabels = slices.Clone(a.AppMetricLabels)
 		a.Metrics = cloneMetrics(a.Metrics)
 		out.Apps[i] = a
 	}
 	return &out
+}
+
+// validateAppMetricLabels refuses an allow-list entry the gateway would
+// drop anyway, so an operator learns at load time instead of from missing
+// labels.
+func validateAppMetricLabels(a AppConfig) error {
+	seen := make(map[string]bool, len(a.AppMetricLabels))
+	for _, k := range a.AppMetricLabels {
+		sens, card := specClasses(k)
+		switch {
+		case k == "":
+			return errors.New("empty key")
+		case len(k) > maxAppLabelLen:
+			return fmt.Errorf("%.32s... is longer than %d bytes", k, maxAppLabelLen)
+		case seen[k]:
+			return fmt.Errorf("duplicate key %s", k)
+		case gatewayOwned[k] || k == keyServiceName || k == keyOverflow:
+			return fmt.Errorf("%s is set by the gateway", k)
+		case sens == rumspec.Secret:
+			return fmt.Errorf("%s is classified secret by the specification and is always dropped", k)
+		case sens == rumspec.PII:
+			return fmt.Errorf("%s is classified PII by the specification and is always dropped", k)
+		case card == rumspec.Unbounded:
+			return fmt.Errorf("%s is unbounded by the specification and is always dropped", k)
+		case strings.HasPrefix(k, "o11y.") && rumspec.Types[k] == "" && !isTemplateKey(k):
+			return fmt.Errorf("%s is not defined by the specification, which alone mints o11y.* keys", k)
+		}
+		seen[k] = true
+	}
+	return nil
 }

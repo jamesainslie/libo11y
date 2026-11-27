@@ -11,7 +11,6 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/jamesainslie/libo11y/go/o11yrum/internal/aggregate"
-	"github.com/jamesainslie/libo11y/go/o11yrum/internal/rumspec"
 )
 
 // Reasons an app metric data point is dropped.
@@ -39,6 +38,10 @@ const (
 	maxAppLabelLen = 256
 )
 
+// keyOverflow marks the aggregator's overflow series. Only the gateway
+// sets it.
+const keyOverflow = "otel.metric.overflow"
+
 // instrumentNamePattern is the OpenTelemetry instrument name syntax.
 var instrumentNamePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_./-]{0,254}$`)
 
@@ -51,10 +54,10 @@ const (
 
 // metrics validates md in place for re-aggregation: the resource and scope
 // attributes go through the policy like any record's, and so do data point
-// attributes, which then also lose every key the specification classifies
-// unbounded, such as session.id. Exemplars are removed, because they carry
-// trace and span IDs. Attributes the specification does not classify are
-// the app's own and are kept, within the label budget appMetrics applies.
+// attributes, which then keep only the labels metricLabel allows: keys the
+// specification classifies bounded or enum, and keys the app lists in
+// app_metric_labels, within the label budget appMetrics applies. Exemplars
+// are removed, because they carry trace and span IDs.
 // Nothing is dropped here; appMetrics decides which points it can
 // aggregate.
 func (v *validator) metrics(md pmetric.Metrics) dropCounts {
@@ -70,11 +73,11 @@ func (v *validator) metrics(md pmetric.Metrics) dropCounts {
 				eachPoint(m, func(attrs pcommon.Map, exemplars pmetric.ExemplarSlice) {
 					v.filter(attrs)
 					attrs.RemoveIf(func(k string, _ pcommon.Value) bool {
-						if rumspec.Cardinalities[k] == rumspec.Unbounded {
-							v.attrsRemoved++
-							return true
+						if v.policy.metricLabel(k) {
+							return false
 						}
-						return false
+						v.attrsRemoved++
+						return true
 					})
 					exemplars.RemoveIf(func(pmetric.Exemplar) bool { return true })
 				})
@@ -323,7 +326,7 @@ func appLabels(service string, attrs pcommon.Map) (attribute.Set, bool) {
 		switch {
 		case len(k) > maxAppLabelLen:
 			return attribute.Set{}, false
-		case k == keyServiceName || k == "otel.metric.overflow":
+		case k == keyServiceName || k == keyOverflow:
 		case v.Type() == pcommon.ValueTypeMap || v.Type() == pcommon.ValueTypeSlice || v.Type() == pcommon.ValueTypeBytes:
 		default:
 			kvs = append(kvs, attribute.String(k, truncateUTF8(v.AsString(), maxAppLabelLen)))
