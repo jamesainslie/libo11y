@@ -1,0 +1,24 @@
+[package]
+name = "libo11y-cli"
+description = "Command-line tool for libo11y: validates application attribute registries against the libo11y policy rules."
+readme = "README.md"
+keywords = ["observability", "opentelemetry", "telemetry", "cli", "libo11y"]
+categories = ["command-line-utilities", "development-tools"]
+include = ["src/**/*.rs", "README.md", "LICENSE"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[[bin]]
+name = "libo11y"
+path = "src/main.rs"
+doc = false
+
+[dependencies]
+libo11y.workspace = true
+
+[lints]
+workspace = true

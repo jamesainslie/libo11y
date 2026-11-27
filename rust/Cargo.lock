@@ -127,6 +127,8 @@ dependencies = [
  "http",
  "http-body",
  "http-body-util",
+ "hyper",
+ "hyper-util",
  "itoa",
  "matchit",
  "memchr",
@@ -135,6 +137,7 @@ dependencies = [
  "pin-project-lite",
  "serde_core",
  "sync_wrapper",
+ "tokio",
  "tower",
  "tower-layer",
  "tower-service",
@@ -952,6 +955,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 
 [[package]]
+name = "httpserver-example"
+version = "0.0.0"
+dependencies = [
+ "axum",
+ "http",
+ "http-body-util",
+ "libo11y",
+ "libo11y-http",
+ "libo11y-spec",
+ "libo11y-test",
+ "tokio",
+ "tower",
+ "tracing",
+]
+
+[[package]]
 name = "hybrid-array"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1317,6 +1336,13 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "libo11y-cli"
+version = "0.0.0"
+dependencies = [
+ "libo11y",
 ]
 
 [[package]]
@@ -2825,6 +2851,7 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
+ "signal-hook-registry",
  "socket2",
  "tokio-macros",
  "windows-sys 0.61.2",

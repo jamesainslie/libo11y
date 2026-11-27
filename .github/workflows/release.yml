@@ -25,8 +25,15 @@
 # attestations, runs a live PyPI consumer smoke test, and then publishes the
 # GitHub Release titled `libo11y-python vX.Y.Z` (never marked Latest).
 #
+# A rust/vX.Y.Z tag validates lockstep workspace versions, rust/CHANGELOG.md,
+# `make rust-check`, and `make rust-msrv`, publishes all eleven crates to
+# crates.io in dependency order through crates.io trusted publishing
+# (skipping any crate version already on crates.io), runs a live consumer
+# smoke test against crates.io, and publishes the GitHub Release titled
+# `libo11y Rust vX.Y.Z` (never marked Latest).
+#
 # scripts/release-tag.sh routes the tag. The verify job's kind output (go,
-# ts, zig or python) selects the jobs and steps that run.
+# ts, zig, python or rust) selects the jobs and steps that run.
 name: release
 
 on:
@@ -39,6 +46,7 @@ on:
       - "ts/v*"
       - "zig/v*"
       - "python/v*"
+      - "rust/v*"
 
 permissions:
   contents: read
@@ -63,6 +71,8 @@ jobs:
       prerelease: ${{ steps.tag.outputs.prerelease }}
       # The ts branch only: every package name, space separated.
       packages: ${{ steps.packages.outputs.names }}
+      # The rust branch only: every publishable crate in topological order, space separated.
+      rust_crates: ${{ steps.rust_crates.outputs.crates }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -75,7 +85,7 @@ jobs:
         run: |
           # The script explains a refused tag on stderr.
           if ! scripts/release-tag.sh "$TAG" >"$RUNNER_TEMP/release-tag.out"; then
-            echo "::error::$TAG is not a release tag with a semantic version (go/vX.Y.Z, go/<submodule>/vX.Y.Z, ts/vX.Y.Z, zig/vX.Y.Z or python/vX.Y.Z)"
+            echo "::error::$TAG is not a release tag with a semantic version (go/vX.Y.Z, go/<submodule>/vX.Y.Z, ts/vX.Y.Z, zig/vX.Y.Z, python/vX.Y.Z or rust/vX.Y.Z)"
             exit 1
           fi
           cat "$RUNNER_TEMP/release-tag.out" >>"$GITHUB_OUTPUT"
@@ -232,6 +242,43 @@ jobs:
         env:
           VERSION: ${{ steps.tag.outputs.version }}
         run: scripts/python-release-check.sh "v$VERSION"
+
+      # The Rust branch. Every publishable crate in rust/ must carry the tag's
+      # version, rust/CHANGELOG.md must hold its release notes, and both the
+      # MSRV toolchain and the pinned toolchain must pass.
+      # Install 1.88 first and 1.95.0 second so 1.95.0 is the active default
+      # toolchain when `make rust-check` runs.
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, 2026-10-16
+        if: steps.tag.outputs.kind == 'rust'
+        with:
+          toolchain: "1.88"
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, 2026-10-16
+        if: steps.tag.outputs.kind == 'rust'
+        with:
+          toolchain: "1.95.0"
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        if: steps.tag.outputs.kind == 'rust'
+        with:
+          workspaces: rust
+      - name: Check the Rust changelog has release notes
+        if: steps.tag.outputs.kind == 'rust'
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: scripts/release-notes.sh "$VERSION" rust/CHANGELOG.md
+      - name: Validate Rust lockstep versions, changelog, and package hygiene
+        id: rust_crates
+        if: steps.tag.outputs.kind == 'rust'
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          scripts/rust-release-check.sh "v$VERSION" --write-order "$RUNNER_TEMP/rust-crates.txt"
+          echo "crates=$(cat "$RUNNER_TEMP/rust-crates.txt")" >>"$GITHUB_OUTPUT"
+      - name: Run Rust workspace checks and MSRV verification
+        if: steps.tag.outputs.kind == 'rust'
+        run: |
+          make rust-check RUST_JOBS=4
+          make rust-msrv RUST_MSRV=1.88 RUST_JOBS=4
 
   release:
     needs: verify
@@ -646,6 +693,223 @@ jobs:
           notes="$RUNNER_TEMP/release-notes.md"
           scripts/release-notes.sh "$VERSION" python/CHANGELOG.md >"$notes"
           title="libo11y-python v$VERSION"
+          # The Go main module's release stays the repository's Latest release.
+          if gh release view "$TAG" >/dev/null; then
+            echo "$TAG already has a release; replacing its title and notes"
+            gh release edit "$TAG" --title "$title" --notes-file "$notes" --prerelease="$PRERELEASE" --latest=false
+          else
+            gh release create "$TAG" --title "$title" --notes-file "$notes" --verify-tag --prerelease="$PRERELEASE" --latest=false
+          fi
+
+  publish-rust:
+    needs: verify
+    if: needs.verify.outputs.kind == 'rust'
+    runs-on: blacksmith-4vcpu-ubuntu-2604
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      # Exchanges the workflow's OIDC identity for a short-lived crates.io
+      # publish token via trusted publishing (no long-lived token stored).
+      id-token: write
+    steps:
+      - uses: useblacksmith/checkout@v1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, 2026-10-16
+        with:
+          toolchain: "1.95.0"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Obtain crates.io trusted publishing token
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+      - name: Publish Rust crates to crates.io in dependency order
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+          VERSION: ${{ needs.verify.outputs.version }}
+          CRATES: ${{ needs.verify.outputs.rust_crates }}
+        run: |
+          if [[ -z "$CRATES" ]]; then
+            echo "::error::the verify job listed no Rust crates"
+            exit 1
+          fi
+          sparse_index_url() {
+            local name="${1,,}"
+            local len="${#name}"
+            case "$len" in
+            1) echo "https://index.crates.io/1/$name" ;;
+            2) echo "https://index.crates.io/2/$name" ;;
+            3) echo "https://index.crates.io/3/${name:0:1}/$name" ;;
+            *) echo "https://index.crates.io/${name:0:2}/${name:2:2}/$name" ;;
+            esac
+          }
+          in_sparse_index() {
+            local url
+            url="$(sparse_index_url "$1")"
+            curl -fsS -A "libo11y-release-workflow" "$url" 2>/dev/null |
+              jq -e --arg v "$VERSION" 'select(.vers == $v)' >/dev/null 2>&1
+          }
+          for crate in $CRATES; do
+            if in_sparse_index "$crate"; then
+              echo "$crate@$VERSION is already in the crates.io sparse index; skipping it"
+              continue
+            fi
+            echo "Publishing $crate@$VERSION"
+            published=false
+            for attempt in 1 2 3 4; do
+              if cargo publish --locked -p "$crate" --manifest-path rust/Cargo.toml -j 4; then
+                published=true
+                break
+              fi
+              if in_sparse_index "$crate"; then
+                echo "$crate@$VERSION landed in the sparse index after publish attempt $attempt"
+                published=true
+                break
+              fi
+              echo "attempt $attempt: cargo publish failed for $crate@$VERSION; backing off before retry" >&2
+              sleep $((attempt * 15))
+            done
+            if [[ "$published" != true ]]; then
+              echo "::error::cargo publish failed for $crate@$VERSION after retries"
+              exit 1
+            fi
+            # Wait for the crates.io sparse index CDN to serve the new version
+            # before publishing crates that depend on it.
+            indexed=false
+            for attempt in $(seq 1 18); do
+              if in_sparse_index "$crate"; then
+                indexed=true
+                break
+              fi
+              echo "attempt $attempt: waiting for $crate@$VERSION in the crates.io sparse index" >&2
+              sleep 10
+            done
+            if [[ "$indexed" != true ]]; then
+              echo "::error::$crate@$VERSION did not appear in the crates.io sparse index after publishing"
+              exit 1
+            fi
+          done
+
+  smoke-rust:
+    needs: [verify, publish-rust]
+    if: needs.verify.outputs.kind == 'rust'
+    runs-on: blacksmith-4vcpu-ubuntu-2604
+    timeout-minutes: 30
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+      CRATES: ${{ needs.verify.outputs.rust_crates }}
+    steps:
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, 2026-10-16
+        with:
+          toolchain: "1.95.0"
+      - name: Wait for all published crates in the crates.io sparse index
+        run: |
+          if [[ -z "$CRATES" ]]; then
+            echo "::error::the verify job listed no Rust crates"
+            exit 1
+          fi
+          sparse_index_url() {
+            local name="${1,,}"
+            local len="${#name}"
+            case "$len" in
+            1) echo "https://index.crates.io/1/$name" ;;
+            2) echo "https://index.crates.io/2/$name" ;;
+            3) echo "https://index.crates.io/3/${name:0:1}/$name" ;;
+            *) echo "https://index.crates.io/${name:0:2}/${name:2:2}/$name" ;;
+            esac
+          }
+          for attempt in $(seq 1 20); do
+            missing=""
+            for crate in $CRATES; do
+              url="$(sparse_index_url "$crate")"
+              if ! curl -fsS -A "libo11y-release-workflow" "$url" 2>/dev/null |
+                jq -e --arg v "$VERSION" 'select(.vers == $v)' >/dev/null 2>&1; then
+                missing="$missing $crate"
+              fi
+            done
+            if [[ -z "$missing" ]]; then
+              exit 0
+            fi
+            echo "attempt $attempt: crates.io sparse index does not serve$missing at $VERSION yet" >&2
+            sleep 15
+          done
+          echo "::error::crates.io sparse index did not serve$missing at $VERSION"
+          exit 1
+      - name: Build and test a fresh consumer against crates.io
+        run: |
+          consumer="$(mktemp -d)"
+          cd "$consumer"
+          cat >Cargo.toml <<EOF
+          [package]
+          name = "libo11y-rust-smoke"
+          version = "0.1.0"
+          edition = "2024"
+
+          [dependencies]
+          libo11y = "=$VERSION"
+          libo11y-spec = "=$VERSION"
+          libo11y-test = "=$VERSION"
+          tracing = "0.1"
+          EOF
+          mkdir -p src
+          cat >src/main.rs <<'EOF'
+          use libo11y_test::Recorder;
+
+          fn main() {
+              let rec = Recorder::start("rust-smoke");
+              rec.in_scope(|| {
+                  let _span = tracing::info_span!("smoke.op").entered();
+                  tracing::info!(smoke.ok = true, "smoke log");
+                  rec.sdk()
+                      .meter("smoke")
+                      .u64_counter("smoke.requests")
+                      .build()
+                      .add(1, &[]);
+              });
+              rec.assert_conforms();
+              rec.assert_correlated();
+              rec.assert_triangle("smoke.requests");
+              assert_eq!(rec.sdk().resource().schema_url(), Some(libo11y_spec::SCHEMA_URL));
+          }
+          EOF
+          cargo run -j 4
+      - name: Install and run libo11y-cli from crates.io
+        run: |
+          tmp="$(mktemp -d)"
+          cargo install libo11y-cli --version "=$VERSION" --locked --root "$tmp/bin" -j 4
+          cat >"$tmp/registry.yaml" <<'EOF'
+          schema: libo11y.app-registry/v1
+          namespace: smoke
+          attributes:
+            smoke.order.id: {type: string, sensitivity: internal, cardinality: unbounded}
+          EOF
+          "$tmp/bin/bin/libo11y" registry check "$tmp/registry.yaml"
+
+  # The GitHub Release waits for smoke-rust so it is created only after the
+  # published crates resolve and run for an external consumer.
+  release-rust:
+    needs: [verify, smoke-rust]
+    if: needs.verify.outputs.kind == 'rust'
+    runs-on: blacksmith-4vcpu-ubuntu-2604
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: useblacksmith/checkout@v1
+        with:
+          persist-credentials: false
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.verify.outputs.version }}
+          PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+        run: |
+          notes="$RUNNER_TEMP/release-notes.md"
+          scripts/release-notes.sh "$VERSION" rust/CHANGELOG.md >"$notes"
+          title="libo11y Rust v$VERSION"
           # The Go main module's release stays the repository's Latest release.
           if gh release view "$TAG" >/dev/null; then
             echo "$TAG already has a release; replacing its title and notes"

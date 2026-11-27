@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Tests for release-tag.sh: it routes each Go, TypeScript and Zig release
-# tag to its family, directory, module and version, and it refuses any other
-# tag.
+# Tests for release-tag.sh: it routes each Go, TypeScript, Zig, Python and
+# Rust release tag to its family, directory, module and version, and it
+# refuses any other tag.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -157,6 +157,26 @@ prerelease=true
 EOF
 )" python/v0.2.0-rc.1
 
+expect_route "routes the rust workspace" "$(
+	cat <<'EOF'
+kind=rust
+dir=rust
+module=libo11y-rust
+version=0.1.0
+prerelease=false
+EOF
+)" rust/v0.1.0
+
+expect_route "marks a rust prerelease" "$(
+	cat <<'EOF'
+kind=rust
+dir=rust
+module=libo11y-rust
+version=0.2.0-rc.1
+prerelease=true
+EOF
+)" rust/v0.2.0-rc.1
+
 expect_failure "refuses a spec tag" 1 "spec/v1.2.0 is not a release tag" spec/v1.2.0
 expect_failure "refuses an unknown go submodule" 1 "is not a release tag" go/o11yfoo/v1.0.0
 expect_failure "refuses a tag without the v" 1 "is not a release tag" ts/0.1.0
@@ -167,6 +187,9 @@ expect_failure "refuses a two-part zig version" 1 "1.2 is not a semantic version
 expect_failure "refuses a python tag without the v" 1 "is not a release tag" python/0.1.0
 expect_failure "refuses a nested python path" 1 "is not a release tag" python/foo/v0.1.0
 expect_failure "refuses a two-part python version" 1 "1.2 is not a semantic version" python/v1.2
+expect_failure "refuses a rust tag without the v" 1 "is not a release tag" rust/0.1.0
+expect_failure "refuses a nested rust path" 1 "is not a release tag" rust/libo11y/v0.1.0
+expect_failure "refuses a two-part rust version" 1 "1.2 is not a semantic version" rust/v1.2
 expect_failure "refuses a two-part version" 1 "1.2 is not a semantic version" ts/v1.2
 expect_failure "refuses a leading zero" 1 "01.0.0 is not a semantic version" ts/v01.0.0
 expect_failure "refuses build metadata" 1 "is not a semantic version" ts/v0.1.0+build.5

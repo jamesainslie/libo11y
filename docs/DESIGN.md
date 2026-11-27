@@ -25,9 +25,9 @@ All three signals are first-class and OTLP-native:
   endpoints of libo11y's own. One standard route to a scrape endpoint
   remains in Go: exporter selection is delegated to OpenTelemetry's
   autoexport, so `OTEL_METRICS_EXPORTER=prometheus` starts upstream's
-  Prometheus exporter. TypeScript, Zig, Python, and C reject that value.
-  Runtime metrics on by default (Zig and C collect semantic-convention process
-  metrics, as they have no garbage-collected runtime; Python collects
+  Prometheus exporter. TypeScript, Zig, Python, C, and Rust reject that value.
+  Runtime metrics on by default (Zig, C, and Rust collect semantic-convention
+  process metrics, as they have no garbage-collected runtime; Python collects
   `cpython.gc.*` and `process.*` using only the standard library).
 - **Logs**: the language's standard structured-logging facade is the front
   door (Go: `slog`; Python: stdlib `logging`; Rust: `tracing`; Java: SLF4J). TypeScript has no such
@@ -146,7 +146,7 @@ not honor yet, such as `OTEL_PROPAGATORS`.
 The one exception is explicit and opt-in: a hermetic mode (Go:
 `WithoutOTELEnv`; TypeScript: `hermetic: true`; Zig: `.env = .hermetic`,
 which is the default; Python: `env=libo11y.HERMETIC`; C:
-`env_mode = O11Y_ENV_HERMETIC`) in which no `OTEL_*`
+`env_mode = O11Y_ENV_HERMETIC`; Rust: `Builder::without_otel_env()`) in which no `OTEL_*`
 variable affects behavior, configuration comes only from code options and
 library defaults, and a signal with nothing injected is disabled rather
 than built from the environment. In Go, two experimental switches with no
@@ -178,8 +178,10 @@ Three complementary layers, all language-idiomatic:
    decorator;
    C: `o11y_log_kv_secret`, `o11y_log_kv_masked`, `o11y_redact_secret`, and
    `o11y_redact_mask`;
-   Rust: derive with `Display`-only output; Java: annotation processor or
-   wrapper types).
+   Rust: `libo11y::redact::{Secret, Masked}` and `#[derive(Redact)]` guarding
+   `Debug`, `Display`, `serde::Serialize`, and `tracing` fields recorded with
+   `%` or `?`; Java:
+   annotation processor or wrapper types).
    Protections: `mask` (same-length X string), `redact` (literal `REDACTED`),
    `omit` (field absent). Strictest wins through nesting. Two more tag
    values are accepted as synonyms: `confidential` masks and `secret`
@@ -245,7 +247,7 @@ Shared cases and vectors live under `conformance/` today. They fix the
 outputs every implementation must reproduce exactly: the application
 registry check, the instance ID derivation, the PII token and endpoint
 sanitizing. The registry cases are hand-written, and Go generates the JSON
-vectors. The Go, TypeScript, Zig, Python, and C suites all test against them.
+vectors. The Go, TypeScript, Zig, Python, C, and Rust suites all test against them.
 
 The OTLP payload corpus is future work. It will run each implementation's
 example app against a shared OTLP capture harness and diff normalized
