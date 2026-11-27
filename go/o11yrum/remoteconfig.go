@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -41,15 +42,17 @@ type ConfigProvider interface {
 // or modification time changed, which picks up a Kubernetes ConfigMap
 // update. A file that stops parsing keeps the last good version.
 type FileConfigProvider struct {
-	mu    sync.Mutex
 	now   func() time.Time
-	files map[string]*configFile
+	files map[string]*configFile          // read-only after construction
 	warn  func(service string, err error) // reports a failed reload; may be nil
 }
 
 var _ ConfigProvider = (*FileConfigProvider)(nil)
 
+// configFile is one app's file. Its lock covers a reload, so a slow read
+// of one file never holds up another app's requests.
 type configFile struct {
+	mu      sync.Mutex
 	path    string
 	checked time.Time // last time the file was looked at
 	modTime time.Time // of the last version read, good or bad
@@ -85,12 +88,12 @@ func NewFileConfigProvider(files map[string]string, now func() time.Time) (*File
 // RemoteConfig returns the current configuration of service, or
 // ErrNoRemoteConfig.
 func (p *FileConfigProvider) RemoteConfig(_ context.Context, service string) (RemoteConfig, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
 	f, ok := p.files[service]
 	if !ok {
 		return RemoteConfig{}, ErrNoRemoteConfig
 	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	now := p.now()
 	if now.Sub(f.checked) >= reloadEvery {
 		f.checked = now
@@ -117,17 +120,23 @@ func (p *FileConfigProvider) report(service string, err error) {
 // file's size and modification time are still recorded, so an unchanged
 // broken file is not read again.
 func (f *configFile) load(now time.Time) error {
-	st, err := os.Stat(f.path)
+	file, err := os.Open(f.path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = file.Close() }()
+	st, err := file.Stat()
 	if err != nil {
 		return err
 	}
 	f.modTime, f.size, f.checked = st.ModTime(), st.Size(), now
-	if st.Size() > maxRemoteConfigBytes {
-		return fmt.Errorf("%s is larger than %d bytes", f.path, maxRemoteConfigBytes)
-	}
-	raw, err := os.ReadFile(f.path)
+	// Reading one byte past the cap catches a file that grew after Stat.
+	raw, err := io.ReadAll(io.LimitReader(file, maxRemoteConfigBytes+1))
 	if err != nil {
 		return err
+	}
+	if len(raw) > maxRemoteConfigBytes {
+		return fmt.Errorf("%s is larger than %d bytes", f.path, maxRemoteConfigBytes)
 	}
 	if err := checkJSONObject(raw); err != nil {
 		return fmt.Errorf("%s must hold a JSON object: %w", f.path, err)
@@ -209,6 +218,12 @@ func (h *Handler) serveConfig(w http.ResponseWriter, r *http.Request) {
 		h.reject(w, r, a.origins, rejection{status: http.StatusServiceUnavailable, reason: "config_provider", retryAfter: sinkRetryAfter})
 		return
 	}
+	if !validVersion(rc.Version) {
+		h.log.WarnContext(r.Context(), "o11yrum: the remote configuration provider returned an unusable version",
+			slog.String("o11yrum.app", service))
+		h.reject(w, r, a.origins, rejection{status: http.StatusServiceUnavailable, reason: "config_provider", retryAfter: sinkRetryAfter})
+		return
+	}
 	setCORS(w, r, a.origins)
 	hdr := w.Header()
 	if hdr.Get("Access-Control-Allow-Origin") != "" {
@@ -231,6 +246,20 @@ func (h *Handler) serveConfig(w http.ResponseWriter, r *http.Request) {
 	hdr.Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(body)
+}
+
+// validVersion reports whether v can be an entity tag: not empty, and
+// only visible ASCII other than the double quote.
+func validVersion(v string) bool {
+	if v == "" {
+		return false
+	}
+	for i := range len(v) {
+		if c := v[i]; c <= ' ' || c == '"' || c > '~' {
+			return false
+		}
+	}
+	return true
 }
 
 // etagMatches applies If-None-Match's weak comparison: any listed tag,

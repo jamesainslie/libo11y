@@ -200,3 +200,14 @@ sinks:
 		t.Error("clone shares the headers map")
 	}
 }
+
+func TestOTLPSinkKeepsConnectionsForOneCollector(t *testing.T) {
+	s := newSink(t, OTLPSinkConfig{Endpoint: "http://collector:4318"})
+	tr, ok := s.client.Transport.(*http.Transport)
+	if !ok || tr.MaxIdleConnsPerHost < 64 {
+		t.Fatalf("transport %T keeps too few idle connections", s.client.Transport)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+}

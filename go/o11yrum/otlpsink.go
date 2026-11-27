@@ -76,8 +76,27 @@ func NewOTLPSink(cfg OTLPSinkConfig) (*OTLPSink, error) {
 		base:    strings.TrimRight(cfg.Endpoint, "/"),
 		headers: maps.Clone(cfg.Headers),
 		gzip:    cfg.Compression != "none",
-		client:  &http.Client{Timeout: timeout},
+		client:  &http.Client{Timeout: timeout, Transport: newCollectorTransport()},
 	}, nil
+}
+
+// maxIdleCollectorConns is how many idle connections the sink keeps to its
+// one collector. net/http's default of two would open and close a
+// connection for nearly every export under load.
+const maxIdleCollectorConns = 100
+
+func newCollectorTransport() *http.Transport {
+	tr := http.DefaultTransport.(*http.Transport).Clone() //nolint:forcetypeassert // the standard library's default
+	tr.MaxIdleConns = maxIdleCollectorConns
+	tr.MaxIdleConnsPerHost = maxIdleCollectorConns
+	return tr
+}
+
+// Close closes the sink's idle connections. Call it after the last
+// export.
+func (s *OTLPSink) Close() error {
+	s.client.CloseIdleConnections()
+	return nil
 }
 
 // Name returns "otlp".

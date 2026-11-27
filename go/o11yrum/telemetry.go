@@ -33,6 +33,10 @@ const (
 	sinkError       = "error"
 )
 
+// durationBuckets are the boundaries the semantic conventions advise for
+// durations in seconds.
+var durationBuckets = []float64{0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 10}
+
 // appUnknown labels a batch whose app is not configured, or not yet
 // known, so the label stays bounded by the configuration.
 const appUnknown = "unknown"
@@ -80,10 +84,21 @@ func newTelemetry(mp metric.MeterProvider, log *slog.Logger) *telemetry {
 		t.attrsRemoved, _ = fallback.Int64Counter("o11yrum.attributes.removed")
 	}
 	if t.sinkDuration, err = m.Float64Histogram("o11yrum.sink.duration", metric.WithUnit("s"),
+		metric.WithExplicitBucketBoundaries(durationBuckets...),
 		metric.WithDescription("Time one sink took to export one batch, by sink and outcome.")); !check("o11yrum.sink.duration", err) {
 		t.sinkDuration, _ = fallback.Float64Histogram("o11yrum.sink.duration")
 	}
 	return t
+}
+
+// report records one finished OTLP request. What validation removed is
+// counted only for a batch the gateway accepted: a refused batch is sent
+// again, and would be counted twice.
+func (t *telemetry) report(ctx context.Context, sig Signal, rep *batchReport) {
+	t.batch(ctx, rep.app, sig, rep.outcome, rep.reason)
+	if rep.outcome != outcomeRejected {
+		t.validated(ctx, rep.app, sig, rep.drops, rep.attrsRemoved)
+	}
 }
 
 // batch counts one OTLP request.
@@ -111,9 +126,11 @@ func (t *telemetry) validated(ctx context.Context, app string, sig Signal, drops
 // batchReport collects one request's outcome for o11yrum.batches. The
 // ingest path fills it in and records it once, when the request ends.
 type batchReport struct {
-	app     string
-	outcome string
-	reason  string
+	app          string
+	outcome      string
+	reason       string
+	drops        dropCounts
+	attrsRemoved int64
 }
 
 func newBatchReport() *batchReport {
@@ -121,6 +138,11 @@ func newBatchReport() *batchReport {
 }
 
 func (b *batchReport) reject(reason string) { b.outcome, b.reason = outcomeRejected, reason }
+
+// validated keeps what validation removed, for report.
+func (b *batchReport) validated(drops dropCounts, attrsRemoved int64) {
+	b.drops, b.attrsRemoved = drops, attrsRemoved
+}
 
 func (b *batchReport) accept(drops dropCounts) {
 	b.outcome, b.reason = outcomeAccepted, reasonOK

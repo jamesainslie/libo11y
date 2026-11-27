@@ -1,6 +1,7 @@
 package o11yrum
 
 import (
+	"math"
 	"net/http"
 	"net/netip"
 	"strconv"
@@ -24,7 +25,9 @@ type clientInfo struct {
 // clientInfo reads the country header, the user agent and its client
 // hints, and the sent_at query parameter (Unix milliseconds). receiver is
 // the proxy hop that received the client's connection, never the client.
-func (h *Handler) clientInfo(r *http.Request, receiver netip.Addr) clientInfo {
+// arrived is when the request arrived, read before the body, so upload and
+// decoding time do not count as skew.
+func (h *Handler) clientInfo(r *http.Request, receiver netip.Addr, arrived time.Time) clientInfo {
 	ci := clientInfo{
 		country: h.trust.country(r, receiver),
 		ua: uaparse.Parse(uaparse.Hints{
@@ -34,7 +37,7 @@ func (h *Handler) clientInfo(r *http.Request, receiver netip.Addr) clientInfo {
 		}),
 	}
 	if ms, err := strconv.ParseInt(r.URL.Query().Get("sent_at"), 10, 64); err == nil && ms > 0 {
-		skew := h.now().Sub(time.UnixMilli(ms))
+		skew := arrived.Sub(time.UnixMilli(ms))
 		if skew.Abs() >= h.cfg.Edge.ClockSkewThreshold {
 			ci.skew = skew
 		}
@@ -67,7 +70,8 @@ func enrich(sig Signal, d decoded, ci clientInfo) {
 
 // enrichResource adds what the gateway derives from the request. Browser
 // family and OS come from the user agent only for web pages and browser
-// extensions; a React Native user agent names its HTTP library. A device
+// extensions, which keep no os.name of their own; a React Native user
+// agent names its HTTP library, so a native app's os.name stays. A device
 // class the client sent stays, unless the user agent is a bot.
 func enrichResource(res pcommon.Resource, ci clientInfo, platform string) {
 	attrs := res.Attributes()
@@ -78,8 +82,13 @@ func enrichResource(res pcommon.Resource, ci clientInfo, platform string) {
 	if browser && ci.ua.Family != "" {
 		attrs.PutStr(keyBrowserFamily, ci.ua.Family)
 	}
-	if browser && ci.ua.OS != "" {
-		attrs.PutStr(keyOSName, ci.ua.OS)
+	if browser {
+		// A browser's OS is the gateway's to name, so a client's value
+		// cannot add arbitrary series.
+		attrs.Remove(keyOSName)
+		if ci.ua.OS != "" {
+			attrs.PutStr(keyOSName, ci.ua.OS)
+		}
 	}
 	if ci.ua.Device == "bot" {
 		attrs.PutStr(keyDeviceClass, "bot")
@@ -130,49 +139,79 @@ func platformOf(m pcommon.Map) (string, bool) {
 	return v.Str(), true
 }
 
-// shiftTraces moves every span start, end and event timestamp by d.
+// shiftTraces moves every span start, end and event timestamp by d. The
+// batch is left alone when any timestamp would leave the representable
+// range, because moving some timestamps and not others would break the
+// order validation checked.
 func shiftTraces(td ptrace.Traces, d time.Duration) {
+	if shiftable(func(f func(pcommon.Timestamp) pcommon.Timestamp) { visitTraceTimes(td, f) }, d) {
+		visitTraceTimes(td, func(ts pcommon.Timestamp) pcommon.Timestamp { return shift(ts, d) })
+	}
+}
+
+// shiftLogs moves every record's timestamp and observed timestamp by d,
+// under the same rule as shiftTraces.
+func shiftLogs(ld plog.Logs, d time.Duration) {
+	if shiftable(func(f func(pcommon.Timestamp) pcommon.Timestamp) { visitLogTimes(ld, f) }, d) {
+		visitLogTimes(ld, func(ts pcommon.Timestamp) pcommon.Timestamp { return shift(ts, d) })
+	}
+}
+
+// shiftable reports whether every timestamp visit offers can move by d.
+func shiftable(visit func(func(pcommon.Timestamp) pcommon.Timestamp), d time.Duration) bool {
+	ok := true
+	visit(func(ts pcommon.Timestamp) pcommon.Timestamp {
+		if ts != 0 {
+			n := int64(ts) //nolint:gosec // a timestamp past 2262 shows up as negative and is refused
+			if n < 0 || (d > 0 && n > math.MaxInt64-int64(d)) || n+int64(d) <= 0 {
+				ok = false
+			}
+		}
+		return ts
+	})
+	return ok
+}
+
+// shift moves a set timestamp by d. Zero means unset and stays zero.
+func shift(ts pcommon.Timestamp, d time.Duration) pcommon.Timestamp {
+	if ts == 0 {
+		return 0
+	}
+	return pcommon.Timestamp(int64(ts) + int64(d)) //nolint:gosec // shiftable checked the range
+}
+
+// visitTraceTimes replaces every span start, end and event timestamp with
+// f of it.
+func visitTraceTimes(td ptrace.Traces, f func(pcommon.Timestamp) pcommon.Timestamp) {
 	for i := range td.ResourceSpans().Len() {
 		scopes := td.ResourceSpans().At(i).ScopeSpans()
 		for j := range scopes.Len() {
 			spans := scopes.At(j).Spans()
 			for k := range spans.Len() {
 				s := spans.At(k)
-				s.SetStartTimestamp(shift(s.StartTimestamp(), d))
-				s.SetEndTimestamp(shift(s.EndTimestamp(), d))
+				s.SetStartTimestamp(f(s.StartTimestamp()))
+				s.SetEndTimestamp(f(s.EndTimestamp()))
 				for e := range s.Events().Len() {
 					ev := s.Events().At(e)
-					ev.SetTimestamp(shift(ev.Timestamp(), d))
+					ev.SetTimestamp(f(ev.Timestamp()))
 				}
 			}
 		}
 	}
 }
 
-// shiftLogs moves every record's timestamp and observed timestamp by d.
-func shiftLogs(ld plog.Logs, d time.Duration) {
+// visitLogTimes replaces every record's timestamp and observed timestamp
+// with f of it.
+func visitLogTimes(ld plog.Logs, f func(pcommon.Timestamp) pcommon.Timestamp) {
 	for i := range ld.ResourceLogs().Len() {
 		scopes := ld.ResourceLogs().At(i).ScopeLogs()
 		for j := range scopes.Len() {
 			records := scopes.At(j).LogRecords()
 			for k := range records.Len() {
 				lr := records.At(k)
-				lr.SetTimestamp(shift(lr.Timestamp(), d))
-				lr.SetObservedTimestamp(shift(lr.ObservedTimestamp(), d))
+				lr.SetTimestamp(f(lr.Timestamp()))
+				lr.SetObservedTimestamp(f(lr.ObservedTimestamp()))
 			}
 		}
 	}
-}
-
-// shift moves a timestamp by d, leaving zero (unset) alone and refusing to
-// go to or below zero.
-func shift(ts pcommon.Timestamp, d time.Duration) pcommon.Timestamp {
-	if ts == 0 {
-		return 0
-	}
-	n := int64(ts) + int64(d) //nolint:gosec // OTLP timestamps fit in int64 until 2262
-	if n <= 0 {
-		return ts
-	}
-	return pcommon.Timestamp(n)
 }

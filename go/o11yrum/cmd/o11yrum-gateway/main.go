@@ -19,10 +19,12 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"regexp"
 	"slices"
+	"strings"
 	"syscall"
 	"time"
 
@@ -34,11 +36,21 @@ import (
 // version is set at build time with -ldflags "-X main.version=...".
 var version = "dev"
 
-// shutdownTimeout bounds draining in-flight requests on shutdown.
-const shutdownTimeout = 20 * time.Second
+// Shutdown budget. Together they stay inside Kubernetes' default 30s
+// termination grace period, so the final telemetry flush is not killed.
+const (
+	serverDrain    = 15 * time.Second // in-flight requests and their exports
+	telemetryFlush = 10 * time.Second // the gateway's own telemetry
+)
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	// After the first signal, restore the default handling so a second
+	// one ends the process at once instead of waiting for the drain.
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
 	code := run(ctx, os.Args[1:], os.Stdout, os.Stderr)
 	stop()
 	os.Exit(code)
@@ -109,7 +121,9 @@ func load(path string) (*o11yrum.Config, *o11yrum.OTLPSink, error) {
 		return nil, nil, fmt.Errorf("config: environment %q must be production, staging, development or test", cfg.Environment)
 	}
 	if cfg.Sinks.OTLP.Endpoint == "" {
-		cfg.Sinks.OTLP.Endpoint = os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+		if err := sinkFromEnvironment(&cfg.Sinks.OTLP); err != nil {
+			return nil, nil, err
+		}
 	}
 	if cfg.Sinks.OTLP.Endpoint == "" {
 		return cfg, nil, nil
@@ -119,6 +133,56 @@ func load(path string) (*o11yrum.Config, *o11yrum.OTLPSink, error) {
 		return nil, nil, err
 	}
 	return cfg, sink, nil
+}
+
+// sinkFromEnvironment fills the OTLP sink from the standard exporter
+// variables the gateway's own telemetry also reads: the endpoint, the
+// headers (a header the configuration sets wins), and the protocol, which
+// must be http/protobuf because that is what the sink speaks.
+func sinkFromEnvironment(c *o11yrum.OTLPSinkConfig) error {
+	endpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	if endpoint == "" {
+		return nil
+	}
+	if p := os.Getenv("OTEL_EXPORTER_OTLP_PROTOCOL"); p != "" && p != "http/protobuf" {
+		return fmt.Errorf("OTEL_EXPORTER_OTLP_PROTOCOL=%s: the sink speaks OTLP/HTTP protobuf; set sinks.otlp.endpoint", p)
+	}
+	headers, err := parseOTLPHeaders(os.Getenv("OTEL_EXPORTER_OTLP_HEADERS"))
+	if err != nil {
+		return err
+	}
+	if c.Headers == nil {
+		c.Headers = map[string]string{}
+	}
+	for k, v := range headers {
+		if _, set := c.Headers[k]; !set {
+			c.Headers[k] = v
+		}
+	}
+	c.Endpoint = endpoint
+	return nil
+}
+
+// parseOTLPHeaders reads OTEL_EXPORTER_OTLP_HEADERS: comma-separated
+// key=value pairs with URL-encoded values.
+func parseOTLPHeaders(raw string) (map[string]string, error) {
+	out := map[string]string{}
+	for pair := range strings.SplitSeq(raw, ",") {
+		if strings.TrimSpace(pair) == "" {
+			continue
+		}
+		k, v, ok := strings.Cut(pair, "=")
+		k = strings.TrimSpace(k)
+		if !ok || k == "" {
+			return nil, fmt.Errorf("OTEL_EXPORTER_OTLP_HEADERS: %q is not key=value", strings.TrimSpace(pair))
+		}
+		value, err := url.PathUnescape(strings.TrimSpace(v))
+		if err != nil {
+			return nil, fmt.Errorf("OTEL_EXPORTER_OTLP_HEADERS: the value of %s: %w", k, err)
+		}
+		out[k] = value
+	}
+	return out, nil
 }
 
 // serve runs the gateway until ctx ends, then drains it.
@@ -131,14 +195,15 @@ func serve(ctx context.Context, cfg *o11yrum.Config, sink *o11yrum.OTLPSink, std
 		return fmt.Errorf("telemetry: %w", err)
 	}
 	defer func() {
-		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)
+		flushCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), telemetryFlush)
 		defer cancel()
-		if serr := sdk.Shutdown(shutdownCtx); serr != nil && err == nil {
+		if serr := sdk.Shutdown(flushCtx); serr != nil && err == nil {
 			err = fmt.Errorf("telemetry shutdown: %w", serr)
 		}
 	}()
 	opts := []o11yrum.Option{o11yrum.WithConfig(cfg), o11yrum.WithSDK(sdk)}
 	if sink != nil {
+		defer func() { _ = sink.Close() }()
 		opts = append(opts, o11yrum.WithSinks(sink))
 	}
 	h, err := o11yrum.NewHandler(opts...)
@@ -172,9 +237,9 @@ func serve(ctx context.Context, cfg *o11yrum.Config, sink *o11yrum.OTLPSink, std
 		return err
 	case <-ctx.Done():
 	}
-	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)
+	drainCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), serverDrain)
 	defer cancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil {
+	if err := srv.Shutdown(drainCtx); err != nil {
 		return fmt.Errorf("shutdown: %w", err)
 	}
 	return nil

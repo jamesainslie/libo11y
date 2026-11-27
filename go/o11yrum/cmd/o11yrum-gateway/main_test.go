@@ -210,6 +210,47 @@ func TestSinkEndpointFromEnvironment(t *testing.T) {
 	}
 }
 
+func TestSinkFromEnvironmentHonoursProtocolAndHeaders(t *testing.T) {
+	quietTelemetry(t)
+	path := filepath.Join(t.TempDir(), "gateway.yaml")
+	cfgYAML := "environment: test\napps:\n  - {service_name: a, origins: [\"https://a\"]}\nsinks: {otlp: {headers: {X-Scope-OrgID: from-config}}}\n"
+	if err := os.WriteFile(path, []byte(cfgYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.example:4318")
+	t.Setenv("OTEL_EXPORTER_OTLP_HEADERS", "Authorization=Basic%20abc,X-Scope-OrgID=from-env, X-Extra = 1 ")
+	cfg, _, err := load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := cfg.Sinks.OTLP.Headers
+	if h["Authorization"] != "Basic abc" || h["X-Scope-OrgID"] != "from-config" || h["X-Extra"] != "1" {
+		t.Errorf("headers %v", h)
+	}
+
+	for _, proto := range []string{"grpc", "http/json"} {
+		t.Setenv("OTEL_EXPORTER_OTLP_PROTOCOL", proto)
+		if _, _, err := load(path); err == nil || !strings.Contains(err.Error(), proto) {
+			t.Errorf("protocol %s: err = %v", proto, err)
+		}
+	}
+	t.Setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf")
+	if _, _, err := load(path); err != nil {
+		t.Errorf("http/protobuf: %v", err)
+	}
+	t.Setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_HEADERS", "novalue")
+	if _, _, err := load(path); err == nil || !strings.Contains(err.Error(), "OTEL_EXPORTER_OTLP_HEADERS") {
+		t.Errorf("malformed headers: err = %v", err)
+	}
+}
+
+func TestShutdownBudgetFitsKubernetesGrace(t *testing.T) {
+	if serverDrain+telemetryFlush >= 30*time.Second {
+		t.Fatalf("draining (%v) and flushing (%v) exceed the default 30s grace period", serverDrain, telemetryFlush)
+	}
+}
+
 func TestListenFailure(t *testing.T) {
 	quietTelemetry(t)
 	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")

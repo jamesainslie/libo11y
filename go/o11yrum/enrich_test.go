@@ -2,6 +2,7 @@ package o11yrum
 
 import (
 	"bytes"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -101,12 +102,7 @@ func TestShiftTraces(t *testing.T) {
 		t.Errorf("an unset event timestamp became %v", got)
 	}
 
-	early := spans.AppendEmpty()
-	early.SetStartTimestamp(pcommon.Timestamp(time.Second))
 	shiftTraces(td, -3*time.Second)
-	if early.StartTimestamp() != pcommon.Timestamp(time.Second) {
-		t.Errorf("a shift below zero moved the timestamp to %v", early.StartTimestamp())
-	}
 	if s.StartTimestamp() != pcommon.Timestamp(10*time.Second) {
 		t.Errorf("negative shift: %v", s.StartTimestamp())
 	}
@@ -162,7 +158,7 @@ func TestClientInfoSkew(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			r := httptest.NewRequest(http.MethodPost, "/_o11y/v1/logs?"+tc.query, nil)
-			if got := h.clientInfo(r, netip.Addr{}).skew; got != tc.want {
+			if got := h.clientInfo(r, netip.Addr{}, fixedNow).skew; got != tc.want {
 				t.Errorf("skew %v, want %v", got, tc.want)
 			}
 		})
@@ -337,4 +333,79 @@ func TestIngestNeverExportsDirectClientAddress(t *testing.T) {
 	if len(carriers) != 1 || carriers[0] != "shop.ip" {
 		t.Fatalf("the client address reached the sink in %v, want only the app's own shop.ip", carriers)
 	}
+}
+
+func TestShiftSkipsBatchThatWouldGoNegative(t *testing.T) {
+	td := ptrace.NewTraces()
+	s := td.ResourceSpans().AppendEmpty().ScopeSpans().AppendEmpty().Spans().AppendEmpty()
+	s.SetStartTimestamp(pcommon.Timestamp(10 * time.Second))
+	s.SetEndTimestamp(pcommon.Timestamp(15 * time.Second))
+	// Shifting by -12s would take the start below zero but not the end;
+	// moving one and not the other would put the end before the start.
+	shiftTraces(td, -12*time.Second)
+	if s.StartTimestamp() != pcommon.Timestamp(10*time.Second) || s.EndTimestamp() != pcommon.Timestamp(15*time.Second) {
+		t.Errorf("span moved to %v..%v", s.StartTimestamp(), s.EndTimestamp())
+	}
+
+	ld := plog.NewLogs()
+	records := ld.ResourceLogs().AppendEmpty().ScopeLogs().AppendEmpty().LogRecords()
+	a, b := records.AppendEmpty(), records.AppendEmpty()
+	a.SetTimestamp(pcommon.Timestamp(2 * time.Second))
+	b.SetTimestamp(pcommon.Timestamp(20 * time.Second))
+	shiftLogs(ld, -5*time.Second)
+	if a.Timestamp() != pcommon.Timestamp(2*time.Second) || b.Timestamp() != pcommon.Timestamp(20*time.Second) {
+		t.Errorf("records moved to %v and %v", a.Timestamp(), b.Timestamp())
+	}
+
+	// Overflowing int64 upwards is skipped too.
+	s.SetEndTimestamp(pcommon.Timestamp(math.MaxInt64 - 1))
+	shiftTraces(td, time.Second)
+	if s.StartTimestamp() != pcommon.Timestamp(10*time.Second) {
+		t.Errorf("an overflowing shift moved the start to %v", s.StartTimestamp())
+	}
+}
+
+func TestIngestMeasuresSkewAtArrival(t *testing.T) {
+	// The clock advances while the body is decoded; the skew is measured
+	// from the moment the request arrived.
+	sink := &recordingSink{}
+	cfg, err := ParseConfig([]byte(testConfig))
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	clock := func() time.Time {
+		calls++
+		if calls == 1 {
+			return fixedNow
+		}
+		return fixedNow.Add(time.Hour)
+	}
+	h, err := NewHandler(WithConfig(cfg), WithSinks(sink), WithClock(clock))
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls = 0 // the request's first reading of the clock is its arrival
+	ld := sampleLogs()
+	ts := pcommon.NewTimestampFromTime(fixedNow.Add(-time.Minute))
+	ld.ResourceLogs().At(0).ScopeLogs().At(0).LogRecords().At(0).SetTimestamp(ts)
+	w := send(h, http.MethodPost, "/_o11y/v1/logs?sent_at="+sentAt(10*time.Second), "application/json", "https://shop.example", "203.0.113.5:1000", logsBody(t, ld))
+	if w.Code != 200 {
+		t.Fatalf("status %d", w.Code)
+	}
+	got := sink.batches[0].Logs.ResourceLogs().At(0).ScopeLogs().At(0).LogRecords().At(0).Timestamp()
+	if want := ts + pcommon.Timestamp(10*time.Second); got != want {
+		t.Errorf("timestamp %v, want %v", got.AsTime(), want.AsTime())
+	}
+}
+
+func TestEnrichResourceReplacesClientOSForBrowsers(t *testing.T) {
+	// A web page's os.name is the gateway's to set; an unknown agent
+	// leaves none rather than the client's own value.
+	res := resourceWith(keyPlatform, "web", keyOSName, "TempleOS 9000")
+	enrichResource(res, clientInfo{ua: uaparse.Result{Family: "other", Device: "unknown"}}, "web")
+	wantAttrs(t, res.Attributes(), map[string]string{keyOSName: ""})
+	res = resourceWith(keyOSName, "Plan 9")
+	enrichResource(res, clientInfo{ua: uaparse.Result{Family: "chrome", OS: "Linux", Device: "desktop"}}, "")
+	wantAttrs(t, res.Attributes(), map[string]string{keyOSName: "Linux"})
 }

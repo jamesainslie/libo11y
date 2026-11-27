@@ -34,8 +34,9 @@ type rejection struct {
 // rate limit, decoding, app admission, validation, enrichment and export.
 // Each stage is a method so later stages slot in without restructuring.
 func (h *Handler) ingest(w http.ResponseWriter, r *http.Request, sig Signal) {
+	arrived := h.now()
 	rep := newBatchReport()
-	defer func() { h.tel.batch(r.Context(), rep.app, sig, rep.outcome, rep.reason) }()
+	defer func() { h.tel.report(r.Context(), sig, rep) }()
 	refuse := func(corsOrigins map[string]bool, rej rejection) {
 		rep.reject(rej.reason)
 		h.reject(w, r, corsOrigins, rej)
@@ -78,7 +79,7 @@ func (h *Handler) ingest(w http.ResponseWriter, r *http.Request, sig Signal) {
 		refuse(nil, *rej)
 		return
 	}
-	ci := h.clientInfo(r, receiver)
+	ci := h.clientInfo(r, receiver, arrived)
 	v := &validator{policy: a.policy, limits: h.cfg.Limits}
 	var drops dropCounts
 	var remaining int
@@ -97,7 +98,7 @@ func (h *Handler) ingest(w http.ResponseWriter, r *http.Request, sig Signal) {
 		d.logs.MarkReadOnly()
 		b.Logs = d.logs
 	}
-	h.tel.validated(r.Context(), service, sig, drops, v.attrsRemoved)
+	rep.validated(drops, v.attrsRemoved)
 	if remaining > 0 {
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), sinkTimeout)
 		defer cancel()

@@ -370,3 +370,60 @@ apps:
 		t.Fatalf("status %d", w.Code)
 	}
 }
+
+// fixedProvider serves one RemoteConfig for every app.
+type fixedProvider struct{ rc RemoteConfig }
+
+func (p fixedProvider) RemoteConfig(context.Context, string) (RemoteConfig, error) { return p.rc, nil }
+
+func TestServeConfigRefusesBadProviderVersion(t *testing.T) {
+	for name, version := range map[string]string{"empty": "", "quote": `a"b`, "control": "a\nb", "space": "a b"} {
+		t.Run(name, func(t *testing.T) {
+			h := newConfigHandler(t, WithConfigProvider(fixedProvider{RemoteConfig{Version: version, Document: json.RawMessage(`{}`)}}))
+			if w := getConfig(h, "?service=shop-web", "https://shop.example", "203.0.113.70:1"); w.Code != 503 {
+				t.Fatalf("status %d, want 503", w.Code)
+			}
+		})
+	}
+	h := newConfigHandler(t, WithConfigProvider(fixedProvider{RemoteConfig{Version: "v1.2-x", Document: json.RawMessage(`{}`)}}))
+	if w := getConfig(h, "?service=shop-web", "https://shop.example", "203.0.113.71:1"); w.Code != 200 || w.Header().Get("ETag") != `"v1.2-x"` {
+		t.Fatalf("status %d ETag %q", w.Code, w.Header().Get("ETag"))
+	}
+}
+
+func TestFileConfigProviderConcurrentReloads(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "shop-web.json")
+	writeFile(t, path, `{"n":0}`)
+	clock := newTestClock()
+	p, err := NewFileConfigProvider(map[string]string{"shop-web": path}, clock.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	for i := range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := range 50 {
+				if i == 0 && j%10 == 0 {
+					writeFile(t, path, fmt.Sprintf(`{"n":%d}`, j))
+					clock.advance(11 * time.Second)
+				}
+				rc, err := p.RemoteConfig(context.Background(), "shop-web")
+				if err != nil || len(rc.Version) != 16 {
+					t.Errorf("version %q err %v", rc.Version, err)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+func TestFileConfigProviderRefusesLargeFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "big.json")
+	writeFile(t, path, `{"pad":"`+strings.Repeat("x", maxRemoteConfigBytes)+`"}`)
+	if _, err := NewFileConfigProvider(map[string]string{"shop-web": path}, time.Now); err == nil {
+		t.Fatal("a file over the cap was accepted")
+	}
+}

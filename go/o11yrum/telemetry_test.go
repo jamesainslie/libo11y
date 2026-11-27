@@ -88,9 +88,11 @@ func TestTelemetry(t *testing.T) {
 	if w := postLogs(t, h, "nope", "https://shop.example", "", "203.0.113.3:1"); w.Code != 403 {
 		t.Fatalf("unknown service: %d", w.Code)
 	}
-	// Rejected: a sink failure.
+	// Rejected: a sink failure. Its dropped record and removed attribute
+	// are not counted, because the client sends the batch again.
 	failing.err = errors.New("down")
-	if w := postLogs(t, h, "shop-web", "https://shop.example", "", "203.0.113.4:1"); w.Code != 503 {
+	bad.Attributes().PutStr("client.address", "x")
+	if w := send(h, http.MethodPost, "/_o11y/v1/logs", "application/json", "https://shop.example", "203.0.113.4:1", logsBody(t, ld)); w.Code != 503 {
 		t.Fatalf("sink failure: %d", w.Code)
 	}
 	// Rejected: undecodable traces.
@@ -133,6 +135,9 @@ func TestTelemetry(t *testing.T) {
 	hist, ok := dur.Data.(metricdata.Histogram[float64])
 	if !ok {
 		t.Fatalf("o11yrum.sink.duration is %T", dur.Data)
+	}
+	if len(hist.DataPoints) == 0 || hist.DataPoints[0].Bounds[0] != 0.001 {
+		t.Errorf("o11yrum.sink.duration buckets are not sized for seconds: %v", hist.DataPoints)
 	}
 	counts := map[attribute.Distinct]uint64{}
 	for _, dp := range hist.DataPoints {
