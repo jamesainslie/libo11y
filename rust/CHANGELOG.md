@@ -20,7 +20,8 @@ Workspace MSRV is Rust 1.88 (Rust 1.94 for `libo11y-sqlx`).
 - `libo11y-macros` and `libo11y-redact`: capture-time redaction with
   `Secret<T>`, `Masked<T>`, the `Redact` trait, and `#[derive(Redact)]`
   supporting `#[o11y(mask | redact | omit | confidential | secret)]` across
-  `Debug`, `Display`, `serde::Serialize`, and `tracing::Value` surfaces (strictest
+  `Debug`, `Display`, `serde::Serialize`, and `tracing` fields recorded with
+  `%` or `?` (strictest
   wins through nesting; unknown attributes fail closed to `redact`).
 - `libo11y`: core SDK (`Sdk::builder()`, `Builder::setup()`, `Builder::build()`)
   on OpenTelemetry Rust 0.33.1 and `tracing` with swappable global subscriber

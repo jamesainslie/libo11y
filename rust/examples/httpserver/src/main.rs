@@ -33,20 +33,46 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let (stop_tx, stop_rx) = oneshot::channel::<()>();
     let router = httpserver_example::app(&sdk);
     let server = tokio::spawn(async move {
-        let _ = axum::serve(listener, router)
+        axum::serve(listener, router)
             .with_graceful_shutdown(async {
                 let _ = stop_rx.await;
             })
-            .await;
+            .await
     });
 
-    #[cfg(unix)]
-    let shutdown_res = sdk.shutdown_on_signals().await;
-    #[cfg(not(unix))]
-    let shutdown_res = sdk.shutdown_async().await;
-
+    // Wait for a termination signal, drain in-flight HTTP requests first, and
+    // only then flush and shut down the telemetry SDK so spans, logs, and
+    // metrics from drained requests are exported.
+    shutdown_signal().await;
     let _ = stop_tx.send(());
-    let _ = server.await;
-    shutdown_res?;
+    let serve_result = server.await?;
+    let shutdown_result = sdk.shutdown_async().await;
+    serve_result?;
+    shutdown_result?;
     Ok(())
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        if let Ok(mut sigterm) =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        {
+            sigterm.recv().await;
+        } else {
+            std::future::pending::<()>().await;
+        }
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = ctrl_c => {}
+        () = terminate => {}
+    }
 }

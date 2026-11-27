@@ -2,13 +2,17 @@
 # rust-release-check.sh: validate the libo11y Rust workspace for a lockstep
 # release.
 #
-# Usage: rust-release-check.sh [VERSION] [--workspace DIR] [--changelog FILE]
+# Usage: rust-release-check.sh [VERSION] [--workspace DIR] [--changelog FILE] [--write-order FILE]
 #
 # Defaults:
 #   VERSION    v0.0.0 (leading v is optional; `make rust-release-check` and
 #              `make release-check` pass RUST_RELEASE_VERSION).
 #   WORKSPACE  <repo_root>/rust
 #   CHANGELOG  <workspace>/CHANGELOG.md
+#
+# Options:
+#   --write-order FILE  Write the verified space-separated topological publish
+#                       order of all publishable crates to FILE.
 #
 # Checks:
 #   1. Every publishable workspace crate (publish != false) is at VERSION and
@@ -17,7 +21,8 @@
 #      readme metadata, and has LICENSE and README.md on disk.
 #   3. When VERSION is not 0.0.0, CHANGELOG has a non-empty `## [VERSION]`
 #      section (validated via scripts/release-notes.sh).
-#   4. Workspace-internal dependencies form an acyclic publish order.
+#   4. Workspace-internal dependencies (including version-pinned dev
+#      dependencies) form an acyclic publish order.
 #   5. `cargo package --list --allow-dirty` succeeds for every publishable
 #      crate, includes Cargo.toml, LICENSE, and README.md, and excludes
 #      conformance/ and agent artifacts.
@@ -30,9 +35,10 @@ version="v0.0.0"
 version_set=false
 workspace=""
 changelog=""
+write_order=""
 
 usage() {
-	echo "usage: rust-release-check.sh [VERSION] [--workspace DIR] [--changelog FILE]" >&2
+	echo "usage: rust-release-check.sh [VERSION] [--workspace DIR] [--changelog FILE] [--write-order FILE]" >&2
 }
 
 while (($# > 0)); do
@@ -64,6 +70,22 @@ while (($# > 0)); do
 	--changelog=*)
 		changelog="${1#--changelog=}"
 		if [[ -z "$changelog" ]]; then
+			usage
+			exit 2
+		fi
+		shift
+		;;
+	--write-order)
+		if (($# < 2)) || [[ -z "$2" ]]; then
+			usage
+			exit 2
+		fi
+		write_order="$2"
+		shift 2
+		;;
+	--write-order=*)
+		write_order="${1#--write-order=}"
+		if [[ -z "$write_order" ]]; then
 			usage
 			exit 2
 		fi
@@ -136,7 +158,9 @@ done < <(jq -r '.[].name' <<<"$pub_json")
 
 # Check lockstep version, exact internal dependency pinning, metadata fields,
 # and LICENSE / README.md presence for every publishable crate.
-while IFS=$'\t' read -r name pkg_version pkg_manifest description license repository readme; do
+# Uses ASCII unit separator (0x1f) with a trailing sentinel so bash read never
+# collapses adjacent empty fields (unlike whitespace IFS such as tab).
+while IFS=$'\x1f' read -r name pkg_version pkg_manifest description license repository readme _end; do
 	if [[ "$pkg_version" != "$plain" ]]; then
 		fail "$name is at version $pkg_version, want $plain"
 	fi
@@ -150,7 +174,7 @@ while IFS=$'\t' read -r name pkg_version pkg_manifest description license reposi
 	[[ -f "$crate_dir/$readme" ]] || fail "$name: missing readme file $crate_dir/$readme"
 
 	# Verify every workspace-internal dependency pins exact version =VERSION.
-	while IFS=$'\t' read -r dep_name dep_req dep_kind; do
+	while IFS=$'\x1f' read -r dep_name dep_req dep_kind _dep_end; do
 		[[ -n "$dep_name" ]] || continue
 		if [[ -n "${is_pub[$dep_name]+x}" ]]; then
 			if [[ "$dep_req" != "=$plain" ]]; then
@@ -160,13 +184,13 @@ while IFS=$'\t' read -r name pkg_version pkg_manifest description license reposi
 	done < <(jq -r --arg name "$name" '
 		.[] | select(.name == $name)
 		| .dependencies[]
-		| [.name, .req, (.kind // "normal")]
-		| @tsv
+		| [.name, (.req // ""), (.kind // "normal"), "_"]
+		| join("\u001f")
 	' <<<"$pub_json")
 done < <(jq -r '
 	.[]
-	| [.name, .version, .manifest_path, (.description // ""), (.license // ""), (.repository // ""), (.readme // "")]
-	| @tsv
+	| [.name, .version, .manifest_path, (.description // ""), (.license // ""), (.repository // ""), (.readme // ""), "_"]
+	| join("\u001f")
 ' <<<"$pub_json")
 
 echo "rust-release-check: $count publishable crate(s) match lockstep version $plain and metadata checks"
@@ -182,7 +206,9 @@ else
 	echo "rust-release-check: $changelog present with ## [Unreleased] (unreleased 0.0.0)"
 fi
 
-# Verify normal/build workspace dependencies form a DAG (acyclic publish order).
+# Verify workspace dependencies (normal, build, and version-pinned dev
+# dependencies) form a DAG so crates.io publish verification resolves every
+# pinned dev-dependency (such as libo11y-test) before dependents publish.
 declare -A dep_list=()
 while IFS= read -r name; do
 	deps=""
@@ -194,7 +220,7 @@ while IFS= read -r name; do
 	done < <(jq -r --arg name "$name" '
 		.[] | select(.name == $name)
 		| .dependencies[]
-		| select((.kind // "normal") != "dev")
+		| select((.kind // "normal") != "dev" or ((.req // "") != "" and (.req // "") != "*"))
 		| .name
 	' <<<"$pub_json" | sort -u)
 	dep_list["$name"]="$deps"
@@ -225,6 +251,9 @@ while ((${#ordered[@]} < count)); do
 done
 
 echo "rust-release-check: publish order verified: ${ordered[*]}"
+if [[ -n "$write_order" ]]; then
+	printf '%s\n' "${ordered[*]}" >"$write_order"
+fi
 
 # Verify packaging file lists for every publishable crate.
 for name in "${ordered[@]}"; do

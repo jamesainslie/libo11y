@@ -175,7 +175,8 @@ Three complementary layers, all language-idiomatic:
    C: `o11y_log_kv_secret`, `o11y_log_kv_masked`, `o11y_redact_secret`, and
    `o11y_redact_mask`;
    Rust: `libo11y::redact::{Secret, Masked}` and `#[derive(Redact)]` guarding
-   `Debug`, `Display`, `serde::Serialize`, and `tracing::Value`; Java:
+   `Debug`, `Display`, `serde::Serialize`, and `tracing` fields recorded with
+   `%` or `?`; Java:
    annotation processor or wrapper types).
    Protections: `mask` (same-length X string), `redact` (literal `REDACTED`),
    `omit` (field absent). Strictest wins through nesting. Two more tag

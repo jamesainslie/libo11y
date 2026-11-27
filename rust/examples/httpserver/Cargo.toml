@@ -14,7 +14,7 @@ axum = { version = "0.8.9", default-features = false, features = ["http1", "matc
 libo11y.workspace = true
 libo11y-http = { workspace = true, features = ["axum"] }
 libo11y-spec.workspace = true
-tokio = { version = "1.54.1", default-features = false, features = ["macros", "net", "rt-multi-thread", "sync"] }
+tokio = { version = "1.54.1", default-features = false, features = ["macros", "net", "rt-multi-thread", "signal", "sync"] }
 tracing.workspace = true
 
 [dev-dependencies]
