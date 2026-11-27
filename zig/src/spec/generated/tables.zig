@@ -392,6 +392,7 @@ pub const sensitivity: []const SensitivityEntry = &.{
     .{ .key = "o11y.rum.platform", .class = .public },
     .{ .key = "o11y.rum.replay.segment", .class = .public },
     .{ .key = "o11y.rum.session.retained", .class = .public },
+    .{ .key = "o11y.rum.span.shape", .class = .public },
     .{ .key = "o11y.rum.summary.cls.value", .class = .public },
     .{ .key = "o11y.rum.summary.errors.anr", .class = .public },
     .{ .key = "o11y.rum.summary.errors.boundary", .class = .public },
@@ -422,6 +423,7 @@ pub const sensitivity: []const SensitivityEntry = &.{
     .{ .key = "o11y.signal", .class = .public },
     .{ .key = "o11y.team.name", .class = .public },
     .{ .key = "o11y.tenant.id", .class = .internal },
+    .{ .key = "os.name", .class = .public },
     .{ .key = "os.type", .class = .public },
     .{ .key = "process.command_args", .class = .pii },
     .{ .key = "process.command_line", .class = .pii },
@@ -481,6 +483,7 @@ pub const cardinality: []const CardinalityEntry = &.{
     .{ .key = "o11y.rum.platform", .class = .@"enum" },
     .{ .key = "o11y.rum.replay.segment", .class = .unbounded },
     .{ .key = "o11y.rum.session.retained", .class = .@"enum" },
+    .{ .key = "o11y.rum.span.shape", .class = .@"enum" },
     .{ .key = "o11y.rum.summary.cls.value", .class = .unbounded },
     .{ .key = "o11y.rum.summary.errors.anr", .class = .unbounded },
     .{ .key = "o11y.rum.summary.errors.boundary", .class = .unbounded },
@@ -511,8 +514,10 @@ pub const cardinality: []const CardinalityEntry = &.{
     .{ .key = "o11y.signal", .class = .@"enum" },
     .{ .key = "o11y.team.name", .class = .bounded },
     .{ .key = "o11y.tenant.id", .class = .unbounded },
+    .{ .key = "os.name", .class = .bounded },
     .{ .key = "process.command_args", .class = .unbounded },
     .{ .key = "process.command_line", .class = .unbounded },
+    .{ .key = "service.name", .class = .bounded },
     .{ .key = "session.id", .class = .unbounded },
     .{ .key = "url.path", .class = .unbounded },
 };
@@ -768,6 +773,7 @@ pub const rum_span_required: []const SpanShape = &.{
     .{
         .name = "view",
         .required = &.{
+            "o11y.rum.span.shape",
             "o11y.rum.platform",
             "o11y.rum.view.name",
             "o11y.rum.view.id",
@@ -777,10 +783,20 @@ pub const rum_span_required: []const SpanShape = &.{
     },
     .{
         .name = "action",
-        .required = &.{ "o11y.rum.action.type", "o11y.rum.view.id", "session.id" },
+        .required = &.{
+            "o11y.rum.span.shape",
+            "o11y.rum.action.type",
+            "o11y.rum.view.id",
+            "session.id",
+        },
     },
     .{
         .name = "app_load",
-        .required = &.{ "o11y.rum.platform", "o11y.rum.view.id", "session.id" },
+        .required = &.{
+            "o11y.rum.span.shape",
+            "o11y.rum.platform",
+            "o11y.rum.view.id",
+            "session.id",
+        },
     },
 };

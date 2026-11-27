@@ -213,6 +213,9 @@ export const ATTR_RUM_REPLAY_SEGMENT = "o11y.rum.replay.segment";
 export const ATTR_RUM_SESSION_RETAINED = "o11y.rum.session.retained";
 
 // @public (undocumented)
+export const ATTR_RUM_SPAN_SHAPE = "o11y.rum.span.shape";
+
+// @public (undocumented)
 export const ATTR_RUM_SUMMARY_CLS_VALUE = "o11y.rum.summary.cls.value";
 
 // @public (undocumented)
@@ -656,6 +659,18 @@ export const RUM_SESSION_RETAINED_VALUES: readonly RUMSessionRetained[];
 export const RUM_SPAN_REQUIRED: ReadonlyMap<string, readonly string[]>;
 
 // @public (undocumented)
+export const RUM_SPAN_SHAPE_VALUE_ACTION = "action";
+
+// @public (undocumented)
+export const RUM_SPAN_SHAPE_VALUE_APP_LOAD = "app_load";
+
+// @public (undocumented)
+export const RUM_SPAN_SHAPE_VALUE_VIEW = "view";
+
+// @public
+export const RUM_SPAN_SHAPE_VALUES: readonly RUMSpanShape[];
+
+// @public (undocumented)
 export const RUM_VIEW_KIND_VALUE_BFCACHE_RESTORE = "bfcache_restore";
 
 // @public (undocumented)
@@ -708,6 +723,9 @@ export type RUMPlatform = "web" | "webext" | "react_native" | "ios" | "android";
 
 // @public
 export type RUMSessionRetained = "head_sampled" | "error" | "frustration";
+
+// @public
+export type RUMSpanShape = "view" | "action" | "app_load";
 
 // @public
 export type RUMViewKind = "initial" | "soft" | "bfcache_restore" | "prerender" | "screen";

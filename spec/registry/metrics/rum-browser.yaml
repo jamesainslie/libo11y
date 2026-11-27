@@ -13,6 +13,7 @@ groups:
     instrument: histogram
     unit: s
     attributes:
+      - {ref: service.name, requirement_level: required, annotations: {o11y.cardinality: bounded, o11y.gen: alias}}
       - {ref: o11y.rum.view.name, requirement_level: required, annotations: {o11y.gen: mint}}
       - {ref: o11y.rum.vital.rating, annotations: {o11y.gen: mint}}
       - {ref: o11y.rum.device.class, annotations: {o11y.gen: mint}}
@@ -31,6 +32,7 @@ groups:
     instrument: histogram
     unit: s
     attributes:
+      - {ref: service.name, requirement_level: required, annotations: {o11y.cardinality: bounded, o11y.gen: alias}}
       - {ref: o11y.rum.view.name, requirement_level: required, annotations: {o11y.gen: mint}}
       - {ref: o11y.rum.vital.rating, annotations: {o11y.gen: mint}}
       - {ref: o11y.rum.device.class, annotations: {o11y.gen: mint}}
@@ -49,6 +51,7 @@ groups:
     instrument: histogram
     unit: "1"
     attributes:
+      - {ref: service.name, requirement_level: required, annotations: {o11y.cardinality: bounded, o11y.gen: alias}}
       - {ref: o11y.rum.view.name, requirement_level: required, annotations: {o11y.gen: mint}}
       - {ref: o11y.rum.vital.rating, annotations: {o11y.gen: mint}}
       - {ref: o11y.rum.device.class, annotations: {o11y.gen: mint}}
@@ -67,6 +70,7 @@ groups:
     instrument: histogram
     unit: s
     attributes:
+      - {ref: service.name, requirement_level: required, annotations: {o11y.cardinality: bounded, o11y.gen: alias}}
       - {ref: o11y.rum.view.name, requirement_level: required, annotations: {o11y.gen: mint}}
       - {ref: o11y.rum.vital.rating, annotations: {o11y.gen: mint}}
       - {ref: o11y.rum.device.class, annotations: {o11y.gen: mint}}
@@ -85,6 +89,7 @@ groups:
     instrument: histogram
     unit: s
     attributes:
+      - {ref: service.name, requirement_level: required, annotations: {o11y.cardinality: bounded, o11y.gen: alias}}
       - {ref: o11y.rum.view.name, requirement_level: required, annotations: {o11y.gen: mint}}
       - {ref: o11y.rum.vital.rating, annotations: {o11y.gen: mint}}
       - {ref: o11y.rum.device.class, annotations: {o11y.gen: mint}}
@@ -102,4 +107,5 @@ groups:
     instrument: counter
     unit: "{frame}"
     attributes:
+      - {ref: service.name, requirement_level: required, annotations: {o11y.cardinality: bounded, o11y.gen: alias}}
       - {ref: o11y.rum.view.name, requirement_level: required, annotations: {o11y.gen: mint}}

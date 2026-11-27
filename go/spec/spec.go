@@ -86,6 +86,15 @@ const (
 	RUMPlatformAndroid     RUMPlatform = "android"
 )
 
+// RUMSpanShape is the closed value set for o11y.rum.span.shape.
+type RUMSpanShape string
+
+const (
+	RUMSpanShapeView    RUMSpanShape = "view"
+	RUMSpanShapeAction  RUMSpanShape = "action"
+	RUMSpanShapeAppLoad RUMSpanShape = "app_load"
+)
+
 // RUMViewKind is the closed value set for o11y.rum.view.kind.
 type RUMViewKind string
 
@@ -239,6 +248,7 @@ const (
 	RUMSummaryFCPValueKey                 attribute.Key = "o11y.rum.summary.fcp.value"
 	RUMSummaryTTFBValueKey                attribute.Key = "o11y.rum.summary.ttfb.value"
 	RUMPlatformKey                        attribute.Key = "o11y.rum.platform"
+	RUMSpanShapeKey                       attribute.Key = "o11y.rum.span.shape"
 	RUMViewNameKey                        attribute.Key = "o11y.rum.view.name"
 	RUMViewIDKey                          attribute.Key = "o11y.rum.view.id"
 	RUMViewKindKey                        attribute.Key = "o11y.rum.view.kind"
@@ -391,6 +401,9 @@ func RUMSummaryTTFBValue(v float64) attribute.KeyValue { return RUMSummaryTTFBVa
 
 // RUMPlatformValue returns the o11y.rum.platform attribute.
 func RUMPlatformValue(v RUMPlatform) attribute.KeyValue { return RUMPlatformKey.String(string(v)) }
+
+// RUMSpanShapeValue returns the o11y.rum.span.shape attribute.
+func RUMSpanShapeValue(v RUMSpanShape) attribute.KeyValue { return RUMSpanShapeKey.String(string(v)) }
 
 // RUMViewName returns the o11y.rum.view.name attribute.
 func RUMViewName(v string) attribute.KeyValue { return RUMViewNameKey.String(v) }

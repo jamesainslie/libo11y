@@ -353,6 +353,61 @@ impl core::str::FromStr for RumPlatform {
     }
 }
 
+/// The closed value set for `o11y.rum.span.shape`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum RumSpanShape {
+    /// The value `view`.
+    ///
+    /// A view span.
+    View,
+    /// The value `action`.
+    ///
+    /// An action span.
+    Action,
+    /// The value `app_load`.
+    ///
+    /// A document load or app start span.
+    AppLoad,
+}
+
+impl RumSpanShape {
+    /// The attribute key these values belong to.
+    pub const KEY: &'static str = "o11y.rum.span.shape";
+
+    /// Every value, in registry order.
+    pub const ALL: &'static [Self] = &[Self::View, Self::Action, Self::AppLoad];
+
+    /// Returns the value as the registry spells it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::View => "view",
+            Self::Action => "action",
+            Self::AppLoad => "app_load",
+        }
+    }
+}
+
+impl core::fmt::Display for RumSpanShape {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl core::str::FromStr for RumSpanShape {
+    type Err = ParseEnumError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "view" => Ok(Self::View),
+            "action" => Ok(Self::Action),
+            "app_load" => Ok(Self::AppLoad),
+            _ => Err(ParseEnumError::new(Self::KEY, s)),
+        }
+    }
+}
+
 /// The closed value set for `o11y.rum.view.kind`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -1155,6 +1210,8 @@ pub mod attr {
     pub const RUM_SUMMARY_TTFB_VALUE: &str = "o11y.rum.summary.ttfb.value";
     /// The `o11y.rum.platform` attribute key.
     pub const RUM_PLATFORM: &str = "o11y.rum.platform";
+    /// The `o11y.rum.span.shape` attribute key.
+    pub const RUM_SPAN_SHAPE: &str = "o11y.rum.span.shape";
     /// The `o11y.rum.view.name` attribute key.
     pub const RUM_VIEW_NAME: &str = "o11y.rum.view.name";
     /// The `o11y.rum.view.id` attribute key.
@@ -1323,6 +1380,11 @@ mod tests {
     #[test]
     fn rum_platform_round_trips() {
         crate::assert_round_trips(RumPlatform::ALL);
+    }
+
+    #[test]
+    fn rum_span_shape_round_trips() {
+        crate::assert_round_trips(RumSpanShape::ALL);
     }
 
     #[test]

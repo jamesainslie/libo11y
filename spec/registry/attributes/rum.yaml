@@ -23,6 +23,20 @@ groups:
         examples: ["web", "ios"]
         annotations: {o11y.sensitivity: public, o11y.cardinality: enum}
 
+      - id: o11y.rum.span.shape
+        type:
+          members:
+            - {id: view, value: "view", stability: development, brief: A view span.}
+            - {id: action, value: "action", stability: development, brief: An action span.}
+            - {id: app_load, value: "app_load", stability: development, brief: A document load or app start span.}
+        stability: development
+        brief: >
+          Which RUM span shape a span follows. Every view, action and app_load
+          span carries it, so a gateway or a query can tell the shapes apart
+          without inferring them from other attributes.
+        examples: ["view"]
+        annotations: {o11y.sensitivity: public, o11y.cardinality: enum}
+
       - id: o11y.rum.view.name
         type: string
         stability: development
@@ -240,4 +254,6 @@ groups:
       - ref: session.id
         annotations: {o11y.sensitivity: internal, o11y.cardinality: unbounded, o11y.gen: alias}
       - ref: geo.country.iso_code
+        annotations: {o11y.sensitivity: public, o11y.cardinality: bounded, o11y.gen: alias}
+      - ref: os.name
         annotations: {o11y.sensitivity: public, o11y.cardinality: bounded, o11y.gen: alias}

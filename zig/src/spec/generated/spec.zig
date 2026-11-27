@@ -244,6 +244,44 @@ pub const RumPlatform = enum {
     }
 };
 
+/// The closed value set for `o11y.rum.span.shape`.
+pub const RumSpanShape = enum {
+    /// The value `view`.
+    ///
+    /// A view span.
+    view,
+    /// The value `action`.
+    ///
+    /// An action span.
+    action,
+    /// The value `app_load`.
+    ///
+    /// A document load or app start span.
+    app_load,
+
+    /// The attribute key these values belong to.
+    pub const key = "o11y.rum.span.shape";
+    /// Every value, in registry order.
+    pub const all: []const RumSpanShape = &.{ .view, .action, .app_load };
+
+    /// Returns the value as the registry spells it.
+    pub fn asStr(self: RumSpanShape) []const u8 {
+        return switch (self) {
+            .view => "view",
+            .action => "action",
+            .app_load => "app_load",
+        };
+    }
+
+    /// Returns the value the registry spells `s`, or null when `s` is not one.
+    pub fn parse(s: []const u8) ?RumSpanShape {
+        for (all) |value| {
+            if (std.mem.eql(u8, value.asStr(), s)) return value;
+        }
+        return null;
+    }
+};
+
 /// The closed value set for `o11y.rum.view.kind`.
 pub const RumViewKind = enum {
     /// The value `initial`.
@@ -841,6 +879,8 @@ pub const attr = struct {
     pub const rum_summary_ttfb_value = "o11y.rum.summary.ttfb.value";
     /// The `o11y.rum.platform` attribute key.
     pub const rum_platform = "o11y.rum.platform";
+    /// The `o11y.rum.span.shape` attribute key.
+    pub const rum_span_shape = "o11y.rum.span.shape";
     /// The `o11y.rum.view.name` attribute key.
     pub const rum_view_name = "o11y.rum.view.name";
     /// The `o11y.rum.view.id` attribute key.

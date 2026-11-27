@@ -131,3 +131,20 @@ func TestAppUpdateIDMinted(t *testing.T) {
 		t.Errorf("RUMAppUpdateID = %v, want o11y.rum.app.update_id=0d1f5a4e", kv)
 	}
 }
+
+func TestRUMSpanShapeMarkerRequired(t *testing.T) {
+	shapes := []spec.RUMSpanShape{spec.RUMSpanShapeView, spec.RUMSpanShapeAction, spec.RUMSpanShapeAppLoad}
+	if len(spectables.RUMSpanRequired) != len(shapes) {
+		t.Fatalf("RUMSpanRequired has %d shapes, want %d", len(spectables.RUMSpanRequired), len(shapes))
+	}
+	for _, shape := range shapes {
+		required, ok := spectables.RUMSpanRequired[string(shape)]
+		if !ok {
+			t.Errorf("RUMSpanRequired lacks the %q shape named by o11y.rum.span.shape", shape)
+			continue
+		}
+		if !slices.Contains(required, spec.RUMSpanShapeKey) {
+			t.Errorf("the %q shape does not require %s: %v", shape, spec.RUMSpanShapeKey, required)
+		}
+	}
+}

@@ -465,6 +465,7 @@ SENSITIVITY_OF: Final[Mapping[str, Sensitivity]] = MappingProxyType(
         "o11y.rum.platform": Sensitivity.PUBLIC,
         "o11y.rum.replay.segment": Sensitivity.PUBLIC,
         "o11y.rum.session.retained": Sensitivity.PUBLIC,
+        "o11y.rum.span.shape": Sensitivity.PUBLIC,
         "o11y.rum.summary.cls.value": Sensitivity.PUBLIC,
         "o11y.rum.summary.errors.anr": Sensitivity.PUBLIC,
         "o11y.rum.summary.errors.boundary": Sensitivity.PUBLIC,
@@ -495,6 +496,7 @@ SENSITIVITY_OF: Final[Mapping[str, Sensitivity]] = MappingProxyType(
         "o11y.signal": Sensitivity.PUBLIC,
         "o11y.team.name": Sensitivity.PUBLIC,
         "o11y.tenant.id": Sensitivity.INTERNAL,
+        "os.name": Sensitivity.PUBLIC,
         "os.type": Sensitivity.PUBLIC,
         "process.command_args": Sensitivity.PII,
         "process.command_line": Sensitivity.PII,
@@ -555,6 +557,7 @@ CARDINALITY_OF: Final[Mapping[str, Cardinality]] = MappingProxyType(
         "o11y.rum.platform": Cardinality.ENUM,
         "o11y.rum.replay.segment": Cardinality.UNBOUNDED,
         "o11y.rum.session.retained": Cardinality.ENUM,
+        "o11y.rum.span.shape": Cardinality.ENUM,
         "o11y.rum.summary.cls.value": Cardinality.UNBOUNDED,
         "o11y.rum.summary.errors.anr": Cardinality.UNBOUNDED,
         "o11y.rum.summary.errors.boundary": Cardinality.UNBOUNDED,
@@ -585,8 +588,10 @@ CARDINALITY_OF: Final[Mapping[str, Cardinality]] = MappingProxyType(
         "o11y.signal": Cardinality.ENUM,
         "o11y.team.name": Cardinality.BOUNDED,
         "o11y.tenant.id": Cardinality.UNBOUNDED,
+        "os.name": Cardinality.BOUNDED,
         "process.command_args": Cardinality.UNBOUNDED,
         "process.command_line": Cardinality.UNBOUNDED,
+        "service.name": Cardinality.BOUNDED,
         "session.id": Cardinality.UNBOUNDED,
         "url.path": Cardinality.UNBOUNDED,
     }
@@ -731,14 +736,15 @@ SPAN_REQUIRED: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
 RUM_SPAN_REQUIRED: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
     {
         "view": (
+            "o11y.rum.span.shape",
             "o11y.rum.platform",
             "o11y.rum.view.name",
             "o11y.rum.view.id",
             "o11y.rum.view.kind",
             "session.id",
         ),
-        "action": ("o11y.rum.action.type", "o11y.rum.view.id", "session.id"),
-        "app_load": ("o11y.rum.platform", "o11y.rum.view.id", "session.id"),
+        "action": ("o11y.rum.span.shape", "o11y.rum.action.type", "o11y.rum.view.id", "session.id"),
+        "app_load": ("o11y.rum.span.shape", "o11y.rum.platform", "o11y.rum.view.id", "session.id"),
     }
 )
 

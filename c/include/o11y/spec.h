@@ -94,6 +94,15 @@ typedef enum o11y_cardinality {
 /* A native Android app. */
 #define O11Y_RUM_PLATFORM_ANDROID "android"
 
+/* Closed value set for o11y.rum.span.shape */
+#define O11Y_RUM_SPAN_SHAPE_KEY "o11y.rum.span.shape"
+/* A view span. */
+#define O11Y_RUM_SPAN_SHAPE_VIEW "view"
+/* An action span. */
+#define O11Y_RUM_SPAN_SHAPE_ACTION "action"
+/* A document load or app start span. */
+#define O11Y_RUM_SPAN_SHAPE_APP_LOAD "app_load"
+
 /* Closed value set for o11y.rum.view.kind */
 #define O11Y_RUM_VIEW_KIND_KEY "o11y.rum.view.kind"
 /* The first view of a page load. */
@@ -263,6 +272,7 @@ typedef enum o11y_cardinality {
 #define O11Y_ATTR_RUM_SUMMARY_FCP_VALUE "o11y.rum.summary.fcp.value"
 #define O11Y_ATTR_RUM_SUMMARY_TTFB_VALUE "o11y.rum.summary.ttfb.value"
 #define O11Y_ATTR_RUM_PLATFORM "o11y.rum.platform"
+#define O11Y_ATTR_RUM_SPAN_SHAPE "o11y.rum.span.shape"
 #define O11Y_ATTR_RUM_VIEW_NAME "o11y.rum.view.name"
 #define O11Y_ATTR_RUM_VIEW_ID "o11y.rum.view.id"
 #define O11Y_ATTR_RUM_VIEW_KIND "o11y.rum.view.kind"

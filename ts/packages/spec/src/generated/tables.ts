@@ -142,6 +142,7 @@ export const SENSITIVITY_OF: ReadonlyMap<string, Sensitivity> = new Map<string, 
   ["o11y.rum.platform", "public"],
   ["o11y.rum.replay.segment", "public"],
   ["o11y.rum.session.retained", "public"],
+  ["o11y.rum.span.shape", "public"],
   ["o11y.rum.summary.cls.value", "public"],
   ["o11y.rum.summary.errors.anr", "public"],
   ["o11y.rum.summary.errors.boundary", "public"],
@@ -172,6 +173,7 @@ export const SENSITIVITY_OF: ReadonlyMap<string, Sensitivity> = new Map<string, 
   ["o11y.signal", "public"],
   ["o11y.team.name", "public"],
   ["o11y.tenant.id", "internal"],
+  ["os.name", "public"],
   ["os.type", "public"],
   ["process.command_args", "pii"],
   ["process.command_line", "pii"],
@@ -229,7 +231,7 @@ export const APP_RESERVED_NAMESPACES: ReadonlySet<string> = new Set<string>(["an
 
 /** RUM span shapes mapped to their required attributes. */
 export const RUM_SPAN_REQUIRED: ReadonlyMap<string, readonly string[]> = new Map<string, readonly string[]>([
-  ["view", ["o11y.rum.platform", "o11y.rum.view.name", "o11y.rum.view.id", "o11y.rum.view.kind", "session.id"]],
-  ["action", ["o11y.rum.action.type", "o11y.rum.view.id", "session.id"]],
-  ["app_load", ["o11y.rum.platform", "o11y.rum.view.id", "session.id"]],
+  ["view", ["o11y.rum.span.shape", "o11y.rum.platform", "o11y.rum.view.name", "o11y.rum.view.id", "o11y.rum.view.kind", "session.id"]],
+  ["action", ["o11y.rum.span.shape", "o11y.rum.action.type", "o11y.rum.view.id", "session.id"]],
+  ["app_load", ["o11y.rum.span.shape", "o11y.rum.platform", "o11y.rum.view.id", "session.id"]],
 ]);

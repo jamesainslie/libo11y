@@ -80,6 +80,7 @@ test("RUM conventions", () => {
   assert.equal(EVENT_RUM_ERROR, "o11y.rum.error");
   assert.ok(RUM_VIEW_KIND_VALUES.includes("screen"));
   assert.deepEqual(RUM_SPAN_REQUIRED.get("view"), [
+    "o11y.rum.span.shape",
     "o11y.rum.platform",
     "o11y.rum.view.name",
     "o11y.rum.view.id",

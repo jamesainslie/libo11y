@@ -60,6 +60,14 @@ class RUMPlatform(StrEnum):
     ANDROID = "android"
 
 
+class RUMSpanShape(StrEnum):
+    """Closed value set for `o11y.rum.span.shape`."""
+
+    VIEW = "view"
+    ACTION = "action"
+    APP_LOAD = "app_load"
+
+
 class RUMViewKind(StrEnum):
     """Closed value set for `o11y.rum.view.kind`."""
 
@@ -203,6 +211,7 @@ ATTR_RUM_SUMMARY_CLS_VALUE: Final[str] = "o11y.rum.summary.cls.value"
 ATTR_RUM_SUMMARY_FCP_VALUE: Final[str] = "o11y.rum.summary.fcp.value"
 ATTR_RUM_SUMMARY_TTFB_VALUE: Final[str] = "o11y.rum.summary.ttfb.value"
 ATTR_RUM_PLATFORM: Final[str] = "o11y.rum.platform"
+ATTR_RUM_SPAN_SHAPE: Final[str] = "o11y.rum.span.shape"
 ATTR_RUM_VIEW_NAME: Final[str] = "o11y.rum.view.name"
 ATTR_RUM_VIEW_ID: Final[str] = "o11y.rum.view.id"
 ATTR_RUM_VIEW_KIND: Final[str] = "o11y.rum.view.kind"

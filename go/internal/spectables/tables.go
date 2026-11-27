@@ -178,6 +178,7 @@ var SensitivityOf = map[attribute.Key]Sensitivity{
 	"o11y.rum.platform":                           Public,
 	"o11y.rum.replay.segment":                     Public,
 	"o11y.rum.session.retained":                   Public,
+	"o11y.rum.span.shape":                         Public,
 	"o11y.rum.summary.cls.value":                  Public,
 	"o11y.rum.summary.errors.anr":                 Public,
 	"o11y.rum.summary.errors.boundary":            Public,
@@ -208,6 +209,7 @@ var SensitivityOf = map[attribute.Key]Sensitivity{
 	"o11y.signal":                                 Public,
 	"o11y.team.name":                              Public,
 	"o11y.tenant.id":                              Internal,
+	"os.name":                                     Public,
 	"os.type":                                     Public,
 	"process.command_args":                        PII,
 	"process.command_line":                        PII,
@@ -270,7 +272,7 @@ var SpanRequired = map[string][]attribute.Key{
 // RUMSpanRequired maps each RUM span shape to the attributes required
 // on it.
 var RUMSpanRequired = map[string][]attribute.Key{
-	"view":     {"o11y.rum.platform", "o11y.rum.view.name", "o11y.rum.view.id", "o11y.rum.view.kind", "session.id"},
-	"action":   {"o11y.rum.action.type", "o11y.rum.view.id", "session.id"},
-	"app_load": {"o11y.rum.platform", "o11y.rum.view.id", "session.id"},
+	"view":     {"o11y.rum.span.shape", "o11y.rum.platform", "o11y.rum.view.name", "o11y.rum.view.id", "o11y.rum.view.kind", "session.id"},
+	"action":   {"o11y.rum.span.shape", "o11y.rum.action.type", "o11y.rum.view.id", "session.id"},
+	"app_load": {"o11y.rum.span.shape", "o11y.rum.platform", "o11y.rum.view.id", "session.id"},
 }

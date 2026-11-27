@@ -45,6 +45,7 @@ pub const DataClassification = generated_spec.DataClassification;
 pub const Signal = generated_spec.Signal;
 pub const LogSource = generated_spec.LogSource;
 pub const RumPlatform = generated_spec.RumPlatform;
+pub const RumSpanShape = generated_spec.RumSpanShape;
 pub const RumViewKind = generated_spec.RumViewKind;
 pub const RumActionType = generated_spec.RumActionType;
 pub const RumFrustrationType = generated_spec.RumFrustrationType;

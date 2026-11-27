@@ -58,6 +58,14 @@ export const RUM_PLATFORM_VALUE_ANDROID = "android";
 /** Every value of `o11y.rum.platform`. */
 export const RUM_PLATFORM_VALUES: readonly RUMPlatform[] = ["web", "webext", "react_native", "ios", "android"];
 
+/** The closed value set for `o11y.rum.span.shape`. */
+export type RUMSpanShape = "view" | "action" | "app_load";
+export const RUM_SPAN_SHAPE_VALUE_VIEW = "view";
+export const RUM_SPAN_SHAPE_VALUE_ACTION = "action";
+export const RUM_SPAN_SHAPE_VALUE_APP_LOAD = "app_load";
+/** Every value of `o11y.rum.span.shape`. */
+export const RUM_SPAN_SHAPE_VALUES: readonly RUMSpanShape[] = ["view", "action", "app_load"];
+
 /** The closed value set for `o11y.rum.view.kind`. */
 export type RUMViewKind = "initial" | "soft" | "bfcache_restore" | "prerender" | "screen";
 export const RUM_VIEW_KIND_VALUE_INITIAL = "initial";
@@ -199,6 +207,7 @@ export const ATTR_RUM_SUMMARY_CLS_VALUE = "o11y.rum.summary.cls.value";
 export const ATTR_RUM_SUMMARY_FCP_VALUE = "o11y.rum.summary.fcp.value";
 export const ATTR_RUM_SUMMARY_TTFB_VALUE = "o11y.rum.summary.ttfb.value";
 export const ATTR_RUM_PLATFORM = "o11y.rum.platform";
+export const ATTR_RUM_SPAN_SHAPE = "o11y.rum.span.shape";
 export const ATTR_RUM_VIEW_NAME = "o11y.rum.view.name";
 export const ATTR_RUM_VIEW_ID = "o11y.rum.view.id";
 export const ATTR_RUM_VIEW_KIND = "o11y.rum.view.kind";
