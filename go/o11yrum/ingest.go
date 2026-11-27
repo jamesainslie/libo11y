@@ -55,7 +55,11 @@ func (h *Handler) ingest(w http.ResponseWriter, r *http.Request, sig Signal) {
 	}
 	service, err := batchService(sig, d)
 	if err != nil {
-		h.reject(w, r, h.origins, rejection{status: http.StatusBadRequest, reason: "mixed_service"})
+		reason := "mixed_service"
+		if errors.Is(err, errMissingService) {
+			reason = "missing_service"
+		}
+		h.reject(w, r, h.origins, rejection{status: http.StatusBadRequest, reason: reason})
 		return
 	}
 	if service == "" { // an empty batch
@@ -107,11 +111,15 @@ func (h *Handler) clientKey(r *http.Request) (uint64, bool) {
 	return h.keyer.key(client), true
 }
 
-var errMixedService = errors.New("resources disagree on service.name")
+var (
+	errMixedService   = errors.New("resources disagree on service.name")
+	errMissingService = errors.New("a resource has no single string service.name")
+)
 
 // batchService returns the one service.name every resource carries, or ""
-// for a batch with no resources. A missing, non-string or differing value
-// is an error.
+// for a batch with no resources. A missing, repeated, non-string or
+// differing value is an error. A repeated key matters because pdata keeps
+// both values and readers disagree on which one wins.
 func batchService(sig Signal, d decoded) (string, error) {
 	var resources []pcommon.Resource
 	switch sig {
@@ -131,8 +139,8 @@ func batchService(sig Signal, d decoded) (string, error) {
 	service := ""
 	for _, res := range resources {
 		v, ok := res.Attributes().Get(keyServiceName)
-		if !ok || v.Type() != pcommon.ValueTypeStr || v.Str() == "" {
-			return "", errMixedService
+		if !ok || v.Type() != pcommon.ValueTypeStr || v.Str() == "" || countKey(res.Attributes(), keyServiceName) > 1 {
+			return "", errMissingService
 		}
 		if service != "" && v.Str() != service {
 			return "", errMixedService
@@ -140,6 +148,18 @@ func batchService(sig Signal, d decoded) (string, error) {
 		service = v.Str()
 	}
 	return service, nil
+}
+
+// countKey counts the occurrences of k in m. pdata keeps duplicate keys
+// from the wire, so it can exceed one.
+func countKey(m pcommon.Map, k string) int {
+	n := 0
+	for key := range m.All() {
+		if key == k {
+			n++
+		}
+	}
+	return n
 }
 
 // admit identifies the app and checks the request may send for it.

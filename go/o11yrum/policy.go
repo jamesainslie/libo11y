@@ -53,21 +53,32 @@ func newAttrPolicy(app AppConfig, lim LimitsConfig) attrPolicy {
 }
 
 // apply filters m in place and returns how many attributes it removed.
-// Truncating a value does not count as a removal.
+// Truncating a value does not count as a removal. A key repeated on the
+// wire keeps only its first value, because pdata keeps both and readers
+// disagree on which one wins. The count cap never removes service.name.
 func (p attrPolicy) apply(m pcommon.Map) int {
 	removed := 0
+	seen := make(map[string]bool, m.Len())
 	m.RemoveIf(func(k string, v pcommon.Value) bool {
-		if !p.keep(k, v) {
+		if seen[k] || !p.keep(k, v) {
 			removed++
 			return true
 		}
+		seen[k] = true
 		return false
 	})
 	if m.Len() > p.maxAttrs {
+		budget := p.maxAttrs
+		if seen[keyServiceName] {
+			budget--
+		}
 		i := 0
-		m.RemoveIf(func(string, pcommon.Value) bool {
+		m.RemoveIf(func(k string, _ pcommon.Value) bool {
+			if k == keyServiceName {
+				return false
+			}
 			i++
-			if i > p.maxAttrs {
+			if i > budget {
 				removed++
 				return true
 			}
@@ -77,12 +88,32 @@ func (p attrPolicy) apply(m pcommon.Map) int {
 	return removed
 }
 
+// urlForms says how each URL-bearing key is cleaned: true for a URL or a
+// path with a query, false for a bare query string.
+var urlForms = map[string]bool{
+	keyURLFull:     true,
+	"url.original": true,
+	"http.url":     true,
+	"http.target":  true,
+	keyURLQuery:    false,
+}
+
+// sensitivityKey is the key looked up in the sensitivity table. HTTP
+// header names are case-insensitive, so header attribute keys are
+// lowercased: http.request.header.Authorization is still a secret.
+func sensitivityKey(k string) string {
+	if strings.HasPrefix(k, "http.request.header.") || strings.HasPrefix(k, "http.response.header.") {
+		return strings.ToLower(k)
+	}
+	return k
+}
+
 // keep decides one attribute and normalises its value in place.
 func (p attrPolicy) keep(k string, v pcommon.Value) bool {
 	if gatewayOwned[k] {
 		return false
 	}
-	switch rumspec.Sensitivities[k] {
+	switch rumspec.Sensitivities[sensitivityKey(k)] {
 	case rumspec.Secret:
 		return false
 	case rumspec.PII:
@@ -104,16 +135,17 @@ func (p attrPolicy) keep(k string, v pcommon.Value) bool {
 	if strings.HasPrefix(k, "o11y.rum.summary.") && !nonNegative(v) {
 		return false
 	}
+	full, isURL := urlForms[k]
+	if isURL && v.Type() != pcommon.ValueTypeStr {
+		return false // a URL that is not a string cannot be cleaned
+	}
 	switch v.Type() {
 	case pcommon.ValueTypeMap, pcommon.ValueTypeBytes:
 		return false
 	case pcommon.ValueTypeStr:
 		s := v.Str()
-		switch k {
-		case keyURLFull:
-			s = stripQuery(s, p.queryAllow, true)
-		case keyURLQuery:
-			s = stripQuery(s, p.queryAllow, false)
+		if isURL {
+			s = stripQuery(s, p.queryAllow, full)
 		}
 		v.SetStr(truncateUTF8(s, p.maxValueLen))
 	case pcommon.ValueTypeSlice:
@@ -201,14 +233,16 @@ func truncateUTF8(s string, n int) string {
 }
 
 // stripQuery keeps only allow-listed query parameters, sorted, and always
-// drops the fragment, which can carry tokens. full says raw is a URL rather
-// than a bare query string.
+// drops the fragment, which can carry tokens. full says raw is a URL (or a
+// path with a query) rather than a bare query string; a URL also loses any
+// user name and password.
 func stripQuery(raw string, allow map[string]bool, full bool) string {
 	base, query := "", raw
 	if full {
 		raw, _, _ = strings.Cut(raw, "#")
 		var found bool
 		base, query, found = strings.Cut(raw, "?")
+		base = removeUserinfo(base)
 		if !found {
 			return base
 		}
@@ -229,4 +263,21 @@ func stripQuery(raw string, allow map[string]bool, full bool) string {
 		return base
 	}
 	return base + "?" + enc
+}
+
+// removeUserinfo drops the user[:password]@ part of a URL's authority.
+func removeUserinfo(s string) string {
+	scheme, rest, found := strings.Cut(s, "://")
+	if !found {
+		return s
+	}
+	end := strings.IndexAny(rest, "/?#")
+	if end < 0 {
+		end = len(rest)
+	}
+	at := strings.LastIndex(rest[:end], "@")
+	if at < 0 {
+		return s
+	}
+	return scheme + "://" + rest[at+1:]
 }

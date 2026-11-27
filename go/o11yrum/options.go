@@ -28,9 +28,15 @@ func WithSDK(sdk *o11y.SDK) Option {
 }
 
 // WithSinks adds sinks that receive every processed batch. It may be given
-// more than once; the sinks accumulate.
+// more than once; the sinks accumulate. nil sinks are skipped.
 func WithSinks(sinks ...Sink) Option {
-	return func(s *settings) { s.sinks = append(s.sinks, sinks...) }
+	return func(s *settings) {
+		for _, sink := range sinks {
+			if sink != nil {
+				s.sinks = append(s.sinks, sink)
+			}
+		}
+	}
 }
 
 // WithClock sets the clock the gateway reads, for tests. nil keeps

@@ -2,6 +2,7 @@ package o11yrum
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -42,17 +43,25 @@ func NewHandler(opts ...Option) (*Handler, error) {
 	if s.cfg == nil {
 		return nil, errors.New("o11yrum: NewHandler needs WithConfig")
 	}
-	trust, err := newProxyTrust(s.cfg.Edge)
+	// The handler keeps its own copy, with defaults applied, so a Config
+	// built in code works like a parsed one and later changes to it cannot
+	// race with requests.
+	cfg := s.cfg.clone()
+	cfg.applyDefaults()
+	if err := cfg.validate(); err != nil {
+		return nil, fmt.Errorf("o11yrum: config: %w", err)
+	}
+	trust, err := newProxyTrust(cfg.Edge)
 	if err != nil {
 		return nil, err
 	}
 	h := &Handler{
-		cfg:     s.cfg,
-		apps:    make(map[string]*app, len(s.cfg.Apps)),
+		cfg:     cfg,
+		apps:    make(map[string]*app, len(cfg.Apps)),
 		origins: map[string]bool{},
 		trust:   trust,
 		keyer:   newClientKeyer(),
-		limit:   newLimiter(s.cfg.Edge.RateLimitPerMinute, s.cfg.Edge.MaxTrackedClients, s.now),
+		limit:   newLimiter(cfg.Edge.RateLimitPerMinute, cfg.Edge.MaxTrackedClients, s.now),
 		sinks:   s.sinks,
 		now:     s.now,
 		log:     slog.Default(),
@@ -60,10 +69,9 @@ func NewHandler(opts ...Option) (*Handler, error) {
 	if s.sdk != nil {
 		h.log = s.sdk.Logger()
 	}
-	for _, ac := range s.cfg.Apps {
-		a := &app{cfg: ac, origins: map[string]bool{}, policy: newAttrPolicy(ac, s.cfg.Limits)}
+	for _, ac := range cfg.Apps {
+		a := &app{cfg: ac, origins: map[string]bool{}, policy: newAttrPolicy(ac, cfg.Limits)}
 		for _, o := range ac.Origins {
-			o = normalizeOrigin(o)
 			a.origins[o] = true
 			h.origins[o] = true
 		}

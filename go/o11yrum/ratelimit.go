@@ -16,6 +16,7 @@ type limiter struct {
 	max       int
 	now       func() time.Time
 	lastSweep time.Time
+	sweeps    int // sweeps run, for tests
 	buckets   map[uint64]*bucket
 }
 
@@ -46,7 +47,9 @@ func (l *limiter) allow(key uint64) (ok bool, retryAfter time.Duration) {
 	}
 	b, found := l.buckets[key]
 	if !found {
-		if len(l.buckets) >= l.max {
+		// A full table is swept at most once a second, so a flood of new
+		// keys cannot make every request scan the table under the lock.
+		if len(l.buckets) >= l.max && now.Sub(l.lastSweep) >= time.Second {
 			l.sweepLocked(now)
 		}
 		if len(l.buckets) >= l.max {
@@ -73,6 +76,7 @@ func (l *limiter) sweepLocked(now time.Time) {
 		}
 	}
 	l.lastSweep = now
+	l.sweeps++
 }
 
 // tracked reports how many clients have a bucket. Tests only.

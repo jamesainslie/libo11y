@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -198,6 +199,9 @@ func (c *Config) validate() error {
 	if c.Edge.MaxDecompressedBytes < c.Edge.MaxBodyBytes {
 		return errors.New("edge.max_decompressed_bytes must be at least max_body_bytes")
 	}
+	if strings.EqualFold(c.Edge.ForwardedHeader, "Forwarded") {
+		return errors.New("edge.forwarded_header: the RFC 7239 Forwarded header is not supported; name an X-Forwarded-For style header")
+	}
 	for _, s := range c.Edge.TrustedProxies {
 		if _, err := netip.ParsePrefix(s); err != nil {
 			return fmt.Errorf("edge.trusted_proxies: %q is not a CIDR", s)
@@ -249,4 +253,17 @@ func normalizeOrigin(o string) string {
 		return strings.TrimSuffix(o, ":80")
 	}
 	return o
+}
+
+// clone returns a deep copy of c.
+func (c *Config) clone() *Config {
+	out := *c
+	out.Edge.TrustedProxies = slices.Clone(c.Edge.TrustedProxies)
+	out.Apps = make([]AppConfig, len(c.Apps))
+	for i, a := range c.Apps {
+		a.Origins = slices.Clone(a.Origins)
+		a.QueryAllowList = slices.Clone(a.QueryAllowList)
+		out.Apps[i] = a
+	}
+	return &out
 }

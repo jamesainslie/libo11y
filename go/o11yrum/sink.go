@@ -32,14 +32,29 @@ type Sink interface {
 	Export(ctx context.Context, b Batch) error
 }
 
+// errSinkPanic wraps a panic recovered from a sink.
+var errSinkPanic = errors.New("panicked")
+
 // exportAll hands b to every sink, even after one fails, and joins their
 // errors.
 func exportAll(ctx context.Context, sinks []Sink, b Batch) error {
 	var errs []error
 	for _, s := range sinks {
-		if err := s.Export(ctx, b); err != nil {
+		if err := exportOne(ctx, s, b); err != nil {
 			errs = append(errs, fmt.Errorf("sink %s: %w", s.Name(), err))
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// exportOne calls one sink and turns a panic into an error. Left to
+// net/http, a panic would be logged with the request's remote address,
+// which the gateway never logs.
+func exportOne(ctx context.Context, s Sink, b Batch) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("%w: %v", errSinkPanic, r)
+		}
+	}()
+	return s.Export(ctx, b)
 }
