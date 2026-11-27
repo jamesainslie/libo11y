@@ -323,54 +323,66 @@ impl Recorder {
     }
 
     /// Computes total `o11y.schema.violations` counts for `rule`, keyed by
-    /// `o11y.signal`. Handles both cumulative (latest snapshot per signal)
-    /// and delta (summed across snapshots) temporalities.
+    /// `o11y.signal`. Handles both cumulative (summing matching points within
+    /// each snapshot and taking the latest snapshot per signal) and delta
+    /// (summed across snapshots) temporalities.
     fn violations_by_signal(&self, rule: &str) -> BTreeMap<String, i64> {
-        let mut cumulative: BTreeMap<String, i64> = BTreeMap::new();
-        let mut delta: BTreeMap<String, i64> = BTreeMap::new();
+        violations_by_signal_from_requests(&self.recorded_metrics(), rule)
+    }
+}
 
-        for request in self.recorded_metrics() {
-            for rm in &request.resource_metrics {
-                for sm in &rm.scope_metrics {
-                    for m in &sm.metrics {
-                        if m.name != metric::SCHEMA_VIOLATIONS {
-                            continue;
-                        }
-                        let Some(Data::Sum(sum)) = &m.data else {
+fn violations_by_signal_from_requests(
+    requests: &[opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest],
+    rule: &str,
+) -> BTreeMap<String, i64> {
+    let mut cumulative: BTreeMap<String, i64> = BTreeMap::new();
+    let mut delta: BTreeMap<String, i64> = BTreeMap::new();
+
+    for request in requests {
+        let mut snapshot_cumulative: BTreeMap<String, i64> = BTreeMap::new();
+        for rm in &request.resource_metrics {
+            for sm in &rm.scope_metrics {
+                for m in &sm.metrics {
+                    if m.name != metric::SCHEMA_VIOLATIONS {
+                        continue;
+                    }
+                    let Some(Data::Sum(sum)) = &m.data else {
+                        continue;
+                    };
+                    let is_delta =
+                        sum.aggregation_temporality == AggregationTemporality::Delta as i32;
+                    for dp in &sum.data_points {
+                        let Some(number_data_point::Value::AsInt(val)) = dp.value else {
                             continue;
                         };
-                        let is_delta =
-                            sum.aggregation_temporality == AggregationTemporality::Delta as i32;
-                        for dp in &sum.data_points {
-                            let Some(number_data_point::Value::AsInt(val)) = dp.value else {
-                                continue;
-                            };
-                            if val <= 0 {
-                                continue;
-                            }
-                            if proto_attr_str(&dp.attributes, attr::RULE).as_deref() != Some(rule) {
-                                continue;
-                            }
-                            let signal =
-                                proto_attr_str(&dp.attributes, attr::SIGNAL).unwrap_or_default();
-                            if is_delta {
-                                *delta.entry(signal).or_insert(0) += val;
-                            } else {
-                                cumulative.insert(signal, val);
-                            }
+                        if val <= 0 {
+                            continue;
+                        }
+                        if proto_attr_str(&dp.attributes, attr::RULE).as_deref() != Some(rule) {
+                            continue;
+                        }
+                        let signal =
+                            proto_attr_str(&dp.attributes, attr::SIGNAL).unwrap_or_default();
+                        if is_delta {
+                            *delta.entry(signal).or_insert(0) += val;
+                        } else {
+                            *snapshot_cumulative.entry(signal).or_insert(0) += val;
                         }
                     }
                 }
             }
         }
-
-        let mut totals = cumulative;
-        for (signal, count) in delta {
-            *totals.entry(signal).or_insert(0) += count;
+        for (signal, count) in snapshot_cumulative {
+            cumulative.insert(signal, count);
         }
-        totals.retain(|_, count| *count > 0);
-        totals
     }
+
+    let mut totals = cumulative;
+    for (signal, count) in delta {
+        *totals.entry(signal).or_insert(0) += count;
+    }
+    totals.retain(|_, count| *count > 0);
+    totals
 }
 
 fn is_valid_hex_trace_id(tid: &str) -> bool {
@@ -399,16 +411,21 @@ fn walk_attr_keys(prefix: &str, key: &str, value: &AnyValue, visit: &mut impl Fn
         (false, true) => prefix.to_owned(),
         (false, false) => format!("{prefix}.{key}"),
     };
-    if !effective.is_empty()
+    let already_visited = !effective.is_empty()
         && matches!(value, AnyValue::Map(_) | AnyValue::ListAny(_))
-        && sensitivity_of(&effective) == Some(Sensitivity::Secret)
-    {
+        && sensitivity_of(&effective) == Some(Sensitivity::Secret);
+    if already_visited {
         visit(effective.clone());
     }
-    walk_value_keys(&effective, value, visit);
+    walk_value_keys(&effective, value, already_visited, visit);
 }
 
-fn walk_value_keys(prefix: &str, value: &AnyValue, visit: &mut impl FnMut(String)) {
+fn walk_value_keys(
+    prefix: &str,
+    value: &AnyValue,
+    prefix_already_visited: bool,
+    visit: &mut impl FnMut(String),
+) {
     match value {
         AnyValue::Map(map) => {
             let mut entries: Vec<_> = map.iter().collect();
@@ -422,15 +439,15 @@ fn walk_value_keys(prefix: &str, value: &AnyValue, visit: &mut impl FnMut(String
             for item in items.iter() {
                 if matches!(item, AnyValue::Map(_) | AnyValue::ListAny(_)) {
                     had_composite = true;
-                    walk_value_keys(prefix, item, visit);
+                    walk_value_keys(prefix, item, prefix_already_visited, visit);
                 }
             }
-            if !had_composite && !prefix.is_empty() {
+            if !had_composite && !prefix_already_visited && !prefix.is_empty() {
                 visit(prefix.to_owned());
             }
         }
         _ => {
-            if !prefix.is_empty() {
+            if !prefix_already_visited && !prefix.is_empty() {
                 visit(prefix.to_owned());
             }
         }
@@ -664,5 +681,105 @@ mod tests {
             check_event(event::REQUEST_SUMMARY, &keys).is_empty(),
             "{keys:?}"
         );
+    }
+
+    #[test]
+    fn secret_key_with_non_composite_list_is_visited_once() {
+        let scalar_list = AnyValue::ListAny(Box::new(vec![
+            AnyValue::from("Bearer a"),
+            AnyValue::from("Bearer b"),
+        ]));
+        let mut keys = Vec::new();
+        walk_attr_keys(
+            "",
+            "http.request.header.authorization",
+            &scalar_list,
+            &mut |k| {
+                keys.push(k);
+            },
+        );
+        assert_eq!(
+            keys,
+            vec!["http.request.header.authorization".to_owned()],
+            "secret key with scalar list must be reported once"
+        );
+
+        let nested_scalar_list =
+            AnyValue::ListAny(Box::new(vec![AnyValue::ListAny(Box::new(vec![
+                AnyValue::from("Bearer c"),
+            ]))]));
+        let mut nested_keys = Vec::new();
+        walk_attr_keys(
+            "",
+            "http.request.header.authorization",
+            &nested_scalar_list,
+            &mut |k| nested_keys.push(k),
+        );
+        assert_eq!(
+            nested_keys,
+            vec!["http.request.header.authorization".to_owned()],
+            "secret key with nested scalar list must be reported once"
+        );
+    }
+
+    #[test]
+    fn violations_by_signal_sums_cumulative_points_within_snapshot() {
+        use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
+        use opentelemetry_proto::tonic::common::v1::{
+            AnyValue as ProtoAny, KeyValue as ProtoKv, any_value::Value as ProtoVal,
+        };
+        use opentelemetry_proto::tonic::metrics::v1::{
+            Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics, Sum,
+        };
+
+        let kv = |k: &str, v: &str| ProtoKv {
+            key: k.to_owned(),
+            value: Some(ProtoAny {
+                value: Some(ProtoVal::StringValue(v.to_owned())),
+            }),
+            ..Default::default()
+        };
+        let dp = |signal: &str, rule: &str, extra: &str, val: i64| NumberDataPoint {
+            attributes: vec![
+                kv(attr::SIGNAL, signal),
+                kv(attr::RULE, rule),
+                kv("extra", extra),
+            ],
+            value: Some(number_data_point::Value::AsInt(val)),
+            ..Default::default()
+        };
+        let snapshot = |points: Vec<NumberDataPoint>| ExportMetricsServiceRequest {
+            resource_metrics: vec![ResourceMetrics {
+                scope_metrics: vec![ScopeMetrics {
+                    metrics: vec![Metric {
+                        name: metric::SCHEMA_VIOLATIONS.to_owned(),
+                        data: Some(Data::Sum(Sum {
+                            aggregation_temporality: AggregationTemporality::Cumulative as i32,
+                            is_monotonic: true,
+                            data_points: points,
+                        })),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        // Snapshot 1 has two matching cumulative points for logs (2 + 3 = 5).
+        // Snapshot 2 updates them cumulatively to 4 + 5 = 9; latest snapshot
+        // replaces snapshot 1 rather than adding 5 + 9.
+        let reqs = vec![
+            snapshot(vec![
+                dp("logs", SECRET_ATTRIBUTE_RULE, "a", 2),
+                dp("logs", SECRET_ATTRIBUTE_RULE, "b", 3),
+            ]),
+            snapshot(vec![
+                dp("logs", SECRET_ATTRIBUTE_RULE, "a", 4),
+                dp("logs", SECRET_ATTRIBUTE_RULE, "b", 5),
+            ]),
+        ];
+        let totals = violations_by_signal_from_requests(&reqs, SECRET_ATTRIBUTE_RULE);
+        assert_eq!(totals.get("logs"), Some(&9), "{totals:?}");
     }
 }

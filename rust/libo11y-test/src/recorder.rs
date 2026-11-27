@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use opentelemetry::Context;
 use opentelemetry::logs::AnyValue;
-use opentelemetry::trace::{SpanContext, TraceContextExt as _, TraceFlags, TraceState};
+use opentelemetry::trace::{SpanContext, TraceContextExt as _};
 use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
 use opentelemetry_proto::tonic::common::v1::{
     KeyValue as ProtoKeyValue, any_value::Value as ProtoAnyValue,
@@ -285,8 +285,10 @@ impl Recorder {
         out
     }
 
-    /// Clears all spans, exported metric batches, and logs recorded so far.
+    /// Drains any pending buffered telemetry (including exemplars) and clears
+    /// all spans, exported metric batches, and logs recorded so far.
     pub fn reset(&self) {
+        let _ = self.sdk.force_flush();
         self.spans.clear();
         self.metrics.clear();
         self.logs.clear();
@@ -412,19 +414,7 @@ impl LogSink for LogCapture {
     fn emit(&self, record: &LogRecord) -> Result<(), BoxError> {
         let current = Context::current();
         let active = current.span().span_context().clone();
-        let span_context = if active.is_valid() {
-            Some(active)
-        } else if let (Some(tid), Some(sid)) = (record.trace_id(), record.span_id()) {
-            Some(SpanContext::new(
-                tid,
-                sid,
-                TraceFlags::SAMPLED,
-                false,
-                TraceState::default(),
-            ))
-        } else {
-            None
-        };
+        let span_context = active.is_valid().then_some(active);
         self.records
             .lock()
             .unwrap_or_else(PoisonError::into_inner)

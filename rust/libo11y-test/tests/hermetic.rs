@@ -211,6 +211,28 @@ fn debug_logs_captured_by_default_and_reset_clears_buffers() {
 }
 
 #[test]
+fn reset_drains_buffered_exemplars_before_clearing() {
+    let rec = Recorder::start("reset-exemplars");
+    rec.in_scope(|| {
+        let _span = tracing::info_span!("before-reset").entered();
+        rec.sdk()
+            .meter("svc")
+            .u64_counter("orders.count")
+            .build()
+            .add(1, &[]);
+    });
+
+    // Do NOT call rec.metrics() or rec.exemplars() before reset: the exemplar
+    // is still buffered in the reader's ExemplarStore.
+    rec.reset();
+
+    assert!(
+        rec.exemplars("orders.count").is_empty(),
+        "reset must drain buffered exemplars so pre-reset exemplars do not leak"
+    );
+}
+
+#[test]
 #[should_panic(expected = "libo11y-test: building SDK:")]
 fn start_panics_with_expected_prefix_on_invalid_service_name() {
     let _ = Recorder::start("   ");

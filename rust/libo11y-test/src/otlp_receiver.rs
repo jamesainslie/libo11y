@@ -15,10 +15,11 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Context, Poll};
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 use flate2::read::GzDecoder;
 use http::{Method, Request, Response, StatusCode, header};
-use http_body_util::{BodyExt as _, Full};
+use http_body_util::{BodyExt as _, Full, LengthLimitError, Limited};
 use hyper::body::{Bytes, Incoming};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
@@ -39,6 +40,14 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 use tokio::task::JoinSet;
 use tonic::codec::CompressionEncoding;
+
+/// Maximum request body size (both compressed and decompressed) accepted by
+/// [`OtlpHttpReceiver`].
+const MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
+
+/// Maximum time [`OtlpGrpcReceiver`] waits for open HTTP/2 connections to
+/// drain after shutdown is signaled before aborting them.
+const GRPC_SHUTDOWN_GRACE: Duration = Duration::from_millis(200);
 
 #[derive(Default)]
 struct Received {
@@ -237,6 +246,7 @@ async fn serve_http(
         tokio::select! {
             biased;
             _ = &mut shutdown_rx => break,
+            Some(_) = connections.join_next(), if !connections.is_empty() => {}
             accepted = listener.accept() => {
                 match accepted {
                     Ok((stream, _)) => {
@@ -313,9 +323,18 @@ async fn handle_http_request(
         .get("content-encoding")
         .is_some_and(|v| v.trim().eq_ignore_ascii_case("gzip"));
 
-    let raw_bytes = match req.into_body().collect().await {
+    let raw_bytes = match Limited::new(req.into_body(), MAX_BODY_BYTES)
+        .collect()
+        .await
+    {
         Ok(collected) => collected.to_bytes(),
         Err(err) => {
+            if err.downcast_ref::<LengthLimitError>().is_some() {
+                return Ok(text_response(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "request body too large",
+                ));
+            }
             return Ok(text_response(
                 StatusCode::BAD_REQUEST,
                 &format!("reading body: {err}"),
@@ -324,12 +343,21 @@ async fn handle_http_request(
     };
 
     let payload = if is_gzip {
-        let mut gz = GzDecoder::new(raw_bytes.as_ref());
+        let limit = u64::try_from(MAX_BODY_BYTES)
+            .unwrap_or(u64::MAX)
+            .saturating_add(1);
+        let mut gz = GzDecoder::new(raw_bytes.as_ref()).take(limit);
         let mut uncompressed = Vec::new();
         if let Err(err) = gz.read_to_end(&mut uncompressed) {
             return Ok(text_response(
                 StatusCode::BAD_REQUEST,
                 &format!("gunzip body: {err}"),
+            ));
+        }
+        if uncompressed.len() > MAX_BODY_BYTES {
+            return Ok(text_response(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "decompressed body too large",
             ));
         }
         uncompressed
@@ -488,25 +516,42 @@ impl OtlpGrpcReceiver {
                         }
                     };
                     let incoming = TcpIncoming(listener);
+                    let (graceful_tx, graceful_rx) = oneshot::channel();
+                    let mut server_task = tokio::spawn(async move {
+                        let _ = tonic::transport::Server::builder()
+                            .add_service(
+                                TraceServiceServer::new(svc.clone())
+                                    .accept_compressed(CompressionEncoding::Gzip),
+                            )
+                            .add_service(
+                                MetricsServiceServer::new(svc.clone())
+                                    .accept_compressed(CompressionEncoding::Gzip),
+                            )
+                            .add_service(
+                                LogsServiceServer::new(svc)
+                                    .accept_compressed(CompressionEncoding::Gzip),
+                            )
+                            .serve_with_incoming_shutdown(incoming, async move {
+                                let _ = graceful_rx.await;
+                            })
+                            .await;
+                    });
                     let _ = ready_tx.send(Ok(()));
-                    let _ = tonic::transport::Server::builder()
-                        .add_service(
-                            TraceServiceServer::new(svc.clone())
-                                .accept_compressed(CompressionEncoding::Gzip),
-                        )
-                        .add_service(
-                            MetricsServiceServer::new(svc.clone())
-                                .accept_compressed(CompressionEncoding::Gzip),
-                        )
-                        .add_service(
-                            LogsServiceServer::new(svc)
-                                .accept_compressed(CompressionEncoding::Gzip),
-                        )
-                        .serve_with_incoming_shutdown(incoming, async move {
-                            let _ = shutdown_rx.await;
-                        })
-                        .await;
+                    tokio::select! {
+                        _ = &mut server_task => {}
+                        _ = shutdown_rx => {
+                            let _ = graceful_tx.send(());
+                            tokio::select! {
+                                _ = &mut server_task => {}
+                                () = tokio::time::sleep(GRPC_SHUTDOWN_GRACE) => {
+                                    server_task.abort();
+                                    let _ = server_task.await;
+                                }
+                            }
+                        }
+                    }
                 });
+                runtime.shutdown_timeout(GRPC_SHUTDOWN_GRACE);
             })?;
 
         match ready_rx.recv() {
@@ -688,5 +733,92 @@ impl tonic::codegen::tokio_stream::Stream for TcpIncoming {
             Poll::Ready(Err(err)) => Poll::Ready(Some(Err(err))),
             Poll::Pending => Poll::Pending,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write as _;
+    use std::net::TcpStream as StdTcpStream;
+
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+
+    use super::*;
+
+    fn send_http_post(addr: SocketAddr, path: &str, headers: &[(&str, &str)], body: &[u8]) -> u16 {
+        let mut stream = StdTcpStream::connect(addr).expect("connect");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("timeout");
+        let mut head = format!(
+            "POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\nConnection: close\r\n",
+            body.len()
+        );
+        for (k, v) in headers {
+            head.push_str(k);
+            head.push_str(": ");
+            head.push_str(v);
+            head.push_str("\r\n");
+        }
+        head.push_str("\r\n");
+        let _ = stream.write_all(head.as_bytes());
+        let _ = stream.write_all(body);
+        let _ = stream.flush();
+
+        let mut resp = Vec::new();
+        let _ = stream.read_to_end(&mut resp);
+        let text = String::from_utf8_lossy(&resp);
+        let status_line = text.lines().next().expect("status line");
+        status_line
+            .split_whitespace()
+            .nth(1)
+            .expect("status code")
+            .parse()
+            .expect("numeric status")
+    }
+
+    #[test]
+    fn http_receiver_rejects_oversized_raw_and_gzip_bodies_with_413() {
+        let receiver = OtlpHttpReceiver::start().expect("http receiver");
+
+        // 1. Oversized raw body (> MAX_BODY_BYTES).
+        let huge = vec![b'a'; MAX_BODY_BYTES + 1024];
+        let status = send_http_post(
+            receiver.addr(),
+            "/v1/traces",
+            &[("Content-Type", "application/x-protobuf")],
+            &huge,
+        );
+        assert_eq!(status, 413, "oversized raw body must return 413");
+
+        // 2. Small gzip bomb that decompresses to > MAX_BODY_BYTES.
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+        let chunk = vec![0u8; 64 * 1024];
+        let mut written = 0;
+        while written <= MAX_BODY_BYTES {
+            encoder.write_all(&chunk).expect("write chunk");
+            written += chunk.len();
+        }
+        let compressed = encoder.finish().expect("finish gzip");
+        assert!(
+            compressed.len() < MAX_BODY_BYTES / 10,
+            "compressed payload should be small ({} bytes)",
+            compressed.len()
+        );
+        let status = send_http_post(
+            receiver.addr(),
+            "/v1/traces",
+            &[
+                ("Content-Type", "application/x-protobuf"),
+                ("Content-Encoding", "gzip"),
+            ],
+            &compressed,
+        );
+        assert_eq!(
+            status, 413,
+            "oversized decompressed gzip body must return 413"
+        );
+        assert!(receiver.traces().is_empty());
     }
 }

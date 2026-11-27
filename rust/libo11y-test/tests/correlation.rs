@@ -212,6 +212,57 @@ fn check_triangle_fails_when_legs_missing_or_disjoint() {
 }
 
 #[test]
+fn event_in_context_attaches_explicit_context_for_extra_sinks() {
+    use opentelemetry::Context;
+    use opentelemetry::trace::{
+        SpanContext, SpanId, TraceContextExt as _, TraceFlags, TraceId, TraceState,
+    };
+
+    let rec = Recorder::start("explicit-cx");
+
+    // 1. Inside an active span, event_in_context(&Context::new(), ...) must
+    //    capture NO span context rather than leaking the ambient span.
+    rec.in_scope(|| {
+        let _span = tracing::info_span!("ambient").entered();
+        rec.sdk()
+            .event_in_context(&Context::new(), "custom.uncorrelated", []);
+    });
+
+    // 2. Outside any active span, event_in_context(&explicit_cx, ...) must
+    //    preserve the exact SpanContext (including trace_flags and is_remote).
+    let explicit_sc = SpanContext::new(
+        TraceId::from(0x0123_4567_89ab_cdef_u128),
+        SpanId::from(0xfeed_face_u64),
+        TraceFlags::default(), // unsampled
+        true,                  // remote
+        TraceState::default(),
+    );
+    let explicit_cx = Context::new().with_remote_span_context(explicit_sc.clone());
+    rec.sdk()
+        .event_in_context(&explicit_cx, "custom.explicit", []);
+
+    let logs = rec.logs();
+    assert_eq!(logs.len(), 2);
+
+    assert_eq!(logs[0].event_name(), Some("custom.uncorrelated"));
+    assert!(
+        logs[0].span_context().is_none(),
+        "uncorrelated event_in_context leaked ambient span context: {:?}",
+        logs[0].span_context()
+    );
+    assert!(logs[0].trace_id().is_none());
+
+    assert_eq!(logs[1].event_name(), Some("custom.explicit"));
+    assert_eq!(logs[1].span_context(), Some(&explicit_sc));
+    assert_eq!(
+        logs[1].trace_id().as_deref(),
+        Some(explicit_sc.trace_id().to_string().as_str())
+    );
+
+    rec.assert_correlated();
+}
+
+#[test]
 #[should_panic(expected = "triangle check failed:")]
 fn assert_triangle_panics_when_broken() {
     let rec = Recorder::start("panic-triangle");

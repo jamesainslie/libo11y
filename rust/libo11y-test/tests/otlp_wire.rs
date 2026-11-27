@@ -521,3 +521,52 @@ async fn otlp_grpc_gzip_and_metadata_end_to_end() {
     receiver.shutdown();
     receiver.shutdown(); // idempotent
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn otlp_grpc_receiver_drop_does_not_deadlock_with_open_client() {
+    let receiver = OtlpGrpcReceiver::start().expect("grpc receiver");
+    let endpoint = receiver.endpoint();
+
+    let sdk = Sdk::builder()
+        .service_name("wire-grpc-open-drop")
+        .environment(Environment::Test)
+        .without_console_log()
+        .without_runtime_metrics()
+        .env_lookup(EnvLookup::from_pairs([
+            ("OTEL_TRACES_EXPORTER", "otlp"),
+            ("OTEL_METRICS_EXPORTER", "otlp"),
+            ("OTEL_LOGS_EXPORTER", "otlp"),
+            ("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc"),
+            ("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint.as_str()),
+            ("OTEL_METRIC_EXPORT_INTERVAL", "3600000"),
+        ]))
+        .with_error_handler(|_| {})
+        .build()
+        .expect("SDK");
+
+    // Export once so the tonic HTTP/2 client establishes and keeps an open
+    // connection to the receiver.
+    let _ = emit_wire_telemetry(&sdk);
+    let sdk_flush = sdk.clone();
+    tokio::task::spawn_blocking(move || sdk_flush.force_flush())
+        .await
+        .expect("join")
+        .expect("flush");
+    assert!(!receiver.traces().is_empty());
+
+    // Drop the receiver BEFORE shutting down the SDK: must complete promptly
+    // instead of deadlocking waiting for the open HTTP/2 channel.
+    let start = std::time::Instant::now();
+    tokio::task::spawn_blocking(move || drop(receiver))
+        .await
+        .expect("drop receiver");
+    assert!(
+        start.elapsed() < Duration::from_secs(5),
+        "dropping OtlpGrpcReceiver with open client took {:?}",
+        start.elapsed()
+    );
+
+    let _ = sdk
+        .shutdown_with_timeout_async(Duration::from_secs(2))
+        .await;
+}
