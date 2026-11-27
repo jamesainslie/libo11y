@@ -40,10 +40,12 @@ func TestValidateSpans(t *testing.T) {
 		build  func(ptrace.Span)
 		reason string // "" means kept
 	}{
-		"valid view":              {viewSpan, ""},
-		"view missing view.name":  {func(s ptrace.Span) { viewSpan(s); s.Attributes().Remove("o11y.rum.view.name") }, "rum_shape"},
-		"view kind not a member":  {func(s ptrace.Span) { viewSpan(s); s.Attributes().PutStr("o11y.rum.view.kind", "bogus") }, "rum_shape"},
-		"view and action at once": {func(s ptrace.Span) { viewSpan(s); s.Attributes().PutStr("o11y.rum.action.type", "click") }, "rum_shape"},
+		"valid view":                           {viewSpan, ""},
+		"view missing view.name":               {func(s ptrace.Span) { viewSpan(s); s.Attributes().Remove("o11y.rum.view.name") }, "rum_shape"},
+		"view kind not a member":               {func(s ptrace.Span) { viewSpan(s); s.Attributes().PutStr("o11y.rum.view.kind", "bogus") }, "rum_shape"},
+		"view marker names an unknown shape":   {func(s ptrace.Span) { viewSpan(s); s.Attributes().PutStr("o11y.rum.span.shape", "bogus") }, "rum_shape"},
+		"action marker on a view span":         {func(s ptrace.Span) { viewSpan(s); s.Attributes().PutStr("o11y.rum.span.shape", "action") }, "rum_shape"},
+		"marked view with a stray action type": {func(s ptrace.Span) { viewSpan(s); s.Attributes().PutStr("o11y.rum.action.type", "click") }, ""},
 		"action needs session": {func(s ptrace.Span) {
 			spanIDs(s)
 			s.Attributes().PutStr("o11y.rum.action.type", "click")
