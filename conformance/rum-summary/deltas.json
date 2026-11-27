@@ -1,0 +1,67 @@
+{
+  "description": "Counts and time on view are deltas since the view's previous summary.",
+  "platform": "web",
+  "steps": [
+    {
+      "at": 0,
+      "do": "open",
+      "view": {
+        "id": "v0",
+        "name": "/",
+        "kind": "initial",
+        "sessionId": "s1"
+      }
+    },
+    {
+      "at": 100,
+      "do": "count",
+      "key": "frustrations.rage"
+    },
+    {
+      "at": 1000,
+      "do": "hide"
+    },
+    {
+      "at": 5000,
+      "do": "show"
+    },
+    {
+      "at": 5100,
+      "do": "count",
+      "key": "frustrations.rage"
+    },
+    {
+      "at": 5200,
+      "do": "count",
+      "key": "errors.console"
+    },
+    {
+      "at": 6000,
+      "do": "close",
+      "viewId": "v0"
+    }
+  ],
+  "want": [
+    {
+      "o11y.rum.platform": "web",
+      "o11y.rum.view.id": "v0",
+      "o11y.rum.view.name": "/",
+      "o11y.rum.view.kind": "initial",
+      "session.id": "s1",
+      "o11y.rum.summary.seq": 0,
+      "o11y.rum.summary.time_on_view": 1,
+      "o11y.rum.summary.frustrations.rage": 1
+    },
+    {
+      "o11y.rum.platform": "web",
+      "o11y.rum.view.id": "v0",
+      "o11y.rum.view.name": "/",
+      "o11y.rum.view.kind": "initial",
+      "session.id": "s1",
+      "o11y.rum.summary.seq": 1,
+      "o11y.rum.summary.time_on_view": 1,
+      "o11y.rum.summary.frustrations.rage": 1,
+      "o11y.rum.summary.errors.console": 1
+    }
+  ]
+}

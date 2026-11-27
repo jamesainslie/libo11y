@@ -8,7 +8,7 @@ GO_TEST_P ?= 4
 # gate runs on each module separately.
 GO_MODULES := go go/o11ygin go/o11yconnect go/o11ysql go/o11yrum
 
-.PHONY: spec-check spec-generate spec-drift test lint vet tidy-check vuln release-check zig-release-check python-release-check rust-release-check rust-release-check-test c-release-check schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-npm-plan-test ts-install ts-check ts-browser-test rust-check rust-msrv zig-check zig-integrations-check zig-hygiene-test python-check python-hygiene-test c-check ci
+.PHONY: spec-check spec-generate spec-drift test lint vet tidy-check vuln release-check zig-release-check python-release-check rust-release-check rust-release-check-test c-release-check schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-npm-plan-test ts-install ts-check ts-size ts-browser-test rust-check rust-msrv zig-check zig-integrations-check zig-hygiene-test python-check python-hygiene-test c-check ci
 
 # Validate the spec registry against the libo11y policy suite (naming,
 # ownership, sensitivity, cardinality, events, units).
@@ -42,10 +42,17 @@ ts-install:
 ts-check: ts-install
 	cd ts && bun run lint && bun run typecheck && bun run build && bun run api:check && bun run test:bun && bun run test:node
 
-# Browser suites for @libo11y/web and @libo11y/webext under Playwright and
-# headless Chromium. Needs Playwright's Chromium for the pinned version:
-# CI installs it with `bun x --no-install playwright install --with-deps
-# chromium` in ts/.
+# The browser bundle size budgets in ts/size-budget.json: each entry and each
+# collector delta, minified and gzip-compressed, against its budget.
+ts-size: ts-install
+	cd ts && bun scripts/size.ts --check
+
+# Browser suites under Playwright: @libo11y/web and @libo11y/webext in
+# headless Chromium, @libo11y/rum and its adapters in headless Chromium,
+# Firefox and WebKit. Needs Playwright's browsers for the pinned version:
+# CI installs them with `bun x --no-install playwright install --with-deps
+# chromium firefox webkit` in ts/. A host with only Chromium runs
+# `bun run test:browser --project=web --project=webext --project=rum-chromium`.
 ts-browser-test: ts-install
 	cd ts && bun run test:browser
 
@@ -255,4 +262,4 @@ c-check:
 
 # vuln runs last: it depends on the advisory database and the toolchain's
 # patch level, so local runs exercise every other gate first.
-ci: lint vet test tidy-check spec-check spec-drift ts-check ts-browser-test rust-check rust-msrv zig-check python-check c-check schema-published-test release-notes-test release-tag-test rust-release-check-test ts-browser-bundle-test ts-npm-plan-test release-check vuln
+ci: lint vet test tidy-check spec-check spec-drift ts-check ts-size ts-browser-test rust-check rust-msrv zig-check python-check c-check schema-published-test release-notes-test release-tag-test rust-release-check-test ts-browser-bundle-test ts-npm-plan-test release-check vuln

@@ -35,7 +35,7 @@
     },
     "packages/core": {
       "name": "@libo11y/core",
-      "version": "0.1.2",
+      "version": "0.2.1",
       "dependencies": {
         "@libo11y/spec": "workspace:*",
         "@opentelemetry/api": "1.10.0",
@@ -50,9 +50,26 @@
         "@opentelemetry/context-async-hooks": "3.1.1",
       },
     },
+    "packages/rum": {
+      "name": "@libo11y/rum",
+      "version": "0.2.1",
+      "dependencies": {
+        "@libo11y/core": "workspace:*",
+        "@libo11y/spec": "workspace:*",
+        "@libo11y/web": "workspace:*",
+        "@opentelemetry/api": "1.10.0",
+        "@opentelemetry/core": "3.1.1",
+        "@opentelemetry/sdk-logs": "3.1.1",
+        "@opentelemetry/sdk-trace": "3.1.1",
+      },
+      "devDependencies": {
+        "@libo11y/test": "workspace:*",
+        "fake-indexeddb": "6.2.7",
+      },
+    },
     "packages/server": {
       "name": "@libo11y/server",
-      "version": "0.1.2",
+      "version": "0.2.1",
       "dependencies": {
         "@libo11y/core": "workspace:*",
         "@libo11y/spec": "workspace:*",
@@ -76,7 +93,7 @@
     },
     "packages/spec": {
       "name": "@libo11y/spec",
-      "version": "0.1.2",
+      "version": "0.2.1",
       "bin": {
         "libo11y": "./src/cli.ts",
       },
@@ -86,7 +103,7 @@
     },
     "packages/test": {
       "name": "@libo11y/test",
-      "version": "0.1.2",
+      "version": "0.2.1",
       "dependencies": {
         "@libo11y/core": "workspace:*",
         "@libo11y/spec": "workspace:*",
@@ -102,7 +119,7 @@
     },
     "packages/web": {
       "name": "@libo11y/web",
-      "version": "0.1.2",
+      "version": "0.2.1",
       "dependencies": {
         "@libo11y/core": "workspace:*",
         "@libo11y/spec": "workspace:*",
@@ -121,7 +138,7 @@
     },
     "packages/webext": {
       "name": "@libo11y/webext",
-      "version": "0.1.2",
+      "version": "0.2.1",
       "dependencies": {
         "@libo11y/core": "workspace:*",
         "@libo11y/spec": "workspace:*",
@@ -161,6 +178,8 @@
     "@biomejs/cli-win32-x64": ["@biomejs/cli-win32-x64@2.6.8", "", { "os": "win32", "cpu": "x64" }, "sha512-cD6HvGczZUiAYsY8s2TxxXj2AHFzEdMomvVJfEjzOjBM45nGqIDfBpbtvwGQzDCN8X2yKKk9u1jnDZisT2nxIg=="],
 
     "@libo11y/core": ["@libo11y/core@workspace:packages/core"],
+
+    "@libo11y/rum": ["@libo11y/rum@workspace:packages/rum"],
 
     "@libo11y/server": ["@libo11y/server@workspace:packages/server"],
 

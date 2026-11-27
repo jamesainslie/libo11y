@@ -1,0 +1,49 @@
+{
+  "description": "Time on view counts only while the page is visible.",
+  "platform": "web",
+  "steps": [
+    {
+      "at": 0,
+      "do": "open",
+      "view": {
+        "id": "v0",
+        "name": "/",
+        "kind": "initial",
+        "sessionId": "s1"
+      }
+    },
+    {
+      "at": 2000,
+      "do": "hide"
+    },
+    {
+      "at": 10000,
+      "do": "show"
+    },
+    {
+      "at": 10500,
+      "do": "close",
+      "viewId": "v0"
+    }
+  ],
+  "want": [
+    {
+      "o11y.rum.platform": "web",
+      "o11y.rum.view.id": "v0",
+      "o11y.rum.view.name": "/",
+      "o11y.rum.view.kind": "initial",
+      "session.id": "s1",
+      "o11y.rum.summary.seq": 0,
+      "o11y.rum.summary.time_on_view": 2
+    },
+    {
+      "o11y.rum.platform": "web",
+      "o11y.rum.view.id": "v0",
+      "o11y.rum.view.name": "/",
+      "o11y.rum.view.kind": "initial",
+      "session.id": "s1",
+      "o11y.rum.summary.seq": 1,
+      "o11y.rum.summary.time_on_view": 0.5
+    }
+  ]
+}

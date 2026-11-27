@@ -128,3 +128,10 @@ credential is never echoed. The output is Go's `url.URL.String()`. It
 lowercases only the scheme and escapes the path, and it normalizes nothing
 else. A WHATWG `URL` parser would lowercase the host, drop default ports,
 resolve dot segments and apply IDNA, so a port must not use one.
+
+## `rum-summary/`
+
+Hand-written view summary timelines and the `o11y.rum.view.summary`
+records they must produce. `rum-summary/README.md` describes the format.
+The TypeScript suite, `ts/packages/rum/src/summary/conformance.test.ts`,
+checks them.

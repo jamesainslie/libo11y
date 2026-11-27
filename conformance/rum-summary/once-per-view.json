@@ -1,0 +1,79 @@
+{
+  "description": "A vital is accepted once per view; a pending or sent vital ignores later values.",
+  "platform": "web",
+  "steps": [
+    {
+      "at": 0,
+      "do": "open",
+      "view": {
+        "id": "v0",
+        "name": "/",
+        "kind": "initial",
+        "sessionId": "s1"
+      }
+    },
+    {
+      "at": 1500,
+      "do": "vital",
+      "viewId": "v0",
+      "name": "lcp",
+      "value": 1.2
+    },
+    {
+      "at": 1600,
+      "do": "vital",
+      "viewId": "v0",
+      "name": "lcp",
+      "value": 1.9
+    },
+    {
+      "at": 1700,
+      "do": "vital",
+      "viewId": "v0",
+      "name": "cls",
+      "value": 0.05
+    },
+    {
+      "at": 3000,
+      "do": "hide"
+    },
+    {
+      "at": 3100,
+      "do": "vital",
+      "viewId": "v0",
+      "name": "cls",
+      "value": 0.2
+    },
+    {
+      "at": 4000,
+      "do": "show"
+    },
+    {
+      "at": 5000,
+      "do": "close",
+      "viewId": "v0"
+    }
+  ],
+  "want": [
+    {
+      "o11y.rum.platform": "web",
+      "o11y.rum.view.id": "v0",
+      "o11y.rum.view.name": "/",
+      "o11y.rum.view.kind": "initial",
+      "session.id": "s1",
+      "o11y.rum.summary.seq": 0,
+      "o11y.rum.summary.time_on_view": 3,
+      "o11y.rum.summary.lcp.value": 1.2,
+      "o11y.rum.summary.cls.value": 0.05
+    },
+    {
+      "o11y.rum.platform": "web",
+      "o11y.rum.view.id": "v0",
+      "o11y.rum.view.name": "/",
+      "o11y.rum.view.kind": "initial",
+      "session.id": "s1",
+      "o11y.rum.summary.seq": 1,
+      "o11y.rum.summary.time_on_view": 1
+    }
+  ]
+}

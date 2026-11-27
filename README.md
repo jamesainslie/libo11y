@@ -196,12 +196,14 @@ npm install @libo11y/spec            # only for the spec constants or the libo11
 npm install --save-dev @libo11y/test # the hermetic recorder and the OTLP sink
 npm install @libo11y/web             # browsers: setup, consent, the offline queue, fetch and XHR spans
 npm install @libo11y/webext          # Manifest V3 extensions: the service worker and content scripts
+npm install @libo11y/rum             # RUM for browsers and extensions
 ```
 
-The six packages release together at one version, and they are built on
+The seven packages release together at one version, and they are built on
 OpenTelemetry JS 3.x. `@libo11y/server` and `@libo11y/test` run on Bun
-1.3.13 and Node 24. `@libo11y/web` and `@libo11y/webext` run in browsers,
-and by default they record nothing until the application grants consent.
+1.3.13 and Node 24. `@libo11y/web`, `@libo11y/webext` and `@libo11y/rum` run in
+browsers, and by default they record nothing until the application grants
+consent. `@libo11y/rum` is in development and has not shipped yet.
 
 ## Quick start (TypeScript)
 

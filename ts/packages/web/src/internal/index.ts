@@ -1,5 +1,5 @@
 /**
- * @libo11y/web/internal: the building blocks @libo11y/webext and the L5 RUM packages compose. For
+ * @libo11y/web/internal: the building blocks @libo11y/webext and @libo11y/rum compose. For
  * libo11y packages only; it follows the package version but carries no compatibility promise and
  * has no API report.
  *
@@ -47,6 +47,7 @@ export {
   type NavigatorLike,
   parseResourceAttributes,
 } from "../resource.ts";
+export { defaultSetupDeps, type SetupDeps, setupWithDeps } from "../setup.ts";
 export { createDelivery } from "../transport/delivery.ts";
 export { resolveEndpoints, type SignalEndpoints } from "../transport/endpoints.ts";
 export {

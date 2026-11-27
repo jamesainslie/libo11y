@@ -2,12 +2,39 @@
 
 All notable changes to the libo11y TypeScript packages are documented
 here: `@libo11y/spec`, `@libo11y/core`, `@libo11y/server`,
-`@libo11y/test`, `@libo11y/web` and `@libo11y/webext`, which release together at one version from a `ts/vX.Y.Z`
+`@libo11y/test`, `@libo11y/web`, `@libo11y/webext` and `@libo11y/rum`, which release together at one version from a `ts/vX.Y.Z`
 tag. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the packages
 adhere to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+
+### Added
+
+- `@libo11y/rum`, browser RUM over `@libo11y/web`. In development; it is
+  not on npm yet. `setupRum` takes the options of the web `setup` and RUM's
+  own under `rum`. It shares one session across the tabs of an origin
+  through `localStorage` and a `BroadcastChannel`, ending a session after
+  15 minutes idle or 4 hours. It records, stores and sends nothing until
+  consent is granted, and revoking consent removes the session and the
+  retention buffer. A session is head-sampled by a hash of its ID
+  (`rum.sessionSampleRate`). Every consented session sends an
+  `o11y.rum.view.summary` per view. The detail of a session that is not
+  head-sampled waits in an IndexedDB retention buffer until an error or a
+  frustration keeps the session. Every OTLP request carries the `sent_at`
+  and `client_token` query parameters of the RUM gateway. The collectors
+  arrive in later changes.
+- `@libo11y/rum`: the `documentLoad` span of `@libo11y/web` becomes the
+  `app_load` span shape under `setupRum`. It is renamed `app_load` and
+  carries `o11y.rum.span.shape`, `o11y.rum.platform`, `session.id` and
+  `o11y.rum.view.id`. `@libo11y/web` on its own still records
+  `documentLoad`.
+- `@libo11y/web/internal` exports `setupWithDeps`, `defaultSetupDeps` and
+  `SetupDeps`, the seam `@libo11y/rum` builds on.
+- Size budgets for the browser bundles in `ts/size-budget.json`, checked by
+  `bun scripts/size.ts --check` (`make ts-size`) in CI.
+- `conformance/rum-summary/`, the view summary vectors the TypeScript
+  suite checks.
 
 ## [0.2.1] - 2026-11-27
 
