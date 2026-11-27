@@ -1,0 +1,39 @@
+[package]
+name = "libo11y-http"
+description = "Tower HTTP server and client instrumentation layers for libo11y, with optional axum MatchedPath support."
+readme = "README.md"
+keywords = ["observability", "opentelemetry", "http", "tower", "libo11y"]
+categories = ["web-programming::http-server", "web-programming::http-client"]
+include = ["src/**/*.rs", "README.md", "LICENSE"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[features]
+default = []
+# Reads `axum::extract::MatchedPath` from request extensions automatically when
+# no custom route extractor matches.
+axum = ["dep:axum"]
+
+[dependencies]
+axum = { version = "0.8.9", default-features = false, features = ["matched-path"], optional = true }
+http = "1.5.0"
+libo11y.workspace = true
+libo11y-spec.workspace = true
+opentelemetry = { version = "0.33.1", default-features = false, features = ["metrics", "trace"] }
+pin-project-lite = "0.2.17"
+tower-layer = "0.3.3"
+tower-service = "0.3.3"
+
+[dev-dependencies]
+http-body-util = "0.1.5"
+libo11y-test.workspace = true
+tokio = { version = "1.54.1", features = ["macros", "net", "rt-multi-thread"] }
+tower = { version = "0.5.3", features = ["util"] }
+tracing.workspace = true
+
+[lints]
+workspace = true
