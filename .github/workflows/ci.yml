@@ -21,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        module: [go, go/o11ygin, go/o11yconnect, go/o11ysql]
+        module: [go, go/o11ygin, go/o11yconnect, go/o11ysql, go/o11yrum]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -58,6 +58,7 @@ jobs:
             go/o11ygin/go.sum
             go/o11yconnect/go.sum
             go/o11ysql/go.sum
+            go/o11yrum/go.sum
       - run: make vet test tidy-check GO_TEST_P=4
 
   spec:
@@ -308,6 +309,7 @@ jobs:
             go/o11ygin/go.sum
             go/o11yconnect/go.sum
             go/o11ysql/go.sum
+            go/o11yrum/go.sum
       - run: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
       - run: make vuln
 
@@ -328,6 +330,7 @@ jobs:
             go/o11ygin/go.sum
             go/o11yconnect/go.sum
             go/o11ysql/go.sum
+            go/o11yrum/go.sum
       # The TypeScript half packs the packages and imports them under Bun and Node.
       - uses: oven-sh/setup-bun@v2
         with:
