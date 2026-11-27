@@ -108,7 +108,7 @@ func WithSpanNameFormatter(format func(c *gin.Context) string) Option {
 // WithServerTiming adds `Server-Timing: traceparent;desc="00-<trace-id>-<span-id>-<flags>"`
 // to HTML responses, naming the server span, as o11yhttp's WithServerTiming
 // does. A browser page instrumented with @libo11y/web makes the server span
-// the parent of its documentLoad span, so the first page load joins the
+// the parent of its app_load span, so the first page load joins the
 // backend trace. An existing Server-Timing value the handler set is kept,
 // and the entry is added after it.
 //

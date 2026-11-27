@@ -3,7 +3,7 @@ module github.com/jamesainslie/libo11y/go/o11ysql
 go 1.26.0
 
 require (
-	github.com/jamesainslie/libo11y/go v0.3.0
+	github.com/jamesainslie/libo11y/go v0.4.0
 	go.opentelemetry.io/otel v1.47.0
 	go.opentelemetry.io/otel/metric v1.47.0
 	go.opentelemetry.io/otel/sdk v1.47.0

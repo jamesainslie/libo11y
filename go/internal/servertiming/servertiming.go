@@ -3,7 +3,7 @@
 //
 // The entry is `traceparent;desc="00-<trace-id>-<span-id>-<flags>"`, the
 // format the TypeScript, Zig and Python servers emit and @libo11y/web's
-// document-load instrumentation reads, so the page's documentLoad span can
+// document-load instrumentation reads, so the page's app_load span can
 // adopt the server span as its parent. Only HTML responses carry it: a
 // document load is the one navigation whose server span the page cannot
 // otherwise learn.

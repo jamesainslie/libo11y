@@ -8,13 +8,22 @@ adhere to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-27
+
 ### Added
 
+- `spec`: the spec 1.3.0 names. They are the view summary event
+  `spec.EventRUMViewSummary` and its `o11y.rum.summary.*` keys, the span
+  shape marker `spec.RUMSpanShapeKey` with the closed enum
+  `spec.RUMSpanShape`, `spec.RUMAppUpdateIDKey`, and the detail keys for
+  error breadcrumbs, vital attribution, resource type and Server-Timing
+  entries. `spec.SchemaURL` and `spec.SpecVersion` name spec 1.3.0, so
+  every resource carries the spec 1.3.0 schema URL.
 - `o11yhttp`: `WithServerTiming` adds
   `Server-Timing: traceparent;desc="00-<trace-id>-<span-id>-<flags>"`,
   naming the server span, to HTML responses. `@libo11y/web`'s
   document-load instrumentation reads it and makes the server span the
-  parent of the page's `documentLoad` span, so the first page load joins
+  parent of the page's `app_load` span, so the first page load joins
   the backend trace. The entry is added when the handler commits the
   headers (a final `WriteHeader`, `Write`, `Flush`, or a `ReadFrom` that
   copies bytes, also through `http.ResponseController`) and only for a
@@ -552,7 +561,8 @@ tracking one of those commits can see what moved.
   GO-2026-6599, GO-2026-6600), `net/url` (GO-2026-6218), and
   `encoding/asn1` (GO-2026-5972).
 
-[Unreleased]: https://github.com/jamesainslie/libo11y/compare/go/v0.3.0...HEAD
+[Unreleased]: https://github.com/jamesainslie/libo11y/compare/go/v0.4.0...HEAD
+[0.4.0]: https://github.com/jamesainslie/libo11y/compare/go/v0.3.0...go/v0.4.0
 [0.3.0]: https://github.com/jamesainslie/libo11y/releases/tag/go/v0.3.0
 [0.2.0]: https://github.com/jamesainslie/libo11y/releases/tag/go/v0.2.0
 [0.1.0]: https://github.com/jamesainslie/libo11y/releases/tag/go/v0.1.0
