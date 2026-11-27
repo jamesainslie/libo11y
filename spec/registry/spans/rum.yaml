@@ -1,12 +1,20 @@
 # RUM span shapes. Each group names its shape in o11y.rum.span; the
 # generator turns the required attributes into RUMSpanRequired (Go) and
 # RUM_SPAN_REQUIRED (TypeScript). app_load is the document load on the web
-# and the app start on mobile.
+# and the app start on mobile. The view and action briefs state when each
+# span starts and ends (spec 1.3.0, docs/SPEC.md section 7): a view span
+# covers getting into the view, and the view summary event carries the time
+# spent on it.
 groups:
   - id: libo11y.rum.span.view
     type: attribute_group
     display_name: RUM View Span
-    brief: Required shape of the span RUM records for each view.
+    brief: >
+      Required shape of the span RUM records for each view. It covers getting
+      into the view, not the time spent on it. An initial view is a child of
+      app_load and ends at the first paint after the routed view renders. A
+      soft navigation is a root span from the route change to the first paint
+      after the new route renders, capped at 10 seconds.
     stability: development
     annotations: {o11y.rum.span: view}
     attributes:
@@ -19,7 +27,12 @@ groups:
   - id: libo11y.rum.span.action
     type: attribute_group
     display_name: RUM Action Span
-    brief: Required shape of the span RUM records for each user action.
+    brief: >
+      Required shape of the span RUM records for each user action. It ends
+      when the work it caused settles, once its requests have finished and
+      the page has been idle for 100 ms, capped at 10 seconds. Requests it
+      caused are its children, it links to the view it happened on, and a
+      view it caused links back to it.
     stability: development
     annotations: {o11y.rum.span: action}
     attributes:

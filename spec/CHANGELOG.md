@@ -8,6 +8,28 @@ at its schema URL.
 
 ## [Unreleased]
 
+Spec 1.3.0, the RUM view summary. The schema URL is
+`https://schemas.o11y.ing/libo11y/1.3.0`.
+
+### Added
+
+- The event `o11y.rum.view.summary` and its attribute group
+  `registry.o11y.rum.summary`: the summary's index within its view, the
+  time on the view, request and long animation frame counts, one count per
+  `o11y.rum.error.source` and `o11y.rum.frustration.type` value, and one
+  value per web vital. Counts are deltas, and an absent count means zero.
+- The statement that the gateway derives the nine RUM metrics from view
+  summaries and that clients do not export them, with the mapping from
+  summary attributes to metrics. Each RUM metric brief says so.
+- The vital rating thresholds the gateway rates each web vital against.
+  Clients do not send a rating.
+- The rule that each vital is reported once per view, in the first summary
+  sent after it is known, and how that differs from CrUX.
+- The start and end of view and action spans, in the span shape briefs.
+- `o11y.rum.app.update_id`, the over-the-air update a mobile app runs.
+- The rule `libo11y_rum_summary_coverage`, which keeps the summary's
+  per-source and per-type counts in step with their enums.
+
 ## [1.2.0] - 2026-11-24
 
 Tagged `spec/v1.2.0`. Its schema file is served at

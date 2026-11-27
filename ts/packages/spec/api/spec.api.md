@@ -171,6 +171,9 @@ export const ATTR_RUM_ACTION_NAME = "o11y.rum.action.name";
 export const ATTR_RUM_ACTION_TYPE = "o11y.rum.action.type";
 
 // @public (undocumented)
+export const ATTR_RUM_APP_UPDATE_ID = "o11y.rum.app.update_id";
+
+// @public (undocumented)
 export const ATTR_RUM_BROWSER_FAMILY = "o11y.rum.browser.family";
 
 // @public (undocumented)
@@ -208,6 +211,75 @@ export const ATTR_RUM_REPLAY_SEGMENT = "o11y.rum.replay.segment";
 
 // @public (undocumented)
 export const ATTR_RUM_SESSION_RETAINED = "o11y.rum.session.retained";
+
+// @public (undocumented)
+export const ATTR_RUM_SUMMARY_CLS_VALUE = "o11y.rum.summary.cls.value";
+
+// @public (undocumented)
+export const ATTR_RUM_SUMMARY_ERRORS_ANR = "o11y.rum.summary.errors.anr";
+
+// @public (undocumented)
+export const ATTR_RUM_SUMMARY_ERRORS_BOUNDARY = "o11y.rum.summary.errors.boundary";
+
+// @public (undocumented)
+export const ATTR_RUM_SUMMARY_ERRORS_CONSOLE = "o11y.rum.summary.errors.console";
+
+// @public (undocumented)
+export const ATTR_RUM_SUMMARY_ERRORS_CRASH = "o11y.rum.summary.errors.crash";
+
+// @public (undocumented)
+export const ATTR_RUM_SUMMARY_ERRORS_CSP = "o11y.rum.summary.errors.csp";
+
+// @public (undocumented)
+export const ATTR_RUM_SUMMARY_ERRORS_CUSTOM = "o11y.rum.summary.errors.custom";
+
+// @public (undocumented)
+export const ATTR_RUM_SUMMARY_ERRORS_HANG = "o11y.rum.summary.errors.hang";
+
+// @public (undocumented)
+export const ATTR_RUM_SUMMARY_ERRORS_NETWORK = "o11y.rum.summary.errors.network";
+
+// @public (undocumented)
+export const ATTR_RUM_SUMMARY_ERRORS_RESOURCE = "o11y.rum.summary.errors.resource";
+
+// @public (undocumented)
+export const ATTR_RUM_SUMMARY_ERRORS_UNCAUGHT = "o11y.rum.summary.errors.uncaught";
+
+// @public (undocumented)
+export const ATTR_RUM_SUMMARY_ERRORS_UNHANDLED_REJECTION = "o11y.rum.summary.errors.unhandled_rejection";
+
+// @public (undocumented)
+export const ATTR_RUM_SUMMARY_FCP_VALUE = "o11y.rum.summary.fcp.value";
+
+// @public (undocumented)
+export const ATTR_RUM_SUMMARY_FRUSTRATIONS_DEAD = "o11y.rum.summary.frustrations.dead";
+
+// @public (undocumented)
+export const ATTR_RUM_SUMMARY_FRUSTRATIONS_ERROR = "o11y.rum.summary.frustrations.error";
+
+// @public (undocumented)
+export const ATTR_RUM_SUMMARY_FRUSTRATIONS_RAGE = "o11y.rum.summary.frustrations.rage";
+
+// @public (undocumented)
+export const ATTR_RUM_SUMMARY_INP_VALUE = "o11y.rum.summary.inp.value";
+
+// @public (undocumented)
+export const ATTR_RUM_SUMMARY_LCP_VALUE = "o11y.rum.summary.lcp.value";
+
+// @public (undocumented)
+export const ATTR_RUM_SUMMARY_LONG_ANIMATION_FRAMES = "o11y.rum.summary.long_animation_frames";
+
+// @public (undocumented)
+export const ATTR_RUM_SUMMARY_REQUESTS = "o11y.rum.summary.requests";
+
+// @public (undocumented)
+export const ATTR_RUM_SUMMARY_SEQ = "o11y.rum.summary.seq";
+
+// @public (undocumented)
+export const ATTR_RUM_SUMMARY_TIME_ON_VIEW = "o11y.rum.summary.time_on_view";
+
+// @public (undocumented)
+export const ATTR_RUM_SUMMARY_TTFB_VALUE = "o11y.rum.summary.ttfb.value";
 
 // @public (undocumented)
 export const ATTR_RUM_VIEW_ID = "o11y.rum.view.id";
@@ -304,6 +376,9 @@ export const EVENT_RUM_SESSION_END = "o11y.rum.session.end";
 
 // @public (undocumented)
 export const EVENT_RUM_SESSION_START = "o11y.rum.session.start";
+
+// @public (undocumented)
+export const EVENT_RUM_VIEW_SUMMARY = "o11y.rum.view.summary";
 
 // @public (undocumented)
 export const EVENT_TELEMETRY_CONFIGURED = "o11y.telemetry.configured";
@@ -641,7 +716,7 @@ export type RUMViewKind = "initial" | "soft" | "bfcache_restore" | "prerender" |
 export type RUMVitalRating = "good" | "needs-improvement" | "poor";
 
 // @public
-export const SCHEMA_URL = "https://schemas.o11y.ing/libo11y/1.2.0";
+export const SCHEMA_URL = "https://schemas.o11y.ing/libo11y/1.3.0";
 
 // @public
 export const SEMCONV_VERSION = "1.41.0";
@@ -674,7 +749,7 @@ export const SIGNAL_VALUES: readonly Signal[];
 export const SPAN_REQUIRED: ReadonlyMap<string, readonly string[]>;
 
 // @public
-export const SPEC_VERSION = "1.2.0";
+export const SPEC_VERSION = "1.3.0";
 
 // @public
 export function validateAppRegistry(reg: AppRegistry): AppRegistryResult;

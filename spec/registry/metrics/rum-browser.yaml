@@ -6,7 +6,10 @@ groups:
     type: metric
     metric_name: o11y.rum.vital.lcp
     stability: development
-    brief: Largest Contentful Paint of a view.
+    brief: >
+      Largest Contentful Paint of a view. Derived by the gateway from
+      o11y.rum.view.summary. Clients do not export it. The rating label comes
+      from the thresholds in SPEC.md.
     instrument: histogram
     unit: s
     attributes:
@@ -21,7 +24,10 @@ groups:
     type: metric
     metric_name: o11y.rum.vital.inp
     stability: development
-    brief: Interaction to Next Paint of a view.
+    brief: >
+      Interaction to Next Paint of a view. Derived by the gateway from
+      o11y.rum.view.summary. Clients do not export it. The rating label comes
+      from the thresholds in SPEC.md.
     instrument: histogram
     unit: s
     attributes:
@@ -36,7 +42,10 @@ groups:
     type: metric
     metric_name: o11y.rum.vital.cls
     stability: development
-    brief: Cumulative Layout Shift of a view, a unitless score.
+    brief: >
+      Cumulative Layout Shift of a view, a unitless score. Derived by the
+      gateway from o11y.rum.view.summary. Clients do not export it. The rating
+      label comes from the thresholds in SPEC.md.
     instrument: histogram
     unit: "1"
     attributes:
@@ -51,7 +60,10 @@ groups:
     type: metric
     metric_name: o11y.rum.vital.fcp
     stability: development
-    brief: First Contentful Paint of a view.
+    brief: >
+      First Contentful Paint of a view. Derived by the gateway from
+      o11y.rum.view.summary. Clients do not export it. The rating label comes
+      from the thresholds in SPEC.md.
     instrument: histogram
     unit: s
     attributes:
@@ -66,7 +78,10 @@ groups:
     type: metric
     metric_name: o11y.rum.vital.ttfb
     stability: development
-    brief: Time to First Byte of a view's document.
+    brief: >
+      Time to First Byte of a view's document. Derived by the gateway from
+      o11y.rum.view.summary. Clients do not export it. The rating label comes
+      from the thresholds in SPEC.md.
     instrument: histogram
     unit: s
     attributes:
@@ -81,7 +96,9 @@ groups:
     type: metric
     metric_name: o11y.rum.browser.long_animation_frames
     stability: development
-    brief: Count of long animation frames on a view.
+    brief: >
+      Count of long animation frames on a view. Derived by the gateway from
+      o11y.rum.view.summary. Clients do not export it.
     instrument: counter
     unit: "{frame}"
     attributes:

@@ -203,8 +203,9 @@ func isRUMSpanGroup(g group) bool {
 
 // checkGroups validates registry groups against the libo11y policy suite:
 // naming, namespace ownership, references, sensitivity and cardinality
-// classification, stability and requirement enums, event discipline, and
-// metric naming, instrument, and unit rules. It runs as a second pass over
+// classification, stability and requirement enums, event discipline,
+// metric naming, instrument, and unit rules, and RUM view summary
+// coverage. It runs as a second pass over
 // the prebuilt idx, which carries the cross-group facts the per-attribute
 // rules consult. Registry-wide findings are reported once per attribute,
 // and a duplicated group ID once per ID.
@@ -216,7 +217,79 @@ func checkGroups(groups []group, idx *index) []violation {
 		}
 		violations = append(violations, checkGroup(g)...)
 	}
+	violations = append(violations, checkRUMSummaryCoverage(groups)...)
 	return dedupeRegistryWide(violations)
+}
+
+// rumSummaryGroup is the group defining the RUM view summary's attributes.
+const rumSummaryGroup = "registry.o11y.rum.summary"
+
+// rumSummaryCounts pairs each enum the view summary breaks its counts down
+// by with the name prefix of those count attributes.
+var rumSummaryCounts = []struct{ enum, prefix string }{
+	{"o11y.rum.error.source", "o11y.rum.summary.errors."},
+	{"o11y.rum.frustration.type", "o11y.rum.summary.frustrations."},
+}
+
+// checkRUMSummaryCoverage keeps the view summary's count attributes in step
+// with the enums they break down: one count per member value, and no count
+// for a value the enum does not have. The gateway turns each count into a
+// metric point labelled with the member, so a missing count drops a label
+// value and an extra one invents it. An enum the registry no longer defines
+// is reported once under its own name, because its pairing in
+// rumSummaryCounts is then stale. The rule applies only when the registry
+// defines the summary group, and it reads the attributes of every group
+// with that ID, so a duplicated group (libo11y_group_duplicate) adds no
+// findings of its own.
+func checkRUMSummaryCoverage(groups []group) []violation {
+	var found bool
+	var summary []attr
+	members := map[string][]string{}
+	for _, g := range groups {
+		if g.ID == rumSummaryGroup {
+			found = true
+			summary = append(summary, g.Attributes...)
+		}
+		for _, a := range g.Attributes {
+			if a.ID != "" {
+				members[a.ID] = append(members[a.ID], enumValues(a)...)
+			}
+		}
+	}
+	if !found {
+		return nil
+	}
+	defined := map[string]bool{}
+	for _, a := range summary {
+		defined[a.ID] = true
+	}
+	var violations []violation
+	fail := func(name string) {
+		violations = append(violations, violation{RuleID: "libo11y_rum_summary_coverage", Category: "rum", Group: rumSummaryGroup, Attr: name})
+	}
+	for _, c := range rumSummaryCounts {
+		if len(members[c.enum]) == 0 {
+			fail(c.enum)
+			continue
+		}
+		want := map[string]bool{}
+		for _, v := range members[c.enum] {
+			key := c.prefix + v
+			if want[key] {
+				continue
+			}
+			want[key] = true
+			if !defined[key] {
+				fail(key)
+			}
+		}
+		for _, a := range summary {
+			if strings.HasPrefix(a.ID, c.prefix) && !want[a.ID] {
+				fail(a.ID)
+			}
+		}
+	}
+	return violations
 }
 
 // duplicateGroups reports each group ID that more than one group in the

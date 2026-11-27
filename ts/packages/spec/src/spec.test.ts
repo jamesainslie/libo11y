@@ -5,9 +5,14 @@ import {
   APP_RESERVED_NAMESPACES,
   ATTR_LOG_SOURCE,
   ATTR_OUTCOME,
+  ATTR_RUM_APP_UPDATE_ID,
+  ATTR_RUM_SUMMARY_ERRORS_UNHANDLED_REJECTION,
+  ATTR_RUM_SUMMARY_LCP_VALUE,
+  ATTR_RUM_SUMMARY_SEQ,
   ATTR_RUM_VIEW_NAME,
   ENVIRONMENT_VALUES,
   EVENT_RUM_ERROR,
+  EVENT_RUM_VIEW_SUMMARY,
   EVENT_TELEMETRY_CONFIGURED,
   EVENTS,
   LOG_SOURCE_VALUES,
@@ -89,8 +94,8 @@ test("RUM conventions", () => {
   assert.equal(RUM_VITAL_RATING_VALUE_NEEDS_IMPROVEMENT, "needs-improvement");
 });
 
-test("spec 1.2.0 marks captured console records", () => {
-  assert.equal(SPEC_VERSION, "1.2.0");
+test("captured console records (spec 1.2.0)", () => {
+  assert.equal(SPEC_VERSION, "1.3.0");
   assert.equal(ATTR_LOG_SOURCE, "o11y.log.source");
   assert.deepEqual([...LOG_SOURCE_VALUES], ["logger", "console"]);
   assert.equal(SENSITIVITY_OF.get("o11y.log.source"), "public");
@@ -102,4 +107,20 @@ test("the application registry reserved namespaces", () => {
     assert.equal(APP_RESERVED_NAMESPACES.has(ns), true);
   }
   assert.equal(APP_RESERVED_NAMESPACES.has("lor"), false);
+});
+
+test("the view summary event (spec 1.3.0)", () => {
+  assert.equal(EVENT_RUM_VIEW_SUMMARY, "o11y.rum.view.summary");
+  assert.equal(ATTR_RUM_SUMMARY_SEQ, "o11y.rum.summary.seq");
+  assert.equal(ATTR_RUM_SUMMARY_LCP_VALUE, "o11y.rum.summary.lcp.value");
+  assert.equal(ATTR_RUM_SUMMARY_ERRORS_UNHANDLED_REJECTION, "o11y.rum.summary.errors.unhandled_rejection");
+  const required = EVENTS.get(EVENT_RUM_VIEW_SUMMARY)?.required ?? [];
+  for (const key of ["o11y.rum.summary.seq", "o11y.rum.summary.time_on_view", "o11y.rum.view.id"]) {
+    assert.ok(required.includes(key), `missing ${key}`);
+  }
+});
+
+test("the over-the-air update ID (spec 1.3.0)", () => {
+  assert.equal(ATTR_RUM_APP_UPDATE_ID, "o11y.rum.app.update_id");
+  assert.equal(SENSITIVITY_OF.get(ATTR_RUM_APP_UPDATE_ID), "public");
 });

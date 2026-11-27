@@ -1,6 +1,7 @@
 package main
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -880,4 +881,127 @@ groups:
 	if len(got) != 1 || got[0].Group != "libo11y.rum.span.view" || got[0].Category != "references" {
 		t.Errorf("libo11y_group_duplicate violations = %v, want one for libo11y.rum.span.view", got)
 	}
+}
+
+// summaryEnums defines cut-down versions of the two enums the RUM view
+// summary breaks its counts down by.
+const summaryEnums = `groups:
+  - id: registry.o11y.rum
+    type: attribute_group
+    brief: RUM.
+    attributes:
+      - id: o11y.rum.error.source
+        type:
+          members:
+            - {id: uncaught, value: "uncaught", stability: development, brief: U.}
+            - {id: csp, value: "csp", stability: development, brief: C.}
+        stability: development
+        brief: Source.
+        annotations: {o11y.sensitivity: public, o11y.cardinality: enum}
+      - id: o11y.rum.frustration.type
+        type:
+          members:
+            - {id: rage, value: "rage", stability: development, brief: R.}
+        stability: development
+        brief: Type.
+        annotations: {o11y.sensitivity: public, o11y.cardinality: enum}
+`
+
+// summaryGroup renders a registry.o11y.rum.summary group holding one int
+// count attribute per key.
+func summaryGroup(keys ...string) string {
+	var b strings.Builder
+	b.WriteString("  - id: registry.o11y.rum.summary\n    type: attribute_group\n    brief: Summary.\n    attributes:\n")
+	for _, k := range keys {
+		b.WriteString("      - id: " + k + "\n        type: int\n        stability: development\n        brief: A count.\n        annotations: {o11y.sensitivity: public, o11y.cardinality: unbounded}\n")
+	}
+	return b.String()
+}
+
+// summaryCoverage returns the libo11y_rum_summary_coverage violations doc
+// raises.
+func summaryCoverage(t *testing.T, doc string) []violation {
+	t.Helper()
+	groups := parseGroups(t, doc)
+	var got []violation
+	for _, v := range checkGroups(groups, buildIndex(groups)) {
+		if v.RuleID == "libo11y_rum_summary_coverage" {
+			got = append(got, v)
+		}
+	}
+	return got
+}
+
+// TestRUMSummaryCoverageComplete pins that a summary with one count per
+// enum member raises nothing.
+func TestRUMSummaryCoverageComplete(t *testing.T) {
+	assertViolations(t, summaryEnums+summaryGroup(
+		"o11y.rum.summary.errors.uncaught", "o11y.rum.summary.errors.csp", "o11y.rum.summary.frustrations.rage"))
+}
+
+// TestRUMSummaryCoverageViolations pins what libo11y_rum_summary_coverage
+// reports, in order: missing counts in enum member order, then unknown
+// counts in registry order, for each enum in turn.
+func TestRUMSummaryCoverageViolations(t *testing.T) {
+	complete := []string{"o11y.rum.summary.errors.uncaught", "o11y.rum.summary.errors.csp", "o11y.rum.summary.frustrations.rage"}
+	for name, tc := range map[string]struct {
+		doc       string
+		wantAttrs []string
+	}{
+		"missing error count": {
+			doc:       summaryEnums + summaryGroup("o11y.rum.summary.errors.uncaught", "o11y.rum.summary.frustrations.rage"),
+			wantAttrs: []string{"o11y.rum.summary.errors.csp"},
+		},
+		"missing frustration count": {
+			doc:       summaryEnums + summaryGroup("o11y.rum.summary.errors.uncaught", "o11y.rum.summary.errors.csp"),
+			wantAttrs: []string{"o11y.rum.summary.frustrations.rage"},
+		},
+		"unknown count": {
+			doc:       summaryEnums + summaryGroup(append(complete, "o11y.rum.summary.errors.bogus")...),
+			wantAttrs: []string{"o11y.rum.summary.errors.bogus"},
+		},
+		"missing then unknown": {
+			doc: summaryEnums + summaryGroup(
+				"o11y.rum.summary.errors.bogus", "o11y.rum.summary.errors.csp",
+				"o11y.rum.summary.frustrations.nope", "o11y.rum.summary.frustrations.rage"),
+			wantAttrs: []string{"o11y.rum.summary.errors.uncaught", "o11y.rum.summary.errors.bogus", "o11y.rum.summary.frustrations.nope"},
+		},
+		"enum defined twice reports a missing count once": {
+			doc: summaryEnums + summaryGroup("o11y.rum.summary.errors.uncaught", "o11y.rum.summary.frustrations.rage") +
+				"  - id: registry.o11y.rum.again\n    type: attribute_group\n    attributes:\n" +
+				"      - id: o11y.rum.error.source\n        type:\n          members:\n" +
+				"            - {id: csp, value: \"csp\", stability: development, brief: C.}\n" +
+				"        annotations: {o11y.sensitivity: public, o11y.cardinality: enum}\n",
+			wantAttrs: []string{"o11y.rum.summary.errors.csp"},
+		},
+		"counts split across duplicated summary groups": {
+			doc: summaryEnums + summaryGroup("o11y.rum.summary.errors.uncaught") +
+				summaryGroup("o11y.rum.summary.errors.csp", "o11y.rum.summary.frustrations.rage"),
+		},
+		"enum absent": {
+			doc: strings.SplitAfter(summaryEnums, "annotations: {o11y.sensitivity: public, o11y.cardinality: enum}\n")[0] +
+				summaryGroup("o11y.rum.summary.errors.uncaught", "o11y.rum.summary.errors.csp"),
+			wantAttrs: []string{"o11y.rum.frustration.type"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := summaryCoverage(t, tc.doc)
+			var attrs []string
+			for _, v := range got {
+				if v.Group != "registry.o11y.rum.summary" || v.Category != "rum" {
+					t.Errorf("violation %v, want group registry.o11y.rum.summary and category rum", v)
+				}
+				attrs = append(attrs, v.Attr)
+			}
+			if !slices.Equal(attrs, tc.wantAttrs) {
+				t.Errorf("libo11y_rum_summary_coverage attributes = %v, want %v", attrs, tc.wantAttrs)
+			}
+		})
+	}
+}
+
+// TestRUMSummaryCoverageNoSummaryGroup pins that the rule applies only when
+// the registry defines registry.o11y.rum.summary.
+func TestRUMSummaryCoverageNoSummaryGroup(t *testing.T) {
+	assertViolations(t, summaryEnums)
 }

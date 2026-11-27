@@ -15,7 +15,7 @@ import (
 	"github.com/jamesainslie/libo11y/go/spec"
 )
 
-const wantSchemaURL = "https://schemas.o11y.ing/libo11y/1.2.0"
+const wantSchemaURL = "https://schemas.o11y.ing/libo11y/1.3.0"
 
 // TestSchemaArtifactIsValidAndConsistent pins the schema contract: the
 // manifest, the generated spec package, and the committed OpenTelemetry
@@ -29,7 +29,7 @@ func TestSchemaArtifactIsValidAndConsistent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m.schemaURL != wantSchemaURL || m.specVersion != "1.2.0" {
+	if m.schemaURL != wantSchemaURL || m.specVersion != "1.3.0" {
 		t.Fatalf("manifest schema_url = %q (version %q), want %q", m.schemaURL, m.specVersion, wantSchemaURL)
 	}
 	path := filepath.Join("../../..", "spec", "schemas", m.specVersion)
@@ -44,7 +44,7 @@ func TestSchemaArtifactIsValidAndConsistent(t *testing.T) {
 	if parsed.SchemaURL != m.schemaURL {
 		t.Errorf("schema file schema_url = %q, want %q", parsed.SchemaURL, m.schemaURL)
 	}
-	for _, v := range []string{"1.2.0", "1.1.0", "1.0.0"} {
+	for _, v := range []string{"1.3.0", "1.2.0", "1.1.0", "1.0.0"} {
 		if _, ok := parsed.Versions[types.TelemetryVersion(v)]; !ok {
 			t.Errorf("schema file lacks version %s: %v", v, parsed.Versions)
 		}

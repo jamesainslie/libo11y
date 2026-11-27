@@ -4,7 +4,9 @@ groups:
     type: metric
     metric_name: o11y.rum.views
     stability: development
-    brief: Count of views RUM recorded.
+    brief: >
+      Count of views RUM recorded. Derived by the gateway from
+      o11y.rum.view.summary. Clients do not export it.
     instrument: counter
     unit: "{view}"
     attributes:
@@ -23,7 +25,9 @@ groups:
     type: metric
     metric_name: o11y.rum.errors
     stability: development
-    brief: Count of errors RUM recorded, by source.
+    brief: >
+      Count of errors RUM recorded, by source. Derived by the gateway from
+      o11y.rum.view.summary. Clients do not export it.
     instrument: counter
     unit: "{error}"
     attributes:
@@ -40,7 +44,9 @@ groups:
     type: metric
     metric_name: o11y.rum.frustrations
     stability: development
-    brief: Count of frustration signals RUM recorded, by type.
+    brief: >
+      Count of frustration signals RUM recorded, by type. Derived by the
+      gateway from o11y.rum.view.summary. Clients do not export it.
     instrument: counter
     unit: "{signal}"
     attributes:

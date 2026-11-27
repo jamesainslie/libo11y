@@ -1,0 +1,59 @@
+# The view summary: one o11y.rum.view.summary event per view and flush,
+# sent by every consented session whatever its sampling. The gateway
+# derives the standard RUM metrics from these attributes. Counts are deltas
+# since the previous summary of the same view, and an absent count is
+# zero. Each vital is reported once per view, in the first summary sent
+# after the vital is known.
+groups:
+  - id: registry.o11y.rum.summary
+    type: attribute_group
+    display_name: RUM View Summary Attributes
+    brief: Attributes of the RUM view summary event.
+    stability: development
+    attributes:
+      - id: o11y.rum.summary.seq
+        type: int
+        stability: development
+        brief: 0-based index of this summary within its view. The gateway counts a view once, at index 0.
+        examples: [0, 1]
+        annotations: {o11y.sensitivity: public, o11y.cardinality: unbounded}
+      - id: o11y.rum.summary.time_on_view
+        type: double
+        stability: development
+        brief: Seconds the view was visible since the previous summary of the same view.
+        examples: [12.4]
+        annotations: {o11y.sensitivity: public, o11y.cardinality: unbounded}
+      - id: o11y.rum.summary.requests
+        type: int
+        stability: development
+        brief: Requests the view started since the previous summary.
+        examples: [7]
+        annotations: {o11y.sensitivity: public, o11y.cardinality: unbounded}
+      - id: o11y.rum.summary.long_animation_frames
+        type: int
+        stability: development
+        brief: Long animation frames on the view since the previous summary.
+        examples: [2]
+        annotations: {o11y.sensitivity: public, o11y.cardinality: unbounded}
+      # One count per o11y.rum.error.source member (rule libo11y_rum_summary_coverage).
+      - {id: o11y.rum.summary.errors.uncaught, type: int, stability: development, brief: "Uncaught exceptions since the previous summary.", examples: [1], annotations: {o11y.sensitivity: public, o11y.cardinality: unbounded}}
+      - {id: o11y.rum.summary.errors.unhandled_rejection, type: int, stability: development, brief: "Unhandled promise rejections since the previous summary.", examples: [1], annotations: {o11y.sensitivity: public, o11y.cardinality: unbounded}}
+      - {id: o11y.rum.summary.errors.console, type: int, stability: development, brief: "Captured console errors since the previous summary.", examples: [1], annotations: {o11y.sensitivity: public, o11y.cardinality: unbounded}}
+      - {id: o11y.rum.summary.errors.boundary, type: int, stability: development, brief: "Errors a UI framework boundary caught since the previous summary.", examples: [1], annotations: {o11y.sensitivity: public, o11y.cardinality: unbounded}}
+      - {id: o11y.rum.summary.errors.resource, type: int, stability: development, brief: "Resources that failed to load since the previous summary.", examples: [1], annotations: {o11y.sensitivity: public, o11y.cardinality: unbounded}}
+      - {id: o11y.rum.summary.errors.csp, type: int, stability: development, brief: "Content Security Policy violations since the previous summary.", examples: [1], annotations: {o11y.sensitivity: public, o11y.cardinality: unbounded}}
+      - {id: o11y.rum.summary.errors.network, type: int, stability: development, brief: "Failed network requests since the previous summary.", examples: [1], annotations: {o11y.sensitivity: public, o11y.cardinality: unbounded}}
+      - {id: o11y.rum.summary.errors.crash, type: int, stability: development, brief: "Native crashes since the previous summary.", examples: [1], annotations: {o11y.sensitivity: public, o11y.cardinality: unbounded}}
+      - {id: o11y.rum.summary.errors.anr, type: int, stability: development, brief: "Application-not-responding events since the previous summary.", examples: [1], annotations: {o11y.sensitivity: public, o11y.cardinality: unbounded}}
+      - {id: o11y.rum.summary.errors.hang, type: int, stability: development, brief: "Main-thread hangs since the previous summary.", examples: [1], annotations: {o11y.sensitivity: public, o11y.cardinality: unbounded}}
+      - {id: o11y.rum.summary.errors.custom, type: int, stability: development, brief: "Errors the application reported itself since the previous summary.", examples: [1], annotations: {o11y.sensitivity: public, o11y.cardinality: unbounded}}
+      # One count per o11y.rum.frustration.type member.
+      - {id: o11y.rum.summary.frustrations.rage, type: int, stability: development, brief: "Rage interactions since the previous summary.", examples: [1], annotations: {o11y.sensitivity: public, o11y.cardinality: unbounded}}
+      - {id: o11y.rum.summary.frustrations.dead, type: int, stability: development, brief: "Dead interactions since the previous summary.", examples: [1], annotations: {o11y.sensitivity: public, o11y.cardinality: unbounded}}
+      - {id: o11y.rum.summary.frustrations.error, type: int, stability: development, brief: "Interactions followed by an error since the previous summary.", examples: [1], annotations: {o11y.sensitivity: public, o11y.cardinality: unbounded}}
+      # Vital values, each sent once per view.
+      - {id: o11y.rum.summary.lcp.value, type: double, stability: development, brief: "Largest Contentful Paint of the view in seconds.", examples: [1.8], annotations: {o11y.sensitivity: public, o11y.cardinality: unbounded}}
+      - {id: o11y.rum.summary.inp.value, type: double, stability: development, brief: "Interaction to Next Paint of the view in seconds.", examples: [0.12], annotations: {o11y.sensitivity: public, o11y.cardinality: unbounded}}
+      - {id: o11y.rum.summary.cls.value, type: double, stability: development, brief: "Cumulative Layout Shift of the view, which has no unit.", examples: [0.05], annotations: {o11y.sensitivity: public, o11y.cardinality: unbounded}}
+      - {id: o11y.rum.summary.fcp.value, type: double, stability: development, brief: "First Contentful Paint of the view in seconds.", examples: [0.9], annotations: {o11y.sensitivity: public, o11y.cardinality: unbounded}}
+      - {id: o11y.rum.summary.ttfb.value, type: double, stability: development, brief: "Time to First Byte of the view's document in seconds.", examples: [0.3], annotations: {o11y.sensitivity: public, o11y.cardinality: unbounded}}

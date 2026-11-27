@@ -1,7 +1,8 @@
 # libo11y RUM
 
 This document is the charter of libo11y RUM and the human-readable form of
-its conventions. The conventions are part of spec 1.1.0 and live in the
+its conventions. The conventions are part of the specification from spec
+1.1.0 on, and spec 1.3.0 adds the view summary. They live in the
 registry under [`spec/registry`](../spec/registry). Where this document and
 the registry disagree, the registry wins. Every RUM group has development
 stability. The RUM libraries themselves arrive in later releases, starting
@@ -59,9 +60,9 @@ mobile. A view holds actions, resources, errors and vitals. An action is a
 user interaction, and it links to the requests and the route change it
 caused. A resource is a request the view made, and it carries
 `traceparent` to the backend so the backend trace joins the view. Every
-RUM span and event carries `session.id`. Every span shape and the error
-and frustration events also carry `o11y.rum.view.id`, and the session
-start and end events do not. With those two attributes the planned gateway
+RUM span and event carries `session.id`. Every span shape and the error,
+frustration and view summary events also carry `o11y.rum.view.id`, and the
+session start and end events do not. With those two attributes the planned gateway
 and Grafana session explorer can rebuild the timeline of a session.
 Metrics carry neither attribute, because both are unbounded. The registry
 defines span shapes for views, actions and app loads. It defines none for
@@ -102,6 +103,28 @@ Every RUM platform uses them.
 | `o11y.rum.session.retained` | string | public | enum | `head_sampled`, `error`, `frustration` |
 | `o11y.rum.replay.segment` | int | public | unbounded | the index of the replay segment in the session |
 | `o11y.rum.config.version` | string | public | bounded | the version of the remote configuration the session ran under |
+| `o11y.rum.app.update_id` | string | public | bounded | the over-the-air update a mobile app runs, such as an Expo Updates update ID, absent for the embedded bundle (spec 1.3.0) |
+
+The view summary group `registry.o11y.rum.summary`, in
+[`spec/registry/attributes/rum-summary.yaml`](../spec/registry/attributes/rum-summary.yaml),
+holds the attributes of the `o11y.rum.view.summary` event (spec 1.3.0).
+Every one is public and unbounded, so none may be a metric label. Counts
+and time on view are deltas since the previous summary of the same view,
+and an absent count means zero.
+
+| Attribute | Type | Meaning |
+|---|---|---|
+| `o11y.rum.summary.seq` | int | the 0-based index of the summary within its view |
+| `o11y.rum.summary.time_on_view` | double | seconds the view was visible |
+| `o11y.rum.summary.requests` | int | requests the view started |
+| `o11y.rum.summary.long_animation_frames` | int | long animation frames on the view |
+| `o11y.rum.summary.errors.<source>` | int | errors from one `o11y.rum.error.source` value, one attribute per value |
+| `o11y.rum.summary.frustrations.<type>` | int | frustration signals of one `o11y.rum.frustration.type` value, one attribute per value |
+| `o11y.rum.summary.<vital>.value` | double | the value of `lcp`, `inp`, `fcp` or `ttfb` in seconds, or of `cls` with no unit |
+
+The rule `libo11y_rum_summary_coverage` fails `make spec-check` when an
+`o11y.rum.error.source` or `o11y.rum.frustration.type` value has no count,
+or when a count names a value the enum does not have.
 
 The browser group `registry.o11y.rum.browser` holds the attributes RUM
 records only in browsers and browser extensions.
@@ -138,13 +161,30 @@ is exported from `@libo11y/spec`.
 | `action` | each user action | `o11y.rum.action.type`, `o11y.rum.view.id`, `session.id` | `o11y.rum.action.name`, when the element has a `data-o11y` label or a privacy-safe accessible name |
 | `app_load` | the document load on the web, the app start on mobile | `o11y.rum.platform`, `o11y.rum.view.id`, `session.id` | none |
 
+Spec 1.3.0 fixes when the view and action spans start and end.
+
+| Shape | Starts | Ends |
+|---|---|---|
+| `view`, initial | as a child of `app_load` | at the first paint after the routed view renders |
+| `view`, soft navigation | as a root span, at the route change | at the first paint after the new route renders, capped at 10 seconds |
+| `action` | at the user interaction | once its requests have finished and the page has been idle for 100 ms, capped at 10 seconds |
+
+A view span covers getting into the view, and the view summary carries the
+time spent on it. The requests an action caused are children of its span.
+The action span links to the view it happened on, and a view the action
+caused links back to it.
+
 ### Metrics
 
 The platform-neutral metrics are in
 [`spec/registry/metrics/rum.yaml`](../spec/registry/metrics/rum.yaml). The
 browser metrics are in
 [`spec/registry/metrics/rum-browser.yaml`](../spec/registry/metrics/rum-browser.yaml).
-Every label is bounded or an enum. Labels in bold are required. Go has a
+Every label is bounded or an enum. Labels in bold are required. The
+gateway derives every one of these metrics from `o11y.rum.view.summary`
+events, and clients do not export them. SPEC.md section 6 gives the
+mapping from summary attributes to metrics and the thresholds the gateway
+uses for `o11y.rum.vital.rating`. Go has a
 name constant for each metric, such as `spec.MetricRUMVitalLCP`, and
 TypeScript has one such as `METRIC_RUM_VITAL_LCP`.
 
@@ -180,6 +220,7 @@ so the registry does not register it.
 | `o11y.rum.frustration` | a frustration signal on a UI element | `o11y.rum.frustration.type`, `session.id`, `o11y.rum.view.id` | `o11y.rum.element.selector` |
 | `o11y.rum.session.start` | the start of a session | `session.id`, `o11y.rum.platform` | none |
 | `o11y.rum.session.end` | the end of a session | `session.id`, `o11y.rum.session.retained` | none |
+| `o11y.rum.view.summary` | a view's counts, time on view and vitals since its previous summary (spec 1.3.0) | `o11y.rum.platform`, `o11y.rum.view.id`, `o11y.rum.view.name`, `o11y.rum.view.kind`, `session.id`, `o11y.rum.summary.seq`, `o11y.rum.summary.time_on_view` | `o11y.rum.device.class`, `o11y.rum.connection.effective`, `o11y.rum.config.version`, and the counts and vital values of `registry.o11y.rum.summary` |
 
 ## Growing the conventions
 

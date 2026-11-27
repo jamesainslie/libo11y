@@ -1,6 +1,6 @@
 # The libo11y telemetry specification
 
-Version 1.2.0. Normative keywords (MUST, SHOULD, MAY)
+Version 1.3.0. Normative keywords (MUST, SHOULD, MAY)
 follow RFC 2119.
 
 This document is the human-readable form of the machine registry under
@@ -185,6 +185,7 @@ is sampled. libo11y v1 registers:
 | `o11y.rum.frustration` | a frustration signal on a UI element (spec 1.1.0) |
 | `o11y.rum.session.start` | the start of a RUM session (spec 1.1.0) |
 | `o11y.rum.session.end` | the end of a RUM session, with the reason its telemetry was kept (spec 1.1.0) |
+| `o11y.rum.view.summary` | a view's counts, time on view and vitals since the previous summary of the same view, the source of the derived RUM metrics (spec 1.3.0, section 6). Its required attributes are `o11y.rum.platform`, `o11y.rum.view.id`, `o11y.rum.view.name`, `o11y.rum.view.kind`, `session.id`, `o11y.rum.summary.seq` and `o11y.rum.summary.time_on_view` |
 
 Exceptions are not a registered event. The semconv exception attributes
 are registered as record attributes. An exception record MUST carry
@@ -384,7 +385,104 @@ Spec 1.1.0 adds the RUM conventions under `o11y.rum.*`. They define three
 span shapes, `view`, `action` and `app_load`, each with its required
 attributes. They also define RUM counters and one histogram per web vital,
 whose labels are all bounded or enums. [RUM.md](RUM.md) lists the shapes,
-the metrics and their labels.
+the metrics and their labels. Spec 1.3.0 adds the view summary, the rules
+for deriving the RUM metrics from it, and the timing of view and action
+spans. The subsections below state them.
+
+### View summary
+
+A RUM client sends one `o11y.rum.view.summary` event for each view and
+flush. Every consented session sends it, whatever its sampling rate. The
+event carries the view's identity in `o11y.rum.platform`,
+`o11y.rum.view.id`, `o11y.rum.view.name`, `o11y.rum.view.kind` and
+`session.id`. Its own attributes are in the group
+`registry.o11y.rum.summary`
+([`spec/registry/attributes/rum-summary.yaml`](../spec/registry/attributes/rum-summary.yaml)).
+
+- `o11y.rum.summary.seq` is the 0-based index of the summary within its
+  view.
+- `o11y.rum.summary.time_on_view` is the time in seconds the view was
+  visible since the previous summary of the same view.
+- `o11y.rum.summary.requests` and `o11y.rum.summary.long_animation_frames`
+  count requests and long animation frames.
+- `o11y.rum.summary.errors.<source>` counts errors, with one attribute for
+  each `o11y.rum.error.source` value.
+- `o11y.rum.summary.frustrations.<type>` counts frustration signals, with
+  one attribute for each `o11y.rum.frustration.type` value.
+- `o11y.rum.summary.<vital>.value` carries the value of a web vital, for
+  `lcp`, `inp`, `cls`, `fcp` and `ttfb`. LCP, INP, FCP and TTFB are in
+  seconds. CLS has no unit.
+
+Counts and time on view are deltas since the previous summary of the same
+view, so the summaries of one view add up. An absent count means zero. The
+rule `libo11y_rum_summary_coverage` keeps the per-source and per-type
+counts in step with the two enums. It fails when a member has no count and
+when a count names a value the enum does not have. It also fails when the
+registry no longer defines one of the two enums.
+
+### Derived metrics
+
+The gateway computes the nine RUM metrics from view summaries. Clients
+MUST NOT export them. Because every consented session sends summaries,
+the metrics count every consented session whatever the sampling rate.
+
+| Metric | Derived from |
+|---|---|
+| `o11y.rum.views` | one per summary with `o11y.rum.summary.seq` 0, labelled with its platform, view name, view kind and device class |
+| `o11y.rum.errors` | each `o11y.rum.summary.errors.<source>` count, labelled with that source |
+| `o11y.rum.frustrations` | each `o11y.rum.summary.frustrations.<type>` count, labelled with that type |
+| `o11y.rum.browser.long_animation_frames` | `o11y.rum.summary.long_animation_frames` |
+| `o11y.rum.vital.lcp`, `.inp`, `.cls`, `.fcp`, `.ttfb` | `o11y.rum.summary.<vital>.value`, with `o11y.rum.vital.rating` computed by the gateway |
+
+The gateway fills the labels a summary does not carry, such as
+`o11y.rum.browser.family` and `geo.country.iso_code`, from the request
+that delivered it.
+
+### Vital ratings
+
+Clients do not send a rating. The gateway rates each vital against the
+thresholds below, which follow web.dev. A value at or under the first
+bound is `good`. A value above the second bound is `poor`. A value
+between them is `needs-improvement`.
+
+| Vital | Good up to | Poor above |
+|---|---|---|
+| LCP | 2.5 s | 4 s |
+| INP | 0.2 s | 0.5 s |
+| CLS | 0.1 | 0.25 |
+| FCP | 1.8 s | 3 s |
+| TTFB | 0.8 s | 1.8 s |
+
+### Once per view
+
+A client reports each vital once per view, in the first summary it sends
+after the vital is known. A CLS or INP change after the page returns from
+hidden is left out of the metrics. A kept session still records the change
+in its detail events. CrUX reports the final value at page unload, so the
+p75 that libo11y reports can differ from CrUX. The difference is largest
+for CLS and INP on long-lived views.
+
+### Span timing
+
+A view span covers getting into the view, not the time spent on it. The
+view summary carries the time on the view. An initial view span is a
+child of `app_load` and ends at the first paint after the routed view
+renders. A soft navigation span is a root span. It starts at the route
+change and ends at the first paint after the new route renders, capped at
+10 seconds.
+
+An action span ends when the work it caused settles. That is once its
+requests have finished and the page has been idle for 100 ms, capped at
+10 seconds. The requests the action caused are its children. The action
+span links to the view it happened on, and a view the action caused links
+back to it.
+
+### Over-the-air updates
+
+`o11y.rum.app.update_id` identifies the over-the-air update a mobile app
+runs, such as an Expo Updates update ID. It is absent when the app runs
+its embedded bundle. Source maps for the update are looked up by
+`service.version` and this ID.
 
 ## 7. Versioning
 
@@ -393,11 +491,11 @@ release stamps one schema URL and pins one semconv version. A stable spec
 item is never renamed or removed without a major version bump.
 
 - **Schema URL.** The URL ends in the bare spec version:
-  `https://schemas.o11y.ing/libo11y/1.2.0` (`spec.SchemaURL` in
+  `https://schemas.o11y.ing/libo11y/1.3.0` (`spec.SchemaURL` in
   Go, `SCHEMA_URL` in TypeScript, `o11y.spec.schema_url` in Zig,
   `O11Y_SCHEMA_URL` in C), stamped on every resource.
 - **Version history.** The manifest lists every spec version in
-  `versions`, currently `[1.0.0, 1.1.0, 1.2.0]`. The list starts at
+  `versions`, currently `[1.0.0, 1.1.0, 1.2.0, 1.3.0]`. The list starts at
   1.0.0, ends at the version in `schema_url`, and ascends.
   `make spec-check` and `make spec-generate` both fail on a history that
   breaks these rules.
@@ -420,10 +518,10 @@ item is never renamed or removed without a major version bump.
   `make schema-published` fails unless the schema URL serves the generated
   file byte for byte, and it must pass before the tag is created.
 
-Status: spec 1.2.0 is released. Its schema file is served at its schema
-URL, and the commit is tagged `spec/v1.2.0`. Spec 1.1.0 is tagged
-`spec/v1.1.0`, and spec 1.0.0 is tagged `spec/v1.0.0` together with
-`go/v0.1.0`.
+Status: spec 1.3.0 is in development. Spec 1.2.0 is released. Its schema
+file is served at its schema URL, and the commit is tagged `spec/v1.2.0`.
+Spec 1.1.0 is tagged `spec/v1.1.0`, and spec 1.0.0 is tagged
+`spec/v1.0.0` together with `go/v0.1.0`.
 
 ## 8. Enforcement layers
 
@@ -483,6 +581,7 @@ allowlist enforcing the identity quintet.
 | enums | `libo11y_enum_member_empty`, `libo11y_enum_value_whitespace`, `libo11y_enum_duplicate_value` |
 | events | `libo11y_event_namespace`, `libo11y_event_stability` |
 | spans | `libo11y_rum_span_kind` |
+| RUM | `libo11y_rum_summary_coverage` |
 | metrics and units | `libo11y_instrument_unknown`, `libo11y_metric_total_suffix`, `libo11y_metric_count_suffix`, `libo11y_metric_unit_in_name`, `libo11y_metric_unit_missing`, `libo11y_metric_unit_invalid`, `libo11y_metric_namespace` |
 | schema hygiene | `libo11y_stability_unknown`, `libo11y_requirement_unknown`, `libo11y_annotation_unknown` |
 
