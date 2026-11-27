@@ -92,6 +92,37 @@ def _walk_attr_keys(prefix: str, attrs: Mapping[str, Any]) -> list[str]:
     return out
 
 
+class _CapturingMetricReader(InMemoryMetricReader):
+    """InMemoryMetricReader that preserves exemplars across force_flush() and collect()."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._exemplars: dict[str, list[Any]] = {}
+
+    def _receive_metrics(
+        self,
+        metrics_data: Any,
+        timeout_millis: float = 10_000,
+        **kwargs: Any,
+    ) -> None:
+        super()._receive_metrics(  # pyright: ignore[reportUnknownMemberType]
+            metrics_data, timeout_millis=timeout_millis, **kwargs
+        )
+        with self._lock:
+            for rm in metrics_data.resource_metrics:
+                for sm in rm.scope_metrics:
+                    for m in sm.metrics:
+                        for dp in m.data.data_points:
+                            exs = getattr(dp, "exemplars", None)
+                            if exs:
+                                self._exemplars.setdefault(m.name, []).extend(exs)
+
+    def captured_exemplars(self, metric_name: str) -> list[Any]:
+        with self._lock:
+            self.collect()
+            return list(self._exemplars.get(metric_name, ()))
+
+
 class Recorder:
     """Hermetic in-memory telemetry recorder for unit and integration tests."""
 
@@ -100,7 +131,7 @@ class Recorder:
         *,
         telemetry: Telemetry,
         span_exporter: InMemorySpanExporter,
-        metric_reader: InMemoryMetricReader,
+        metric_reader: _CapturingMetricReader,
         log_exporter: InMemoryLogRecordExporter,
         log_capture: _LogCaptureHandler,
     ) -> None:
@@ -110,19 +141,6 @@ class Recorder:
         self._log_exporter = log_exporter
         self._log_capture = log_capture
         self._attached_loggers: list[logging.Logger] = []
-        self._exemplars: dict[str, list[Any]] = {}
-
-    def _collect_metrics(self) -> Any:
-        data = self._metric_reader.get_metrics_data()
-        if data is not None:
-            for rm in data.resource_metrics:
-                for sm in rm.scope_metrics:
-                    for m in sm.metrics:
-                        for dp in m.data.data_points:
-                            exs = getattr(dp, "exemplars", None)
-                            if exs:
-                                self._exemplars.setdefault(m.name, []).extend(exs)
-        return data
 
     def logger(self, name: str = "libo11y.test") -> logging.Logger:
         """Return a non-propagating stdlib logger wired to this Recorder's handler."""
@@ -150,7 +168,7 @@ class Recorder:
 
     def metric_names(self) -> list[str]:
         """Collect metrics and return the sorted names of all recorded instruments."""
-        data = self._collect_metrics()
+        data = self._metric_reader.get_metrics_data()
         if data is None:
             return []
         names: set[str] = set()
@@ -162,7 +180,7 @@ class Recorder:
 
     def metric_points(self, name: str) -> list[dict[str, Any]]:
         """Collect and return all data points recorded for metric name."""
-        data = self._collect_metrics()
+        data = self._metric_reader.get_metrics_data()
         if data is None:
             return []
         out: list[dict[str, Any]] = []
@@ -184,8 +202,7 @@ class Recorder:
 
     def exemplars(self, metric_name: str) -> list[Any]:
         """Return all exemplars recorded on data points of metric_name."""
-        self._collect_metrics()
-        return list(self._exemplars.get(metric_name, ()))
+        return self._metric_reader.captured_exemplars(metric_name)
 
     def assert_conforms(self) -> None:
         """Assert recorded telemetry conforms to the libo11y specification.
@@ -289,7 +306,7 @@ def start_recorder(
 ) -> Recorder:
     """Create a hermetic in-memory Recorder without touching process globals."""
     span_exporter = InMemorySpanExporter()
-    metric_reader = InMemoryMetricReader()
+    metric_reader = _CapturingMetricReader()
     log_exporter = InMemoryLogRecordExporter()
     log_capture = _LogCaptureHandler()
 
