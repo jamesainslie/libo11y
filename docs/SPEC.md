@@ -340,7 +340,7 @@ pin in `spec/registry/manifest.yaml` names a release the list does not
 reflect. The list in `go/v0.2.0` and earlier misses one root, `state`, which
 semconv 1.41.0 defines as a deprecated database attribute. `go/v0.3.0`
 reserves it. The TypeScript list in `ts/v0.2.0` and earlier misses it too,
-which is a defect listed in [PARITY.md](PARITY.md).
+and `ts/v0.2.1` reserves it.
 
 ### Checking a registry
 

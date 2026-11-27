@@ -14,7 +14,7 @@ everything is correlated and exported over OTLP.
 | Language | Status | Location |
 |----------|--------|----------|
 | Go | Implemented | [`go/`](go/) |
-| TypeScript | Implemented for Bun, Node, browsers and Manifest V3 extensions. The browser packages first ship in `ts/v0.2.0` | [`ts/`](ts/) |
+| TypeScript | Implemented for Bun, Node, browsers and Manifest V3 extensions. The browser packages first ship in `ts/v0.2.1` | [`ts/`](ts/) |
 | Zig | Implemented for Zig 0.17.1 (`zig/v0.1.0`) | [`zig/`](zig/) |
 | Python | Implemented for Python 3.12, 3.13, and 3.14 (`python/v0.1.0`) | [`python/`](python/) |
 | C | Implemented for C11 (`c/v0.1.0`, pure C11 ABI backed by `zig/`) | [`c/`](c/) |
@@ -55,8 +55,8 @@ everything is correlated and exported over OTLP.
 4. **Owned lifecycle.** Initialization returns a handle with an idempotent,
    bounded `Shutdown` that reports per-signal errors. The library never
    panics, never calls exit, and never blocks startup on collector
-   connectivity. [`docs/PARITY.md`](docs/PARITY.md) lists the known defects
-   of the current releases against this rule.
+   connectivity. [`docs/PARITY.md`](docs/PARITY.md) lists any current release
+   that breaks this rule.
 5. **Locally testable.** The guarantees a test can observe, which are
    specification conformance, log-to-trace correlation and exemplars, can
    be asserted in a consumer's own test suite with the bundled hermetic
@@ -448,7 +448,7 @@ The TypeScript packages release in lockstep. One `ts/vX.Y.Z` tag publishes
 `@libo11y/spec`, `@libo11y/core`, `@libo11y/server`, `@libo11y/test`,
 `@libo11y/web` and `@libo11y/webext` to npm at version X.Y.Z, with
 provenance, through npm trusted publishing. The first version on npm is
-0.1.1, and `@libo11y/web` and `@libo11y/webext` join at 0.2.0. Each
+0.1.1, and `@libo11y/web` and `@libo11y/webext` join at 0.2.1. Each
 TypeScript release is listed in [`ts/CHANGELOG.md`](ts/CHANGELOG.md).
 `make release-check` also packs the packages and installs them into a
 throwaway consumer under Node and Bun, and it bundles the browser packages

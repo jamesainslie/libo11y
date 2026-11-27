@@ -206,7 +206,10 @@ container (`O11Y_PG_TEST_DSN`).
 - TypeScript releases are lockstep. Every `@libo11y/*` package publishes
   at one shared version from a `ts/vX.Y.Z` tag. The first version on npm
   is 0.1.1. The `ts/v0.1.0` release never reached npm, because npm asked
-  for 2FA on a direct publish from CI. Every package keeps
+  for 2FA on a direct publish from CI. The `ts/v0.2.0` release never
+  reached npm either, because the trusted publishers allowed only staged
+  publishing, so `@libo11y/web` and `@libo11y/webext` first appear at
+  0.2.1. Every package keeps
   `"private": true` in the source tree, and `release.ts pack` drops it
   from each packed `package.json`, so only packed tarballs publish.
   `make release-check` also runs `scripts/ts-release-check.sh` for

@@ -1,6 +1,6 @@
 {
   "name": "@libo11y/core",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "The platform-neutral libo11y core for TypeScript: configuration, identity, the sensitivity policy and the signal pipelines over the OpenTelemetry JS SDK.",
   "license": "Apache-2.0",
