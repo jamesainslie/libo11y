@@ -23,6 +23,7 @@ otlp-http = [
     "dep:prost",
     "dep:reqwest",
     "dep:serde_json",
+    "opentelemetry-otlp/gzip-http",
     "opentelemetry-otlp/http-proto",
     "opentelemetry-otlp/http-json",
     "opentelemetry-otlp/reqwest-blocking-client",
@@ -36,6 +37,7 @@ otlp-grpc = [
     "opentelemetry-proto/gen-tonic",
     "tonic/gzip",
     "opentelemetry-otlp/grpc-tonic",
+    "opentelemetry-otlp/gzip-tonic",
     "opentelemetry-otlp/tls-aws-lc",
     "opentelemetry-otlp/tls-webpki-roots",
 ]

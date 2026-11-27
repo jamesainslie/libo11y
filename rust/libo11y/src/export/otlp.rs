@@ -1,19 +1,93 @@
 //! Builds upstream's OTLP span and log exporters for a resolved
-//! [`SignalExport`]: the protocol, endpoint and timeout libo11y resolved, a
-//! reqwest client or a tonic TLS configuration from the certificate
-//! variables, and upstream's own reading of the header, compression and
-//! insecure variables, which it takes from the process environment.
+//! [`SignalExport`]: the protocol, endpoint, timeout, headers, compression,
+//! insecure flag and TLS material resolved through [`EnvLookup`].
+
+#[cfg(feature = "otlp-http")]
+use std::collections::HashMap;
 
 use crate::BoxError;
+use crate::env::EnvLookup;
 use crate::export::tls::TlsMaterial;
 use crate::export::{Protocol, SignalExport};
+
+/// Resolves `OTEL_EXPORTER_OTLP_<SIGNAL>_COMPRESSION`, else
+/// `OTEL_EXPORTER_OTLP_COMPRESSION`, through `env`.
+fn signal_compression(env: &EnvLookup, upper: &str) -> Option<opentelemetry_otlp::Compression> {
+    let raw = env
+        .trimmed(&format!("OTEL_EXPORTER_OTLP_{upper}_COMPRESSION"))
+        .or_else(|| env.trimmed("OTEL_EXPORTER_OTLP_COMPRESSION"));
+    match raw.as_deref().map(str::to_ascii_lowercase).as_deref() {
+        Some("gzip") => Some(opentelemetry_otlp::Compression::Gzip),
+        _ => None,
+    }
+}
+
+/// Resolves raw `key=value` header entries from
+/// `OTEL_EXPORTER_OTLP_<SIGNAL>_HEADERS`, else `OTEL_EXPORTER_OTLP_HEADERS`,
+/// without percent-decoding (for `WithHttpConfig::with_headers`, which
+/// percent-decodes values itself).
+#[cfg(feature = "otlp-http")]
+fn signal_http_headers(env: &EnvLookup, upper: &str) -> HashMap<String, String> {
+    let Some(raw) = env
+        .trimmed(&format!("OTEL_EXPORTER_OTLP_{upper}_HEADERS"))
+        .or_else(|| env.trimmed("OTEL_EXPORTER_OTLP_HEADERS"))
+    else {
+        return HashMap::new();
+    };
+    raw.split(',')
+        .filter_map(|entry| {
+            let (key, value) = entry.trim().split_once('=')?;
+            let key = key.trim();
+            if key.is_empty() {
+                return None;
+            }
+            Some((key.to_owned(), value.trim().to_owned()))
+        })
+        .collect()
+}
+
+/// Resolves `OTEL_EXPORTER_OTLP_<SIGNAL>_HEADERS`, else
+/// `OTEL_EXPORTER_OTLP_HEADERS`, into a tonic `MetadataMap`.
+#[cfg(feature = "otlp-grpc")]
+fn signal_grpc_metadata(env: &EnvLookup, upper: &str) -> tonic::metadata::MetadataMap {
+    let mut map = tonic::metadata::MetadataMap::new();
+    let Some(raw) = env
+        .trimmed(&format!("OTEL_EXPORTER_OTLP_{upper}_HEADERS"))
+        .or_else(|| env.trimmed("OTEL_EXPORTER_OTLP_HEADERS"))
+    else {
+        return map;
+    };
+    for (name, value) in crate::metrics::sink::parse_headers(&raw) {
+        let lower = name.to_ascii_lowercase();
+        if let (Ok(k), Ok(v)) = (
+            tonic::metadata::MetadataKey::<tonic::metadata::Ascii>::from_bytes(lower.as_bytes()),
+            tonic::metadata::MetadataValue::try_from(value.as_str()),
+        ) {
+            map.insert(k, v);
+        }
+    }
+    map
+}
+
+/// Resolves `OTEL_EXPORTER_OTLP_<SIGNAL>_INSECURE`, else
+/// `OTEL_EXPORTER_OTLP_INSECURE`, through `env`.
+#[cfg(feature = "otlp-grpc")]
+fn signal_insecure(env: &EnvLookup, upper: &str) -> bool {
+    let raw = env
+        .trimmed(&format!("OTEL_EXPORTER_OTLP_{upper}_INSECURE"))
+        .or_else(|| env.trimmed("OTEL_EXPORTER_OTLP_INSECURE"));
+    raw.is_some_and(|v| v.eq_ignore_ascii_case("true"))
+}
 
 /// Builds `$builder` (`SpanExporter::builder()` or `LogExporter::builder()`)
 /// over the transport `$export` names.
 macro_rules! build_otlp {
-    ($builder:expr, $export:expr) => {{
+    ($builder:expr, $export:expr, $env:expr, $upper:expr) => {{
         let export: &SignalExport = $export;
+        let env: &EnvLookup = $env;
+        let upper: &str = $upper;
         let tls: Option<TlsMaterial> = export.tls.load()?;
+        let compression = signal_compression(env, upper);
         match export.protocol {
             #[cfg(feature = "otlp-http")]
             Protocol::HttpProtobuf | Protocol::HttpJson => {
@@ -28,6 +102,13 @@ macro_rules! build_otlp {
                     .with_protocol(protocol)
                     .with_endpoint(export.endpoint.clone())
                     .with_timeout(export.timeout);
+                let headers = signal_http_headers(env, upper);
+                if !headers.is_empty() {
+                    builder = builder.with_headers(headers);
+                }
+                if let Some(comp) = compression {
+                    builder = builder.with_compression(comp);
+                }
                 if let Some(tls) = &tls {
                     builder = builder.with_http_client(tls.blocking_client(export.timeout)?);
                 }
@@ -37,13 +118,28 @@ macro_rules! build_otlp {
             Protocol::Grpc => {
                 use opentelemetry_otlp::{WithExportConfig as _, WithTonicConfig as _};
                 require_tokio()?;
+                let endpoint_str = crate::metrics::sink::normalize_grpc_endpoint(
+                    &export.endpoint,
+                    signal_insecure(env, upper),
+                );
                 let mut builder = $builder
                     .with_tonic()
                     .with_protocol(opentelemetry_otlp::Protocol::Grpc)
-                    .with_endpoint(export.endpoint.clone())
+                    .with_endpoint(endpoint_str.clone())
                     .with_timeout(export.timeout);
-                // tonic refuses a TLS configuration for a Unix socket.
-                if tls.is_some() || !export.endpoint.starts_with("unix:") {
+                let metadata = signal_grpc_metadata(env, upper);
+                if !metadata.is_empty() {
+                    builder = builder.with_metadata(metadata);
+                }
+                if let Some(comp) = compression {
+                    builder = builder.with_compression(comp);
+                }
+                // Only attach TLS for https:// endpoints or explicit TLS
+                // material; never for plaintext http:// or Unix sockets.
+                let is_https = endpoint_str
+                    .get(..8)
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case("https://"));
+                if !endpoint_str.starts_with("unix:") && (tls.is_some() || is_https) {
                     builder = builder.with_tls_config(TlsMaterial::tonic_config(tls.as_ref()));
                 }
                 Ok(builder.build()?)
@@ -63,15 +159,27 @@ macro_rules! build_otlp {
 /// Builds the OTLP span exporter.
 pub(crate) fn span_exporter(
     export: &SignalExport,
+    env: &EnvLookup,
 ) -> Result<opentelemetry_otlp::SpanExporter, BoxError> {
-    build_otlp!(opentelemetry_otlp::SpanExporter::builder(), export)
+    build_otlp!(
+        opentelemetry_otlp::SpanExporter::builder(),
+        export,
+        env,
+        "TRACES"
+    )
 }
 
 /// Builds the OTLP log exporter.
 pub(crate) fn log_exporter(
     export: &SignalExport,
+    env: &EnvLookup,
 ) -> Result<opentelemetry_otlp::LogExporter, BoxError> {
-    build_otlp!(opentelemetry_otlp::LogExporter::builder(), export)
+    build_otlp!(
+        opentelemetry_otlp::LogExporter::builder(),
+        export,
+        env,
+        "LOGS"
+    )
 }
 
 /// Upstream's tonic exporter dials lazily on a Tokio runtime, which must be
@@ -112,8 +220,8 @@ mod tests {
         for protocol in ["http/protobuf", "http/json"] {
             let export = traces(&pairs(&[("OTEL_EXPORTER_OTLP_PROTOCOL", protocol)]));
             assert_eq!(export.route, crate::export::Route::Otlp);
-            span_exporter(&export).expect("a span exporter");
-            log_exporter(&export).expect("a log exporter");
+            span_exporter(&export, &EnvLookup::empty()).expect("a span exporter");
+            log_exporter(&export, &EnvLookup::empty()).expect("a log exporter");
         }
     }
 
@@ -139,7 +247,7 @@ mod tests {
                 key.display().to_string(),
             ),
         ]);
-        span_exporter(&export).expect("a span exporter with TLS");
+        span_exporter(&export, &EnvLookup::empty()).expect("a span exporter with TLS");
     }
 
     #[test]
@@ -148,7 +256,7 @@ mod tests {
             "OTEL_EXPORTER_OTLP_CERTIFICATE",
             "/no/such/ca.pem",
         )]));
-        let err = span_exporter(&export).expect_err("unreadable");
+        let err = span_exporter(&export, &EnvLookup::empty()).expect_err("unreadable");
         assert!(
             err.to_string()
                 .starts_with("reading OTEL_EXPORTER_OTLP_CERTIFICATE \"/no/such/ca.pem\""),
@@ -160,7 +268,7 @@ mod tests {
     #[test]
     fn grpc_needs_a_tokio_runtime() {
         let export = traces(&pairs(&[("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")]));
-        let err = span_exporter(&export).expect_err("no runtime");
+        let err = span_exporter(&export, &EnvLookup::empty()).expect_err("no runtime");
         assert!(
             err.to_string()
                 .starts_with("OTLP over grpc needs a Tokio runtime"),
@@ -178,7 +286,7 @@ mod tests {
                 "unix:///tmp/libo11y-no-collector.sock",
             ),
         ]));
-        span_exporter(&export).expect("no TLS configuration for a socket");
+        span_exporter(&export, &EnvLookup::empty()).expect("no TLS configuration for a socket");
     }
 
     #[cfg(feature = "otlp-grpc")]
@@ -204,7 +312,7 @@ mod tests {
                 key.display().to_string(),
             ),
         ]);
-        span_exporter(&export).expect("a gRPC span exporter with TLS");
-        log_exporter(&export).expect("a gRPC log exporter with TLS");
+        span_exporter(&export, &EnvLookup::empty()).expect("a gRPC span exporter with TLS");
+        log_exporter(&export, &EnvLookup::empty()).expect("a gRPC log exporter with TLS");
     }
 }
