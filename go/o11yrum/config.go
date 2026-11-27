@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/netip"
 	"net/url"
 	"os"
@@ -22,6 +23,7 @@ type Config struct {
 	Edge   EdgeConfig   `yaml:"edge"`
 	Limits LimitsConfig `yaml:"limits"`
 	Apps   []AppConfig  `yaml:"apps"`
+	Sinks  SinksConfig  `yaml:"sinks"`
 
 	dir string // directory of the file LoadConfig read, for relative paths
 }
@@ -291,6 +293,7 @@ func (c *Config) clone() *Config {
 	out := *c
 	out.Edge.TrustedProxies = slices.Clone(c.Edge.TrustedProxies)
 	out.Edge.Country.TrustedFrom = slices.Clone(c.Edge.Country.TrustedFrom)
+	out.Sinks.OTLP.Headers = maps.Clone(c.Sinks.OTLP.Headers)
 	out.Apps = make([]AppConfig, len(c.Apps))
 	for i, a := range c.Apps {
 		a.Origins = slices.Clone(a.Origins)
