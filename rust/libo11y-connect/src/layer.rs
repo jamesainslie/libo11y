@@ -13,7 +13,7 @@ use http_body::Body;
 use libo11y::{Propagator, Sdk, start_record};
 use opentelemetry::metrics::Histogram;
 use opentelemetry::propagation::TextMapPropagator as _;
-use opentelemetry::trace::{FutureExt as _, Link, SpanKind, TraceContextExt as _, Tracer as _};
+use opentelemetry::trace::{Link, SpanKind, TraceContextExt as _, Tracer as _};
 use opentelemetry::{Context, KeyValue};
 use tower_layer::Layer;
 use tower_service::Service;
@@ -394,8 +394,14 @@ impl ClientConfig {
         let system = rpc_system(protocol);
         let (span_name, rpc_method) = parse_procedure(&procedure);
         let (parsed_addr, parsed_port) = parse_server_address(Some(req.uri()), req.headers());
-        let server_addr = parsed_addr.or_else(|| self.default_server_address.clone());
-        let server_port = parsed_port.or(self.default_server_port);
+        let (server_addr, server_port) = if parsed_addr.is_some() {
+            (parsed_addr, parsed_port)
+        } else {
+            (
+                self.default_server_address.clone(),
+                self.default_server_port,
+            )
+        };
 
         let mut attrs = Vec::with_capacity(4);
         attrs.push(KeyValue::new(RPC_SYSTEM_NAME, system));
@@ -534,37 +540,15 @@ where
         &self,
         mut request: Request<ClientBody>,
     ) -> BoxFuture<'static, Result<Response<Self::ResponseBody>, Self::Error>> {
-        let Some((cx, mut state)) = self.config.start_client_call(&mut request) else {
-            let fut = self.inner.send(request);
-            return Box::pin(async move {
-                fut.await
-                    .map(|resp| resp.map(InstrumentedBody::passthrough))
-            });
+        let Some((cx, state)) = self.config.start_client_call(&mut request) else {
+            return Box::pin(ResponseFuture::passthrough(self.inner.send(request)));
         };
 
         let fut = {
-            let _guard = cx.clone().attach();
+            let _guard = cx.attach();
             self.inner.send(request)
         };
-
-        Box::pin(async move {
-            match fut.with_context(cx).await {
-                Ok(response) => {
-                    state.set_http_status(response.status());
-                    state.inspect_headers(response.headers());
-                    if response.body().is_end_stream() {
-                        state.finish_from_stream_end();
-                        Ok(response.map(InstrumentedBody::passthrough))
-                    } else {
-                        Ok(response.map(|body| InstrumentedBody::instrumented(body, state)))
-                    }
-                }
-                Err(err) => {
-                    state.finish_transport_error(err.to_string());
-                    Err(err)
-                }
-            }
-        })
+        Box::pin(ResponseFuture::instrumented(fut, state))
     }
 }
 

@@ -1,5 +1,6 @@
 //! OpenTelemetry RPC semantic conventions (v1.41.0), Connect/gRPC protocol
-//! helpers, and W3C header propagation adapters for `libo11y-connect`.
+//! helpers, incremental envelope parsing, and W3C header propagation adapters
+//! for `libo11y-connect`.
 
 use connectrpc::{ErrorCode, Protocol};
 use http::header::{HOST, HeaderName, HeaderValue};
@@ -47,9 +48,14 @@ pub(crate) const HEALTH_PROCEDURE_PREFIX: &str = "/grpc.health.v1.Health/";
 /// Canonical `rpc.response.status_code` spelling for a successful RPC.
 pub(crate) const STATUS_CODE_OK: &str = "OK";
 
+/// Maximum payload size buffered for a Connect unary error body or a single
+/// terminal envelope frame (`0x02` Connect end-of-stream or `0x80` gRPC-Web
+/// trailers). Non-terminal message frames are skipped without buffering.
+pub(crate) const MAX_INSPECT_BYTES: usize = 16 * 1024;
+
 /// Header/trailer carrying the numeric gRPC status code.
 const GRPC_STATUS_HEADER: &str = "grpc-status";
-/// Header/trailer carrying the gRPC status message.
+/// Header/trailer carrying the percent-encoded gRPC status message.
 const GRPC_MESSAGE_HEADER: &str = "grpc-message";
 
 /// Connect streaming end-of-stream envelope flag bit.
@@ -60,6 +66,10 @@ const ENVELOPE_COMPRESSED_FLAG: u8 = 0x01;
 const GRPC_WEB_TRAILER_FLAG: u8 = 0x80;
 /// Size of a Connect/gRPC envelope header (1 flag byte + 4-byte BE length).
 const ENVELOPE_HEADER_LEN: usize = 5;
+
+/// Parsed status outcome from a terminal Connect / gRPC / gRPC-Web signal:
+/// `Ok(())` for success, `Err((code, message))` for an RPC error.
+pub(crate) type RpcStatusOutcome = Result<(), (ErrorCode, Option<String>)>;
 
 /// Returns the `rpc.system.name` attribute value for a wire protocol, matching
 /// Go's `o11yconnect` and `otelconnect`.
@@ -129,13 +139,9 @@ pub(crate) const fn error_code_from_http_status(status: StatusCode) -> Option<Er
     }
 }
 
-/// Parses a gRPC status code from HTTP headers or trailers.
-///
-/// Returns `Some(Ok(()))` when `grpc-status: 0` (OK), `Some(Err((code, msg)))`
-/// for any non-zero status, or `None` if `grpc-status` is absent.
-pub(crate) fn parse_grpc_status_headers(
-    headers: &HeaderMap,
-) -> Option<Result<(), (ErrorCode, Option<String>)>> {
+/// Parses a gRPC status code and percent-decoded `grpc-message` from HTTP
+/// headers or trailers.
+pub(crate) fn parse_grpc_status_headers(headers: &HeaderMap) -> Option<RpcStatusOutcome> {
     let raw = headers.get(GRPC_STATUS_HEADER)?.to_str().ok()?.trim();
     let numeric = raw.parse::<u32>().ok()?;
     if numeric == 0 {
@@ -145,7 +151,7 @@ pub(crate) fn parse_grpc_status_headers(
     let message = headers
         .get(GRPC_MESSAGE_HEADER)
         .and_then(|v| v.to_str().ok())
-        .map(str::to_owned);
+        .map(percent_decode);
     Some(Err((code, message)))
 }
 
@@ -162,85 +168,218 @@ pub(crate) fn parse_connect_error_json(bytes: &[u8]) -> Option<(ErrorCode, Optio
     Some((code, message))
 }
 
-/// Scans uncompressed Connect streaming envelope frames for an `END_STREAM`
-/// (`0x02`) frame carrying `{"error": {"code": "..."}}`.
-pub(crate) fn parse_connect_end_stream_error(bytes: &[u8]) -> Option<(ErrorCode, Option<String>)> {
-    let mut offset = 0;
-    while bytes.len().saturating_sub(offset) >= ENVELOPE_HEADER_LEN {
-        let flags = bytes[offset];
-        let len = u32::from_be_bytes([
-            bytes[offset + 1],
-            bytes[offset + 2],
-            bytes[offset + 3],
-            bytes[offset + 4],
-        ]) as usize;
-        let payload_start = offset + ENVELOPE_HEADER_LEN;
-        let frame_end = payload_start.checked_add(len)?;
-        if frame_end > bytes.len() {
-            return None;
-        }
-        if flags & CONNECT_END_STREAM_FLAG != 0 && flags & ENVELOPE_COMPRESSED_FLAG == 0 {
-            let val: serde_json::Value =
-                serde_json::from_slice(&bytes[payload_start..frame_end]).ok()?;
-            let err_obj = val.get("error")?.as_object()?;
-            let code_str = err_obj.get("code")?.as_str()?;
-            let code = code_str.parse::<ErrorCode>().ok()?;
-            let message = err_obj
-                .get("message")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned);
-            return Some((code, message));
-        }
-        offset = frame_end;
-    }
-    None
+/// Parses the JSON payload of a Connect streaming `END_STREAM` (`0x02`) frame.
+///
+/// Returns `Some(Ok(()))` for a valid JSON object without an `"error"` object
+/// (for example `{}` or `{"metadata": {...}}`), `Some(Err((code, msg)))` when
+/// `"error"` is present, or `None` if the payload is not a valid JSON object.
+pub(crate) fn parse_connect_end_stream_payload(payload: &[u8]) -> Option<RpcStatusOutcome> {
+    let val: serde_json::Value = serde_json::from_slice(payload).ok()?;
+    let obj = val.as_object()?;
+    let Some(err_val) = obj.get("error").filter(|v| !v.is_null()) else {
+        return Some(Ok(()));
+    };
+    let err_obj = err_val.as_object()?;
+    let code = err_obj
+        .get("code")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|s| s.parse::<ErrorCode>().ok())
+        .unwrap_or(ErrorCode::Unknown);
+    let message = err_obj
+        .get("message")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    Some(Err((code, message)))
 }
 
-/// Scans uncompressed gRPC-Web envelope frames for a trailer frame (`0x80`)
-/// carrying `grpc-status`.
-pub(crate) fn parse_grpc_web_trailer_status(
-    bytes: &[u8],
-) -> Option<Result<(), (ErrorCode, Option<String>)>> {
-    let mut offset = 0;
-    while bytes.len().saturating_sub(offset) >= ENVELOPE_HEADER_LEN {
-        let flags = bytes[offset];
-        let len = u32::from_be_bytes([
-            bytes[offset + 1],
-            bytes[offset + 2],
-            bytes[offset + 3],
-            bytes[offset + 4],
-        ]) as usize;
-        let payload_start = offset + ENVELOPE_HEADER_LEN;
-        let frame_end = payload_start.checked_add(len)?;
-        if frame_end > bytes.len() {
-            return None;
+/// Parses the ASCII header-block payload of a gRPC-Web trailer (`0x80`) frame.
+pub(crate) fn parse_grpc_web_trailer_payload(payload: &[u8]) -> Option<RpcStatusOutcome> {
+    let text = std::str::from_utf8(payload).ok()?;
+    let mut numeric = None;
+    let mut message = None;
+    for line in text.split('\n') {
+        let line = line.trim_end_matches('\r');
+        if let Some((k, v)) = line.split_once(':') {
+            let key = k.trim();
+            let val = v.trim();
+            if key.eq_ignore_ascii_case(GRPC_STATUS_HEADER) {
+                numeric = val.parse::<u32>().ok();
+            } else if key.eq_ignore_ascii_case(GRPC_MESSAGE_HEADER) {
+                message = Some(percent_decode(val));
+            }
         }
-        if flags & GRPC_WEB_TRAILER_FLAG != 0 && flags & ENVELOPE_COMPRESSED_FLAG == 0 {
-            let text = std::str::from_utf8(&bytes[payload_start..frame_end]).ok()?;
-            let mut numeric = None;
-            let mut message = None;
-            for line in text.split('\n') {
-                let line = line.trim_end_matches('\r');
-                if let Some((k, v)) = line.split_once(':') {
-                    let key = k.trim();
-                    let val = v.trim();
-                    if key.eq_ignore_ascii_case(GRPC_STATUS_HEADER) {
-                        numeric = val.parse::<u32>().ok();
-                    } else if key.eq_ignore_ascii_case(GRPC_MESSAGE_HEADER) {
-                        message = Some(val.to_owned());
+    }
+    let num = numeric?;
+    if num == 0 {
+        return Some(Ok(()));
+    }
+    let code = ErrorCode::from_grpc_code(num).unwrap_or(ErrorCode::Unknown);
+    Some(Err((code, message)))
+}
+
+/// Which envelope framing protocol [`EnvelopeInspector`] scans.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EnvelopeKind {
+    /// Connect streaming (`application/connect+*`): terminal frame flag `0x02`.
+    ConnectStream,
+    /// gRPC-Web (`application/grpc-web*`): terminal trailer frame flag `0x80`.
+    GrpcWeb,
+}
+
+impl EnvelopeKind {
+    const fn is_terminal(self, flags: u8) -> bool {
+        match self {
+            Self::ConnectStream => flags & CONNECT_END_STREAM_FLAG != 0,
+            Self::GrpcWeb => flags & GRPC_WEB_TRAILER_FLAG != 0,
+        }
+    }
+}
+
+enum EnvelopeState {
+    Header {
+        buf: [u8; ENVELOPE_HEADER_LEN],
+        filled: usize,
+    },
+    Skip {
+        remaining: usize,
+    },
+    Capture {
+        remaining: usize,
+        buf: Vec<u8>,
+    },
+    Done,
+}
+
+/// Incremental 5-byte envelope frame state machine for Connect streaming and
+/// gRPC-Web responses.
+///
+/// Non-terminal message frames (of any size) are skipped by decrementing a
+/// remaining-bytes counter without allocating or buffering payload bytes.
+/// Only the single uncompressed terminal frame (`0x02` or `0x80`, up to
+/// [`MAX_INSPECT_BYTES`]) is buffered and parsed.
+pub(crate) struct EnvelopeInspector {
+    kind: EnvelopeKind,
+    state: EnvelopeState,
+    outcome: Option<RpcStatusOutcome>,
+}
+
+impl EnvelopeInspector {
+    pub(crate) const fn new(kind: EnvelopeKind) -> Self {
+        Self {
+            kind,
+            state: EnvelopeState::Header {
+                buf: [0; ENVELOPE_HEADER_LEN],
+                filled: 0,
+            },
+            outcome: None,
+        }
+    }
+
+    /// Feeds the next slice of response body bytes into the state machine.
+    pub(crate) fn feed(&mut self, mut bytes: &[u8]) {
+        while !bytes.is_empty() {
+            match &mut self.state {
+                EnvelopeState::Done => return,
+                EnvelopeState::Header { buf, filled } => {
+                    let need = ENVELOPE_HEADER_LEN - *filled;
+                    let take = bytes.len().min(need);
+                    buf[*filled..*filled + take].copy_from_slice(&bytes[..take]);
+                    *filled += take;
+                    bytes = &bytes[take..];
+
+                    if *filled == ENVELOPE_HEADER_LEN {
+                        let flags = buf[0];
+                        let len = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
+                        let is_terminal = self.kind.is_terminal(flags);
+                        let is_uncompressed = flags & ENVELOPE_COMPRESSED_FLAG == 0;
+
+                        if is_terminal && is_uncompressed && len <= MAX_INSPECT_BYTES {
+                            if len == 0 {
+                                self.finish_terminal(&[]);
+                            } else {
+                                self.state = EnvelopeState::Capture {
+                                    remaining: len,
+                                    buf: Vec::with_capacity(len.min(1024)),
+                                };
+                            }
+                        } else if len == 0 {
+                            *filled = 0;
+                        } else {
+                            self.state = EnvelopeState::Skip { remaining: len };
+                        }
+                    }
+                }
+                EnvelopeState::Skip { remaining } => {
+                    let take = bytes.len().min(*remaining);
+                    *remaining -= take;
+                    bytes = &bytes[take..];
+                    if *remaining == 0 {
+                        self.state = EnvelopeState::Header {
+                            buf: [0; ENVELOPE_HEADER_LEN],
+                            filled: 0,
+                        };
+                    }
+                }
+                EnvelopeState::Capture { remaining, buf } => {
+                    let take = bytes.len().min(*remaining);
+                    buf.extend_from_slice(&bytes[..take]);
+                    *remaining -= take;
+                    bytes = &bytes[take..];
+                    if *remaining == 0 {
+                        let payload = std::mem::take(buf);
+                        self.finish_terminal(&payload);
                     }
                 }
             }
-            let num = numeric?;
-            if num == 0 {
-                return Some(Ok(()));
-            }
-            let code = ErrorCode::from_grpc_code(num).unwrap_or(ErrorCode::Unknown);
-            return Some(Err((code, message)));
         }
-        offset = frame_end;
     }
-    None
+
+    fn finish_terminal(&mut self, payload: &[u8]) {
+        self.outcome = match self.kind {
+            EnvelopeKind::ConnectStream => parse_connect_end_stream_payload(payload),
+            EnvelopeKind::GrpcWeb => parse_grpc_web_trailer_payload(payload),
+        };
+        self.state = EnvelopeState::Done;
+    }
+
+    /// Returns the parsed terminal status outcome once a terminal frame has
+    /// been decoded.
+    pub(crate) fn outcome(&self) -> Option<&RpcStatusOutcome> {
+        self.outcome.as_ref()
+    }
+}
+
+/// Percent-decodes a `grpc-message` header or trailer value without panicking
+/// on malformed escape sequences.
+pub(crate) fn percent_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    if !bytes.contains(&b'%') {
+        return input.to_owned();
+    }
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let (Some(hi), Some(lo)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2]))
+        {
+            out.push((hi << 4) | lo);
+            i += 3;
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
+}
+
+const fn hex_val(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
 }
 
 /// Strips a leading `/` from a procedure path (`"/pkg.Svc/Method"` ->
@@ -335,6 +474,12 @@ impl Injector for HeaderInjector<'_> {
 mod tests {
     use super::*;
 
+    fn push_frame(out: &mut Vec<u8>, flags: u8, payload: &[u8]) {
+        out.push(flags);
+        out.extend_from_slice(&(u32::try_from(payload.len()).expect("len")).to_be_bytes());
+        out.extend_from_slice(payload);
+    }
+
     #[test]
     fn http_status_and_server_fault_match_go_o11yconnect() {
         let cases = [
@@ -381,31 +526,71 @@ mod tests {
     }
 
     #[test]
-    fn parses_connect_error_json_end_stream_and_grpc_web_trailers() {
+    fn envelope_inspector_skips_large_payloads_and_parses_terminal_frames() {
+        // Connect streaming: 32 KiB payload frame + terminal 0x02 error frame, fed in tiny 7-byte chunks.
+        let big_payload = vec![b'a'; 32 * 1024];
+        let mut wire = Vec::new();
+        push_frame(&mut wire, 0x00, &big_payload);
+        push_frame(
+            &mut wire,
+            CONNECT_END_STREAM_FLAG,
+            br#"{"error":{"code":"internal","message":"boom"}}"#,
+        );
+        let mut inspector = EnvelopeInspector::new(EnvelopeKind::ConnectStream);
+        for chunk in wire.chunks(7) {
+            inspector.feed(chunk);
+        }
+        assert_eq!(
+            inspector.outcome(),
+            Some(&Err((ErrorCode::Internal, Some("boom".to_owned()))))
+        );
+
+        // Connect streaming: successful 0x02 {} frame yields Some(Ok(())).
+        let mut ok_wire = Vec::new();
+        push_frame(&mut ok_wire, 0x00, b"msg");
+        push_frame(&mut ok_wire, CONNECT_END_STREAM_FLAG, b"{}");
+        let mut ok_insp = EnvelopeInspector::new(EnvelopeKind::ConnectStream);
+        ok_insp.feed(&ok_wire);
+        assert_eq!(ok_insp.outcome(), Some(&Ok(())));
+
+        // gRPC-Web: 32 KiB payload frame + 0x80 trailer frame with percent-encoded grpc-message.
+        let mut gw_wire = Vec::new();
+        push_frame(&mut gw_wire, 0x00, &big_payload);
+        push_frame(
+            &mut gw_wire,
+            GRPC_WEB_TRAILER_FLAG,
+            b"grpc-status: 5\r\ngrpc-message: item%20not%20found\r\n",
+        );
+        let mut gw_insp = EnvelopeInspector::new(EnvelopeKind::GrpcWeb);
+        for chunk in gw_wire.chunks(13) {
+            gw_insp.feed(chunk);
+        }
+        assert_eq!(
+            gw_insp.outcome(),
+            Some(&Err((
+                ErrorCode::NotFound,
+                Some("item not found".to_owned())
+            )))
+        );
+    }
+
+    #[test]
+    fn parse_grpc_status_headers_percent_decodes_message() {
+        let mut headers = HeaderMap::new();
+        headers.insert("grpc-status", HeaderValue::from_static("5"));
+        headers.insert("grpc-message", HeaderValue::from_static("missing%20id%3D7"));
+        assert_eq!(
+            parse_grpc_status_headers(&headers),
+            Some(Err((ErrorCode::NotFound, Some("missing id=7".to_owned()))))
+        );
+    }
+
+    #[test]
+    fn parses_connect_unary_error_json() {
         let json = br#"{"code":"not_found","message":"no such item"}"#;
         assert_eq!(
             parse_connect_error_json(json),
             Some((ErrorCode::NotFound, Some("no such item".to_owned())))
-        );
-
-        let end_payload = br#"{"error":{"code":"internal","message":"boom"}}"#;
-        let mut frame = Vec::new();
-        frame.push(CONNECT_END_STREAM_FLAG);
-        frame.extend_from_slice(&(u32::try_from(end_payload.len()).expect("len")).to_be_bytes());
-        frame.extend_from_slice(end_payload);
-        assert_eq!(
-            parse_connect_end_stream_error(&frame),
-            Some((ErrorCode::Internal, Some("boom".to_owned())))
-        );
-
-        let trailer_text = b"grpc-status: 5\r\ngrpc-message: gone\r\n";
-        let mut gw = Vec::new();
-        gw.push(GRPC_WEB_TRAILER_FLAG);
-        gw.extend_from_slice(&(u32::try_from(trailer_text.len()).expect("len")).to_be_bytes());
-        gw.extend_from_slice(trailer_text);
-        assert_eq!(
-            parse_grpc_web_trailer_status(&gw),
-            Some(Err((ErrorCode::NotFound, Some("gone".to_owned()))))
         );
     }
 }

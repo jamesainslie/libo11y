@@ -422,8 +422,14 @@ where
 
         let (span_name, rpc_method) = parse_full_method(&full_method);
         let (parsed_addr, parsed_port) = parse_server_address(req.uri(), req.headers());
-        let server_addr = parsed_addr.or_else(|| self.config.default_server_address.clone());
-        let server_port = parsed_port.or(self.config.default_server_port);
+        let (server_addr, server_port) = if parsed_addr.is_some() {
+            (parsed_addr, parsed_port)
+        } else {
+            (
+                self.config.default_server_address.clone(),
+                self.config.default_server_port,
+            )
+        };
 
         let mut attrs = Vec::with_capacity(4);
         attrs.push(KeyValue::new(RPC_SYSTEM_NAME, RPC_SYSTEM_GRPC));

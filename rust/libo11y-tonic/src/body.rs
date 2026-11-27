@@ -77,12 +77,16 @@ impl RpcStateInner {
         span.end();
     }
 
+    fn finish_panic(self) {
+        self.finish(
+            GrpcStatus::with_message(CODE_INTERNAL, "panic"),
+            Some("panic".to_owned()),
+        );
+    }
+
     fn finish_on_drop(mut self) {
         if std::thread::panicking() {
-            self.finish(
-                GrpcStatus::with_message(CODE_INTERNAL, "panic"),
-                Some("panic".to_owned()),
-            );
+            self.finish_panic();
             return;
         }
         if let Some(status) = self.observed_status.take() {
@@ -166,12 +170,50 @@ impl RpcState {
             );
         }
     }
+
+    fn finish_panic(&mut self) {
+        if let Some(inner) = self.inner.take() {
+            inner.finish_panic();
+        }
+    }
 }
 
 impl Drop for RpcState {
     fn drop(&mut self) {
         if let Some(inner) = self.inner.take() {
             inner.finish_on_drop();
+        }
+    }
+}
+
+/// Stack-local guard placed around inner `poll` / `poll_frame` calls so a
+/// panic is finalized *during* unwinding, even if an outer `catch_unwind`
+/// catches the panic before the future or body is dropped.
+struct PollPanicGuard<'a> {
+    slot: &'a mut Option<RpcState>,
+    disarmed: bool,
+}
+
+impl<'a> PollPanicGuard<'a> {
+    fn new(slot: &'a mut Option<RpcState>) -> Self {
+        Self {
+            slot,
+            disarmed: false,
+        }
+    }
+
+    fn disarm(mut self) {
+        self.disarmed = true;
+    }
+}
+
+impl Drop for PollPanicGuard<'_> {
+    fn drop(&mut self) {
+        if !self.disarmed
+            && std::thread::panicking()
+            && let Some(mut state) = self.slot.take()
+        {
+            state.finish_panic();
         }
     }
 }
@@ -225,11 +267,17 @@ where
         cx: &mut TaskContext<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
         let mut this = self.project();
-        let poll_result = if let Some(otel_cx) = this.state.as_ref().and_then(RpcState::cx) {
-            let _guard = otel_cx.clone().attach();
-            this.inner.as_mut().poll_frame(cx)
-        } else {
-            this.inner.as_mut().poll_frame(cx)
+        let poll_result = {
+            let otel_cx = this.state.as_ref().and_then(RpcState::cx).cloned();
+            let panic_guard = PollPanicGuard::new(this.state);
+            let res = if let Some(otel_cx) = otel_cx {
+                let _guard = otel_cx.attach();
+                this.inner.as_mut().poll_frame(cx)
+            } else {
+                this.inner.as_mut().poll_frame(cx)
+            };
+            panic_guard.disarm();
+            res
         };
 
         let Poll::Ready(item) = poll_result else {
@@ -329,15 +377,18 @@ where
                 let _guard = otel_cx.clone().attach();
                 this.inner.poll(cx)
             }
-            FutureState::Instrumented(Some(state)) => {
-                if let Some(otel_cx) = state.cx() {
-                    let _guard = otel_cx.clone().attach();
+            FutureState::Instrumented(slot) => {
+                let otel_cx = slot.as_ref().and_then(RpcState::cx).cloned();
+                let panic_guard = PollPanicGuard::new(slot);
+                let res = if let Some(otel_cx) = otel_cx {
+                    let _guard = otel_cx.attach();
                     this.inner.poll(cx)
                 } else {
                     this.inner.poll(cx)
-                }
+                };
+                panic_guard.disarm();
+                res
             }
-            FutureState::Instrumented(None) => this.inner.poll(cx),
         };
 
         let Poll::Ready(result) = poll_result else {

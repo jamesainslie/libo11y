@@ -3,11 +3,12 @@
 
 use std::fmt;
 use std::future::Future;
+use std::io::IoSlice;
 use std::pin::Pin;
 use std::task::{Context as TaskContext, Poll};
 use std::time::Instant;
 
-use bytes::Buf as _;
+use bytes::Buf;
 use connectrpc::{ErrorCode, Protocol};
 use http::{Response, StatusCode};
 use http_body::{Body, Frame, SizeHint};
@@ -19,14 +20,15 @@ use pin_project_lite::pin_project;
 
 use crate::canonical::{CanonicalSummary, emit_canonical_line};
 use crate::semconv::{
-    ERROR_TYPE, HTTP_RESPONSE_STATUS_CODE, RPC_RESPONSE_STATUS_CODE, STATUS_CODE_OK,
-    canonical_code, error_code_from_http_status, is_server_fault, parse_connect_end_stream_error,
-    parse_connect_error_json, parse_grpc_status_headers, parse_grpc_web_trailer_status,
+    ERROR_TYPE, EnvelopeInspector, EnvelopeKind, HTTP_RESPONSE_STATUS_CODE, MAX_INSPECT_BYTES,
+    RPC_RESPONSE_STATUS_CODE, RpcStatusOutcome, STATUS_CODE_OK, canonical_code,
+    error_code_from_http_status, is_server_fault, parse_connect_error_json,
+    parse_grpc_status_headers,
 };
 
-/// Maximum number of response body bytes buffered for extracting Connect JSON
-/// error codes or streaming end-of-stream / gRPC-Web trailer frames.
-const MAX_INSPECT_BYTES: usize = 16 * 1024;
+/// Maximum number of vectored `IoSlice` slots allocated when inspecting a
+/// heavily segmented [`Buf`] without consuming it.
+const MAX_VECTORED_CHUNKS: usize = 1024;
 
 /// Which side of the RPC is being instrumented.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +53,59 @@ pub(crate) struct CanonicalState {
     pub(crate) http_method: String,
 }
 
+enum BodyInspector {
+    /// Body bytes do not carry protocol status (e.g., gRPC HTTP/2 trailers or
+    /// Connect unary 200/304).
+    None,
+    /// Connect unary non-200/non-304 response carrying a small JSON error body.
+    ConnectUnaryError { buf: Vec<u8>, overflow: bool },
+    /// Connect streaming (`0x02`) or gRPC-Web (`0x80`) incremental frame scanner.
+    Envelope(EnvelopeInspector),
+}
+
+impl BodyInspector {
+    fn for_response(protocol: Option<Protocol>, is_unary: bool, status: StatusCode) -> Self {
+        match protocol {
+            Some(Protocol::GrpcWeb) => {
+                Self::Envelope(EnvelopeInspector::new(EnvelopeKind::GrpcWeb))
+            }
+            Some(Protocol::Connect) | None => {
+                if is_unary {
+                    if status != StatusCode::OK && status != StatusCode::NOT_MODIFIED {
+                        Self::ConnectUnaryError {
+                            buf: Vec::new(),
+                            overflow: false,
+                        }
+                    } else {
+                        Self::None
+                    }
+                } else {
+                    Self::Envelope(EnvelopeInspector::new(EnvelopeKind::ConnectStream))
+                }
+            }
+            Some(_) => Self::None,
+        }
+    }
+
+    fn feed(&mut self, chunk: &[u8]) {
+        match self {
+            Self::None => {}
+            Self::ConnectUnaryError { buf, overflow } => {
+                if *overflow {
+                    return;
+                }
+                if buf.len().saturating_add(chunk.len()) <= MAX_INSPECT_BYTES {
+                    buf.extend_from_slice(chunk);
+                } else {
+                    *overflow = true;
+                    buf.clear();
+                }
+            }
+            Self::Envelope(inspector) => inspector.feed(chunk),
+        }
+    }
+}
+
 struct RpcStateInner {
     cx: Context,
     duration: Histogram<f64>,
@@ -60,78 +115,32 @@ struct RpcStateInner {
     protocol: Option<Protocol>,
     is_unary: bool,
     http_status: Option<StatusCode>,
-    observed_grpc: Option<Result<(), (ErrorCode, Option<String>)>>,
-    inspect_buf: Vec<u8>,
-    inspect_overflow: bool,
+    observed_grpc: Option<RpcStatusOutcome>,
+    inspector: BodyInspector,
     canonical: Option<CanonicalState>,
     seen_end_stream: bool,
 }
 
 impl RpcStateInner {
-    fn inspect_chunk(&mut self, chunk: &[u8]) {
-        if self.inspect_overflow {
-            return;
-        }
-        let should_buffer = match self.protocol {
-            Some(Protocol::Connect) | None => {
-                if self.is_unary {
-                    // Only buffer Connect unary responses when HTTP status indicates an error.
-                    self.http_status
-                        .is_some_and(|s| s != StatusCode::OK && s != StatusCode::NOT_MODIFIED)
-                } else {
-                    true
-                }
-            }
-            Some(Protocol::GrpcWeb) => true,
-            Some(_) => false,
-        };
-        if !should_buffer {
-            return;
-        }
-        if self.inspect_buf.len().saturating_add(chunk.len()) <= MAX_INSPECT_BYTES {
-            self.inspect_buf.extend_from_slice(chunk);
-        } else {
-            self.inspect_overflow = true;
-            self.inspect_buf.clear();
-        }
-    }
-
     fn resolve_error(&self) -> Option<(ErrorCode, Option<String>)> {
         // 1. Explicit gRPC status from HTTP headers or HTTP/2 trailers.
         if let Some(grpc_res) = &self.observed_grpc {
-            return match grpc_res {
-                Ok(()) => None,
-                Err(err) => Some(err.clone()),
-            };
+            return grpc_res.clone().err();
         }
 
         // 2. Protocol-specific body inspection.
-        match self.protocol {
-            Some(Protocol::GrpcWeb) => {
-                if let Some(res) = parse_grpc_web_trailer_status(&self.inspect_buf) {
-                    return res.err();
+        match &self.inspector {
+            BodyInspector::Envelope(inspector) => {
+                if let Some(outcome) = inspector.outcome() {
+                    return outcome.clone().err();
                 }
             }
-            Some(Protocol::Connect) | None => {
-                if self.is_unary {
-                    if let Some(status) = self.http_status
-                        && status != StatusCode::OK
-                        && status != StatusCode::NOT_MODIFIED
-                    {
-                        if let Some(parsed) = parse_connect_error_json(&self.inspect_buf) {
-                            return Some(parsed);
-                        }
-                        if let Some(code) = error_code_from_http_status(status) {
-                            return Some((code, None));
-                        }
-                    }
-                    return None;
-                }
-                if let Some(parsed) = parse_connect_end_stream_error(&self.inspect_buf) {
+            BodyInspector::ConnectUnaryError { buf, .. } => {
+                if let Some(parsed) = parse_connect_error_json(buf) {
                     return Some(parsed);
                 }
             }
-            Some(_) => {}
+            BodyInspector::None => {}
         }
 
         // 3. Fallback on non-200 HTTP status.
@@ -146,17 +155,13 @@ impl RpcStateInner {
         transport_error: Option<String>,
         panicked: bool,
     ) {
-        let http_status_u16 = if panicked {
-            500
-        } else {
-            self.http_status.map_or(200, |s| s.as_u16())
-        };
-
         let span = self.cx.span();
-        if self.http_status.is_some() || panicked {
+        if panicked {
+            span.set_attribute(KeyValue::new(HTTP_RESPONSE_STATUS_CODE, 500_i64));
+        } else if let Some(status) = self.http_status {
             span.set_attribute(KeyValue::new(
                 HTTP_RESPONSE_STATUS_CODE,
-                i64::from(http_status_u16),
+                i64::from(status.as_u16()),
             ));
         }
 
@@ -180,16 +185,20 @@ impl RpcStateInner {
         span.set_attribute(status_kv.clone());
         self.metric_attrs.push(status_kv);
 
-        if panicked || error.is_some() || is_err {
-            let err_kv = KeyValue::new(ERROR_TYPE, rpc_code);
-            span.set_attribute(err_kv.clone());
-            self.metric_attrs.push(err_kv);
-        }
         if is_err {
             span.set_status(SpanStatus::error(
                 err_desc.unwrap_or_else(|| rpc_code.to_owned()),
             ));
+            let err_kv = KeyValue::new(ERROR_TYPE, rpc_code);
+            span.set_attribute(err_kv.clone());
+            self.metric_attrs.push(err_kv);
         }
+
+        let canonical_http_status = if panicked {
+            Some(500)
+        } else {
+            self.http_status.as_ref().map(StatusCode::as_u16)
+        };
 
         let elapsed = self.start.elapsed().as_secs_f64();
         {
@@ -203,7 +212,7 @@ impl RpcStateInner {
                         procedure: &canonical.procedure,
                         protocol: self.protocol,
                         http_method: &canonical.http_method,
-                        http_status: Some(http_status_u16),
+                        http_status: canonical_http_status,
                         is_unary: self.is_unary,
                         start: self.start,
                         error_code: error.map(|(c, _)| c),
@@ -216,13 +225,17 @@ impl RpcStateInner {
         span.end();
     }
 
+    fn finish_panic(self) {
+        self.finish(
+            Some((ErrorCode::Internal, Some("panic".to_owned()))),
+            None,
+            true,
+        );
+    }
+
     fn finish_on_drop(self) {
         if std::thread::panicking() {
-            self.finish(
-                Some((ErrorCode::Internal, Some("panic".to_owned()))),
-                None,
-                true,
-            );
+            self.finish_panic();
             return;
         }
         if self.seen_end_stream || self.observed_grpc.is_some() {
@@ -231,31 +244,23 @@ impl RpcStateInner {
             return;
         }
         // Clients may stop polling as soon as a terminal gRPC-Web trailer
-        // frame, Connect end-of-stream frame, or Connect unary JSON error body
-        // has been decoded, dropping the body before a trailing `None` poll.
-        match self.protocol {
-            Some(Protocol::GrpcWeb) => {
-                if let Some(res) = parse_grpc_web_trailer_status(&self.inspect_buf) {
-                    self.finish(res.err(), None, false);
+        // frame, Connect end-of-stream frame (including `{}` on success), or
+        // Connect unary JSON error body has been decoded, dropping the body
+        // before a trailing `None` poll.
+        match &self.inspector {
+            BodyInspector::Envelope(inspector) => {
+                if let Some(outcome) = inspector.outcome().cloned() {
+                    self.finish(outcome.err(), None, false);
                     return;
                 }
             }
-            Some(Protocol::Connect) | None => {
-                if self.is_unary {
-                    if let Some(status) = self.http_status
-                        && status != StatusCode::OK
-                        && status != StatusCode::NOT_MODIFIED
-                        && let Some(err) = parse_connect_error_json(&self.inspect_buf)
-                    {
-                        self.finish(Some(err), None, false);
-                        return;
-                    }
-                } else if let Some(err) = parse_connect_end_stream_error(&self.inspect_buf) {
+            BodyInspector::ConnectUnaryError { buf, .. } => {
+                if let Some(err) = parse_connect_error_json(buf) {
                     self.finish(Some(err), None, false);
                     return;
                 }
             }
-            Some(_) => {}
+            BodyInspector::None => {}
         }
         self.finish(Some((ErrorCode::Canceled, None)), None, false);
     }
@@ -293,8 +298,7 @@ impl RpcState {
                 is_unary,
                 http_status: None,
                 observed_grpc: None,
-                inspect_buf: Vec::new(),
-                inspect_overflow: false,
+                inspector: BodyInspector::None,
                 canonical,
                 seen_end_stream: false,
             })),
@@ -302,26 +306,63 @@ impl RpcState {
     }
 
     pub(crate) fn cx(&self) -> Option<&Context> {
-        self.inner.as_ref().map(|i| &i.cx)
+        self.inner.as_deref().map(|i| &i.cx)
     }
 
     pub(crate) fn set_http_status(&mut self, status: StatusCode) {
-        if let Some(inner) = self.inner.as_mut() {
+        if let Some(inner) = self.inner.as_deref_mut() {
             inner.http_status = Some(status);
+            inner.inspector = BodyInspector::for_response(inner.protocol, inner.is_unary, status);
         }
     }
 
     pub(crate) fn inspect_headers(&mut self, headers: &http::HeaderMap) {
-        if let Some(inner) = self.inner.as_mut()
+        if let Some(inner) = self.inner.as_deref_mut()
             && let Some(res) = parse_grpc_status_headers(headers)
         {
             inner.observed_grpc = Some(res);
         }
     }
 
-    fn inspect_data(&mut self, chunk: &[u8]) {
-        if let Some(inner) = self.inner.as_mut() {
-            inner.inspect_chunk(chunk);
+    fn inspect_buf<D: Buf>(&mut self, data: &D) {
+        let Some(inner) = self.inner.as_deref_mut() else {
+            return;
+        };
+        if matches!(inner.inspector, BodyInspector::None) {
+            return;
+        }
+        let total = data.remaining();
+        if total == 0 {
+            return;
+        }
+        let first = data.chunk();
+        if first.len() >= total {
+            inner.inspector.feed(first);
+            return;
+        }
+        // Segmented Buf: inspect all segments via `chunks_vectored` without
+        // advancing or mutating `data`.
+        let mut stack_slices = [IoSlice::new(&[]); 16];
+        let count = data.chunks_vectored(&mut stack_slices);
+        let covered: usize = stack_slices[..count].iter().map(|s| s.len()).sum();
+        if covered >= total {
+            for slice in &stack_slices[..count] {
+                inner.inspector.feed(slice);
+            }
+            return;
+        }
+        let mut cap = 64;
+        loop {
+            let mut vec_slices = vec![IoSlice::new(&[]); cap];
+            let n = data.chunks_vectored(&mut vec_slices);
+            let sum: usize = vec_slices[..n].iter().map(|s| s.len()).sum();
+            if sum >= total || n < cap || cap >= MAX_VECTORED_CHUNKS {
+                for slice in &vec_slices[..n] {
+                    inner.inspector.feed(slice);
+                }
+                break;
+            }
+            cap = (cap * 2).min(MAX_VECTORED_CHUNKS);
         }
     }
 
@@ -342,12 +383,50 @@ impl RpcState {
             );
         }
     }
+
+    fn finish_panic(&mut self) {
+        if let Some(inner) = self.inner.take() {
+            inner.finish_panic();
+        }
+    }
 }
 
 impl Drop for RpcState {
     fn drop(&mut self) {
         if let Some(inner) = self.inner.take() {
             inner.finish_on_drop();
+        }
+    }
+}
+
+/// Stack-local guard placed around inner `poll` / `poll_frame` calls so a
+/// panic is finalized *during* unwinding, even if an outer `catch_unwind`
+/// catches the panic before the future or body is dropped.
+struct PollPanicGuard<'a> {
+    slot: &'a mut Option<RpcState>,
+    disarmed: bool,
+}
+
+impl<'a> PollPanicGuard<'a> {
+    fn new(slot: &'a mut Option<RpcState>) -> Self {
+        Self {
+            slot,
+            disarmed: false,
+        }
+    }
+
+    fn disarm(mut self) {
+        self.disarmed = true;
+    }
+}
+
+impl Drop for PollPanicGuard<'_> {
+    fn drop(&mut self) {
+        if !self.disarmed
+            && std::thread::panicking()
+            && let Some(mut state) = self.slot.take()
+        {
+            state.finish_panic();
         }
     }
 }
@@ -401,11 +480,17 @@ where
         cx: &mut TaskContext<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
         let mut this = self.project();
-        let poll_result = if let Some(otel_cx) = this.state.as_ref().and_then(RpcState::cx) {
-            let _guard = otel_cx.clone().attach();
-            this.inner.as_mut().poll_frame(cx)
-        } else {
-            this.inner.as_mut().poll_frame(cx)
+        let poll_result = {
+            let otel_cx = this.state.as_ref().and_then(RpcState::cx).cloned();
+            let panic_guard = PollPanicGuard::new(this.state);
+            let res = if let Some(otel_cx) = otel_cx {
+                let _guard = otel_cx.attach();
+                this.inner.as_mut().poll_frame(cx)
+            } else {
+                this.inner.as_mut().poll_frame(cx)
+            };
+            panic_guard.disarm();
+            res
         };
 
         let Poll::Ready(item) = poll_result else {
@@ -416,7 +501,7 @@ where
             Some(Ok(frame)) => {
                 if let Some(state) = this.state.as_mut() {
                     if let Some(data) = frame.data_ref() {
-                        state.inspect_data(data.chunk());
+                        state.inspect_buf(data);
                     }
                     if let Some(trailers) = frame.trailers_ref() {
                         state.inspect_headers(trailers);
@@ -501,14 +586,18 @@ where
         let this = self.project();
 
         let poll_result = match this.state {
-            FutureState::Passthrough | FutureState::Instrumented(None) => this.inner.poll(cx),
-            FutureState::Instrumented(Some(state)) => {
-                if let Some(otel_cx) = state.cx() {
-                    let _guard = otel_cx.clone().attach();
+            FutureState::Passthrough => this.inner.poll(cx),
+            FutureState::Instrumented(slot) => {
+                let otel_cx = slot.as_ref().and_then(RpcState::cx).cloned();
+                let panic_guard = PollPanicGuard::new(slot);
+                let res = if let Some(otel_cx) = otel_cx {
+                    let _guard = otel_cx.attach();
                     this.inner.poll(cx)
                 } else {
                     this.inner.poll(cx)
-                }
+                };
+                panic_guard.disarm();
+                res
             }
         };
 

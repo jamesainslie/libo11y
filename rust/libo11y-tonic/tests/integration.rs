@@ -958,3 +958,70 @@ async fn tower_service_handles_transport_errors_and_panics() {
     );
     assert_eq!(StatusCode::OK.as_u16(), 200);
 }
+
+#[test]
+fn outer_catch_unwind_still_records_panic_and_fallback_port_does_not_mix_with_request_host() {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::task::Waker;
+
+    let rec = Recorder::start("tonic-review-regressions");
+
+    // 1. Panic inside poll caught by an outer catch_unwind before future drop.
+    let mut panic_svc = ServiceBuilder::new()
+        .layer(ServerLayer::new(rec.sdk()))
+        .service_fn(|_req: Request<()>| async move {
+            panic!("caught externally");
+            #[allow(unreachable_code)]
+            Ok::<Response<http_body_util::Empty<Bytes>>, Infallible>(Response::new(
+                http_body_util::Empty::new(),
+            ))
+        });
+
+    let mut fut = Box::pin(
+        panic_svc.call(
+            Request::builder()
+                .uri("/pkg.Svc/Caught")
+                .body(())
+                .expect("req"),
+        ),
+    );
+    let waker = Waker::noop();
+    let mut task_cx = TaskContext::from_waker(waker);
+    let caught = catch_unwind(AssertUnwindSafe(|| fut.as_mut().poll(&mut task_cx)));
+    assert!(caught.is_err(), "inner poll must panic");
+    // Dropping the future AFTER catch_unwind (when !thread::panicking()) must
+    // still have recorded INTERNAL/panic, not CANCELLED.
+    drop(fut);
+
+    let span = find_span(&rec.spans(), &SpanKind::Server, "pkg.Svc/Caught").expect("caught span");
+    assert!(matches!(span.status, SpanStatus::Error { .. }));
+    assert_eq!(
+        span_attr(&span, "rpc.response.status_code").as_deref(),
+        Some("INTERNAL")
+    );
+    assert_eq!(span_attr(&span, "error.type").as_deref(), Some("INTERNAL"));
+
+    // 2. Fallback port from with_server_address must not mix with an explicit request host.
+    let mut client = ServiceBuilder::new()
+        .layer(ClientLayer::new(rec.sdk()).with_server_address("fallback.local", Some(50051)))
+        .service_fn(|_req: Request<()>| async move {
+            Ok::<_, Infallible>(Response::new(http_body_util::Empty::<Bytes>::new()))
+        });
+    let mut host_fut = Box::pin(
+        client.call(
+            Request::builder()
+                .uri("http://explicit.host/pkg.Svc/Ping")
+                .body(())
+                .expect("req"),
+        ),
+    );
+    let _ = host_fut.as_mut().poll(&mut task_cx);
+    drop(host_fut);
+
+    let ping = find_span(&rec.spans(), &SpanKind::Client, "pkg.Svc/Ping").expect("ping span");
+    assert_eq!(
+        span_attr(&ping, "server.address").as_deref(),
+        Some("explicit.host")
+    );
+    assert_eq!(span_attr(&ping, "server.port"), None);
+}

@@ -91,6 +91,10 @@ fn build_router(rec: &Recorder, captured: CapturedContexts) -> Router {
             });
             let items: Vec<Result<StringValue, ConnectError>> = match req.value.as_str() {
                 "internal" => vec![Err(ConnectError::internal("stream broken"))],
+                "big-internal" => vec![
+                    Ok(StringValue::from("x".repeat(24 * 1024))),
+                    Err(ConnectError::internal("after big payload")),
+                ],
                 _ => vec![Ok(req)],
             };
             Ok(Response::new(
@@ -308,8 +312,18 @@ async fn canonical_line_summarizes_unary_errors_enrichment_stream_and_grpc_web()
             "server span status for {input}"
         );
         assert_eq!(
+            span_attr(&server, "error.type").as_deref(),
+            want_server_err.then_some(want_rpc),
+            "server error.type for {input}"
+        );
+        assert_eq!(
             span_attr(&client, "rpc.response.status_code").as_deref(),
             Some(want_rpc)
+        );
+        assert_eq!(
+            span_attr(&client, "error.type").as_deref(),
+            (input != "hi").then_some(want_rpc),
+            "client error.type for {input}"
         );
         assert_eq!(
             matches!(client.status, SpanStatus::Error { .. }),
@@ -716,5 +730,412 @@ async fn tower_server_layer_and_client_layer_work_over_real_tcp_and_service_tran
         rec.assert_correlated();
         rec.assert_triangle("rpc.server.call.duration");
         rec.assert_triangle("rpc.client.call.duration");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn large_streaming_error_over_16kib_is_detected() {
+    let rec = Recorder::start("connect-big-stream");
+    let router = build_router(&rec, CapturedContexts::default());
+    let service =
+        ConnectRpcService::new(router).with_interceptor(ServerInterceptor::new(rec.sdk()));
+    let transport = ClientLayer::new(rec.sdk()).wrap_transport(ServiceTransport::new(service));
+    let config = ClientConfig::new("http://localhost:8080".parse().expect("uri")).json();
+
+    let mut stream = call_server_stream::<_, StringValue, StringValueView>(
+        &transport,
+        &config,
+        STREAM_CLIENT_SPEC,
+        StringValue::from("big-internal"),
+        CallOptions::default(),
+    )
+    .await
+    .expect("stream start");
+    let first = stream
+        .message::<StringValue>()
+        .await
+        .expect("first big chunk")
+        .expect("some");
+    assert_eq!(first.value().len(), 24 * 1024);
+    let err = stream
+        .message::<StringValue>()
+        .await
+        .expect_err("terminal error");
+    assert_eq!(err.code, ErrorCode::Internal);
+    drop(stream);
+
+    let client_span =
+        find_span(&rec.spans(), &SpanKind::Client, STREAM_METHOD).expect("client span");
+    assert_eq!(
+        span_attr(&client_span, "rpc.response.status_code").as_deref(),
+        Some("INTERNAL")
+    );
+    assert_eq!(
+        span_attr(&client_span, "error.type").as_deref(),
+        Some("INTERNAL")
+    );
+    assert!(matches!(client_span.status, SpanStatus::Error { .. }));
+}
+
+fn encode_connect_frame(flags: u8, payload: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(5 + payload.len());
+    out.push(flags);
+    out.extend_from_slice(&(u32::try_from(payload.len()).expect("len")).to_be_bytes());
+    out.extend_from_slice(payload);
+    out
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn segmented_buf_over_16kib_records_terminal_error() {
+    use std::convert::Infallible;
+    use std::pin::Pin;
+    use std::task::{Context as TaskContext, Poll};
+
+    use bytes::{Buf as _, Bytes};
+    use http::header::{CONTENT_TYPE, HeaderValue};
+    use http_body::{Body as HttpBody, Frame};
+    use http_body_util::BodyExt as _;
+    use tower::ServiceExt as _;
+
+    struct SegmentedBody(Option<bytes::buf::Chain<Bytes, Bytes>>);
+    impl HttpBody for SegmentedBody {
+        type Data = bytes::buf::Chain<Bytes, Bytes>;
+        type Error = Infallible;
+        fn poll_frame(
+            mut self: Pin<&mut Self>,
+            _cx: &mut TaskContext<'_>,
+        ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+            Poll::Ready(self.0.take().map(|buf| Ok(Frame::data(buf))))
+        }
+    }
+
+    let rec = Recorder::start("connect-segmented");
+    let big = Bytes::from(encode_connect_frame(0x00, &vec![b'z'; 24 * 1024]));
+    let end = Bytes::from(encode_connect_frame(
+        0x02,
+        br#"{"error":{"code":"data_loss","message":"corrupt"}}"#,
+    ));
+    let svc = ServiceBuilder::new()
+        .layer(ClientLayer::new(rec.sdk()))
+        .service_fn(move |_req: http::Request<()>| {
+            let chain = big.clone().chain(end.clone());
+            async move {
+                Ok::<_, Infallible>(
+                    http::Response::builder()
+                        .header(
+                            CONTENT_TYPE,
+                            HeaderValue::from_static("application/connect+json"),
+                        )
+                        .body(SegmentedBody(Some(chain)))
+                        .expect("resp"),
+                )
+            }
+        });
+
+    let resp = svc
+        .oneshot(
+            http::Request::builder()
+                .uri("http://localhost:8080/test.v1.EchoService/EchoStream")
+                .header(CONTENT_TYPE, "application/connect+json")
+                .body(())
+                .expect("req"),
+        )
+        .await
+        .expect("ok");
+    let _ = resp.into_body().collect().await.expect("collect");
+
+    let client = find_span(&rec.spans(), &SpanKind::Client, STREAM_METHOD).expect("client");
+    assert_eq!(
+        span_attr(&client, "rpc.response.status_code").as_deref(),
+        Some("DATA_LOSS")
+    );
+    assert_eq!(
+        span_attr(&client, "error.type").as_deref(),
+        Some("DATA_LOSS")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn early_drop_after_ok_end_stream_records_ok() {
+    use std::convert::Infallible;
+    use std::pin::Pin;
+    use std::task::{Context as TaskContext, Poll};
+
+    use bytes::Bytes;
+    use http::header::{CONTENT_TYPE, HeaderValue};
+    use http_body::{Body as HttpBody, Frame};
+    use http_body_util::BodyExt as _;
+    use tower::ServiceExt as _;
+
+    struct EarlyDropBody(Option<Bytes>);
+    impl HttpBody for EarlyDropBody {
+        type Data = Bytes;
+        type Error = Infallible;
+        fn poll_frame(
+            mut self: Pin<&mut Self>,
+            _cx: &mut TaskContext<'_>,
+        ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+            Poll::Ready(self.0.take().map(|b| Ok(Frame::data(b))))
+        }
+        fn is_end_stream(&self) -> bool {
+            false
+        }
+    }
+
+    let rec = Recorder::start("connect-ok-early-drop");
+    let mut wire = encode_connect_frame(0x00, br#"{"value":"hi"}"#);
+    wire.extend_from_slice(&encode_connect_frame(0x02, b"{}"));
+    let wire = Bytes::from(wire);
+
+    let svc = ServiceBuilder::new()
+        .layer(ClientLayer::new(rec.sdk()))
+        .service_fn(move |_req: http::Request<()>| {
+            let wire = wire.clone();
+            async move {
+                Ok::<_, Infallible>(
+                    http::Response::builder()
+                        .header(
+                            CONTENT_TYPE,
+                            HeaderValue::from_static("application/connect+json"),
+                        )
+                        .body(EarlyDropBody(Some(wire)))
+                        .expect("resp"),
+                )
+            }
+        });
+
+    let resp = svc
+        .oneshot(
+            http::Request::builder()
+                .uri("http://localhost:8080/test.v1.EchoService/EchoStream")
+                .header(CONTENT_TYPE, "application/connect+json")
+                .body(())
+                .expect("req"),
+        )
+        .await
+        .expect("ok");
+    let mut body = resp.into_body();
+    let frame = body.frame().await.expect("one frame").expect("ok");
+    assert!(frame.is_data());
+    drop(body);
+
+    let client = find_span(&rec.spans(), &SpanKind::Client, STREAM_METHOD).expect("client");
+    assert_eq!(
+        span_attr(&client, "rpc.response.status_code").as_deref(),
+        Some("OK")
+    );
+    assert_eq!(span_attr(&client, "error.type"), None);
+    assert_eq!(client.status, SpanStatus::Unset);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn server_layer_not_found_and_pre_response_transport_error_and_fallback_port() {
+    use std::convert::Infallible;
+
+    use bytes::Bytes;
+    use http_body_util::BodyExt as _;
+    use tower::ServiceExt as _;
+
+    // 1. ServerLayer NOT_FOUND omits error.type and leaves span Unset.
+    {
+        let rec = Recorder::start("connect-layer-not-found");
+        let router = build_router(&rec, CapturedContexts::default());
+        let svc = ServiceBuilder::new()
+            .layer(ServerLayer::new(rec.sdk()).with_canonical_line())
+            .service(ConnectRpcService::new(router));
+        let transport = ServiceTransport::new(svc);
+        let config = ClientConfig::new("http://localhost:8080".parse().expect("uri")).json();
+
+        let err = call_unary::<_, StringValue, StringValueView>(
+            &transport,
+            &config,
+            ECHO_CLIENT_SPEC,
+            StringValue::from("not-found"),
+            CallOptions::default(),
+        )
+        .await
+        .expect_err("not found");
+        assert_eq!(err.code, ErrorCode::NotFound);
+
+        let server = find_span(&rec.spans(), &SpanKind::Server, ECHO_METHOD).expect("server");
+        assert_eq!(server.status, SpanStatus::Unset);
+        assert_eq!(span_attr(&server, "error.type"), None);
+        assert_eq!(
+            span_attr(&server, "rpc.response.status_code").as_deref(),
+            Some("NOT_FOUND")
+        );
+    }
+
+    // 2. ServerLayer pre-response transport error reports HTTP 503 on canonical line, not 200.
+    {
+        let rec = Recorder::start("connect-pre-resp-err");
+        let svc = ServiceBuilder::new()
+            .layer(ServerLayer::new(rec.sdk()).with_canonical_line())
+            .service_fn(|_req: http::Request<()>| async move {
+                Err::<http::Response<http_body_util::Empty<Bytes>>, _>(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "downstream failed",
+                ))
+            });
+
+        let _ = svc
+            .oneshot(
+                http::Request::builder()
+                    .method(http::Method::POST)
+                    .uri("/test.v1.EchoService/Echo")
+                    .header(http::header::CONTENT_TYPE, "application/json")
+                    .body(())
+                    .expect("req"),
+            )
+            .await
+            .expect_err("transport error");
+
+        let got = summaries(&rec);
+        assert_eq!(got.len(), 1);
+        assert_eq!(
+            got[0].attr_str("http.response.status_code").as_deref(),
+            Some("503")
+        );
+        assert_eq!(
+            got[0].attr_str("rpc.response.status_code").as_deref(),
+            Some("UNAVAILABLE")
+        );
+        assert_eq!(
+            got[0].attr_str(attr::OUTCOME).as_deref(),
+            Some(Outcome::Failure.as_str())
+        );
+    }
+
+    // 3. Fallback port from with_server_address must not mix with an explicit request host.
+    {
+        let rec = Recorder::start("connect-fallback-port");
+        let svc = ServiceBuilder::new()
+            .layer(ClientLayer::new(rec.sdk()).with_server_address("fallback.local", Some(9999)))
+            .service_fn(|_req: http::Request<()>| async move {
+                Ok::<_, Infallible>(http::Response::new(http_body_util::Empty::<Bytes>::new()))
+            });
+        let resp = svc
+            .oneshot(
+                http::Request::builder()
+                    .uri("http://explicit.host/test.v1.EchoService/Echo")
+                    .header(http::header::CONTENT_TYPE, "application/json")
+                    .body(())
+                    .expect("req"),
+            )
+            .await
+            .expect("ok");
+        let _ = resp.into_body().collect().await.expect("collect");
+
+        let client = find_span(&rec.spans(), &SpanKind::Client, ECHO_METHOD).expect("client");
+        assert_eq!(
+            span_attr(&client, "server.address").as_deref(),
+            Some("explicit.host")
+        );
+        assert_eq!(span_attr(&client, "server.port"), None);
+    }
+}
+
+#[test]
+fn outer_catch_unwind_records_panic_for_both_server_layer_and_interceptor() {
+    use std::convert::Infallible;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::task::{Context as TaskContext, Waker};
+
+    use bytes::Bytes;
+    use tower::Service as _;
+
+    let waker = Waker::noop();
+    let mut task_cx = TaskContext::from_waker(waker);
+
+    // 1. ServerLayer future polled inside catch_unwind and dropped after unwind stops.
+    {
+        let rec = Recorder::start("connect-layer-catch-unwind");
+        let mut svc = ServiceBuilder::new()
+            .layer(ServerLayer::new(rec.sdk()).with_canonical_line())
+            .service_fn(|_req: http::Request<()>| async move {
+                panic!("caught externally");
+                #[allow(unreachable_code)]
+                Ok::<http::Response<http_body_util::Empty<Bytes>>, Infallible>(http::Response::new(
+                    http_body_util::Empty::new(),
+                ))
+            });
+
+        let mut fut = Box::pin(
+            svc.call(
+                http::Request::builder()
+                    .method(http::Method::POST)
+                    .uri("/test.v1.EchoService/Echo")
+                    .header(http::header::CONTENT_TYPE, "application/json")
+                    .body(())
+                    .expect("req"),
+            ),
+        );
+        let caught = catch_unwind(AssertUnwindSafe(|| fut.as_mut().poll(&mut task_cx)));
+        assert!(caught.is_err());
+        drop(fut);
+
+        let server = find_span(&rec.spans(), &SpanKind::Server, ECHO_METHOD).expect("server");
+        assert!(matches!(server.status, SpanStatus::Error { .. }));
+        assert_eq!(
+            span_attr(&server, "rpc.response.status_code").as_deref(),
+            Some("INTERNAL")
+        );
+        assert_eq!(
+            span_attr(&server, "error.type").as_deref(),
+            Some("INTERNAL")
+        );
+        let got = summaries(&rec);
+        assert_eq!(got.len(), 1);
+        assert_eq!(
+            got[0].attr_str("http.response.status_code").as_deref(),
+            Some("500")
+        );
+        assert_eq!(
+            got[0].attr_str(attr::OUTCOME).as_deref(),
+            Some(Outcome::Failure.as_str())
+        );
+    }
+
+    // 2. ServerInterceptor future polled inside catch_unwind and dropped after unwind stops.
+    {
+        let rec = Recorder::start("connect-interceptor-catch-unwind");
+        let router = build_router(&rec, CapturedContexts::default());
+        let mut svc = ConnectRpcService::new(router)
+            .with_interceptor(ServerInterceptor::new(rec.sdk()).with_canonical_line());
+
+        let mut fut = Box::pin(
+            svc.call(
+                http::Request::builder()
+                    .method(http::Method::POST)
+                    .uri("/test.v1.EchoService/Echo")
+                    .header(http::header::CONTENT_TYPE, "application/json")
+                    .body(http_body_util::Full::new(Bytes::from_static(br#""panic""#)))
+                    .expect("req"),
+            ),
+        );
+        let caught = catch_unwind(AssertUnwindSafe(|| fut.as_mut().poll(&mut task_cx)));
+        assert!(caught.is_err());
+        drop(fut);
+
+        let server = find_span(&rec.spans(), &SpanKind::Server, ECHO_METHOD).expect("server");
+        assert!(matches!(server.status, SpanStatus::Error { .. }));
+        assert_eq!(
+            span_attr(&server, "rpc.response.status_code").as_deref(),
+            Some("INTERNAL")
+        );
+        assert_eq!(
+            span_attr(&server, "error.type").as_deref(),
+            Some("INTERNAL")
+        );
+        let got = summaries(&rec);
+        assert_eq!(got.len(), 1);
+        assert_eq!(
+            got[0].attr_str("http.response.status_code").as_deref(),
+            Some("500")
+        );
+        assert_eq!(
+            got[0].attr_str(attr::OUTCOME).as_deref(),
+            Some(Outcome::Failure.as_str())
+        );
     }
 }

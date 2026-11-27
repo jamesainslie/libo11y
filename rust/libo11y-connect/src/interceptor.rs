@@ -2,6 +2,7 @@
 //! `go/o11yconnect`.
 
 use std::fmt;
+use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context as TaskContext, Poll};
@@ -19,9 +20,10 @@ use opentelemetry::baggage::{Baggage, BaggageExt as _};
 use opentelemetry::metrics::Histogram;
 use opentelemetry::propagation::TextMapPropagator as _;
 use opentelemetry::trace::{
-    FutureExt as _, Link, SpanKind, Status as SpanStatus, TraceContextExt as _, Tracer as _,
+    Link, SpanKind, Status as SpanStatus, TraceContextExt as _, Tracer as _,
 };
 use opentelemetry::{Context, KeyValue};
+use pin_project_lite::pin_project;
 
 use crate::canonical::{CanonicalSummary, emit_canonical_line};
 use crate::layer::MethodFilter;
@@ -165,7 +167,6 @@ struct ActiveCall {
     http_method: &'static str,
     is_unary: bool,
     record: Option<Record>,
-    stream_error: Option<(ErrorCode, Option<String>)>,
 }
 
 impl ActiveCall {
@@ -210,15 +211,13 @@ impl ActiveCall {
         span.set_attribute(status_kv.clone());
         self.metric_attrs.push(status_kv);
 
-        if panicked || error.is_some() {
-            let err_kv = KeyValue::new(ERROR_TYPE, rpc_code);
-            span.set_attribute(err_kv.clone());
-            self.metric_attrs.push(err_kv);
-        }
         if is_err {
             span.set_status(SpanStatus::error(
                 err_desc.unwrap_or_else(|| rpc_code.to_owned()),
             ));
+            let err_kv = KeyValue::new(ERROR_TYPE, rpc_code);
+            span.set_attribute(err_kv.clone());
+            self.metric_attrs.push(err_kv);
         }
 
         let elapsed = self.start.elapsed().as_secs_f64();
@@ -245,6 +244,14 @@ impl ActiveCall {
         }
         span.end();
     }
+
+    fn finish_panic(self) {
+        self.finish(
+            Some((ErrorCode::Internal, Some("panic".to_owned()))),
+            Some(500),
+            true,
+        );
+    }
 }
 
 struct CallGuard {
@@ -264,8 +271,7 @@ impl CallGuard {
 
     fn finish_ok(&mut self) {
         if let Some(active) = self.active.take() {
-            let err = active.stream_error.clone();
-            active.finish(err, None, false);
+            active.finish(None, None, false);
         }
     }
 
@@ -278,25 +284,83 @@ impl CallGuard {
             );
         }
     }
+
+    fn finish_panic(&mut self) {
+        if let Some(active) = self.active.take() {
+            active.finish_panic();
+        }
+    }
 }
 
 impl Drop for CallGuard {
     fn drop(&mut self) {
         if let Some(active) = self.active.take() {
             if std::thread::panicking() {
-                active.finish(
-                    Some((ErrorCode::Internal, Some("panic".to_owned()))),
-                    Some(500),
-                    true,
-                );
+                active.finish_panic();
             } else {
-                let err = active
-                    .stream_error
-                    .clone()
-                    .or(Some((ErrorCode::Canceled, None)));
-                active.finish(err, None, false);
+                active.finish(Some((ErrorCode::Canceled, None)), None, false);
             }
         }
+    }
+}
+
+/// Stack-local drop sentinel placed around inner future/stream polling so a
+/// panic is recorded *during* unwinding even when caught by an outer
+/// `catch_unwind`.
+struct CallPanicSentinel<'a> {
+    guard: &'a mut CallGuard,
+    disarmed: bool,
+}
+
+impl<'a> CallPanicSentinel<'a> {
+    fn new(guard: &'a mut CallGuard) -> Self {
+        Self {
+            guard,
+            disarmed: false,
+        }
+    }
+
+    fn disarm(mut self) {
+        self.disarmed = true;
+    }
+}
+
+impl Drop for CallPanicSentinel<'_> {
+    fn drop(&mut self) {
+        if !self.disarmed && std::thread::panicking() {
+            self.guard.finish_panic();
+        }
+    }
+}
+
+pin_project! {
+    /// Polls `inner` inside `guard`'s OpenTelemetry context while arming a
+    /// [`CallPanicSentinel`] on every poll.
+    struct GuardedFuture<'a, F> {
+        #[pin]
+        inner: F,
+        guard: &'a mut CallGuard,
+    }
+}
+
+impl<F> Future for GuardedFuture<'_, F>
+where
+    F: Future,
+{
+    type Output = F::Output;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Self::Output> {
+        let this = self.project();
+        let otel_cx = this.guard.cx().cloned();
+        let sentinel = CallPanicSentinel::new(this.guard);
+        let res = if let Some(otel_cx) = otel_cx {
+            let _attached = otel_cx.attach();
+            this.inner.poll(cx)
+        } else {
+            this.inner.poll(cx)
+        };
+        sentinel.disarm();
+        res
     }
 }
 
@@ -382,7 +446,6 @@ fn begin_call(
         http_method,
         is_unary,
         record,
-        stream_error: None,
     }))
 }
 
@@ -416,12 +479,15 @@ impl Stream for InstrumentedPayloadStream {
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Option<Self::Item>> {
         let this = self.as_mut().get_mut();
-        let poll_res = if let Some(otel_cx) = this.guard.cx() {
-            let _guard = otel_cx.clone().attach();
+        let otel_cx = this.guard.cx().cloned();
+        let sentinel = CallPanicSentinel::new(&mut this.guard);
+        let poll_res = if let Some(otel_cx) = otel_cx {
+            let _attached = otel_cx.attach();
             this.inner.as_mut().poll_next(cx)
         } else {
             this.inner.as_mut().poll_next(cx)
         };
+        sentinel.disarm();
 
         let Poll::Ready(item) = poll_res else {
             return Poll::Pending;
@@ -450,8 +516,11 @@ impl Interceptor for ServerInterceptor {
         let Some(mut guard) = begin_call(&self.config, &req.ctx, true) else {
             return next.run(req).await;
         };
-        let cx = guard.cx().cloned().unwrap_or_else(Context::new);
-        let result = next.run(req).with_context(cx).await;
+        let result = GuardedFuture {
+            inner: next.run(req),
+            guard: &mut guard,
+        }
+        .await;
         match &result {
             Ok(_) => guard.finish_ok(),
             Err(err) => guard.finish_err(err),
@@ -468,8 +537,11 @@ impl Interceptor for ServerInterceptor {
         let Some(mut guard) = begin_call(&self.config, &req.ctx, false) else {
             return next.run(req, inbound).await;
         };
-        let cx = guard.cx().cloned().unwrap_or_else(Context::new);
-        let result = next.run(req, inbound).with_context(cx).await;
+        let result = GuardedFuture {
+            inner: next.run(req, inbound),
+            guard: &mut guard,
+        }
+        .await;
         match result {
             Ok(resp) => Ok(resp.map_body(|stream| -> PayloadStream {
                 Box::pin(InstrumentedPayloadStream {
