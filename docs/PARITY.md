@@ -161,10 +161,25 @@ reach users with the next release of each library.
 | `ts/v0.1.2` | a connection attempt still pending when shutdown resolves keeps the process alive past the deadline: until the exporter's request timeout on Bun (10 s by default), and until the operating system gives up on Node (about 135 s on Linux) | bounded shutdown |
 | `ts/v0.1.2` | `shutdownOnSignals` gives `beforeShutdown` and `shutdown` a full deadline each, so it can take twice the stated bound | bounded shutdown |
 
-## Rust and Java
+## Upcoming and planned clients
 
-No released implementation exists yet. When one ships, it gets its own
-status and form columns in the matrix above, against the same baseline.
-Rust, for example, may express capture-time redaction as a derive macro
-with Display-only output, and Java may build the harness over the OTEL Java
-testing SDK.
+No released implementation exists yet for Rust, Python, C, or Java. When
+each ships, it gets its own status and form columns in the matrix above,
+against the same baseline.
+
+- **Rust** (coming soon): under active development in `rust/` on
+  `tracing` and OpenTelemetry Rust. `libo11y-spec`, `libo11y-redact` (with
+  the `Redact` derive macro), and the core identity, policy, and
+  application-registry crate are on `main`; traces, logs, metrics,
+  `libo11y-test`, and HTTP, RPC, and database integrations are in progress.
+- **Python** (coming soon): design complete for Python 3.12+ on
+  OpenTelemetry Python SDK 1.45, targeting a single `libo11y` PyPI
+  distribution with optional extras, stdlib `logging`, `@redacted`
+  capture-time redaction, and native ASGI, WSGI, httpx, requests, gRPC,
+  Connect, and DB-API integrations.
+- **C** (coming soon): under active development as a pure C11 ABI wrapping
+  the Zig core, with generated C spec headers (`o11y/spec.h`),
+  `o11y/o11y.h`, the `o11ytest` C harness (`o11y/test.h`), and
+  `pkg-config` and CMake packaging.
+- **Java** (planned): not started; planned to build over the OpenTelemetry
+  Java SDK and SLF4J.

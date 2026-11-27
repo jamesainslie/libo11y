@@ -16,7 +16,9 @@ everything is correlated and exported over OTLP.
 | Go | Implemented | [`go/`](go/) |
 | TypeScript | Implemented for Bun, Node, browsers and Manifest V3 extensions. The browser packages first ship in `ts/v0.2.0` | [`ts/`](ts/) |
 | Zig | Implemented for Zig 0.17.1 (`zig/v0.1.0`) | [`zig/`](zig/) |
-| Rust | Planned | [`rust/`](rust/) |
+| Rust | In development (coming soon) | [`rust/`](rust/) |
+| Python | In development (coming soon) | design in progress |
+| C | In development (coming soon) | C11 ABI in progress |
 | Java | Planned | [`java/`](java/) |
 
 ## Design principles

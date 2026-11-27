@@ -6,8 +6,9 @@ follow RFC 2119.
 This document is the human-readable form of the machine registry under
 [`spec/registry`](../spec/registry). The registry is the source of truth.
 The generator produces the attribute tables in `docs/taxonomy/`, the Go
-`spec` package and the TypeScript package `@libo11y/spec` from it. Where
-this prose and the registry disagree, the registry wins.
+`spec` package, the TypeScript package `@libo11y/spec`, the Zig `o11y.spec`
+namespace, and the Rust `libo11y-spec` crate from it. Where this prose and
+the registry disagree, the registry wins.
 
 Where the Go implementation does not yet enforce a requirement, this
 document says so next to the requirement. Section 8 lists the enforcement
@@ -163,8 +164,9 @@ belongs to libo11y, OpenTelemetry or semconv.
 
 ### Events
 
-An Event is a record emitted through the event API (`SDK.Event` in Go, and
-`Record.EmitEvent`, which calls it): it carries the given name as
+An Event is a record emitted through the event API (`SDK.Event` in Go,
+`telemetry.event` in TypeScript, `Telemetry.event` in Zig, and
+`Record.EmitEvent` / `Record.emitEvent`, which call it): it carries the given name as
 `event.name` and is force-emitted, so it is exempt from level gating. The
 API accepts any name; the registered names below are contract-bearing (their
 required attributes are checked by the conformance harness). The exemption
@@ -193,8 +195,9 @@ recommended.
 Records marked `o11y.record.class = audit` and emitted with force-emit are
 exempt from sampling, level gates, and trace-based dropping, and SHOULD be
 routed to a dedicated exporter. Marking is structural, never string
-matching: in Go the exemption comes from `o11y.ForceEmit`, not from the
-attribute, and dedicated audit routing is not implemented yet.
+matching: in Go the exemption comes from `o11y.ForceEmit` (`forceEmit` in
+TypeScript and `o11y.forceEmit` in Zig), not from the attribute, and
+dedicated audit routing is not implemented yet.
 
 ## 5. Sensitivity classification
 
@@ -241,7 +244,7 @@ it does not cover:
 
 - values under keys that neither the specification nor a loaded
   application registry (section 5a) classifies (capture-time redaction,
-  the `redact` package in Go, protects those);
+  the `redact` package in Go and `o11y.redact` in Zig, protects those);
 - log record bodies and other free text: span names, span status
   descriptions, and span event names;
 - instrumentation scope attributes;
@@ -280,6 +283,9 @@ validator checks types, cardinality budgets and enum values.
 TypeScript loads a registry through the `registry` option or
 `loadAppRegistry(path)`, from `ts/v0.1.1`, the first version on npm. It
 rejects an invalid registry with the `INVALID_APP_REGISTRY` error code.
+Zig loads registries at setup or init through `Options.app_registries`
+(paths, YAML bytes, or pre-parsed `AppRegistry` values), from `zig/v0.1.0`,
+and rejects an invalid registry with `error.InvalidAppRegistry`.
 
 ### Schema
 
@@ -382,7 +388,8 @@ item is never renamed or removed without a major version bump.
 
 - **Schema URL.** The URL ends in the bare spec version:
   `https://schemas.o11y.ing/libo11y/1.2.0` (`spec.SchemaURL` in
-  Go, `SCHEMA_URL` in TypeScript), stamped on every resource.
+  Go, `SCHEMA_URL` in TypeScript, `o11y.spec.schema_url` in Zig), stamped
+  on every resource.
 - **Version history.** The manifest lists every spec version in
   `versions`, currently `[1.0.0, 1.1.0, 1.2.0]`. The list starts at
   1.0.0, ends at the version in `schema_url`, and ascends.
@@ -414,10 +421,10 @@ URL, and the commit is tagged `spec/v1.2.0`. Spec 1.1.0 is tagged
 
 ## 8. Enforcement layers
 
-1. **Generated typed API** (`go/spec`, and the generated TypeScript
-   package `@libo11y/spec`): typed keys and closed enums make many invalid
-   states unrepresentable at compile time. Forbidden keys get no
-   constants.
+1. **Generated typed API** (`go/spec`, the generated TypeScript
+   package `@libo11y/spec`, Zig's `o11y.spec`, and Rust's `libo11y-spec`):
+   typed keys and closed enums make many invalid states unrepresentable at
+   compile time. Forbidden keys get no constants.
 2. **Registry policy checks** (`make spec-check`, also run before every
    `make spec-generate`): strict decoding of every registry group file
    (an unknown field fails with `libo11y_registry_unknown_field`), followed

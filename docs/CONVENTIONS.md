@@ -13,7 +13,7 @@ libo11y/
   conformance/   shared cases and vectors every implementation must
                  reproduce exactly
   scripts/       release and schema checks, with their tests
-  rust/          Rust workspace (planned)
+  rust/          Rust workspace (in development)
   java/          Java/Maven module (planned)
   zig/           Zig package (zig/v0.1.0), published through the
                  root build.zig and build.zig.zon shim
