@@ -27,6 +27,16 @@ Spec 1.3.0, the RUM view summary. The schema URL is
   sent after it is known, and how that differs from CrUX.
 - The start and end of view and action spans, in the span shape briefs.
 - `o11y.rum.app.update_id`, the over-the-air update a mobile app runs.
+- The detail group `registry.o11y.rum.detail`: error breadcrumbs, INP, LCP
+  and CLS attribution, resource type and Server-Timing entries, for the
+  detail that kept sessions send.
+- `o11y.rum.span.shape`, required on the view, action and `app_load` span
+  shapes, so a span names the shape it follows.
+- `service.name` as a required attribute of the nine RUM metrics, because
+  one gateway derives them for many apps.
+- The classification of the semconv attribute `os.name` as `public` and
+  `bounded`, for the operating system the gateway parses from the user
+  agent.
 - The rule `libo11y_rum_summary_coverage`, which keeps the summary's
   per-source and per-type counts in step with their enums.
 

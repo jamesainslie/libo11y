@@ -81,6 +81,41 @@ typedef enum o11y_cardinality {
 /* The record came from a captured console call. */
 #define O11Y_LOG_SOURCE_CONSOLE "console"
 
+/* Closed value set for o11y.rum.vital.attribution.interaction_type */
+#define O11Y_RUM_VITAL_ATTRIBUTION_INTERACTION_TYPE_KEY "o11y.rum.vital.attribution.interaction_type"
+/* A pointer or touch interaction. */
+#define O11Y_RUM_VITAL_ATTRIBUTION_INTERACTION_TYPE_POINTER "pointer"
+/* A keyboard interaction. */
+#define O11Y_RUM_VITAL_ATTRIBUTION_INTERACTION_TYPE_KEYBOARD "keyboard"
+
+/* Closed value set for o11y.rum.vital.attribution.load_state */
+#define O11Y_RUM_VITAL_ATTRIBUTION_LOAD_STATE_KEY "o11y.rum.vital.attribution.load_state"
+/* The document was loading. */
+#define O11Y_RUM_VITAL_ATTRIBUTION_LOAD_STATE_LOADING "loading"
+/* The DOM was interactive. */
+#define O11Y_RUM_VITAL_ATTRIBUTION_LOAD_STATE_DOM_INTERACTIVE "dom-interactive"
+/* The DOM content loaded event had fired. */
+#define O11Y_RUM_VITAL_ATTRIBUTION_LOAD_STATE_DOM_CONTENT_LOADED "dom-content-loaded"
+/* The document had loaded. */
+#define O11Y_RUM_VITAL_ATTRIBUTION_LOAD_STATE_COMPLETE "complete"
+
+/* Closed value set for o11y.rum.resource.type */
+#define O11Y_RUM_RESOURCE_TYPE_KEY "o11y.rum.resource.type"
+/* A script. */
+#define O11Y_RUM_RESOURCE_TYPE_SCRIPT "script"
+/* A stylesheet. */
+#define O11Y_RUM_RESOURCE_TYPE_STYLESHEET "stylesheet"
+/* An image. */
+#define O11Y_RUM_RESOURCE_TYPE_IMAGE "image"
+/* A font. */
+#define O11Y_RUM_RESOURCE_TYPE_FONT "font"
+/* Audio or video. */
+#define O11Y_RUM_RESOURCE_TYPE_MEDIA "media"
+/* A frame's document. */
+#define O11Y_RUM_RESOURCE_TYPE_DOCUMENT "document"
+/* Any other resource. */
+#define O11Y_RUM_RESOURCE_TYPE_OTHER "other"
+
 /* Closed value set for o11y.rum.platform */
 #define O11Y_RUM_PLATFORM_KEY "o11y.rum.platform"
 /* A web page. */
@@ -93,6 +128,15 @@ typedef enum o11y_cardinality {
 #define O11Y_RUM_PLATFORM_IOS "ios"
 /* A native Android app. */
 #define O11Y_RUM_PLATFORM_ANDROID "android"
+
+/* Closed value set for o11y.rum.span.shape */
+#define O11Y_RUM_SPAN_SHAPE_KEY "o11y.rum.span.shape"
+/* A view span. */
+#define O11Y_RUM_SPAN_SHAPE_VIEW "view"
+/* An action span. */
+#define O11Y_RUM_SPAN_SHAPE_ACTION "action"
+/* A document load or app start span. */
+#define O11Y_RUM_SPAN_SHAPE_APP_LOAD "app_load"
 
 /* Closed value set for o11y.rum.view.kind */
 #define O11Y_RUM_VIEW_KIND_KEY "o11y.rum.view.kind"
@@ -239,6 +283,21 @@ typedef enum o11y_cardinality {
 #define O11Y_ATTR_RULE "o11y.rule"
 #define O11Y_ATTR_DURATION "o11y.duration"
 #define O11Y_ATTR_LOG_SOURCE "o11y.log.source"
+#define O11Y_ATTR_RUM_ERROR_BREADCRUMBS "o11y.rum.error.breadcrumbs"
+#define O11Y_ATTR_RUM_VITAL_ATTRIBUTION_INPUT_DELAY "o11y.rum.vital.attribution.input_delay"
+#define O11Y_ATTR_RUM_VITAL_ATTRIBUTION_PROCESSING_DURATION "o11y.rum.vital.attribution.processing_duration"
+#define O11Y_ATTR_RUM_VITAL_ATTRIBUTION_PRESENTATION_DELAY "o11y.rum.vital.attribution.presentation_delay"
+#define O11Y_ATTR_RUM_VITAL_ATTRIBUTION_INTERACTION_TYPE "o11y.rum.vital.attribution.interaction_type"
+#define O11Y_ATTR_RUM_VITAL_ATTRIBUTION_TIME_TO_FIRST_BYTE "o11y.rum.vital.attribution.time_to_first_byte"
+#define O11Y_ATTR_RUM_VITAL_ATTRIBUTION_RESOURCE_LOAD_DELAY "o11y.rum.vital.attribution.resource_load_delay"
+#define O11Y_ATTR_RUM_VITAL_ATTRIBUTION_RESOURCE_LOAD_DURATION "o11y.rum.vital.attribution.resource_load_duration"
+#define O11Y_ATTR_RUM_VITAL_ATTRIBUTION_ELEMENT_RENDER_DELAY "o11y.rum.vital.attribution.element_render_delay"
+#define O11Y_ATTR_RUM_VITAL_ATTRIBUTION_LARGEST_SHIFT_VALUE "o11y.rum.vital.attribution.largest_shift_value"
+#define O11Y_ATTR_RUM_VITAL_ATTRIBUTION_LARGEST_SHIFT_TIME "o11y.rum.vital.attribution.largest_shift_time"
+#define O11Y_ATTR_RUM_VITAL_ATTRIBUTION_LOAD_STATE "o11y.rum.vital.attribution.load_state"
+#define O11Y_ATTR_RUM_RESOURCE_TYPE "o11y.rum.resource.type"
+#define O11Y_ATTR_RUM_SERVER_TIMING_NAME "o11y.rum.server_timing.name"
+#define O11Y_ATTR_RUM_SERVER_TIMING_DURATION "o11y.rum.server_timing.duration"
 #define O11Y_ATTR_RUM_SUMMARY_SEQ "o11y.rum.summary.seq"
 #define O11Y_ATTR_RUM_SUMMARY_TIME_ON_VIEW "o11y.rum.summary.time_on_view"
 #define O11Y_ATTR_RUM_SUMMARY_REQUESTS "o11y.rum.summary.requests"
@@ -263,6 +322,7 @@ typedef enum o11y_cardinality {
 #define O11Y_ATTR_RUM_SUMMARY_FCP_VALUE "o11y.rum.summary.fcp.value"
 #define O11Y_ATTR_RUM_SUMMARY_TTFB_VALUE "o11y.rum.summary.ttfb.value"
 #define O11Y_ATTR_RUM_PLATFORM "o11y.rum.platform"
+#define O11Y_ATTR_RUM_SPAN_SHAPE "o11y.rum.span.shape"
 #define O11Y_ATTR_RUM_VIEW_NAME "o11y.rum.view.name"
 #define O11Y_ATTR_RUM_VIEW_ID "o11y.rum.view.id"
 #define O11Y_ATTR_RUM_VIEW_KIND "o11y.rum.view.kind"

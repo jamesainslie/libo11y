@@ -280,6 +280,208 @@ impl core::str::FromStr for LogSource {
     }
 }
 
+/// The closed value set for `o11y.rum.vital.attribution.interaction_type`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum RumVitalAttributionInteractionType {
+    /// The value `pointer`.
+    ///
+    /// A pointer or touch interaction.
+    Pointer,
+    /// The value `keyboard`.
+    ///
+    /// A keyboard interaction.
+    Keyboard,
+}
+
+impl RumVitalAttributionInteractionType {
+    /// The attribute key these values belong to.
+    pub const KEY: &'static str = "o11y.rum.vital.attribution.interaction_type";
+
+    /// Every value, in registry order.
+    pub const ALL: &'static [Self] = &[Self::Pointer, Self::Keyboard];
+
+    /// Returns the value as the registry spells it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pointer => "pointer",
+            Self::Keyboard => "keyboard",
+        }
+    }
+}
+
+impl core::fmt::Display for RumVitalAttributionInteractionType {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl core::str::FromStr for RumVitalAttributionInteractionType {
+    type Err = ParseEnumError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "pointer" => Ok(Self::Pointer),
+            "keyboard" => Ok(Self::Keyboard),
+            _ => Err(ParseEnumError::new(Self::KEY, s)),
+        }
+    }
+}
+
+/// The closed value set for `o11y.rum.vital.attribution.load_state`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum RumVitalAttributionLoadState {
+    /// The value `loading`.
+    ///
+    /// The document was loading.
+    Loading,
+    /// The value `dom-interactive`.
+    ///
+    /// The DOM was interactive.
+    DomInteractive,
+    /// The value `dom-content-loaded`.
+    ///
+    /// The DOM content loaded event had fired.
+    DomContentLoaded,
+    /// The value `complete`.
+    ///
+    /// The document had loaded.
+    Complete,
+}
+
+impl RumVitalAttributionLoadState {
+    /// The attribute key these values belong to.
+    pub const KEY: &'static str = "o11y.rum.vital.attribution.load_state";
+
+    /// Every value, in registry order.
+    pub const ALL: &'static [Self] = &[
+        Self::Loading,
+        Self::DomInteractive,
+        Self::DomContentLoaded,
+        Self::Complete,
+    ];
+
+    /// Returns the value as the registry spells it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Loading => "loading",
+            Self::DomInteractive => "dom-interactive",
+            Self::DomContentLoaded => "dom-content-loaded",
+            Self::Complete => "complete",
+        }
+    }
+}
+
+impl core::fmt::Display for RumVitalAttributionLoadState {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl core::str::FromStr for RumVitalAttributionLoadState {
+    type Err = ParseEnumError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "loading" => Ok(Self::Loading),
+            "dom-interactive" => Ok(Self::DomInteractive),
+            "dom-content-loaded" => Ok(Self::DomContentLoaded),
+            "complete" => Ok(Self::Complete),
+            _ => Err(ParseEnumError::new(Self::KEY, s)),
+        }
+    }
+}
+
+/// The closed value set for `o11y.rum.resource.type`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum RumResourceType {
+    /// The value `script`.
+    ///
+    /// A script.
+    Script,
+    /// The value `stylesheet`.
+    ///
+    /// A stylesheet.
+    Stylesheet,
+    /// The value `image`.
+    ///
+    /// An image.
+    Image,
+    /// The value `font`.
+    ///
+    /// A font.
+    Font,
+    /// The value `media`.
+    ///
+    /// Audio or video.
+    Media,
+    /// The value `document`.
+    ///
+    /// A frame's document.
+    Document,
+    /// The value `other`.
+    ///
+    /// Any other resource.
+    Other,
+}
+
+impl RumResourceType {
+    /// The attribute key these values belong to.
+    pub const KEY: &'static str = "o11y.rum.resource.type";
+
+    /// Every value, in registry order.
+    pub const ALL: &'static [Self] = &[
+        Self::Script,
+        Self::Stylesheet,
+        Self::Image,
+        Self::Font,
+        Self::Media,
+        Self::Document,
+        Self::Other,
+    ];
+
+    /// Returns the value as the registry spells it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Script => "script",
+            Self::Stylesheet => "stylesheet",
+            Self::Image => "image",
+            Self::Font => "font",
+            Self::Media => "media",
+            Self::Document => "document",
+            Self::Other => "other",
+        }
+    }
+}
+
+impl core::fmt::Display for RumResourceType {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl core::str::FromStr for RumResourceType {
+    type Err = ParseEnumError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "script" => Ok(Self::Script),
+            "stylesheet" => Ok(Self::Stylesheet),
+            "image" => Ok(Self::Image),
+            "font" => Ok(Self::Font),
+            "media" => Ok(Self::Media),
+            "document" => Ok(Self::Document),
+            "other" => Ok(Self::Other),
+            _ => Err(ParseEnumError::new(Self::KEY, s)),
+        }
+    }
+}
+
 /// The closed value set for `o11y.rum.platform`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -348,6 +550,61 @@ impl core::str::FromStr for RumPlatform {
             "react_native" => Ok(Self::ReactNative),
             "ios" => Ok(Self::Ios),
             "android" => Ok(Self::Android),
+            _ => Err(ParseEnumError::new(Self::KEY, s)),
+        }
+    }
+}
+
+/// The closed value set for `o11y.rum.span.shape`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum RumSpanShape {
+    /// The value `view`.
+    ///
+    /// A view span.
+    View,
+    /// The value `action`.
+    ///
+    /// An action span.
+    Action,
+    /// The value `app_load`.
+    ///
+    /// A document load or app start span.
+    AppLoad,
+}
+
+impl RumSpanShape {
+    /// The attribute key these values belong to.
+    pub const KEY: &'static str = "o11y.rum.span.shape";
+
+    /// Every value, in registry order.
+    pub const ALL: &'static [Self] = &[Self::View, Self::Action, Self::AppLoad];
+
+    /// Returns the value as the registry spells it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::View => "view",
+            Self::Action => "action",
+            Self::AppLoad => "app_load",
+        }
+    }
+}
+
+impl core::fmt::Display for RumSpanShape {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl core::str::FromStr for RumSpanShape {
+    type Err = ParseEnumError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "view" => Ok(Self::View),
+            "action" => Ok(Self::Action),
+            "app_load" => Ok(Self::AppLoad),
             _ => Err(ParseEnumError::new(Self::KEY, s)),
         }
     }
@@ -1106,6 +1363,45 @@ pub mod attr {
     pub const DURATION: &str = "o11y.duration";
     /// The `o11y.log.source` attribute key.
     pub const LOG_SOURCE: &str = "o11y.log.source";
+    /// The `o11y.rum.error.breadcrumbs` attribute key.
+    pub const RUM_ERROR_BREADCRUMBS: &str = "o11y.rum.error.breadcrumbs";
+    /// The `o11y.rum.vital.attribution.input_delay` attribute key.
+    pub const RUM_VITAL_ATTRIBUTION_INPUT_DELAY: &str = "o11y.rum.vital.attribution.input_delay";
+    /// The `o11y.rum.vital.attribution.processing_duration` attribute key.
+    pub const RUM_VITAL_ATTRIBUTION_PROCESSING_DURATION: &str =
+        "o11y.rum.vital.attribution.processing_duration";
+    /// The `o11y.rum.vital.attribution.presentation_delay` attribute key.
+    pub const RUM_VITAL_ATTRIBUTION_PRESENTATION_DELAY: &str =
+        "o11y.rum.vital.attribution.presentation_delay";
+    /// The `o11y.rum.vital.attribution.interaction_type` attribute key.
+    pub const RUM_VITAL_ATTRIBUTION_INTERACTION_TYPE: &str =
+        "o11y.rum.vital.attribution.interaction_type";
+    /// The `o11y.rum.vital.attribution.time_to_first_byte` attribute key.
+    pub const RUM_VITAL_ATTRIBUTION_TIME_TO_FIRST_BYTE: &str =
+        "o11y.rum.vital.attribution.time_to_first_byte";
+    /// The `o11y.rum.vital.attribution.resource_load_delay` attribute key.
+    pub const RUM_VITAL_ATTRIBUTION_RESOURCE_LOAD_DELAY: &str =
+        "o11y.rum.vital.attribution.resource_load_delay";
+    /// The `o11y.rum.vital.attribution.resource_load_duration` attribute key.
+    pub const RUM_VITAL_ATTRIBUTION_RESOURCE_LOAD_DURATION: &str =
+        "o11y.rum.vital.attribution.resource_load_duration";
+    /// The `o11y.rum.vital.attribution.element_render_delay` attribute key.
+    pub const RUM_VITAL_ATTRIBUTION_ELEMENT_RENDER_DELAY: &str =
+        "o11y.rum.vital.attribution.element_render_delay";
+    /// The `o11y.rum.vital.attribution.largest_shift_value` attribute key.
+    pub const RUM_VITAL_ATTRIBUTION_LARGEST_SHIFT_VALUE: &str =
+        "o11y.rum.vital.attribution.largest_shift_value";
+    /// The `o11y.rum.vital.attribution.largest_shift_time` attribute key.
+    pub const RUM_VITAL_ATTRIBUTION_LARGEST_SHIFT_TIME: &str =
+        "o11y.rum.vital.attribution.largest_shift_time";
+    /// The `o11y.rum.vital.attribution.load_state` attribute key.
+    pub const RUM_VITAL_ATTRIBUTION_LOAD_STATE: &str = "o11y.rum.vital.attribution.load_state";
+    /// The `o11y.rum.resource.type` attribute key.
+    pub const RUM_RESOURCE_TYPE: &str = "o11y.rum.resource.type";
+    /// The `o11y.rum.server_timing.name` attribute key.
+    pub const RUM_SERVER_TIMING_NAME: &str = "o11y.rum.server_timing.name";
+    /// The `o11y.rum.server_timing.duration` attribute key.
+    pub const RUM_SERVER_TIMING_DURATION: &str = "o11y.rum.server_timing.duration";
     /// The `o11y.rum.summary.seq` attribute key.
     pub const RUM_SUMMARY_SEQ: &str = "o11y.rum.summary.seq";
     /// The `o11y.rum.summary.time_on_view` attribute key.
@@ -1155,6 +1451,8 @@ pub mod attr {
     pub const RUM_SUMMARY_TTFB_VALUE: &str = "o11y.rum.summary.ttfb.value";
     /// The `o11y.rum.platform` attribute key.
     pub const RUM_PLATFORM: &str = "o11y.rum.platform";
+    /// The `o11y.rum.span.shape` attribute key.
+    pub const RUM_SPAN_SHAPE: &str = "o11y.rum.span.shape";
     /// The `o11y.rum.view.name` attribute key.
     pub const RUM_VIEW_NAME: &str = "o11y.rum.view.name";
     /// The `o11y.rum.view.id` attribute key.
@@ -1321,8 +1619,28 @@ mod tests {
     }
 
     #[test]
+    fn rum_vital_attribution_interaction_type_round_trips() {
+        crate::assert_round_trips(RumVitalAttributionInteractionType::ALL);
+    }
+
+    #[test]
+    fn rum_vital_attribution_load_state_round_trips() {
+        crate::assert_round_trips(RumVitalAttributionLoadState::ALL);
+    }
+
+    #[test]
+    fn rum_resource_type_round_trips() {
+        crate::assert_round_trips(RumResourceType::ALL);
+    }
+
+    #[test]
     fn rum_platform_round_trips() {
         crate::assert_round_trips(RumPlatform::ALL);
+    }
+
+    #[test]
+    fn rum_span_shape_round_trips() {
+        crate::assert_round_trips(RumSpanShape::ALL);
     }
 
     #[test]

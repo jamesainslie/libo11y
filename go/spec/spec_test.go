@@ -131,3 +131,32 @@ func TestAppUpdateIDMinted(t *testing.T) {
 		t.Errorf("RUMAppUpdateID = %v, want o11y.rum.app.update_id=0d1f5a4e", kv)
 	}
 }
+
+func TestRUMSpanShapeMarkerRequired(t *testing.T) {
+	shapes := []spec.RUMSpanShape{spec.RUMSpanShapeView, spec.RUMSpanShapeAction, spec.RUMSpanShapeAppLoad}
+	if len(spectables.RUMSpanRequired) != len(shapes) {
+		t.Fatalf("RUMSpanRequired has %d shapes, want %d", len(spectables.RUMSpanRequired), len(shapes))
+	}
+	for _, shape := range shapes {
+		required, ok := spectables.RUMSpanRequired[string(shape)]
+		if !ok {
+			t.Errorf("RUMSpanRequired lacks the %q shape named by o11y.rum.span.shape", shape)
+			continue
+		}
+		if !slices.Contains(required, spec.RUMSpanShapeKey) {
+			t.Errorf("the %q shape does not require %s: %v", shape, spec.RUMSpanShapeKey, required)
+		}
+	}
+}
+
+func TestRUMDetailMinted(t *testing.T) {
+	if spec.RUMErrorBreadcrumbsKey != "o11y.rum.error.breadcrumbs" {
+		t.Errorf("RUMErrorBreadcrumbsKey = %q", spec.RUMErrorBreadcrumbsKey)
+	}
+	if spec.RUMResourceTypeScript != "script" {
+		t.Errorf("RUMResourceTypeScript = %q, want script", spec.RUMResourceTypeScript)
+	}
+	if kv := spec.RUMServerTimingDuration(0.042); kv.Key != "o11y.rum.server_timing.duration" || kv.Value.Type() != attribute.FLOAT64 {
+		t.Errorf("RUMServerTimingDuration(0.042) = %v, want a double o11y.rum.server_timing.duration", kv)
+	}
+}

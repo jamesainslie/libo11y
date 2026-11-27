@@ -48,6 +48,34 @@ export const LOG_SOURCE_VALUE_CONSOLE = "console";
 /** Every value of `o11y.log.source`. */
 export const LOG_SOURCE_VALUES: readonly LogSource[] = ["logger", "console"];
 
+/** The closed value set for `o11y.rum.vital.attribution.interaction_type`. */
+export type RUMVitalAttributionInteractionType = "pointer" | "keyboard";
+export const RUM_VITAL_ATTRIBUTION_INTERACTION_TYPE_VALUE_POINTER = "pointer";
+export const RUM_VITAL_ATTRIBUTION_INTERACTION_TYPE_VALUE_KEYBOARD = "keyboard";
+/** Every value of `o11y.rum.vital.attribution.interaction_type`. */
+export const RUM_VITAL_ATTRIBUTION_INTERACTION_TYPE_VALUES: readonly RUMVitalAttributionInteractionType[] = ["pointer", "keyboard"];
+
+/** The closed value set for `o11y.rum.vital.attribution.load_state`. */
+export type RUMVitalAttributionLoadState = "loading" | "dom-interactive" | "dom-content-loaded" | "complete";
+export const RUM_VITAL_ATTRIBUTION_LOAD_STATE_VALUE_LOADING = "loading";
+export const RUM_VITAL_ATTRIBUTION_LOAD_STATE_VALUE_DOM_INTERACTIVE = "dom-interactive";
+export const RUM_VITAL_ATTRIBUTION_LOAD_STATE_VALUE_DOM_CONTENT_LOADED = "dom-content-loaded";
+export const RUM_VITAL_ATTRIBUTION_LOAD_STATE_VALUE_COMPLETE = "complete";
+/** Every value of `o11y.rum.vital.attribution.load_state`. */
+export const RUM_VITAL_ATTRIBUTION_LOAD_STATE_VALUES: readonly RUMVitalAttributionLoadState[] = ["loading", "dom-interactive", "dom-content-loaded", "complete"];
+
+/** The closed value set for `o11y.rum.resource.type`. */
+export type RUMResourceType = "script" | "stylesheet" | "image" | "font" | "media" | "document" | "other";
+export const RUM_RESOURCE_TYPE_VALUE_SCRIPT = "script";
+export const RUM_RESOURCE_TYPE_VALUE_STYLESHEET = "stylesheet";
+export const RUM_RESOURCE_TYPE_VALUE_IMAGE = "image";
+export const RUM_RESOURCE_TYPE_VALUE_FONT = "font";
+export const RUM_RESOURCE_TYPE_VALUE_MEDIA = "media";
+export const RUM_RESOURCE_TYPE_VALUE_DOCUMENT = "document";
+export const RUM_RESOURCE_TYPE_VALUE_OTHER = "other";
+/** Every value of `o11y.rum.resource.type`. */
+export const RUM_RESOURCE_TYPE_VALUES: readonly RUMResourceType[] = ["script", "stylesheet", "image", "font", "media", "document", "other"];
+
 /** The closed value set for `o11y.rum.platform`. */
 export type RUMPlatform = "web" | "webext" | "react_native" | "ios" | "android";
 export const RUM_PLATFORM_VALUE_WEB = "web";
@@ -57,6 +85,14 @@ export const RUM_PLATFORM_VALUE_IOS = "ios";
 export const RUM_PLATFORM_VALUE_ANDROID = "android";
 /** Every value of `o11y.rum.platform`. */
 export const RUM_PLATFORM_VALUES: readonly RUMPlatform[] = ["web", "webext", "react_native", "ios", "android"];
+
+/** The closed value set for `o11y.rum.span.shape`. */
+export type RUMSpanShape = "view" | "action" | "app_load";
+export const RUM_SPAN_SHAPE_VALUE_VIEW = "view";
+export const RUM_SPAN_SHAPE_VALUE_ACTION = "action";
+export const RUM_SPAN_SHAPE_VALUE_APP_LOAD = "app_load";
+/** Every value of `o11y.rum.span.shape`. */
+export const RUM_SPAN_SHAPE_VALUES: readonly RUMSpanShape[] = ["view", "action", "app_load"];
 
 /** The closed value set for `o11y.rum.view.kind`. */
 export type RUMViewKind = "initial" | "soft" | "bfcache_restore" | "prerender" | "screen";
@@ -175,6 +211,21 @@ export const ATTR_SIGNAL = "o11y.signal";
 export const ATTR_RULE = "o11y.rule";
 export const ATTR_DURATION = "o11y.duration";
 export const ATTR_LOG_SOURCE = "o11y.log.source";
+export const ATTR_RUM_ERROR_BREADCRUMBS = "o11y.rum.error.breadcrumbs";
+export const ATTR_RUM_VITAL_ATTRIBUTION_INPUT_DELAY = "o11y.rum.vital.attribution.input_delay";
+export const ATTR_RUM_VITAL_ATTRIBUTION_PROCESSING_DURATION = "o11y.rum.vital.attribution.processing_duration";
+export const ATTR_RUM_VITAL_ATTRIBUTION_PRESENTATION_DELAY = "o11y.rum.vital.attribution.presentation_delay";
+export const ATTR_RUM_VITAL_ATTRIBUTION_INTERACTION_TYPE = "o11y.rum.vital.attribution.interaction_type";
+export const ATTR_RUM_VITAL_ATTRIBUTION_TIME_TO_FIRST_BYTE = "o11y.rum.vital.attribution.time_to_first_byte";
+export const ATTR_RUM_VITAL_ATTRIBUTION_RESOURCE_LOAD_DELAY = "o11y.rum.vital.attribution.resource_load_delay";
+export const ATTR_RUM_VITAL_ATTRIBUTION_RESOURCE_LOAD_DURATION = "o11y.rum.vital.attribution.resource_load_duration";
+export const ATTR_RUM_VITAL_ATTRIBUTION_ELEMENT_RENDER_DELAY = "o11y.rum.vital.attribution.element_render_delay";
+export const ATTR_RUM_VITAL_ATTRIBUTION_LARGEST_SHIFT_VALUE = "o11y.rum.vital.attribution.largest_shift_value";
+export const ATTR_RUM_VITAL_ATTRIBUTION_LARGEST_SHIFT_TIME = "o11y.rum.vital.attribution.largest_shift_time";
+export const ATTR_RUM_VITAL_ATTRIBUTION_LOAD_STATE = "o11y.rum.vital.attribution.load_state";
+export const ATTR_RUM_RESOURCE_TYPE = "o11y.rum.resource.type";
+export const ATTR_RUM_SERVER_TIMING_NAME = "o11y.rum.server_timing.name";
+export const ATTR_RUM_SERVER_TIMING_DURATION = "o11y.rum.server_timing.duration";
 export const ATTR_RUM_SUMMARY_SEQ = "o11y.rum.summary.seq";
 export const ATTR_RUM_SUMMARY_TIME_ON_VIEW = "o11y.rum.summary.time_on_view";
 export const ATTR_RUM_SUMMARY_REQUESTS = "o11y.rum.summary.requests";
@@ -199,6 +250,7 @@ export const ATTR_RUM_SUMMARY_CLS_VALUE = "o11y.rum.summary.cls.value";
 export const ATTR_RUM_SUMMARY_FCP_VALUE = "o11y.rum.summary.fcp.value";
 export const ATTR_RUM_SUMMARY_TTFB_VALUE = "o11y.rum.summary.ttfb.value";
 export const ATTR_RUM_PLATFORM = "o11y.rum.platform";
+export const ATTR_RUM_SPAN_SHAPE = "o11y.rum.span.shape";
 export const ATTR_RUM_VIEW_NAME = "o11y.rum.view.name";
 export const ATTR_RUM_VIEW_ID = "o11y.rum.view.id";
 export const ATTR_RUM_VIEW_KIND = "o11y.rum.view.kind";

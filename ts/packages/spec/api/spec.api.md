@@ -195,6 +195,9 @@ export const ATTR_RUM_ELEMENT_SELECTOR = "o11y.rum.element.selector";
 export const ATTR_RUM_ELEMENT_TEXT = "o11y.rum.element.text";
 
 // @public (undocumented)
+export const ATTR_RUM_ERROR_BREADCRUMBS = "o11y.rum.error.breadcrumbs";
+
+// @public (undocumented)
 export const ATTR_RUM_ERROR_FINGERPRINT = "o11y.rum.error.fingerprint";
 
 // @public (undocumented)
@@ -210,7 +213,19 @@ export const ATTR_RUM_PLATFORM = "o11y.rum.platform";
 export const ATTR_RUM_REPLAY_SEGMENT = "o11y.rum.replay.segment";
 
 // @public (undocumented)
+export const ATTR_RUM_RESOURCE_TYPE = "o11y.rum.resource.type";
+
+// @public (undocumented)
+export const ATTR_RUM_SERVER_TIMING_DURATION = "o11y.rum.server_timing.duration";
+
+// @public (undocumented)
+export const ATTR_RUM_SERVER_TIMING_NAME = "o11y.rum.server_timing.name";
+
+// @public (undocumented)
 export const ATTR_RUM_SESSION_RETAINED = "o11y.rum.session.retained";
+
+// @public (undocumented)
+export const ATTR_RUM_SPAN_SHAPE = "o11y.rum.span.shape";
 
 // @public (undocumented)
 export const ATTR_RUM_SUMMARY_CLS_VALUE = "o11y.rum.summary.cls.value";
@@ -289,6 +304,39 @@ export const ATTR_RUM_VIEW_KIND = "o11y.rum.view.kind";
 
 // @public (undocumented)
 export const ATTR_RUM_VIEW_NAME = "o11y.rum.view.name";
+
+// @public (undocumented)
+export const ATTR_RUM_VITAL_ATTRIBUTION_ELEMENT_RENDER_DELAY = "o11y.rum.vital.attribution.element_render_delay";
+
+// @public (undocumented)
+export const ATTR_RUM_VITAL_ATTRIBUTION_INPUT_DELAY = "o11y.rum.vital.attribution.input_delay";
+
+// @public (undocumented)
+export const ATTR_RUM_VITAL_ATTRIBUTION_INTERACTION_TYPE = "o11y.rum.vital.attribution.interaction_type";
+
+// @public (undocumented)
+export const ATTR_RUM_VITAL_ATTRIBUTION_LARGEST_SHIFT_TIME = "o11y.rum.vital.attribution.largest_shift_time";
+
+// @public (undocumented)
+export const ATTR_RUM_VITAL_ATTRIBUTION_LARGEST_SHIFT_VALUE = "o11y.rum.vital.attribution.largest_shift_value";
+
+// @public (undocumented)
+export const ATTR_RUM_VITAL_ATTRIBUTION_LOAD_STATE = "o11y.rum.vital.attribution.load_state";
+
+// @public (undocumented)
+export const ATTR_RUM_VITAL_ATTRIBUTION_PRESENTATION_DELAY = "o11y.rum.vital.attribution.presentation_delay";
+
+// @public (undocumented)
+export const ATTR_RUM_VITAL_ATTRIBUTION_PROCESSING_DURATION = "o11y.rum.vital.attribution.processing_duration";
+
+// @public (undocumented)
+export const ATTR_RUM_VITAL_ATTRIBUTION_RESOURCE_LOAD_DELAY = "o11y.rum.vital.attribution.resource_load_delay";
+
+// @public (undocumented)
+export const ATTR_RUM_VITAL_ATTRIBUTION_RESOURCE_LOAD_DURATION = "o11y.rum.vital.attribution.resource_load_duration";
+
+// @public (undocumented)
+export const ATTR_RUM_VITAL_ATTRIBUTION_TIME_TO_FIRST_BYTE = "o11y.rum.vital.attribution.time_to_first_byte";
 
 // @public (undocumented)
 export const ATTR_RUM_VITAL_RATING = "o11y.rum.vital.rating";
@@ -641,6 +689,30 @@ export const RUM_PLATFORM_VALUE_WEBEXT = "webext";
 export const RUM_PLATFORM_VALUES: readonly RUMPlatform[];
 
 // @public (undocumented)
+export const RUM_RESOURCE_TYPE_VALUE_DOCUMENT = "document";
+
+// @public (undocumented)
+export const RUM_RESOURCE_TYPE_VALUE_FONT = "font";
+
+// @public (undocumented)
+export const RUM_RESOURCE_TYPE_VALUE_IMAGE = "image";
+
+// @public (undocumented)
+export const RUM_RESOURCE_TYPE_VALUE_MEDIA = "media";
+
+// @public (undocumented)
+export const RUM_RESOURCE_TYPE_VALUE_OTHER = "other";
+
+// @public (undocumented)
+export const RUM_RESOURCE_TYPE_VALUE_SCRIPT = "script";
+
+// @public (undocumented)
+export const RUM_RESOURCE_TYPE_VALUE_STYLESHEET = "stylesheet";
+
+// @public
+export const RUM_RESOURCE_TYPE_VALUES: readonly RUMResourceType[];
+
+// @public (undocumented)
 export const RUM_SESSION_RETAINED_VALUE_ERROR = "error";
 
 // @public (undocumented)
@@ -654,6 +726,18 @@ export const RUM_SESSION_RETAINED_VALUES: readonly RUMSessionRetained[];
 
 // @public
 export const RUM_SPAN_REQUIRED: ReadonlyMap<string, readonly string[]>;
+
+// @public (undocumented)
+export const RUM_SPAN_SHAPE_VALUE_ACTION = "action";
+
+// @public (undocumented)
+export const RUM_SPAN_SHAPE_VALUE_APP_LOAD = "app_load";
+
+// @public (undocumented)
+export const RUM_SPAN_SHAPE_VALUE_VIEW = "view";
+
+// @public
+export const RUM_SPAN_SHAPE_VALUES: readonly RUMSpanShape[];
 
 // @public (undocumented)
 export const RUM_VIEW_KIND_VALUE_BFCACHE_RESTORE = "bfcache_restore";
@@ -672,6 +756,30 @@ export const RUM_VIEW_KIND_VALUE_SOFT = "soft";
 
 // @public
 export const RUM_VIEW_KIND_VALUES: readonly RUMViewKind[];
+
+// @public (undocumented)
+export const RUM_VITAL_ATTRIBUTION_INTERACTION_TYPE_VALUE_KEYBOARD = "keyboard";
+
+// @public (undocumented)
+export const RUM_VITAL_ATTRIBUTION_INTERACTION_TYPE_VALUE_POINTER = "pointer";
+
+// @public
+export const RUM_VITAL_ATTRIBUTION_INTERACTION_TYPE_VALUES: readonly RUMVitalAttributionInteractionType[];
+
+// @public (undocumented)
+export const RUM_VITAL_ATTRIBUTION_LOAD_STATE_VALUE_COMPLETE = "complete";
+
+// @public (undocumented)
+export const RUM_VITAL_ATTRIBUTION_LOAD_STATE_VALUE_DOM_CONTENT_LOADED = "dom-content-loaded";
+
+// @public (undocumented)
+export const RUM_VITAL_ATTRIBUTION_LOAD_STATE_VALUE_DOM_INTERACTIVE = "dom-interactive";
+
+// @public (undocumented)
+export const RUM_VITAL_ATTRIBUTION_LOAD_STATE_VALUE_LOADING = "loading";
+
+// @public
+export const RUM_VITAL_ATTRIBUTION_LOAD_STATE_VALUES: readonly RUMVitalAttributionLoadState[];
 
 // @public (undocumented)
 export const RUM_VITAL_RATING_VALUE_GOOD = "good";
@@ -707,10 +815,22 @@ export type RUMFrustrationType = "rage" | "dead" | "error";
 export type RUMPlatform = "web" | "webext" | "react_native" | "ios" | "android";
 
 // @public
+export type RUMResourceType = "script" | "stylesheet" | "image" | "font" | "media" | "document" | "other";
+
+// @public
 export type RUMSessionRetained = "head_sampled" | "error" | "frustration";
 
 // @public
+export type RUMSpanShape = "view" | "action" | "app_load";
+
+// @public
 export type RUMViewKind = "initial" | "soft" | "bfcache_restore" | "prerender" | "screen";
+
+// @public
+export type RUMVitalAttributionInteractionType = "pointer" | "keyboard";
+
+// @public
+export type RUMVitalAttributionLoadState = "loading" | "dom-interactive" | "dom-content-loaded" | "complete";
 
 // @public
 export type RUMVitalRating = "good" | "needs-improvement" | "poor";

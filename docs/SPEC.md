@@ -436,7 +436,14 @@ the metrics count every consented session whatever the sampling rate.
 
 The gateway fills the labels a summary does not carry, such as
 `o11y.rum.browser.family` and `geo.country.iso_code`, from the request
-that delivered it.
+that delivered it. One gateway serves many apps, so it also labels every
+derived data point with the `service.name` of the app that sent the
+summary. Each RUM metric lists `service.name` as a required attribute.
+
+The gateway parses the user agent into `o11y.rum.browser.family`,
+`o11y.rum.device.class` and the semconv attribute `os.name`, which takes
+a small fixed set of values such as `windows`, `macos`, `ios`, `android`
+and `linux`. libo11y classifies `os.name` as `public` and `bounded`.
 
 ### Vital ratings
 
@@ -461,6 +468,21 @@ hidden is left out of the metrics. A kept session still records the change
 in its detail events. CrUX reports the final value at page unload, so the
 p75 that libo11y reports can differ from CrUX. The difference is largest
 for CLS and INP on long-lived views.
+
+### Detail attributes
+
+Kept sessions send detail beyond the view summary. The group
+`registry.o11y.rum.detail` holds its attributes: error breadcrumbs on
+`o11y.rum.error`, vital attribution on the semconv event
+`browser.web_vital`, and resource type and Server-Timing entries on
+resource spans. docs/RUM.md lists them.
+
+### Span shape marker
+
+Every view, action and `app_load` span carries `o11y.rum.span.shape`, set
+to `view`, `action` or `app_load`. It is required on each shape, so a
+gateway validates a span against the right shape and a query finds every
+span of one shape without inferring it from other attributes.
 
 ### Span timing
 

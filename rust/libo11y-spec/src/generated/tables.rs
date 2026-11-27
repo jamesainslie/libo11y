@@ -383,12 +383,17 @@ pub static SENSITIVITY: &[(&str, Sensitivity)] = &[
     ("o11y.rum.device.class", Sensitivity::Public),
     ("o11y.rum.element.selector", Sensitivity::Internal),
     ("o11y.rum.element.text", Sensitivity::Pii),
+    ("o11y.rum.error.breadcrumbs", Sensitivity::Internal),
     ("o11y.rum.error.fingerprint", Sensitivity::Internal),
     ("o11y.rum.error.source", Sensitivity::Public),
     ("o11y.rum.frustration.type", Sensitivity::Public),
     ("o11y.rum.platform", Sensitivity::Public),
     ("o11y.rum.replay.segment", Sensitivity::Public),
+    ("o11y.rum.resource.type", Sensitivity::Public),
+    ("o11y.rum.server_timing.duration", Sensitivity::Public),
+    ("o11y.rum.server_timing.name", Sensitivity::Public),
     ("o11y.rum.session.retained", Sensitivity::Public),
+    ("o11y.rum.span.shape", Sensitivity::Public),
     ("o11y.rum.summary.cls.value", Sensitivity::Public),
     ("o11y.rum.summary.errors.anr", Sensitivity::Public),
     ("o11y.rum.summary.errors.boundary", Sensitivity::Public),
@@ -421,10 +426,52 @@ pub static SENSITIVITY: &[(&str, Sensitivity)] = &[
     ("o11y.rum.view.id", Sensitivity::Internal),
     ("o11y.rum.view.kind", Sensitivity::Public),
     ("o11y.rum.view.name", Sensitivity::Public),
+    (
+        "o11y.rum.vital.attribution.element_render_delay",
+        Sensitivity::Public,
+    ),
+    (
+        "o11y.rum.vital.attribution.input_delay",
+        Sensitivity::Public,
+    ),
+    (
+        "o11y.rum.vital.attribution.interaction_type",
+        Sensitivity::Public,
+    ),
+    (
+        "o11y.rum.vital.attribution.largest_shift_time",
+        Sensitivity::Public,
+    ),
+    (
+        "o11y.rum.vital.attribution.largest_shift_value",
+        Sensitivity::Public,
+    ),
+    ("o11y.rum.vital.attribution.load_state", Sensitivity::Public),
+    (
+        "o11y.rum.vital.attribution.presentation_delay",
+        Sensitivity::Public,
+    ),
+    (
+        "o11y.rum.vital.attribution.processing_duration",
+        Sensitivity::Public,
+    ),
+    (
+        "o11y.rum.vital.attribution.resource_load_delay",
+        Sensitivity::Public,
+    ),
+    (
+        "o11y.rum.vital.attribution.resource_load_duration",
+        Sensitivity::Public,
+    ),
+    (
+        "o11y.rum.vital.attribution.time_to_first_byte",
+        Sensitivity::Public,
+    ),
     ("o11y.rum.vital.rating", Sensitivity::Public),
     ("o11y.signal", Sensitivity::Public),
     ("o11y.team.name", Sensitivity::Public),
     ("o11y.tenant.id", Sensitivity::Internal),
+    ("os.name", Sensitivity::Public),
     ("os.type", Sensitivity::Public),
     ("process.command_args", Sensitivity::Pii),
     ("process.command_line", Sensitivity::Pii),
@@ -706,6 +753,7 @@ pub static RUM_SPAN_REQUIRED: &[SpanShape] = &[
     SpanShape {
         name: "view",
         required: &[
+            "o11y.rum.span.shape",
             "o11y.rum.platform",
             "o11y.rum.view.name",
             "o11y.rum.view.id",
@@ -715,10 +763,20 @@ pub static RUM_SPAN_REQUIRED: &[SpanShape] = &[
     },
     SpanShape {
         name: "action",
-        required: &["o11y.rum.action.type", "o11y.rum.view.id", "session.id"],
+        required: &[
+            "o11y.rum.span.shape",
+            "o11y.rum.action.type",
+            "o11y.rum.view.id",
+            "session.id",
+        ],
     },
     SpanShape {
         name: "app_load",
-        required: &["o11y.rum.platform", "o11y.rum.view.id", "session.id"],
+        required: &[
+            "o11y.rum.span.shape",
+            "o11y.rum.platform",
+            "o11y.rum.view.id",
+            "session.id",
+        ],
     },
 ];

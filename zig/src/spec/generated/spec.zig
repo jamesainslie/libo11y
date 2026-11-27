@@ -196,6 +196,153 @@ pub const LogSource = enum {
     }
 };
 
+/// The closed value set for `o11y.rum.vital.attribution.interaction_type`.
+pub const RumVitalAttributionInteractionType = enum {
+    /// The value `pointer`.
+    ///
+    /// A pointer or touch interaction.
+    pointer,
+    /// The value `keyboard`.
+    ///
+    /// A keyboard interaction.
+    keyboard,
+
+    /// The attribute key these values belong to.
+    pub const key = "o11y.rum.vital.attribution.interaction_type";
+    /// Every value, in registry order.
+    pub const all: []const RumVitalAttributionInteractionType = &.{ .pointer, .keyboard };
+
+    /// Returns the value as the registry spells it.
+    pub fn asStr(self: RumVitalAttributionInteractionType) []const u8 {
+        return switch (self) {
+            .pointer => "pointer",
+            .keyboard => "keyboard",
+        };
+    }
+
+    /// Returns the value the registry spells `s`, or null when `s` is not one.
+    pub fn parse(s: []const u8) ?RumVitalAttributionInteractionType {
+        for (all) |value| {
+            if (std.mem.eql(u8, value.asStr(), s)) return value;
+        }
+        return null;
+    }
+};
+
+/// The closed value set for `o11y.rum.vital.attribution.load_state`.
+pub const RumVitalAttributionLoadState = enum {
+    /// The value `loading`.
+    ///
+    /// The document was loading.
+    loading,
+    /// The value `dom-interactive`.
+    ///
+    /// The DOM was interactive.
+    dom_interactive,
+    /// The value `dom-content-loaded`.
+    ///
+    /// The DOM content loaded event had fired.
+    dom_content_loaded,
+    /// The value `complete`.
+    ///
+    /// The document had loaded.
+    complete,
+
+    /// The attribute key these values belong to.
+    pub const key = "o11y.rum.vital.attribution.load_state";
+    /// Every value, in registry order.
+    pub const all: []const RumVitalAttributionLoadState = &.{
+        .loading,
+        .dom_interactive,
+        .dom_content_loaded,
+        .complete,
+    };
+
+    /// Returns the value as the registry spells it.
+    pub fn asStr(self: RumVitalAttributionLoadState) []const u8 {
+        return switch (self) {
+            .loading => "loading",
+            .dom_interactive => "dom-interactive",
+            .dom_content_loaded => "dom-content-loaded",
+            .complete => "complete",
+        };
+    }
+
+    /// Returns the value the registry spells `s`, or null when `s` is not one.
+    pub fn parse(s: []const u8) ?RumVitalAttributionLoadState {
+        for (all) |value| {
+            if (std.mem.eql(u8, value.asStr(), s)) return value;
+        }
+        return null;
+    }
+};
+
+/// The closed value set for `o11y.rum.resource.type`.
+pub const RumResourceType = enum {
+    /// The value `script`.
+    ///
+    /// A script.
+    script,
+    /// The value `stylesheet`.
+    ///
+    /// A stylesheet.
+    stylesheet,
+    /// The value `image`.
+    ///
+    /// An image.
+    image,
+    /// The value `font`.
+    ///
+    /// A font.
+    font,
+    /// The value `media`.
+    ///
+    /// Audio or video.
+    media,
+    /// The value `document`.
+    ///
+    /// A frame's document.
+    document,
+    /// The value `other`.
+    ///
+    /// Any other resource.
+    other,
+
+    /// The attribute key these values belong to.
+    pub const key = "o11y.rum.resource.type";
+    /// Every value, in registry order.
+    pub const all: []const RumResourceType = &.{
+        .script,
+        .stylesheet,
+        .image,
+        .font,
+        .media,
+        .document,
+        .other,
+    };
+
+    /// Returns the value as the registry spells it.
+    pub fn asStr(self: RumResourceType) []const u8 {
+        return switch (self) {
+            .script => "script",
+            .stylesheet => "stylesheet",
+            .image => "image",
+            .font => "font",
+            .media => "media",
+            .document => "document",
+            .other => "other",
+        };
+    }
+
+    /// Returns the value the registry spells `s`, or null when `s` is not one.
+    pub fn parse(s: []const u8) ?RumResourceType {
+        for (all) |value| {
+            if (std.mem.eql(u8, value.asStr(), s)) return value;
+        }
+        return null;
+    }
+};
+
 /// The closed value set for `o11y.rum.platform`.
 pub const RumPlatform = enum {
     /// The value `web`.
@@ -237,6 +384,44 @@ pub const RumPlatform = enum {
 
     /// Returns the value the registry spells `s`, or null when `s` is not one.
     pub fn parse(s: []const u8) ?RumPlatform {
+        for (all) |value| {
+            if (std.mem.eql(u8, value.asStr(), s)) return value;
+        }
+        return null;
+    }
+};
+
+/// The closed value set for `o11y.rum.span.shape`.
+pub const RumSpanShape = enum {
+    /// The value `view`.
+    ///
+    /// A view span.
+    view,
+    /// The value `action`.
+    ///
+    /// An action span.
+    action,
+    /// The value `app_load`.
+    ///
+    /// A document load or app start span.
+    app_load,
+
+    /// The attribute key these values belong to.
+    pub const key = "o11y.rum.span.shape";
+    /// Every value, in registry order.
+    pub const all: []const RumSpanShape = &.{ .view, .action, .app_load };
+
+    /// Returns the value as the registry spells it.
+    pub fn asStr(self: RumSpanShape) []const u8 {
+        return switch (self) {
+            .view => "view",
+            .action => "action",
+            .app_load => "app_load",
+        };
+    }
+
+    /// Returns the value the registry spells `s`, or null when `s` is not one.
+    pub fn parse(s: []const u8) ?RumSpanShape {
         for (all) |value| {
             if (std.mem.eql(u8, value.asStr(), s)) return value;
         }
@@ -793,6 +978,36 @@ pub const attr = struct {
     pub const duration = "o11y.duration";
     /// The `o11y.log.source` attribute key.
     pub const log_source = "o11y.log.source";
+    /// The `o11y.rum.error.breadcrumbs` attribute key.
+    pub const rum_error_breadcrumbs = "o11y.rum.error.breadcrumbs";
+    /// The `o11y.rum.vital.attribution.input_delay` attribute key.
+    pub const rum_vital_attribution_input_delay = "o11y.rum.vital.attribution.input_delay";
+    /// The `o11y.rum.vital.attribution.processing_duration` attribute key.
+    pub const rum_vital_attribution_processing_duration = "o11y.rum.vital.attribution.processing_duration";
+    /// The `o11y.rum.vital.attribution.presentation_delay` attribute key.
+    pub const rum_vital_attribution_presentation_delay = "o11y.rum.vital.attribution.presentation_delay";
+    /// The `o11y.rum.vital.attribution.interaction_type` attribute key.
+    pub const rum_vital_attribution_interaction_type = "o11y.rum.vital.attribution.interaction_type";
+    /// The `o11y.rum.vital.attribution.time_to_first_byte` attribute key.
+    pub const rum_vital_attribution_time_to_first_byte = "o11y.rum.vital.attribution.time_to_first_byte";
+    /// The `o11y.rum.vital.attribution.resource_load_delay` attribute key.
+    pub const rum_vital_attribution_resource_load_delay = "o11y.rum.vital.attribution.resource_load_delay";
+    /// The `o11y.rum.vital.attribution.resource_load_duration` attribute key.
+    pub const rum_vital_attribution_resource_load_duration = "o11y.rum.vital.attribution.resource_load_duration";
+    /// The `o11y.rum.vital.attribution.element_render_delay` attribute key.
+    pub const rum_vital_attribution_element_render_delay = "o11y.rum.vital.attribution.element_render_delay";
+    /// The `o11y.rum.vital.attribution.largest_shift_value` attribute key.
+    pub const rum_vital_attribution_largest_shift_value = "o11y.rum.vital.attribution.largest_shift_value";
+    /// The `o11y.rum.vital.attribution.largest_shift_time` attribute key.
+    pub const rum_vital_attribution_largest_shift_time = "o11y.rum.vital.attribution.largest_shift_time";
+    /// The `o11y.rum.vital.attribution.load_state` attribute key.
+    pub const rum_vital_attribution_load_state = "o11y.rum.vital.attribution.load_state";
+    /// The `o11y.rum.resource.type` attribute key.
+    pub const rum_resource_type = "o11y.rum.resource.type";
+    /// The `o11y.rum.server_timing.name` attribute key.
+    pub const rum_server_timing_name = "o11y.rum.server_timing.name";
+    /// The `o11y.rum.server_timing.duration` attribute key.
+    pub const rum_server_timing_duration = "o11y.rum.server_timing.duration";
     /// The `o11y.rum.summary.seq` attribute key.
     pub const rum_summary_seq = "o11y.rum.summary.seq";
     /// The `o11y.rum.summary.time_on_view` attribute key.
@@ -841,6 +1056,8 @@ pub const attr = struct {
     pub const rum_summary_ttfb_value = "o11y.rum.summary.ttfb.value";
     /// The `o11y.rum.platform` attribute key.
     pub const rum_platform = "o11y.rum.platform";
+    /// The `o11y.rum.span.shape` attribute key.
+    pub const rum_span_shape = "o11y.rum.span.shape";
     /// The `o11y.rum.view.name` attribute key.
     pub const rum_view_name = "o11y.rum.view.name";
     /// The `o11y.rum.view.id` attribute key.

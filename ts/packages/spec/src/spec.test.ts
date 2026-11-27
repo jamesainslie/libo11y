@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import * as spec from "./index.ts";
 import {
   APP_REGISTRY_SCHEMA,
   APP_RESERVED_NAMESPACES,
@@ -80,6 +81,7 @@ test("RUM conventions", () => {
   assert.equal(EVENT_RUM_ERROR, "o11y.rum.error");
   assert.ok(RUM_VIEW_KIND_VALUES.includes("screen"));
   assert.deepEqual(RUM_SPAN_REQUIRED.get("view"), [
+    "o11y.rum.span.shape",
     "o11y.rum.platform",
     "o11y.rum.view.name",
     "o11y.rum.view.id",
@@ -123,4 +125,22 @@ test("the view summary event (spec 1.3.0)", () => {
 test("the over-the-air update ID (spec 1.3.0)", () => {
   assert.equal(ATTR_RUM_APP_UPDATE_ID, "o11y.rum.app.update_id");
   assert.equal(SENSITIVITY_OF.get(ATTR_RUM_APP_UPDATE_ID), "public");
+});
+
+test("spec 1.3.0 mints the RUM detail attributes and the span shape marker", () => {
+  assert.equal(spec.ATTR_RUM_ERROR_BREADCRUMBS, "o11y.rum.error.breadcrumbs");
+  assert.equal(spec.ATTR_RUM_VITAL_ATTRIBUTION_INPUT_DELAY, "o11y.rum.vital.attribution.input_delay");
+  assert.equal(spec.ATTR_RUM_RESOURCE_TYPE, "o11y.rum.resource.type");
+  assert.equal(spec.ATTR_RUM_SERVER_TIMING_NAME, "o11y.rum.server_timing.name");
+  assert.equal(spec.ATTR_RUM_SPAN_SHAPE, "o11y.rum.span.shape");
+  assert.deepEqual(spec.RUM_RESOURCE_TYPE_VALUES, [
+    "script",
+    "stylesheet",
+    "image",
+    "font",
+    "media",
+    "document",
+    "other",
+  ]);
+  assert.equal(SENSITIVITY_OF.get("o11y.rum.error.breadcrumbs"), "internal");
 });

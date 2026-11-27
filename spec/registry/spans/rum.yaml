@@ -18,6 +18,7 @@ groups:
     stability: development
     annotations: {o11y.rum.span: view}
     attributes:
+      - {ref: o11y.rum.span.shape, requirement_level: required, annotations: {o11y.gen: mint}}
       - {ref: o11y.rum.platform, requirement_level: required, annotations: {o11y.gen: mint}}
       - {ref: o11y.rum.view.name, requirement_level: required, annotations: {o11y.gen: mint}}
       - {ref: o11y.rum.view.id, requirement_level: required, annotations: {o11y.gen: mint}}
@@ -36,6 +37,7 @@ groups:
     stability: development
     annotations: {o11y.rum.span: action}
     attributes:
+      - {ref: o11y.rum.span.shape, requirement_level: required, annotations: {o11y.gen: mint}}
       - {ref: o11y.rum.action.type, requirement_level: required, annotations: {o11y.gen: mint}}
       - {ref: o11y.rum.view.id, requirement_level: required, annotations: {o11y.gen: mint}}
       - {ref: session.id, requirement_level: required, annotations: {o11y.gen: alias}}
@@ -51,6 +53,7 @@ groups:
     stability: development
     annotations: {o11y.rum.span: app_load}
     attributes:
+      - {ref: o11y.rum.span.shape, requirement_level: required, annotations: {o11y.gen: mint}}
       - {ref: o11y.rum.platform, requirement_level: required, annotations: {o11y.gen: mint}}
       - {ref: o11y.rum.view.id, requirement_level: required, annotations: {o11y.gen: mint}}
       - {ref: session.id, requirement_level: required, annotations: {o11y.gen: alias}}

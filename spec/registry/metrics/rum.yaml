@@ -10,6 +10,7 @@ groups:
     instrument: counter
     unit: "{view}"
     attributes:
+      - {ref: service.name, requirement_level: required, annotations: {o11y.cardinality: bounded, o11y.gen: alias}}
       - ref: o11y.rum.platform
         requirement_level: required
         annotations: {o11y.gen: mint}
@@ -31,6 +32,7 @@ groups:
     instrument: counter
     unit: "{error}"
     attributes:
+      - {ref: service.name, requirement_level: required, annotations: {o11y.cardinality: bounded, o11y.gen: alias}}
       - ref: o11y.rum.platform
         requirement_level: required
         annotations: {o11y.gen: mint}
@@ -50,6 +52,7 @@ groups:
     instrument: counter
     unit: "{signal}"
     attributes:
+      - {ref: service.name, requirement_level: required, annotations: {o11y.cardinality: bounded, o11y.gen: alias}}
       - ref: o11y.rum.platform
         requirement_level: required
         annotations: {o11y.gen: mint}
