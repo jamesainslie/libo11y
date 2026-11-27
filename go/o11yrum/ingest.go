@@ -191,6 +191,13 @@ func countKey(m pcommon.Map, k string) int {
 
 // admit identifies the app and checks the request may send for it.
 func (h *Handler) admit(r *http.Request, service string) (*app, *rejection) {
+	return h.admitApp(r, service, false)
+}
+
+// admitApp identifies the app and checks the request may use it. With
+// originOptional, a request without an Origin header passes the origin
+// check, as same-origin GETs send none.
+func (h *Handler) admitApp(r *http.Request, service string, originOptional bool) (*app, *rejection) {
 	a, ok := h.apps[service]
 	if !ok {
 		return nil, &rejection{status: http.StatusForbidden, reason: "unknown_service"}
@@ -199,7 +206,7 @@ func (h *Handler) admit(r *http.Request, service string) (*app, *rejection) {
 		return nil, &rejection{status: http.StatusForbidden, reason: "disabled"}
 	}
 	switch o := normalizeOrigin(r.Header.Get("Origin")); {
-	case o == "" && !a.cfg.AllowMissingOrigin:
+	case o == "" && !a.cfg.AllowMissingOrigin && !originOptional:
 		return nil, &rejection{status: http.StatusForbidden, reason: "origin"}
 	case o != "" && !a.origins[o]:
 		return nil, &rejection{status: http.StatusForbidden, reason: "origin"}
@@ -292,7 +299,7 @@ func (h *Handler) preflight(w http.ResponseWriter, r *http.Request) {
 	setCORS(w, r, h.origins)
 	hdr := w.Header()
 	hdr.Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
-	hdr.Set("Access-Control-Allow-Headers", "Content-Type, Content-Encoding, Authorization")
+	hdr.Set("Access-Control-Allow-Headers", "Content-Type, Content-Encoding, Authorization, If-None-Match")
 	hdr.Set("Access-Control-Max-Age", "86400")
 	w.WriteHeader(http.StatusNoContent)
 }

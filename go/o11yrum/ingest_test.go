@@ -358,7 +358,7 @@ func TestPreflight(t *testing.T) {
 	for k, want := range map[string]string{
 		"Access-Control-Allow-Origin":  "https://shop.example",
 		"Access-Control-Allow-Methods": "POST, GET, OPTIONS",
-		"Access-Control-Allow-Headers": "Content-Type, Content-Encoding, Authorization",
+		"Access-Control-Allow-Headers": "Content-Type, Content-Encoding, Authorization, If-None-Match",
 		"Access-Control-Max-Age":       "86400",
 		"Vary":                         "Origin",
 	} {

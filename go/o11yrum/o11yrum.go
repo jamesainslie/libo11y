@@ -24,6 +24,7 @@ type Handler struct {
 	now     func() time.Time
 	log     *slog.Logger
 	tel     *telemetry
+	configs ConfigProvider
 }
 
 // app is one configured app with its lookups prepared.
@@ -76,6 +77,12 @@ func NewHandler(opts ...Option) (*Handler, error) {
 	for i, sink := range s.sinks {
 		h.sinks[i] = timedSink{Sink: sink, tel: h.tel}
 	}
+	h.configs = s.configs
+	if h.configs == nil {
+		if h.configs, err = newRemoteConfigProvider(cfg, s.now, h.log); err != nil {
+			return nil, err
+		}
+	}
 	for _, ac := range cfg.Apps {
 		a := &app{cfg: ac, origins: map[string]bool{}, policy: newAttrPolicy(ac, cfg.Limits)}
 		for _, o := range ac.Origins {
@@ -105,6 +112,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.ingest(w, r, SignalTraces)
 	case pathPrefix + "logs":
 		h.ingest(w, r, SignalLogs)
+	case pathPrefix + "config":
+		h.serveConfig(w, r)
 	default:
 		http.NotFound(w, r)
 	}

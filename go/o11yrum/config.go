@@ -99,6 +99,10 @@ type AppConfig struct {
 	// QueryAllowList names the URL query parameters kept in url.full and
 	// url.query. Every other parameter is removed.
 	QueryAllowList []string `yaml:"query_allow_list"`
+	// RemoteConfigFile is a JSON object file served to the app's clients
+	// from /_o11y/v1/config. A relative path resolves against the
+	// configuration file's directory. Empty means the app has none.
+	RemoteConfigFile string `yaml:"remote_config_file"`
 }
 
 // PII modes.
