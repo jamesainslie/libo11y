@@ -1,0 +1,42 @@
+[package]
+name = "libo11y-connect"
+description = "OpenTelemetry tracing, metrics, and canonical log line instrumentation for connectrpc servers and clients following the libo11y specification."
+readme = "README.md"
+keywords = ["observability", "opentelemetry", "connectrpc", "rpc", "libo11y"]
+categories = ["development-tools::debugging", "network-programming"]
+include = ["src/**/*.rs", "README.md", "LICENSE"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+bytes = "1.12.2"
+connectrpc = { version = "0.9.1", default-features = false, features = ["json"] }
+futures-core = "0.3.34"
+http = "1.5.0"
+http-body = "1.1.0"
+libo11y.workspace = true
+libo11y-spec.workspace = true
+opentelemetry = { version = "0.33.1", default-features = false, features = ["metrics", "trace"] }
+pin-project-lite = "0.2.17"
+serde_json.workspace = true
+tower-layer = "0.3.3"
+tower-service = "0.3.3"
+
+[dev-dependencies]
+buffa = { version = "0.9.1", features = ["json"] }
+buffa-types = { version = "0.9.1", features = ["json"] }
+connectrpc = { version = "0.9.1", features = ["json", "server", "client"] }
+futures-util = "0.3.34"
+http-body-util = "0.1.5"
+libo11y-test.workspace = true
+opentelemetry_sdk = { version = "0.33.1", default-features = false, features = ["trace"] }
+tokio = { version = "1.54.1", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+tower = { version = "0.5.3", features = ["util"] }
+tracing.workspace = true
+
+[lints]
+workspace = true

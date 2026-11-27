@@ -4,6 +4,7 @@
 resolver = "3"
 members = [
     "libo11y",
+    "libo11y-connect",
     "libo11y-http",
     "libo11y-macros",
     "libo11y-redact",
@@ -11,6 +12,7 @@ members = [
     "libo11y-spec",
     "libo11y-sqlx",
     "libo11y-test",
+    "libo11y-tonic",
 ]
 
 [workspace.package]
@@ -26,6 +28,7 @@ homepage = "https://o11y.ing"
 # they are released in lockstep.
 [workspace.dependencies]
 libo11y = { version = "=0.0.0", path = "libo11y" }
+libo11y-connect = { version = "=0.0.0", path = "libo11y-connect" }
 libo11y-http = { version = "=0.0.0", path = "libo11y-http" }
 libo11y-macros = { version = "=0.0.0", path = "libo11y-macros" }
 libo11y-redact = { version = "=0.0.0", path = "libo11y-redact" }
@@ -33,6 +36,7 @@ libo11y-reqwest = { version = "=0.0.0", path = "libo11y-reqwest" }
 libo11y-spec = { version = "=0.0.0", path = "libo11y-spec" }
 libo11y-sqlx = { version = "=0.0.0", path = "libo11y-sqlx" }
 libo11y-test = { version = "=0.0.0", path = "libo11y-test" }
+libo11y-tonic = { version = "=0.0.0", path = "libo11y-tonic" }
 proc-macro2 = { version = "1.0.107", default-features = false, features = ["proc-macro"] }
 quote = { version = "1.0.47", default-features = false, features = ["proc-macro"] }
 serde = { version = "1.0.229", default-features = false, features = ["std"] }

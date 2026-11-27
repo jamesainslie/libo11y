@@ -1,0 +1,36 @@
+[package]
+name = "libo11y-tonic"
+description = "OpenTelemetry tracing and metrics Tower layers for tonic gRPC servers and clients following the libo11y specification."
+readme = "README.md"
+keywords = ["observability", "opentelemetry", "grpc", "tonic", "libo11y"]
+categories = ["development-tools::debugging", "network-programming"]
+include = ["src/**/*.rs", "README.md", "LICENSE"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+http = "1.5.0"
+http-body = "1.1.0"
+libo11y.workspace = true
+opentelemetry = { version = "0.33.1", default-features = false, features = ["metrics", "trace"] }
+pin-project-lite = "0.2.17"
+tower-layer = "0.3.3"
+tower-service = "0.3.3"
+
+[dev-dependencies]
+bytes = "1.12.2"
+http-body-util = "0.1.5"
+libo11y-test.workspace = true
+opentelemetry_sdk = { version = "0.33.1", default-features = false, features = ["trace"] }
+tokio = { version = "1.54.1", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio-stream = { version = "0.1.19", features = ["net"] }
+tonic = { version = "0.14.9", features = ["router", "server", "transport"] }
+tower = { version = "0.5.3", features = ["util"] }
+tracing.workspace = true
+
+[lints]
+workspace = true
