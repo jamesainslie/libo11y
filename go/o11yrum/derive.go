@@ -54,10 +54,13 @@ func rating(v, good, poor float64) string {
 // deriver turns accepted batches into metrics in the aggregator.
 type deriver struct {
 	agg *aggregate.Aggregator
+	// defs holds each app's operator-defined metrics, by service.name.
+	defs map[string][]operatorMetric
 }
 
-// logs derives the standard metrics from every view summary in ld, which
-// the gateway has validated and the sinks have accepted.
+// logs derives the standard metrics from every view summary in ld, and
+// the app's operator-defined metrics from the events they name. The
+// gateway has validated ld and the sinks have accepted it.
 func (d *deriver) logs(service string, ld plog.Logs) {
 	for i := range ld.ResourceLogs().Len() {
 		rl := ld.ResourceLogs().At(i)
@@ -66,8 +69,13 @@ func (d *deriver) logs(service string, ld plog.Logs) {
 			recs := rl.ScopeLogs().At(j).LogRecords()
 			for k := range recs.Len() {
 				lr := recs.At(k)
-				if eventName(lr) == eventViewSummary {
-					d.summary(service, attrLookup{record: lr.Attributes(), resource: res})
+				name := eventName(lr)
+				l := attrLookup{record: lr.Attributes(), resource: res}
+				if name == eventViewSummary {
+					d.summary(service, l)
+				}
+				if name != "" {
+					d.operator(service, name, l)
 				}
 			}
 		}

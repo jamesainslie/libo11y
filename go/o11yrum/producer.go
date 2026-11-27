@@ -70,8 +70,8 @@ const (
 // newDeriver builds the aggregator for p, registers its series gauge on
 // the SDK's meter provider when there is one, and binds p last, so a
 // failure leaves p unbound. The returned function unregisters the gauge.
-func newDeriver(p *MetricProducer, sdk *o11y.SDK, maxSeries int, now func() time.Time) (*deriver, func() error, error) {
-	agg := aggregate.New(maxSeries, now)
+func newDeriver(p *MetricProducer, sdk *o11y.SDK, cfg *Config, now func() time.Time) (*deriver, func() error, error) {
+	agg := aggregate.New(cfg.Aggregation.MaxSeriesPerMetric, now)
 	unregister := func() error { return nil }
 	if sdk != nil {
 		reg, err := registerSeriesGauge(sdk.MeterProvider(), agg)
@@ -83,7 +83,7 @@ func newDeriver(p *MetricProducer, sdk *o11y.SDK, maxSeries int, now func() time
 	if err := p.bind(agg); err != nil {
 		return nil, nil, errors.Join(err, unregister())
 	}
-	return &deriver{agg: agg}, unregister, nil
+	return &deriver{agg: agg, defs: compileMetrics(cfg.Apps)}, unregister, nil
 }
 
 // registerSeriesGauge reports the number of attribute sets each derived

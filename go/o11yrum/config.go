@@ -130,6 +130,8 @@ type AppConfig struct {
 	// from /_o11y/v1/config. A relative path resolves against the
 	// configuration file's directory. Empty means the app has none.
 	RemoteConfigFile string `yaml:"remote_config_file"`
+	// Metrics are operator-defined metrics derived from the app's events.
+	Metrics []MetricDefinition `yaml:"metrics"`
 }
 
 // PII modes.
@@ -228,6 +230,7 @@ func (c *Config) applyDefaults() {
 		for j, o := range c.Apps[i].Origins {
 			c.Apps[i].Origins[j] = normalizeOrigin(o)
 		}
+		applyMetricDefaults(c.Apps[i].Metrics)
 	}
 }
 
@@ -300,7 +303,7 @@ func (c *Config) validate() error {
 			return fmt.Errorf("app %s: pii %q must be drop or allow", a.ServiceName, a.PII)
 		}
 	}
-	return nil
+	return validateMetrics(c.Apps)
 }
 
 // validOrigin reports whether o is a bare scheme://host[:port].
@@ -337,6 +340,7 @@ func (c *Config) clone() *Config {
 	for i, a := range c.Apps {
 		a.Origins = slices.Clone(a.Origins)
 		a.QueryAllowList = slices.Clone(a.QueryAllowList)
+		a.Metrics = cloneMetrics(a.Metrics)
 		out.Apps[i] = a
 	}
 	return &out

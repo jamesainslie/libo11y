@@ -99,7 +99,7 @@ func NewHandler(opts ...Option) (*Handler, error) {
 		h.apps[ac.ServiceName] = a
 	}
 	if s.producer != nil {
-		if h.derive, h.unregisterDerive, err = newDeriver(s.producer, s.sdk, cfg.Aggregation.MaxSeriesPerMetric, s.now); err != nil {
+		if h.derive, h.unregisterDerive, err = newDeriver(s.producer, s.sdk, cfg, s.now); err != nil {
 			return nil, err
 		}
 	}
