@@ -55,8 +55,10 @@ func (p *MetricProducer) bind(agg *aggregate.Aggregator) error {
 }
 
 // WithMetricProducer makes the handler derive metrics and expose them
-// through p. Without it the handler derives nothing. A producer binds to
-// one handler only.
+// through p. Without it the handler derives nothing, and app metrics are
+// answered as rejected. A producer binds to one handler for its lifetime:
+// it keeps producing that handler's final state after Close, and a new
+// handler needs a new producer.
 func WithMetricProducer(p *MetricProducer) Option {
 	return func(s *settings) { s.producer = p }
 }

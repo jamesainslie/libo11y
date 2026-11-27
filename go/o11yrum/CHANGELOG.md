@@ -38,8 +38,10 @@ adheres to [Semantic Versioning](https://semver.org/).
   attributes the specification classifies bounded or enum.
 - `POST /_o11y/v1/metrics`: app metrics sent as delta sums and delta
   explicit-bucket histograms are re-aggregated under the app's
-  `service.name`, without the resource or any unbounded attribute.
+  `service.name`, without the resource or any unbounded attribute. Each
+  app's metrics are its own, and a point may carry at most 16 labels of
+  256 bytes and 64 histogram bounds.
 - The `aggregation` configuration section: `max_series_per_metric`
-  (default 2000, with an overflow series per app past it) and
+  (default 2000 for each app, with an overflow series per app past it) and
   `max_metrics_per_app` (default 200).
 - The self-telemetry gauge `o11yrum.aggregator.series`.

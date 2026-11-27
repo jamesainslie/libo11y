@@ -228,7 +228,8 @@ func TestSeriesCapOverflows(t *testing.T) {
 	}
 }
 
-func TestOverflowIsPerService(t *testing.T) {
+func TestSeriesCapIsPerService(t *testing.T) {
+	// One app filling its cap never pushes another app into overflow.
 	a := New(1, time.Now)
 	d := Desc{Scope: "s", Name: "views", Unit: "{view}", Kind: Sum, Monotonic: true}
 	for _, svc := range []string{"a", "a", "b", "c"} {
@@ -237,16 +238,131 @@ func TestOverflowIsPerService(t *testing.T) {
 		}
 	}
 	pts := a.Produce()[0].Metrics[0].Data.(metricdata.Sum[float64]).DataPoints
-	overflow := map[string]float64{}
+	real, overflow := map[string]float64{}, map[string]float64{}
 	for _, p := range pts {
+		s, _ := p.Attributes.Value("service.name")
 		if v, ok := p.Attributes.Value("otel.metric.overflow"); ok && v.AsBool() {
-			s, _ := p.Attributes.Value("service.name")
 			overflow[s.AsString()] = p.Value
+			continue
+		}
+		if v, _ := p.Attributes.Value("o11y.rum.view.name"); v.AsString() != "/x" {
+			t.Fatalf("%s kept a series past its cap", s.AsString())
+		}
+		real[s.AsString()] = p.Value
+	}
+	if len(pts) != 6 || real["a"] != 2 || real["b"] != 1 || real["c"] != 1 ||
+		overflow["a"] != 2 || overflow["b"] != 1 || overflow["c"] != 1 {
+		t.Fatalf("%d points, real %v, overflow %v", len(pts), real, overflow)
+	}
+}
+
+func TestOwnersAreSeparateMetrics(t *testing.T) {
+	a := New(10, time.Now)
+	sum := Desc{Owner: "a", Scope: "app", Name: "x", Unit: "1", Kind: Sum, Monotonic: true}
+	hist := Desc{Owner: "b", Scope: "app", Name: "x", Unit: "s", Kind: Histogram, Bounds: []float64{1}}
+	if err := a.Add(sum, attribute.NewSet(attribute.String("service.name", "a")), 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Record(hist, attribute.NewSet(attribute.String("service.name", "b")), 1); err != nil {
+		t.Fatalf("another owner's definition conflicted: %v", err)
+	}
+	if got := a.Produce()[0].Metrics; len(got) != 2 {
+		t.Fatalf("%d metrics, want one per definition", len(got))
+	}
+}
+
+func TestOwnersWithOneDefinitionShareAMetric(t *testing.T) {
+	// The same definition from two owners renders as one metric, whose
+	// points are sorted together.
+	a := New(10, time.Now)
+	for _, owner := range []string{"b", "a"} {
+		d := Desc{Owner: owner, Scope: "app", Name: "x", Unit: "1", Description: owner, Kind: Sum, Monotonic: true}
+		if err := a.Add(d, attribute.NewSet(attribute.String("service.name", owner)), 1); err != nil {
+			t.Fatal(err)
 		}
 	}
-	// One real series, then one overflow series per service that overflows.
-	if len(pts) != 4 || overflow["a"] != 2 || overflow["b"] != 2 || overflow["c"] != 2 {
-		t.Fatalf("%d points, overflow %v", len(pts), overflow)
+	ms := a.Produce()[0].Metrics
+	if len(ms) != 1 {
+		t.Fatalf("%d metrics", len(ms))
+	}
+	pts := ms[0].Data.(metricdata.Sum[float64]).DataPoints
+	first, _ := pts[0].Attributes.Value("service.name")
+	if len(pts) != 2 || first.AsString() != "a" {
+		t.Fatalf("%+v", pts)
+	}
+}
+
+func TestRunningSumStaysFinite(t *testing.T) {
+	a := New(10, time.Now)
+	sum := Desc{Scope: "s", Name: "c", Unit: "1", Kind: Sum, Monotonic: true}
+	hist := Desc{Scope: "s", Name: "h", Unit: "s", Kind: Histogram, Bounds: []float64{1}}
+	set := attribute.NewSet()
+	for range 2 {
+		_ = a.Add(sum, set, math.MaxFloat64)
+		_ = a.Record(hist, set, math.MaxFloat64)
+		_ = a.Merge(hist, set, []uint64{0, 1}, math.MaxFloat64, nil, nil)
+	}
+	for _, m := range a.Produce()[0].Metrics {
+		switch data := m.Data.(type) {
+		case metricdata.Sum[float64]:
+			if v := data.DataPoints[0].Value; v != math.MaxFloat64 {
+				t.Errorf("sum %v", v)
+			}
+		case metricdata.Histogram[float64]:
+			if p := data.DataPoints[0]; p.Sum != math.MaxFloat64 || p.Count != 1 {
+				t.Errorf("histogram sum %v count %d", p.Sum, p.Count)
+			}
+		}
+	}
+	if err := a.Add(sum, set, math.MaxFloat64); !errors.Is(err, ErrValue) {
+		t.Fatalf("err %v", err)
+	}
+}
+
+func TestMergeCountOverflowRefused(t *testing.T) {
+	a := New(10, time.Now)
+	d := Desc{Scope: "s", Name: "h", Unit: "s", Kind: Histogram, Bounds: []float64{1}}
+	if err := a.Merge(d, attribute.NewSet(), []uint64{math.MaxUint64, 1}, 1, nil, nil); !errors.Is(err, ErrValue) {
+		t.Fatalf("one delta: err %v", err)
+	}
+	if err := a.Merge(d, attribute.NewSet(), []uint64{math.MaxUint64 - 1, 0}, 1, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Merge(d, attribute.NewSet(), []uint64{2, 0}, 1, nil, nil); !errors.Is(err, ErrValue) {
+		t.Fatalf("running count: err %v", err)
+	}
+	if p := a.Produce()[0].Metrics[0].Data.(metricdata.Histogram[float64]).DataPoints[0]; p.Count != math.MaxUint64-1 {
+		t.Fatalf("count %d", p.Count)
+	}
+}
+
+func TestMergeExtrema(t *testing.T) {
+	a := New(10, time.Now)
+	d := Desc{Scope: "s", Name: "h", Unit: "s", Kind: Histogram, Bounds: []float64{1}}
+	lo, hi := 3.0, 2.0
+	if err := a.Merge(d, attribute.NewSet(), []uint64{1, 1}, 5, &lo, &hi); !errors.Is(err, ErrValue) {
+		t.Fatalf("min above max: err %v", err)
+	}
+	lo, hi = 0.5, 9
+	// An empty delta has no observations, so its extrema are ignored.
+	if err := a.Merge(d, attribute.NewSet(), []uint64{0, 0}, 0, &lo, &hi); err != nil {
+		t.Fatal(err)
+	}
+	p := a.Produce()[0].Metrics[0].Data.(metricdata.Histogram[float64]).DataPoints[0]
+	if _, ok := p.Min.Value(); ok {
+		t.Fatal("extrema of an empty delta recorded")
+	}
+}
+
+func TestRefusedFirstMeasurementLeavesNoSeries(t *testing.T) {
+	a := New(10, time.Now)
+	d := Desc{Scope: "s", Name: "h", Unit: "s", Kind: Histogram, Bounds: []float64{1}}
+	_ = a.Merge(d, attribute.NewSet(), []uint64{math.MaxUint64, 1}, 1, nil, nil)
+	if got := a.SeriesCounts()["h"]; got != 0 {
+		t.Fatalf("series %d", got)
+	}
+	if got := a.Produce(); len(got) != 0 {
+		t.Fatalf("%+v", got)
 	}
 }
 

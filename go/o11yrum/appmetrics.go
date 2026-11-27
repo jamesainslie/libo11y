@@ -22,6 +22,20 @@ const (
 	reasonInvalidName       = "invalid_name"
 	reasonInvalidValue      = "invalid_value"
 	reasonMetricLimit       = "metric_limit"
+	reasonTooManyAttributes = "too_many_attributes"
+	reasonNoProducer        = "no_producer"
+)
+
+// Caps on what one app metric series may hold. A client chooses the
+// bounds and labels, so without them a few requests could pin gigabytes.
+const (
+	// maxAppBounds caps the bucket bounds of an app histogram.
+	maxAppBounds = 64
+	// maxAppLabels caps the attributes of an app metric point.
+	maxAppLabels = 16
+	// maxAppLabelLen caps an app metric label value in bytes; longer
+	// values are truncated.
+	maxAppLabelLen = 256
 )
 
 // instrumentNamePattern is the OpenTelemetry instrument name syntax.
@@ -37,9 +51,11 @@ const (
 // metrics validates md in place for re-aggregation: the resource and scope
 // attributes go through the policy like any record's, and so do data point
 // attributes, which then also lose every key the specification classifies
-// unbounded, so no per-browser identity reaches a series. Exemplars are
-// removed, because they carry trace and span IDs. Nothing is dropped here;
-// appMetrics decides which points it can aggregate.
+// unbounded, such as session.id. Exemplars are removed, because they carry
+// trace and span IDs. Attributes the specification does not classify are
+// the app's own and are kept, within the label budget appMetrics applies.
+// Nothing is dropped here; appMetrics decides which points it can
+// aggregate.
 func (v *validator) metrics(md pmetric.Metrics) dropCounts {
 	for i := range md.ResourceMetrics().Len() {
 		rm := md.ResourceMetrics().At(i)
@@ -115,8 +131,19 @@ type appMetricSet struct {
 
 type appMetricID struct{ scope, name string }
 
-// admit reports whether service may aggregate the metric, recording it.
-func (s *appMetricSet) admit(service string, id appMetricID) bool {
+// room reports whether service may aggregate the metric: it already has,
+// or it has a slot left.
+func (s *appMetricSet) room(service string, id appMetricID) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	known := s.known[service]
+	return known[id] || len(known) < s.max
+}
+
+// add takes a slot for a metric that aggregated a point. Requests racing
+// for the last slot can each aggregate a point before one takes it, so the
+// overshoot is bounded by the number of concurrent requests.
+func (s *appMetricSet) add(service string, id appMetricID) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	known := s.known[service]
@@ -124,14 +151,9 @@ func (s *appMetricSet) admit(service string, id appMetricID) bool {
 		known = map[appMetricID]bool{}
 		s.known[service] = known
 	}
-	if known[id] {
-		return true
+	if !known[id] && len(known) < s.max {
+		known[id] = true
 	}
-	if len(known) >= s.max {
-		return false
-	}
-	known[id] = true
-	return true
 }
 
 // appMetrics re-aggregates an app's validated metrics into cumulative
@@ -168,7 +190,9 @@ func (d *deriver) appMetric(service, scope string, m pmetric.Metric, drops dropC
 	case !instrumentNamePattern.MatchString(name) || len(scope) > maxScopeNameLen || !validUnit(m.Unit()):
 		return reasonInvalidName
 	}
-	desc := aggregate.Desc{Scope: scope, Name: name, Unit: m.Unit(), Description: m.Description()}
+	// The owner keeps each app's metrics apart, so one app's clients cannot
+	// claim another app's metric with a different definition.
+	desc := aggregate.Desc{Owner: service, Scope: scope, Name: name, Unit: m.Unit(), Description: m.Description()}
 	switch m.Type() {
 	case pmetric.MetricTypeSum:
 		if reason := deltaOnly(m.Sum().AggregationTemporality()); reason != "" {
@@ -183,12 +207,22 @@ func (d *deriver) appMetric(service, scope string, m pmetric.Metric, drops dropC
 	default:
 		return reasonUnsupportedMetric
 	}
-	if !d.apps.admit(service, appMetricID{scope, name}) {
+	id := appMetricID{scope, name}
+	if !d.apps.room(service, id) {
 		return reasonMetricLimit
 	}
+	// A metric takes a slot only once a point aggregates, so junk metrics
+	// whose points are all refused cannot use up the app's slots.
+	aggregated := false
+	defer func() {
+		if aggregated {
+			d.apps.add(service, id)
+		}
+	}()
 	count := func(err error) {
 		switch {
 		case err == nil:
+			aggregated = true
 		case errors.Is(err, aggregate.ErrConflict):
 			drops[reasonConflict]++
 		default:
@@ -208,16 +242,27 @@ func (d *deriver) appMetric(service, scope string, m pmetric.Metric, drops dropC
 				drops[reasonInvalidValue]++
 				continue
 			}
-			count(d.agg.Add(desc, appLabels(service, p.Attributes()), v))
+			set, ok := appLabels(service, p.Attributes())
+			if !ok {
+				drops[reasonTooManyAttributes]++
+				continue
+			}
+			count(d.agg.Add(desc, set, v))
 		}
 		return ""
 	}
 	for i := range m.Histogram().DataPoints().Len() {
 		p := m.Histogram().DataPoints().At(i)
-		if !p.HasSum() {
+		if !p.HasSum() || p.ExplicitBounds().Len() > maxAppBounds {
 			// Without a sum the cumulative sum, and every mean from it, would
-			// be wrong.
+			// be wrong. Every series of a histogram keeps a count per bucket,
+			// so the client may not choose thousands of them.
 			drops[reasonInvalidValue]++
+			continue
+		}
+		set, ok := appLabels(service, p.Attributes())
+		if !ok {
+			drops[reasonTooManyAttributes]++
 			continue
 		}
 		pd := desc
@@ -231,7 +276,7 @@ func (d *deriver) appMetric(service, scope string, m pmetric.Metric, drops dropC
 			v := p.Max()
 			hi = &v
 		}
-		count(d.agg.Merge(pd, appLabels(service, p.Attributes()), p.BucketCounts().AsRaw(), p.Sum(), lo, hi))
+		count(d.agg.Merge(pd, set, p.BucketCounts().AsRaw(), p.Sum(), lo, hi))
 	}
 	return ""
 }
@@ -263,9 +308,10 @@ func validUnit(u string) bool {
 }
 
 // appLabels are the app's service.name plus a point's remaining
-// attributes, scalars rendered as strings. A client cannot set
-// service.name or the overflow marker.
-func appLabels(service string, attrs pcommon.Map) attribute.Set {
+// attributes, scalars rendered as strings and cut to maxAppLabelLen bytes.
+// A client cannot set service.name or the overflow marker. It reports
+// false for a point with more than maxAppLabels labels.
+func appLabels(service string, attrs pcommon.Map) (attribute.Set, bool) {
 	kvs := make([]attribute.KeyValue, 0, attrs.Len()+1)
 	kvs = append(kvs, attribute.String(keyServiceName, service))
 	for k, v := range attrs.All() {
@@ -273,8 +319,26 @@ func appLabels(service string, attrs pcommon.Map) attribute.Set {
 		case k == keyServiceName || k == "otel.metric.overflow":
 		case v.Type() == pcommon.ValueTypeMap || v.Type() == pcommon.ValueTypeSlice || v.Type() == pcommon.ValueTypeBytes:
 		default:
-			kvs = append(kvs, attribute.String(k, v.AsString()))
+			kvs = append(kvs, attribute.String(k, truncateUTF8(v.AsString(), maxAppLabelLen)))
 		}
 	}
-	return attribute.NewSet(kvs...)
+	if len(kvs)-1 > maxAppLabels {
+		return attribute.Set{}, false
+	}
+	return attribute.NewSet(kvs...), true
+}
+
+// metricPoints counts every data point of md.
+func metricPoints(md pmetric.Metrics) int64 {
+	var n int64
+	for i := range md.ResourceMetrics().Len() {
+		rm := md.ResourceMetrics().At(i)
+		for j := range rm.ScopeMetrics().Len() {
+			ms := rm.ScopeMetrics().At(j).Metrics()
+			for k := range ms.Len() {
+				n += pointCount(ms.At(k))
+			}
+		}
+	}
+	return n
 }

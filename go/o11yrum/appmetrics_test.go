@@ -300,10 +300,115 @@ func TestValidateMetricsCleansInPlace(t *testing.T) {
 }
 
 func TestAppMetricsWithoutProducer(t *testing.T) {
+	// The endpoint still validates and answers 200, and tells the client
+	// its points were not kept.
 	md, ms := appMetricsBatch()
 	addDeltaSum(ms, "shop.cart.adds", 1, nil)
-	if code, _ := postMetrics(t, newTestHandler(t), md, "203.0.113.5:1000"); code != 200 {
-		t.Fatalf("status %d", code)
+	addDeltaHistogram(ms, "shop.h", []float64{1}, []uint64{1, 0}, 0.5)
+	code, resp := postMetrics(t, newTestHandler(t), md, "203.0.113.5:1000")
+	if code != 200 || resp.PartialSuccess().RejectedDataPoints() != 2 || !strings.Contains(resp.PartialSuccess().ErrorMessage(), "no_producer=2") {
+		t.Fatalf("%d %d %s", code, resp.PartialSuccess().RejectedDataPoints(), resp.PartialSuccess().ErrorMessage())
+	}
+}
+
+func TestAppMetricBoundsCapped(t *testing.T) {
+	p := NewMetricProducer()
+	r := newManualReader(t, p)
+	h := newProducerHandler(t, p)
+	md, ms := appMetricsBatch()
+	bounds := make([]float64, maxAppBounds+1)
+	for i := range bounds {
+		bounds[i] = float64(i)
+	}
+	addDeltaHistogram(ms, "shop.wide", bounds, make([]uint64, len(bounds)+1), 0)
+	addDeltaHistogram(ms, "shop.ok", bounds[:maxAppBounds], make([]uint64, maxAppBounds+1), 0)
+	code, resp := postMetrics(t, h, md, "203.0.113.5:1000")
+	if code != 200 || resp.PartialSuccess().RejectedDataPoints() != 1 || !strings.Contains(resp.PartialSuccess().ErrorMessage(), "invalid_value=1") {
+		t.Fatalf("%d %s", code, resp.PartialSuccess().ErrorMessage())
+	}
+	if got := flatten(collect(t, r)); len(got) != 1 {
+		t.Fatalf("%v", got)
+	}
+}
+
+func TestAppMetricsAreAppScoped(t *testing.T) {
+	// One app's definition of a metric never conflicts with another app's.
+	cfg, err := ParseConfig([]byte(testConfig))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := NewMetricProducer()
+	r := newManualReader(t, p)
+	h, err := NewHandler(WithConfig(cfg), WithMetricProducer(p))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
+	md, ms := appMetricsBatch()
+	addDeltaSum(ms, "cart.adds", 1, nil)
+	if code, _ := postMetrics(t, h, md, "203.0.113.5:1000"); code != 200 {
+		t.Fatal(code)
+	}
+	other, oms := appMetricsBatch()
+	other.ResourceMetrics().At(0).Resource().Attributes().PutStr("service.name", "shop-mobile")
+	addDeltaHistogram(oms, "cart.adds", []float64{1}, []uint64{1, 0}, 0.5)
+	body, err := pmetricotlp.NewExportRequestFromMetrics(other).MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := send(h, http.MethodPost, "/_o11y/v1/metrics?client_token=pub-123", "application/json", "", "203.0.113.6:1000", body)
+	resp := pmetricotlp.NewExportResponse()
+	if err := resp.UnmarshalJSON(w.Body.Bytes()); err != nil || w.Code != 200 || resp.PartialSuccess().RejectedDataPoints() != 0 {
+		t.Fatalf("%d %v %s", w.Code, err, resp.PartialSuccess().ErrorMessage())
+	}
+	got := flatten(collect(t, r))
+	if got["cart.adds{service.name=shop-web}"] != 1 || got["cart.adds{service.name=shop-mobile}#count"] != 1 {
+		t.Fatalf("%v", got)
+	}
+}
+
+func TestAppMetricSlotTakenOnlyBySuccess(t *testing.T) {
+	p := NewMetricProducer()
+	r := newManualReader(t, p)
+	cfg, err := ParseConfig([]byte("aggregation: {max_metrics_per_app: 1}\n" + testConfig))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := NewHandler(WithConfig(cfg), WithMetricProducer(p))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
+	md, ms := appMetricsBatch()
+	addDeltaSum(ms, "shop.junk", -1, nil) // refused: negative on a monotonic sum
+	addDeltaSum(ms, "shop.real", 1, nil)
+	code, resp := postMetrics(t, h, md, "203.0.113.5:1000")
+	if code != 200 || resp.PartialSuccess().RejectedDataPoints() != 1 || !strings.Contains(resp.PartialSuccess().ErrorMessage(), "invalid_value=1") {
+		t.Fatalf("%d %s", code, resp.PartialSuccess().ErrorMessage())
+	}
+	if got := flatten(collect(t, r)); got["shop.real{service.name=shop-web}"] != 1 {
+		t.Fatalf("%v", got)
+	}
+}
+
+func TestAppMetricLabelBudget(t *testing.T) {
+	p := NewMetricProducer()
+	r := newManualReader(t, p)
+	h := newProducerHandler(t, p)
+	md, ms := appMetricsBatch()
+	wide := map[string]string{}
+	for i := range maxAppLabels + 1 {
+		wide["shop.k"+strings.Repeat("x", i)] = "v"
+	}
+	addDeltaSum(ms, "shop.wide", 1, wide)
+	addDeltaSum(ms, "shop.long", 1, map[string]string{"shop.step": strings.Repeat("y", maxAppLabelLen+10)})
+	code, resp := postMetrics(t, h, md, "203.0.113.5:1000")
+	if code != 200 || resp.PartialSuccess().RejectedDataPoints() != 1 || !strings.Contains(resp.PartialSuccess().ErrorMessage(), "too_many_attributes=1") {
+		t.Fatalf("%d %s", code, resp.PartialSuccess().ErrorMessage())
+	}
+	got := flatten(collect(t, r))
+	if got["shop.long{service.name=shop-web,shop.step="+strings.Repeat("y", maxAppLabelLen)+"}"] != 1 || len(got) != 1 {
+		t.Fatalf("%v", got)
 	}
 }
 

@@ -98,9 +98,9 @@ type LimitsConfig struct {
 
 // AggregationConfig bounds the metrics the gateway derives.
 type AggregationConfig struct {
-	// MaxSeriesPerMetric caps the attribute sets of one derived metric.
-	// Measurements past it go to an overflow series per app, marked
-	// otel.metric.overflow=true. Default 2000.
+	// MaxSeriesPerMetric caps the attribute sets one app may hold in one
+	// derived metric. Measurements past it go to the app's overflow series,
+	// marked otel.metric.overflow=true. Default 2000.
 	MaxSeriesPerMetric int `yaml:"max_series_per_metric"`
 	// MaxMetricsPerApp caps the distinct metrics one app may send to
 	// /_o11y/v1/metrics. Data points of further metrics are dropped as

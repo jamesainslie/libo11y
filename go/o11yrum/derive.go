@@ -144,8 +144,10 @@ func hasKey(kvs []attribute.KeyValue, k string) bool {
 	return false
 }
 
-// add and record measure a standard metric. Errors cannot happen for spec
-// metrics with validated values, so they are dropped.
+// add and record measure a standard metric. The definitions come from the
+// spec, so the only possible error is a value the aggregator refuses, such
+// as one that would make a running sum overflow. The measurement is
+// dropped: one summary cannot be partly counted in a useful way.
 func (d *deriver) add(metric string, set attribute.Set, v float64) {
 	_ = d.agg.Add(standardDesc(metric), set, v)
 }

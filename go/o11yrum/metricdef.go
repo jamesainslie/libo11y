@@ -198,6 +198,10 @@ func (d *deriver) operator(service, event string, l attrLookup) {
 			continue
 		}
 		set := m.labels(service, l)
+		// The configuration check guarantees a consistent definition, so a
+		// refused measurement is a value the aggregator cannot hold, such as
+		// a negative counter value or a sum that would overflow. It is
+		// dropped like a record without the value attribute.
 		switch {
 		case m.desc.Kind == aggregate.Histogram:
 			if v, ok := doubleValue(l, m.value); ok {
@@ -206,7 +210,6 @@ func (d *deriver) operator(service, event string, l attrLookup) {
 		case m.value == "":
 			_ = d.agg.Add(m.desc, set, 1)
 		default:
-			// A negative value is refused by the monotonic sum.
 			if v, ok := doubleValue(l, m.value); ok {
 				_ = d.agg.Add(m.desc, set, v)
 			}

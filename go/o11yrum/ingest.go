@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"maps"
 	"math"
 	"net/http"
 	"net/netip"
@@ -103,8 +102,12 @@ func (h *Handler) ingest(w http.ResponseWriter, r *http.Request, sig Signal) {
 		// App metrics never reach the sinks: they are re-aggregated into
 		// the gateway's own metrics, or dropped without a producer.
 		drops = v.metrics(d.metrics)
-		if h.derive != nil {
-			maps.Copy(drops, h.derive.appMetrics(service, d.metrics))
+		if h.derive == nil {
+			drops[reasonNoProducer] += metricPoints(d.metrics)
+			break
+		}
+		for reason, n := range h.derive.appMetrics(service, d.metrics) {
+			drops[reason] += n
 		}
 	}
 	rep.validated(drops, v.attrsRemoved)

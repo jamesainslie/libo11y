@@ -7,19 +7,20 @@
 // sums and explicit-bucket histograms instead, and Produce renders them as
 // metricdata for a metric.Producer.
 //
-// Every metric holds at most maxSeries attribute sets. A measurement with a
-// new set past the cap goes to an overflow series that keeps only the
-// measurement's service.name and adds otel.metric.overflow=true, so one
-// app's flood never hides another app's totals.
+// Every metric holds at most maxSeries attribute sets for each value of
+// service.name. A measurement with a new set past its app's cap goes to an
+// overflow series that keeps only the service.name and adds
+// otel.metric.overflow=true, so one app's flood never hides another app's
+// totals or pushes another app into overflow.
 package aggregate
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"math"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -38,9 +39,13 @@ const (
 	Histogram
 )
 
-// Desc identifies and describes one metric. Scope and Name identify it;
-// the other fields except Description must agree on every measurement.
+// Desc identifies and describes one metric. Owner, Scope and Name identify
+// it; the other fields except Description must agree on every measurement.
 type Desc struct {
+	// Owner separates metrics that clients define, so one app cannot claim
+	// another app's metric with a different definition. It is not exported.
+	// Owners that define a metric the same way render as one metric.
+	Owner       string
 	Scope       string
 	Name        string
 	Unit        string
@@ -71,11 +76,13 @@ const (
 	serviceKey  = attribute.Key("service.name")
 )
 
-type metricID struct{ scope, name string }
+type metricID struct{ owner, scope, name string }
 
 type metric struct {
 	desc   Desc
 	points map[attribute.Distinct]*point
+	// series counts each app's attribute sets, overflow series excluded.
+	series map[string]int
 }
 
 type point struct {
@@ -121,7 +128,13 @@ func (a *Aggregator) Add(d Desc, attrs attribute.Set, v float64) error {
 	if !finite(v) || (d.Monotonic && v < 0) {
 		return fmt.Errorf("%w: %s: %v", ErrValue, d.Name, v)
 	}
-	return a.update(d, attrs, func(p *point) { p.sum += v })
+	return a.update(d, attrs, func(p *point) error {
+		if !finite(p.sum + v) {
+			return fmt.Errorf("%w: %s: the running sum would not be finite", ErrValue, d.Name)
+		}
+		p.sum += v
+		return nil
+	})
 }
 
 // Record records one observation v in the Histogram d for attrs.
@@ -135,11 +148,15 @@ func (a *Aggregator) Record(d Desc, attrs attribute.Set, v float64) error {
 	if !finite(v) {
 		return fmt.Errorf("%w: %s: %v", ErrValue, d.Name, v)
 	}
-	return a.update(d, attrs, func(p *point) {
+	return a.update(d, attrs, func(p *point) error {
+		if !finite(p.sum+v) || p.count == math.MaxUint64 {
+			return fmt.Errorf("%w: %s: the running sum or count would overflow", ErrValue, d.Name)
+		}
 		p.counts[sort.SearchFloat64s(d.Bounds, v)]++
 		p.count++
 		p.sum += v
 		p.observe(v)
+		return nil
 	})
 }
 
@@ -160,39 +177,57 @@ func (a *Aggregator) Merge(d Desc, attrs attribute.Set, counts []uint64, sum flo
 			return fmt.Errorf("%w: %s: %v", ErrValue, d.Name, *v)
 		}
 	}
-	return a.update(d, attrs, func(p *point) {
+	if min != nil && max != nil && *min > *max {
+		return fmt.Errorf("%w: %s: min above max", ErrValue, d.Name)
+	}
+	var total uint64
+	for _, c := range counts {
+		if total+c < total {
+			return fmt.Errorf("%w: %s: bucket counts overflow", ErrValue, d.Name)
+		}
+		total += c
+	}
+	return a.update(d, attrs, func(p *point) error {
+		if p.count+total < p.count || !finite(p.sum+sum) {
+			return fmt.Errorf("%w: %s: the running sum or count would overflow", ErrValue, d.Name)
+		}
 		for i, c := range counts {
 			p.counts[i] += c
-			p.count += c
 		}
+		p.count += total
 		p.sum += sum
-		if min != nil {
+		// An empty delta observed nothing, so its extrema mean nothing.
+		if total > 0 && min != nil {
 			p.observe(*min)
 		}
-		if max != nil {
+		if total > 0 && max != nil {
 			p.observe(*max)
 		}
+		return nil
 	})
 }
 
-func (a *Aggregator) update(d Desc, attrs attribute.Set, apply func(*point)) error {
+// update finds or creates the point for attrs and applies a measurement.
+// apply checks before it changes anything, so a refused measurement leaves
+// no trace: a point or metric created for it is removed again.
+func (a *Aggregator) update(d Desc, attrs attribute.Set, apply func(*point) error) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	id := metricID{d.Scope, d.Name}
-	m, ok := a.metrics[id]
-	if !ok {
-		m = &metric{desc: cloneDesc(d), points: map[attribute.Distinct]*point{}}
-		a.metrics[id] = m
-		a.order = append(a.order, id)
+	id := metricID{d.Owner, d.Scope, d.Name}
+	m, known := a.metrics[id]
+	if !known {
+		m = &metric{desc: cloneDesc(d), points: map[attribute.Distinct]*point{}, series: map[string]int{}}
 	} else if !sameDesc(m.desc, d) {
 		return fmt.Errorf("%w: %s", ErrConflict, d.Name)
 	}
 	now := a.now()
 	key := attrs.Equivalent()
 	p, ok := m.points[key]
+	created, overflow := false, false
+	service := serviceOf(attrs)
 	if !ok {
-		if len(m.points) >= a.maxSeries {
-			attrs = overflowSet(attrs)
+		if m.series[service] >= a.maxSeries {
+			attrs, overflow = overflowSet(attrs), true
 			key = attrs.Equivalent()
 			p = m.points[key]
 		}
@@ -201,12 +236,30 @@ func (a *Aggregator) update(d Desc, attrs attribute.Set, apply func(*point)) err
 			if d.Kind == Histogram {
 				p.counts = make([]uint64, len(d.Bounds)+1)
 			}
-			m.points[key] = p
+			created = true
 		}
 	}
-	apply(p)
+	if err := apply(p); err != nil {
+		return err
+	}
 	p.last = now
+	if created {
+		m.points[key] = p
+		if !overflow {
+			m.series[service]++
+		}
+	}
+	if !known {
+		a.metrics[id] = m
+		a.order = append(a.order, id)
+	}
 	return nil
+}
+
+// serviceOf returns the service.name of attrs, or "" without one.
+func serviceOf(attrs attribute.Set) string {
+	v, _ := attrs.Value(serviceKey)
+	return v.AsString()
 }
 
 // overflowSet keeps the service.name of attrs and marks the overflow.
@@ -242,59 +295,90 @@ func sameDesc(a, b Desc) bool {
 
 func finite(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) }
 
+// snapshot is one metric copied under the lock, so rendering, sorting and
+// encoding happen outside it and never stall measurements.
+type snapshot struct {
+	desc   Desc // never modified after creation, so it is shared
+	points []point
+}
+
 // Produce renders every metric as cumulative metricdata, grouped by scope
-// in first-seen order, with points sorted by their attribute encoding. The
+// in first-seen order, with points sorted by their attribute encoding.
+// Owners that define a metric the same way render as one metric. The
 // result shares nothing with the Aggregator.
 func (a *Aggregator) Produce() []metricdata.ScopeMetrics {
-	a.mu.Lock()
-	defer a.mu.Unlock()
+	snaps := a.snapshot()
 	var out []metricdata.ScopeMetrics
 	scopes := map[string]int{}
+	for _, s := range snaps {
+		i, ok := scopes[s.desc.Scope]
+		if !ok {
+			i = len(out)
+			scopes[s.desc.Scope] = i
+			out = append(out, metricdata.ScopeMetrics{Scope: instrumentation.Scope{Name: s.desc.Scope}})
+		}
+		out[i].Metrics = append(out[i].Metrics, render(s))
+	}
+	return out
+}
+
+// snapshot copies every metric with points, merging owners that define
+// one metric the same way, in first-seen order.
+func (a *Aggregator) snapshot() []snapshot {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var snaps []snapshot
 	for _, id := range a.order {
 		m := a.metrics[id]
 		if len(m.points) == 0 {
 			continue
 		}
-		i, ok := scopes[id.scope]
-		if !ok {
-			i = len(out)
-			scopes[id.scope] = i
-			out = append(out, metricdata.ScopeMetrics{Scope: instrumentation.Scope{Name: id.scope}})
+		i := slices.IndexFunc(snaps, func(s snapshot) bool {
+			return s.desc.Scope == m.desc.Scope && s.desc.Name == m.desc.Name && sameDesc(s.desc, m.desc)
+		})
+		if i < 0 {
+			i = len(snaps)
+			snaps = append(snaps, snapshot{desc: m.desc})
 		}
-		out[i].Metrics = append(out[i].Metrics, m.render())
+		for _, p := range m.points {
+			cp := *p
+			cp.counts = slices.Clone(p.counts)
+			snaps[i].points = append(snaps[i].points, cp)
+		}
 	}
-	return out
+	return snaps
 }
 
-func (m *metric) render() metricdata.Metrics {
-	pts := make([]*point, 0, len(m.points))
-	for _, p := range m.points {
-		pts = append(pts, p)
-	}
+func render(s snapshot) metricdata.Metrics {
 	enc := attribute.DefaultEncoder()
-	keys := make(map[*point]string, len(pts))
-	for _, p := range pts {
-		keys[p] = p.attrs.Encoded(enc)
+	keys := make([]string, len(s.points))
+	order := make([]int, len(s.points))
+	for i := range s.points {
+		keys[i] = s.points[i].attrs.Encoded(enc)
+		order[i] = i
 	}
-	slices.SortFunc(pts, func(x, y *point) int { return bytes.Compare([]byte(keys[x]), []byte(keys[y])) })
-	out := metricdata.Metrics{Name: m.desc.Name, Description: m.desc.Description, Unit: m.desc.Unit}
-	switch m.desc.Kind {
+	slices.SortFunc(order, func(x, y int) int { return strings.Compare(keys[x], keys[y]) })
+	out := metricdata.Metrics{Name: s.desc.Name, Description: s.desc.Description, Unit: s.desc.Unit}
+	switch s.desc.Kind {
 	case Sum:
-		dps := make([]metricdata.DataPoint[float64], len(pts))
-		for i, p := range pts {
+		dps := make([]metricdata.DataPoint[float64], len(order))
+		for i, j := range order {
+			p := &s.points[j]
 			dps[i] = metricdata.DataPoint[float64]{Attributes: p.attrs, StartTime: p.start, Time: p.last, Value: p.sum}
 		}
-		out.Data = metricdata.Sum[float64]{DataPoints: dps, Temporality: metricdata.CumulativeTemporality, IsMonotonic: m.desc.Monotonic}
+		out.Data = metricdata.Sum[float64]{DataPoints: dps, Temporality: metricdata.CumulativeTemporality, IsMonotonic: s.desc.Monotonic}
 	case Histogram:
-		dps := make([]metricdata.HistogramDataPoint[float64], len(pts))
-		for i, p := range pts {
+		bounds := slices.Clone(s.desc.Bounds)
+		dps := make([]metricdata.HistogramDataPoint[float64], len(order))
+		for i, j := range order {
+			p := &s.points[j]
 			dp := metricdata.HistogramDataPoint[float64]{
 				Attributes:   p.attrs,
 				StartTime:    p.start,
 				Time:         p.last,
 				Count:        p.count,
-				Bounds:       slices.Clone(m.desc.Bounds),
-				BucketCounts: slices.Clone(p.counts),
+				Bounds:       bounds,
+				BucketCounts: p.counts,
 				Sum:          p.sum,
 			}
 			if p.extrema {
@@ -309,7 +393,7 @@ func (m *metric) render() metricdata.Metrics {
 }
 
 // SeriesCounts returns each metric name's number of attribute sets,
-// overflow series included, summed across scopes.
+// overflow series included, summed across owners and scopes.
 func (a *Aggregator) SeriesCounts() map[string]int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
