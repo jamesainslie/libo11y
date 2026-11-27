@@ -19,7 +19,11 @@ test("compareBudgets reports sizes, deltas and every overrun", () => {
 test("compareBudgets refuses a missing measurement or an unknown delta base", () => {
   assert.throws(() => compareBudgets(FILE, { base: 90 }), /extra/);
   assert.throws(
-    () => compareBudgets({ unit: "bytes", entries: {}, deltas: { d: { base: "nope", code: "c", budget: 1 } } }, { d: 1 }),
+    () =>
+      compareBudgets(
+        { unit: "bytes", entries: {}, deltas: { d: { base: "nope", code: "c", budget: 1 } } },
+        { d: 1 },
+      ),
     /nope/,
   );
 });

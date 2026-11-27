@@ -19,7 +19,9 @@ import { join, resolve } from "node:path";
 export interface BudgetFile {
   readonly unit: string;
   readonly entries: Readonly<Record<string, { readonly code: string; readonly budget: number }>>;
-  readonly deltas: Readonly<Record<string, { readonly base: string; readonly code: string; readonly budget: number }>>;
+  readonly deltas: Readonly<
+    Record<string, { readonly base: string; readonly code: string; readonly budget: number }>
+  >;
 }
 
 /** One measured row. */
@@ -47,7 +49,8 @@ export function compareBudgets(file: BudgetFile, absolute: Readonly<Record<strin
     rows.push({ name, size, budget: e.budget, over: size > e.budget });
   }
   for (const [name, d] of Object.entries(file.deltas)) {
-    if (file.entries[d.base] === undefined) throw new Error(`size: delta ${name} names unknown base ${d.base}`);
+    if (file.entries[d.base] === undefined)
+      throw new Error(`size: delta ${name} names unknown base ${d.base}`);
     const size = measured(absolute, name) - measured(absolute, d.base);
     rows.push({ name, size, budget: d.budget, over: size > d.budget });
   }
@@ -125,7 +128,8 @@ async function main(args: readonly string[]): Promise<number> {
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(dir, { recursive: true });
   const absolute: Record<string, number> = {};
-  for (const [name, e] of Object.entries(file.entries)) absolute[name] = await measure(bun, dir, name, e.code);
+  for (const [name, e] of Object.entries(file.entries))
+    absolute[name] = await measure(bun, dir, name, e.code);
   for (const [name, d] of Object.entries(file.deltas)) absolute[name] = await measure(bun, dir, name, d.code);
   const rows = compareBudgets(file, absolute);
   const table = formatTable(rows);
