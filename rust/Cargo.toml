@@ -18,7 +18,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.0.0"
+version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
 license = "Apache-2.0"
@@ -29,17 +29,17 @@ homepage = "https://o11y.ing"
 # plan fixed (2026-11-11). Workspace crates pin each other exactly, because
 # they are released in lockstep.
 [workspace.dependencies]
-libo11y = { version = "=0.0.0", path = "libo11y" }
-libo11y-cli = { version = "=0.0.0", path = "libo11y-cli" }
-libo11y-connect = { version = "=0.0.0", path = "libo11y-connect" }
-libo11y-http = { version = "=0.0.0", path = "libo11y-http" }
-libo11y-macros = { version = "=0.0.0", path = "libo11y-macros" }
-libo11y-redact = { version = "=0.0.0", path = "libo11y-redact" }
-libo11y-reqwest = { version = "=0.0.0", path = "libo11y-reqwest" }
-libo11y-spec = { version = "=0.0.0", path = "libo11y-spec" }
-libo11y-sqlx = { version = "=0.0.0", path = "libo11y-sqlx" }
-libo11y-test = { version = "=0.0.0", path = "libo11y-test" }
-libo11y-tonic = { version = "=0.0.0", path = "libo11y-tonic" }
+libo11y = { version = "=0.1.0", path = "libo11y" }
+libo11y-cli = { version = "=0.1.0", path = "libo11y-cli" }
+libo11y-connect = { version = "=0.1.0", path = "libo11y-connect" }
+libo11y-http = { version = "=0.1.0", path = "libo11y-http" }
+libo11y-macros = { version = "=0.1.0", path = "libo11y-macros" }
+libo11y-redact = { version = "=0.1.0", path = "libo11y-redact" }
+libo11y-reqwest = { version = "=0.1.0", path = "libo11y-reqwest" }
+libo11y-spec = { version = "=0.1.0", path = "libo11y-spec" }
+libo11y-sqlx = { version = "=0.1.0", path = "libo11y-sqlx" }
+libo11y-test = { version = "=0.1.0", path = "libo11y-test" }
+libo11y-tonic = { version = "=0.1.0", path = "libo11y-tonic" }
 proc-macro2 = { version = "1.0.107", default-features = false, features = ["proc-macro"] }
 quote = { version = "1.0.47", default-features = false, features = ["proc-macro"] }
 serde = { version = "1.0.229", default-features = false, features = ["std"] }

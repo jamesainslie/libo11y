@@ -12,6 +12,8 @@ Workspace MSRV is Rust 1.88 (Rust 1.94 for `libo11y-sqlx`).
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-27
+
 ### Added
 
 - `libo11y-spec`: generated spec 1.2.0 attribute keys, closed enums, event and
@@ -82,4 +84,5 @@ Workspace MSRV is Rust 1.88 (Rust 1.94 for `libo11y-sqlx`).
   `o11y-registry.yaml`, `#[derive(Redact)]`, `build_info!()`, `ServerLayer`,
   `record_from_context`, and `libo11y-test`.
 
-[Unreleased]: https://github.com/jamesainslie/libo11y/commits/main
+[Unreleased]: https://github.com/jamesainslie/libo11y/compare/rust/v0.1.0...HEAD
+[0.1.0]: https://github.com/jamesainslie/libo11y/releases/tag/rust/v0.1.0
