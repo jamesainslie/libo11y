@@ -1,5 +1,6 @@
 /**
- * Real-browser tests for @libo11y/web and @libo11y/webext, in Chromium headless. Specs are
+ * Real-browser tests for @libo11y/web and @libo11y/webext in Chromium headless, and for @libo11y/rum
+ * and its adapters in Chromium, Firefox and WebKit. Specs are
  * packages/<pkg>/browser/**\/*.pw.ts, a suffix neither bun test nor the node --test glob picks up.
  * The global setup bundles the fixtures with Bun; the web server is the fixture server and OTLP
  * sink in packages/web/browser/harness/server.ts. Run with `bun run test:browser`.
@@ -44,5 +45,12 @@ export default defineConfig({
     // The webext specs launch their own persistent context with the test extension loaded
     // (packages/webext/browser/harness/fixtures.ts).
     { name: "webext", testDir: "packages/webext/browser" },
+    // @libo11y/rum and its adapters on every engine the browser support matrix names.
+    ...(["chromium", "firefox", "webkit"] as const).map((browserName) => ({
+      name: `rum-${browserName}`,
+      testDir: "packages",
+      testMatch: /\/rum(-[a-z-]+)?\/browser\/.*\.pw\.ts$/,
+      use: { browserName },
+    })),
   ],
 });

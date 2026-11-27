@@ -41,10 +41,12 @@ ts-install:
 ts-check: ts-install
 	cd ts && bun run lint && bun run typecheck && bun run build && bun run api:check && bun run test:bun && bun run test:node
 
-# Browser suites for @libo11y/web and @libo11y/webext under Playwright and
-# headless Chromium. Needs Playwright's Chromium for the pinned version:
-# CI installs it with `bun x --no-install playwright install --with-deps
-# chromium` in ts/.
+# Browser suites under Playwright: @libo11y/web and @libo11y/webext in
+# headless Chromium, @libo11y/rum and its adapters in headless Chromium,
+# Firefox and WebKit. Needs Playwright's browsers for the pinned version:
+# CI installs them with `bun x --no-install playwright install --with-deps
+# chromium firefox webkit` in ts/. A host with only Chromium runs
+# `bun run test:browser --project=web --project=webext --project=rum-chromium`.
 ts-browser-test: ts-install
 	cd ts && bun run test:browser
 

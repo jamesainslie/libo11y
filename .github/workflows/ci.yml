@@ -96,10 +96,12 @@ jobs:
           node-version: "24.x"
       - run: make ts-check ts-browser-bundle-test ts-npm-plan-test
 
-  # The browser packages' suites under Playwright and headless Chromium.
+  # The browser packages' suites under Playwright: @libo11y/web and
+  # @libo11y/webext in headless Chromium, @libo11y/rum and its adapters in
+  # headless Chromium, Firefox and WebKit.
   ts-browser:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
         with:
@@ -125,12 +127,12 @@ jobs:
           key: playwright-${{ runner.os }}-${{ hashFiles('ts/bun.lock') }}
       - run: make ts-install
       # --no-install runs the Playwright that ts/bun.lock pins and fails if
-      # it is missing. --with-deps installs Chromium's system libraries,
-      # which the cache does not hold. A cached Chromium is not downloaded
+      # it is missing. --with-deps installs the browsers' system libraries,
+      # which the cache does not hold. A cached browser is not downloaded
       # again.
-      - name: Install Playwright's Chromium
+      - name: Install Playwright's browsers
         working-directory: ts
-        run: bun x --no-install playwright install --with-deps chromium
+        run: bun x --no-install playwright install --with-deps chromium firefox webkit
       - run: make ts-browser-test
 
   # The Rust workspace: fmt, clippy, tests and docs on the pinned toolchain.
