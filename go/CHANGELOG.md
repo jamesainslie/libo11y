@@ -8,8 +8,13 @@ adhere to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-27
+
 ### Added
 
+- `spec`: the spec 1.2.0 key `o11y.log.source`, as `spec.LogSourceKey`,
+  `spec.LogSourceValue`, and the closed enum `spec.LogSource`
+  (`LogSourceLogger`, `LogSourceConsole`). The key is classified `public`.
 - `o11yproc`: `Inject` and `Extract` take options, and `WithSDK(sdk)`
   binds them to the propagator of an SDK built with `New`, so that SDK's
   baggage egress filter applies and no process global is read. Without
@@ -43,6 +48,8 @@ adhere to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- `spec.SchemaURL` and `spec.SpecVersion` name spec 1.2.0, so every
+  resource carries the spec 1.2.0 schema URL.
 - `OTEL_PROPAGATORS` is now honoured. A process that already sets it, for
   example for another OpenTelemetry SDK in the same environment, changes
   the trace header format it sends on upgrade. Pass
@@ -526,6 +533,7 @@ tracking one of those commits can see what moved.
   GO-2026-6599, GO-2026-6600), `net/url` (GO-2026-6218), and
   `encoding/asn1` (GO-2026-5972).
 
-[Unreleased]: https://github.com/jamesainslie/libo11y/compare/go/v0.2.0...HEAD
+[Unreleased]: https://github.com/jamesainslie/libo11y/compare/go/v0.3.0...HEAD
+[0.3.0]: https://github.com/jamesainslie/libo11y/releases/tag/go/v0.3.0
 [0.2.0]: https://github.com/jamesainslie/libo11y/releases/tag/go/v0.2.0
 [0.1.0]: https://github.com/jamesainslie/libo11y/releases/tag/go/v0.1.0

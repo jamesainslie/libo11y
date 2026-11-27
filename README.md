@@ -104,10 +104,10 @@ feature-parity matrix across implementations.
 ## Installation (Go)
 
 ```sh
-go get github.com/jamesainslie/libo11y/go@v0.2.0
-go get github.com/jamesainslie/libo11y/go/o11ygin@v0.2.0       # only for Gin
-go get github.com/jamesainslie/libo11y/go/o11yconnect@v0.2.0   # only for Connect
-go get github.com/jamesainslie/libo11y/go/o11ysql@v0.2.0       # only for database/sql
+go get github.com/jamesainslie/libo11y/go@v0.3.0
+go get github.com/jamesainslie/libo11y/go/o11ygin@v0.3.0       # only for Gin
+go get github.com/jamesainslie/libo11y/go/o11yconnect@v0.3.0   # only for Connect
+go get github.com/jamesainslie/libo11y/go/o11ysql@v0.3.0       # only for database/sql
 ```
 
 The Gin, Connect, and database/sql integrations (`go/o11ygin`,
@@ -116,10 +116,9 @@ the main module at the same version. The modules require Go 1.26.0 or
 later. Build with the latest patch release of the 1.26 or 1.27 line to
 pick up the standard-library security fixes.
 
-The latest Go release, `go/v0.2.0`, implements spec 1.1.0 and stamps that
-version's schema URL on every resource. Spec 1.2.0 support is on `main`
-and ships in the next Go release. The TypeScript packages implement spec
-1.2.0.
+The latest Go release, `go/v0.3.0`, implements spec 1.2.0 and stamps that
+version's schema URL on every resource. The TypeScript packages implement
+spec 1.2.0 too.
 
 ## Quick start (Go)
 
