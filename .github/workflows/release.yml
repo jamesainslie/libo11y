@@ -7,10 +7,14 @@
 # A ts/vX.Y.Z tag publishes every @libo11y/* package to npm at X.Y.Z with
 # provenance. It authenticates through npm trusted publishing: each package
 # trusts this workflow file in this repository, and no npm token is stored.
-# The smoke job waits for the registry to serve the new versions of every
-# package under ts/packages, installs the server packages under Node and
-# Bun, bundles the browser packages for the browser, and only then is the
-# GitHub Release created.
+# Trusted publishing cannot create a package, so scripts/ts-npm-plan.sh
+# leaves a package new to npm out of npm with a warning. It fails the
+# release before anything publishes if a package on npm depends on one
+# that is not. The smoke job waits for the registry to serve the new versions of
+# the published packages, installs a package not on npm yet from its
+# tarball, installs the server packages under Node and Bun, bundles the
+# browser packages for the browser, and only then is the GitHub Release
+# created, with every packed tarball attached.
 # Rerunning is safe for packages already on the registry, which are
 # skipped.
 #
@@ -75,8 +79,6 @@ jobs:
       module: ${{ steps.tag.outputs.module }}
       version: ${{ steps.tag.outputs.version }}
       prerelease: ${{ steps.tag.outputs.prerelease }}
-      # The ts branch only: every package name, space separated.
-      packages: ${{ steps.packages.outputs.names }}
       # The rust branch only: every publishable crate in topological order, space separated.
       rust_crates: ${{ steps.rust_crates.outputs.crates }}
     steps:
@@ -139,22 +141,17 @@ jobs:
       # The TypeScript branch. The release commit moved every package to the
       # tag's version (bun scripts/release.ts version X.Y.Z).
       - name: Require every package at the tag's version
-        id: packages
         if: steps.tag.outputs.kind == 'ts'
         env:
           VERSION: ${{ steps.tag.outputs.version }}
         run: |
-          # The smoke job waits for each of these names on the registry.
-          names=""
           for manifest in ts/packages/*/package.json; do
             got="$(jq -r .version "$manifest")"
             if [[ "$got" != "$VERSION" ]]; then
               echo "::error::$manifest is at version $got, not $VERSION; the release commit runs bun scripts/release.ts version $VERSION"
               exit 1
             fi
-            names="${names:+$names }$(jq -r .name "$manifest")"
           done
-          echo "names=$names" >>"$GITHUB_OUTPUT"
       - name: Check the TypeScript changelog has release notes
         if: steps.tag.outputs.kind == 'ts'
         env:
@@ -406,6 +403,10 @@ jobs:
       # The workflow's OIDC identity authenticates to npm through trusted
       # publishing and signs each package's provenance.
       id-token: write
+    outputs:
+      # Packages new to npm, space separated: they stay tarballs on the
+      # GitHub Release until a maintainer publishes them by hand.
+      unpublished: ${{ steps.plan.outputs.unpublished }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -429,44 +430,76 @@ jobs:
       # Trusted publishing needs npm 11.5.1 or later.
       - name: Install a pinned npm
         run: npm install --global npm@11.21.2
-      # No NODE_AUTH_TOKEN: npm exchanges the workflow's OIDC token for a
-      # short-lived publish credential.
-      - name: Publish the packages to npm with provenance
+      # npm trusted publishing cannot create a package, so a package new to
+      # npm is left out of npm and ships as a tarball on the GitHub Release.
+      # The plan fails, before anything publishes, when a package on npm
+      # depends on one that is not.
+      - name: Plan what publishes to npm
+        id: plan
         env:
           VERSION: ${{ needs.verify.outputs.version }}
-          PRERELEASE: ${{ needs.verify.outputs.prerelease }}
         run: |
-          # pack prints one tarball per package in dependency order, so each
-          # package publishes after the @libo11y/* packages it depends on.
           want="$(find ts/packages -mindepth 2 -maxdepth 2 -name package.json | wc -l)"
           got="$(wc -l <"$RUNNER_TEMP/tarballs.txt")"
           if [[ "$got" -ne "$want" ]]; then
             echo "::error::pack wrote $got tarballs for $want packages"
             exit 1
           fi
+          plan="$RUNNER_TEMP/packs/plan.tsv"
+          scripts/ts-npm-plan.sh plan "$VERSION" "$RUNNER_TEMP/tarballs.txt" >"$plan"
+          unpublished="$(scripts/ts-npm-plan.sh names "$plan" tarball)"
+          echo "unpublished=$unpublished" >>"$GITHUB_OUTPUT"
+          {
+            echo "### npm publish plan for $VERSION"
+            echo
+            echo "| Package | Action |"
+            echo "| --- | --- |"
+            while IFS=$'\t' read -r action pkg file; do
+              case "$action" in
+                publish) echo "| \`$pkg\` | publish to npm |" ;;
+                present) echo "| \`$pkg\` | already on npm |" ;;
+                new) echo "| \`$pkg\` | not on npm yet: \`$file\` on the GitHub Release only |" ;;
+              esac
+            done <"$plan"
+          } >>"$GITHUB_STEP_SUMMARY"
+          # PKG splits on spaces: npm package names have none.
+          for pkg in $unpublished; do
+            echo "::warning::$pkg is not on npm yet, so this release attaches its tarball to the GitHub Release and does not publish it. Publish its first version by hand and set up its trusted publisher (docs/CONVENTIONS.md)."
+          done
+      # The smoke job installs the tarballs that do not publish, and the
+      # GitHub Release attaches every tarball.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ts-packs
+          path: |
+            ${{ runner.temp }}/packs/*.tgz
+            ${{ runner.temp }}/packs/plan.tsv
+          if-no-files-found: error
+          retention-days: 30
+      # No NODE_AUTH_TOKEN: npm exchanges the workflow's OIDC token for a
+      # short-lived publish credential.
+      - name: Publish the packages to npm with provenance
+        env:
+          PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+        run: |
           # A prerelease must not move the latest dist-tag.
           dist_tag=latest
           if [[ "$PRERELEASE" == "true" ]]; then
             dist_tag=next
           fi
-          while IFS= read -r tarball; do
-            manifest="$(tar -xOf "$tarball" package/package.json)"
-            pkg="$(jq -r .name <<<"$manifest")"
-            pkg_version="$(jq -r .version <<<"$manifest")"
-            if [[ "$pkg_version" != "$VERSION" ]]; then
-              echo "::error::$tarball is $pkg@$pkg_version, not version $VERSION"
-              exit 1
-            fi
-            # npm view fails for a version the registry does not have.
-            if [[ "$(npm view "$pkg@$VERSION" version 2>/dev/null || true)" == "$VERSION" ]]; then
-              echo "$pkg@$VERSION is already on the registry; skipping it"
-              continue
-            fi
-            npm publish --provenance --access public --tag "$dist_tag" "$tarball"
-          done <"$RUNNER_TEMP/tarballs.txt"
+          # The plan lists the tarballs in dependency order, so each package
+          # publishes after the @libo11y/* packages it depends on.
+          while IFS=$'\t' read -r action pkg file; do
+            case "$action" in
+              publish) npm publish --provenance --access public --tag "$dist_tag" "$RUNNER_TEMP/packs/$file" </dev/null ;;
+              present) echo "$pkg is already on the registry at this version; skipping it" ;;
+              new) echo "$pkg is not on npm yet; skipping it" ;;
+            esac
+          done <"$RUNNER_TEMP/packs/plan.tsv"
 
   # The GitHub Release waits for the smoke job, so it only exists once the
-  # published packages install from the registry.
+  # published packages install from the registry. It attaches every packed
+  # tarball, so a package not on npm yet installs from the release.
   release-ts:
     needs: [verify, npm-smoke]
     runs-on: ubuntu-latest
@@ -477,6 +510,10 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: ts-packs
+          path: ${{ runner.temp }}/packs
       - name: Publish the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -485,15 +522,29 @@ jobs:
           VERSION: ${{ needs.verify.outputs.version }}
           PRERELEASE: ${{ needs.verify.outputs.prerelease }}
         run: |
+          packs="$RUNNER_TEMP/packs"
+          shopt -s nullglob
+          tarballs=("$packs"/*.tgz)
+          if ((${#tarballs[@]} == 0)); then
+            echo "::error::the ts-packs artifact holds no tarballs"
+            exit 1
+          fi
           notes="$RUNNER_TEMP/release-notes.md"
           scripts/release-notes.sh "$VERSION" ts/CHANGELOG.md >"$notes"
+          # A paragraph naming the packages not on npm yet, with the asset
+          # URLs to install them from, or nothing.
+          unpublished="$(scripts/ts-npm-plan.sh notes "$packs/plan.tsv" "$GH_REPO" "$TAG")"
+          if [[ -n "$unpublished" ]]; then
+            printf '\n%s\n' "$unpublished" >>"$notes"
+          fi
           title="@libo11y v$VERSION"
           # The Go main module's release stays the repository's Latest release.
           if gh release view "$TAG" >/dev/null; then
-            echo "$TAG already has a release; replacing its title and notes"
+            echo "$TAG already has a release; replacing its title, notes and tarballs"
             gh release edit "$TAG" --title "$title" --notes-file "$notes" --prerelease="$PRERELEASE" --latest=false
+            gh release upload "$TAG" "${tarballs[@]}" --clobber
           else
-            gh release create "$TAG" --title "$title" --notes-file "$notes" --verify-tag --prerelease="$PRERELEASE" --latest=false
+            gh release create "$TAG" "${tarballs[@]}" --title "$title" --notes-file "$notes" --verify-tag --prerelease="$PRERELEASE" --latest=false
           fi
 
   npm-smoke:
@@ -502,12 +553,12 @@ jobs:
     timeout-minutes: 20
     env:
       VERSION: ${{ needs.verify.outputs.version }}
-      PACKAGES: ${{ needs.verify.outputs.packages }}
       # Resolve like an external consumer: the public registry, no workspace.
       NPM_CONFIG_REGISTRY: https://registry.npmjs.org
     steps:
       # No cache, and only scripts/ checked out: every package comes from
-      # the registry, into consumers outside the checkout.
+      # the registry, or from its packed tarball when it is not on npm yet,
+      # into consumers outside the checkout.
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
@@ -518,19 +569,26 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.13"
+      # The publish job's tarballs and plan.tsv, which says which packages
+      # are on npm.
+      - uses: actions/download-artifact@v8
+        with:
+          name: ts-packs
+          path: ${{ runner.temp }}/packs
       - name: Wait for the published version on the registry
-        working-directory: ${{ runner.temp }}
         run: |
-          if [[ -z "$PACKAGES" ]]; then
-            echo "::error::the verify job listed no packages"
-            exit 1
+          packages="$(scripts/ts-npm-plan.sh names "$RUNNER_TEMP/packs/plan.tsv" registry)"
+          if [[ -z "$packages" ]]; then
+            echo "no package is on npm; every one installs from its tarball"
+            exit 0
           fi
+          cd "$RUNNER_TEMP"
           # 20 checks 30 seconds apart: time for the registry to serve the
           # new versions.
           for attempt in $(seq 1 20); do
             missing=""
-            # PACKAGES splits on spaces: npm package names have none.
-            for pkg in $PACKAGES; do
+            # packages splits on spaces: npm package names have none.
+            for pkg in $packages; do
               if [[ "$(npm view "$pkg@$VERSION" version 2>/dev/null || true)" != "$VERSION" ]]; then
                 missing="$missing $pkg"
               fi
@@ -543,12 +601,16 @@ jobs:
           done
           echo "::error::the registry did not serve$missing at $VERSION"
           exit 1
+      # Each smoke installs pkg@VERSION from the registry, or the packed
+      # tarball for a package not on npm yet (scripts/ts-npm-plan.sh specs).
       - name: Install and import the packages under Node
         run: |
+          specs_out="$(scripts/ts-npm-plan.sh specs "$RUNNER_TEMP/packs/plan.tsv" "$VERSION" @libo11y/server @libo11y/test)"
+          mapfile -t specs <<<"$specs_out"
           consumer="$(mktemp -d)"
           cd "$consumer"
           printf '{ "name": "libo11y-npm-smoke", "private": true, "type": "module" }\n' >package.json
-          npm install --no-audit --no-fund --ignore-scripts "@libo11y/server@$VERSION" "@libo11y/test@$VERSION"
+          npm install --no-audit --no-fund --ignore-scripts "${specs[@]}"
           got="$(node --input-type=module -e '
           import { instrumentServe } from "@libo11y/server";
           import { createRecorder } from "@libo11y/test";
@@ -572,10 +634,12 @@ jobs:
           npx --no-install libo11y registry check registry.yaml
       - name: Install and import the packages under Bun
         run: |
+          specs_out="$(scripts/ts-npm-plan.sh specs "$RUNNER_TEMP/packs/plan.tsv" "$VERSION" @libo11y/server @libo11y/test)"
+          mapfile -t specs <<<"$specs_out"
           consumer="$(mktemp -d)"
           cd "$consumer"
           printf '{ "name": "libo11y-bun-smoke", "private": true, "type": "module" }\n' >package.json
-          bun add "@libo11y/server@$VERSION" "@libo11y/test@$VERSION"
+          bun add "${specs[@]}"
           got="$(bun -e '
           import { instrumentServe } from "@libo11y/server";
           import { createRecorder } from "@libo11y/test";
@@ -595,10 +659,31 @@ jobs:
       # scripts/ts-release-check.sh does with the packed tarballs.
       - name: Install and bundle the browser packages
         run: |
+          specs_out="$(scripts/ts-npm-plan.sh specs "$RUNNER_TEMP/packs/plan.tsv" "$VERSION" @libo11y/web @libo11y/webext)"
+          mapfile -t specs <<<"$specs_out"
           consumer="$(mktemp -d)"
           printf '{ "name": "libo11y-browser-smoke", "private": true, "type": "module" }\n' >"$consumer/package.json"
-          (cd "$consumer" && npm install --no-audit --no-fund --ignore-scripts "@libo11y/web@$VERSION" "@libo11y/webext@$VERSION")
+          (cd "$consumer" && npm install --no-audit --no-fund --ignore-scripts "${specs[@]}")
           scripts/ts-browser-bundle-check.sh "$consumer" @libo11y/web=setup @libo11y/webext
+      # A package not on npm yet installs from its tarball, with its other
+      # dependencies from the registry, the way a consumer installs it from
+      # the GitHub Release. The check fails on an incomplete dependency tree
+      # or an entry point that does not resolve.
+      - name: Install the packages not on npm yet from their tarballs
+        run: |
+          plan="$RUNNER_TEMP/packs/plan.tsv"
+          unpublished="$(scripts/ts-npm-plan.sh names "$plan" tarball)"
+          if [[ -z "$unpublished" ]]; then
+            echo "every package is on npm"
+            exit 0
+          fi
+          read -ra pkgs <<<"$unpublished"
+          specs_out="$(scripts/ts-npm-plan.sh specs "$plan" "$VERSION" "${pkgs[@]}")"
+          mapfile -t specs <<<"$specs_out"
+          consumer="$(mktemp -d)"
+          printf '{ "name": "libo11y-tarball-smoke", "private": true, "type": "module" }\n' >"$consumer/package.json"
+          (cd "$consumer" && npm install --no-audit --no-fund --ignore-scripts "${specs[@]}")
+          scripts/ts-npm-plan.sh check "$consumer" "${pkgs[@]}"
 
   zig-release:
     needs: verify
