@@ -16,7 +16,7 @@ spec-check:
 	cd go && go run ./internal/specgen -root .. -check
 
 # Directories holding generated artifacts.
-GENERATED := go/spec go/internal/spectables docs/taxonomy spec/schemas ts/packages/spec/src/generated rust/libo11y-spec/src/generated zig/src/spec/generated
+GENERATED := go/spec go/internal/spectables docs/taxonomy spec/schemas ts/packages/spec/src/generated rust/libo11y-spec/src/generated zig/src/spec/generated python/src/libo11y/spec/_generated
 
 # Validate the registry, then regenerate go/spec, go/internal/spectables,
 # docs/taxonomy, spec/schemas, ts/packages/spec/src/generated,

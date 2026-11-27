@@ -483,6 +483,18 @@ func render(m *model) (map[string]string, error) {
 	outputs[zigSpecPath] = zigSpec
 	outputs[zigTablesPath] = zigTables
 	outputs[zigGoPrintPath] = genZigGoPrint()
+	pySpec, err := genPySpec(m)
+	if err != nil {
+		return nil, err
+	}
+	pyTables, err := genPyTables(m)
+	if err != nil {
+		return nil, err
+	}
+	outputs[pyInitPath] = genPyInit(m)
+	outputs[pySpecPath] = pySpec
+	outputs[pyTablesPath] = pyTables
+	outputs[pyGoPrintPath] = genPyGoPrint()
 	goSources := []struct{ rel, src string }{
 		{"go/spec/spec.go", genSpec(m)},
 		{"go/internal/spectables/tables.go", tables},
