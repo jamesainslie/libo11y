@@ -3,11 +3,14 @@ package o11yrum
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestNormalizeScriptPath(t *testing.T) {
@@ -217,5 +220,155 @@ func TestFileStoreListThroughAFile(t *testing.T) {
 	calls := 0
 	if err := s.List(ctx, "replay/ns/a.json/", func(ObjectInfo) error { calls++; return nil }); err != nil || calls != 0 {
 		t.Fatalf("%d calls, %v", calls, err)
+	}
+}
+
+func TestFileStoreDeleteRemovesEmptyDirectories(t *testing.T) {
+	root := t.TempDir()
+	s, err := NewFileStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for _, k := range []string{"replay/a/s1/000000.json.gz", "replay/a/s1/000000.meta.json", "replay/a/s2/000000.json.gz"} {
+		if err := s.Put(ctx, k, []byte("x")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Delete(ctx, "replay/a/s1/000000.json.gz"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "replay", "a", "s1")); err != nil {
+		t.Fatalf("a directory still holding an object was removed: %v", err)
+	}
+	if err := s.Delete(ctx, "replay/a/s1/000000.meta.json"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "replay", "a", "s1")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the emptied directory remains: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "replay", "a", "s2")); err != nil {
+		t.Fatalf("a sibling directory went: %v", err)
+	}
+	if err := s.Delete(ctx, "replay/a/s2/000000.json.gz"); err != nil {
+		t.Fatal(err)
+	}
+	if entries, err := os.ReadDir(root); err != nil || len(entries) != 0 {
+		t.Fatalf("root %v %v, want it empty and present", entries, err)
+	}
+	// Put recreates what Delete removed.
+	if err := s.Put(ctx, "replay/a/s1/000001.json.gz", []byte("y")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFileStorePutRacesDelete(t *testing.T) {
+	s, err := NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	var wg sync.WaitGroup
+	errs := make(chan error, 400)
+	for i := range 200 {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			errs <- s.Put(ctx, fmt.Sprintf("replay/a/s/%06d.json.gz", i), []byte("x"))
+		}()
+		go func() {
+			defer wg.Done()
+			errs <- s.Delete(ctx, fmt.Sprintf("replay/a/s/%06d.json.gz", i))
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestFileStoreListsStaleTempFiles(t *testing.T) {
+	root := t.TempDir()
+	s, err := NewFileStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := s.Put(ctx, "replay/a/s1/000000.json.gz", []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	// A Put that died left its temporary file; another is in flight.
+	dir := filepath.Join(root, "replay", "a", "s1")
+	for _, name := range []string{".put-1111", ".put-2222"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("segment"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(filepath.Join(dir, ".put-1111"), old, old); err != nil {
+		t.Fatal(err)
+	}
+	var keys []string
+	if err := s.List(ctx, "replay/a/s1/", func(o ObjectInfo) error { keys = append(keys, o.Key); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"replay/a/s1/.put-1111", "replay/a/s1/000000.json.gz"}; !slices.Equal(keys, want) {
+		t.Fatalf("listed %v, want %v: a stale temporary file is listed, a fresh one is not", keys, want)
+	}
+	for _, k := range keys {
+		if err := s.Delete(ctx, k); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".put-1111")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the stale temporary file survived: %v", err)
+	}
+}
+
+func TestFileStoreDeleteKeepsSymlinkedDirectories(t *testing.T) {
+	root, target := t.TempDir(), t.TempDir()
+	if err := os.Symlink(target, filepath.Join(root, "replay")); err != nil {
+		t.Fatal(err)
+	}
+	s, err := NewFileStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := os.MkdirAll(filepath.Join(target, "a"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "a", "x"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Delete(ctx, "replay/a/x"); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Lstat(filepath.Join(root, "replay")); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the symbolic link was removed: %v", err)
+	}
+}
+
+func TestFileStoreDeleteWithRelativeRoot(t *testing.T) {
+	t.Chdir(t.TempDir())
+	s, err := NewFileStore(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := s.Put(ctx, "replay/a/s1/x", []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Delete(ctx, "replay/a/s1/x"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat("replay"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("emptied directories remain under a relative root: %v", err)
+	}
+	if _, err := os.Stat("."); err != nil {
+		t.Fatal(err)
 	}
 }

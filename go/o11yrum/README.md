@@ -285,7 +285,8 @@ A retried upload overwrites both. When the client's `sent_at` differs from
 the gateway's clock by `edge.clock_skew_threshold` or more, every event
 timestamp, the envelope's `start` and `end` and each view's and request's
 `at` are shifted by the difference, which `clock_offset_ms` records. On
-S3, grant the gateway's role `s3:DeleteObject` as well, for erasure and
+S3, grant the gateway's role `s3:ListBucket` on the bucket and
+`s3:DeleteObject` on its objects as well, for the read API, erasure and
 retention.
 
 The gateway's own metrics: `o11yrum.replay.segments` counts uploads by
@@ -295,8 +296,128 @@ app, `o11yrum.outcome` (`accepted` or `rejected`) and `o11yrum.reason`.
 and reason: `input`, `canvas`, `font`, `log`, `type`, `stylesheet` (a CSSOM
 edit of a style or link element whose stylesheet is not allowed), `source`
 (another incremental source) and `invalid`.
-`o11yrum.replay.store.duration` times each store write by
-`o11yrum.operation` and `o11yrum.outcome`.
+`o11yrum.replay.store.duration` times each store operation by
+`o11yrum.operation` (`put`, `get`, `list` or `delete`) and
+`o11yrum.outcome`.
+
+### Retention
+
+`replay.retention` (default `720h`, 30 days) is how long a segment is
+kept. The read API never serves a segment whose `stored_at` is that old
+or older, even while its objects remain, so expiry holds when deletion
+lags. The gateway also sweeps the store every `replay.sweep_interval`
+(default `1h`). A pass lists `replay/` and deletes every object last
+written longer ago than the retention. It runs for any store that can
+list and delete, even when no app records now, so recordings stored
+before replay was switched off still expire. On a store that holds only
+source maps, set `sweep_interval: 0s` to skip the listing. The first
+pass runs one interval after start, so a restart does not sweep at once.
+Several replicas sweeping at the same time is harmless. `o11yrum.replay.swept` counts the objects a pass deleted
+(`o11yrum.outcome=ok`) or failed to delete (`error`). A failed delete
+does not stop the pass.
+
+```yaml
+replay:
+  retention: 720h
+  sweep_interval: 1h  # 0s disables the sweeper
+```
+
+On S3, listing a large bucket every hour costs requests. Set
+`sweep_interval: 0s` and let a bucket lifecycle rule on the `replay/`
+prefix expire objects instead. Prefix the rule's `Prefix` with the
+store's `prefix` when one is set, for example `o11yrum/replay/`, and
+match its `Days` to the retention:
+
+```json
+{ "Rules": [ { "ID": "o11yrum-replay-retention", "Filter": { "Prefix": "replay/" }, "Status": "Enabled", "Expiration": { "Days": 30 } } ] }
+```
+
+S3 expires objects up to a day or so after they are due. The read API's
+own check covers that gap.
+
+Keep the replay bucket unversioned. On a versioned bucket, a delete, and
+a lifecycle `Expiration`, only adds a delete marker. Every earlier
+version stays readable to anyone with `s3:GetObjectVersion`, so neither
+retention nor erasure removes the data. If the bucket must be versioned,
+add `NoncurrentVersionExpiration` with `NoncurrentDays: 1` and
+`ExpiredObjectDeleteMarker: true` to the rule, and know that erased data
+lingers for that day.
+
+### The read API and erasure
+
+The read API serves stored recordings to a player backend, such as a
+future Grafana app plugin, which calls it server side. It also erases a
+session's recording. It is cluster-internal only:
+
+- The `o11yrum-gateway` command serves it on its own listener,
+  `replay.read_listen`, and never under the public `/_o11y/` path or on
+  the `listen` address. A configuration whose `read_listen` is `listen`,
+  or the same port on an address `listen` also binds, is refused. So is
+  a `read_listen` without `read_token_file`.
+- Do not route an ingress, a public load balancer or a CDN to it. Give it
+  its own container port and, if anything outside the pod needs it, its
+  own ClusterIP Service, with a NetworkPolicy that admits only the player
+  backend. A Service reaches it only when `read_listen` binds the pod's
+  address, such as `:9090`. A loopback address such as `127.0.0.1:9090`
+  admits callers in the same pod only.
+- Every request needs `Authorization: Bearer <token>` with a token from
+  `replay.read_token_file`: one per line, blank lines and `#` comments
+  ignored, each at least 16 visible ASCII characters with no space. A
+  byte order mark at the start of the file is ignored. A library user who serves
+  `Handler.ReplayReadHandler` without the file gets 401 for every
+  request. Several lines let a token rotate without downtime: add the
+  new one, restart, move the caller over, remove the old one, restart.
+  The gateway reads the file at start.
+
+```yaml
+replay:
+  read_listen: 127.0.0.1:9090      # empty, the default, serves no read API
+  read_token_file: /run/secrets/o11yrum-replay-read
+```
+
+| Route | Answer | Refusals |
+|---|---|---|
+| `GET /v1/replay/{service}/sessions/{session}` | 200 `{"service","session","segments":[...]}`: each unexpired segment's metadata object, sorted by segment | 401, 400 bad session, 404 unknown or non-recording service or no unexpired segment, 503 with `Retry-After: 5` |
+| `GET /v1/replay/{service}/sessions/{session}/segments/{segment}` | 200 the stored segment, gzipped JSON, with `Content-Encoding: gzip` | 401, 400 bad session or segment, 404 unknown, missing or expired, 503 with `Retry-After: 5` |
+| `DELETE /v1/replay/{service}/sessions/{session}` | 200 `{"service","session","deleted":<objects>,"segments":[...]}` | 401, 400 bad session, 404 unknown service, 503 with `Retry-After: 5` and what was deleted so far |
+
+Every answer carries `Cache-Control: private, no-store` and no CORS
+headers. A request without a valid token answers 401 with
+`WWW-Authenticate: Bearer` whatever its path, so the listener tells an
+unauthenticated caller nothing, not even which routes exist. The gateway
+never logs a token or a session ID. `o11yrum.replay.reads` counts
+requests by `o11yrum.operation` (`list`, `get`, `delete` or `other`) and
+`o11yrum.outcome` (`ok`, `unauthorized`, `bad_request`, `not_found` or
+`error`).
+
+The segment route answers the object as stored, which is gzipped JSON.
+The S3 store labels every object `application/json`, so the read API sets
+`Content-Encoding: gzip` itself. A client that does not inflate
+responses on its own must gunzip the body.
+
+Erasure is the primitive for a subject access or erasure request. It
+deletes every object under `replay/<namespace>/<session.id>/`, expired or
+not, and reports how many objects it removed and which segments they
+held. It is idempotent: erasing a session with nothing stored answers 200
+with `"deleted": 0`, and a retry after a 503 finishes the job. It serves
+every configured app with a usable replay namespace, including an app
+that no longer has `replay.enabled`, so recordings stored before replay
+was switched off can still be erased. On the filesystem store it also
+removes the session's emptied directory, and the temporary file of an
+upload whose process died, once that file is ten minutes old. Erasure
+does not reach a versioned S3 bucket's earlier versions; see Retention. To erase a session:
+
+```sh
+curl -fsS -X DELETE -H "Authorization: Bearer $TOKEN" \
+  http://<read_listen>/v1/replay/<service>/sessions/<session.id>
+```
+
+Erasure removes what is stored when it runs. A session that is still
+recording keeps uploading segments, which are stored again. Revoke
+consent in the client first, or erase again after the session ends.
+
+A library user serves the read API with `Handler.ReplayReadHandler`, on a
+server of its own. `Handler.ServeHTTP` does not serve it.
 
 ## Deploying
 
@@ -317,7 +438,9 @@ an `exec` probe or hook cannot work. Probe over HTTP.
 
 Mount the configuration from a ConfigMap under the key `config.yaml`, and
 each upload token from a Secret at the path its `upload_token_file`
-names. `OTEL_EXPORTER_OTLP_ENDPOINT` names the collector for the
+names. Mount the replay read tokens from a Secret at
+`replay.read_token_file` in the same way.
+`OTEL_EXPORTER_OTLP_ENDPOINT` names the collector for the
 gateway's own telemetry, and for the batches too unless the configuration
 sets `sinks.otlp.endpoint`. On EKS, give the
 service account an S3 role through Pod Identity or IRSA when the object

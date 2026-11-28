@@ -22,8 +22,37 @@ adheres to [Semantic Versioning](https://semver.org/).
   of an object store, implemented by `FileStore` and the S3 store. Replay
   needs both.
 - Self-telemetry for replay: `o11yrum.replay.segments`,
-  `o11yrum.replay.bytes`, `o11yrum.replay.events.dropped` and
-  `o11yrum.replay.store.duration`.
+  `o11yrum.replay.bytes`, `o11yrum.replay.events.dropped`,
+  `o11yrum.replay.store.duration`, `o11yrum.replay.reads` and
+  `o11yrum.replay.swept`.
+- The replay read API, `Handler.ReplayReadHandler`: list a session's
+  segment metadata, read one gzipped segment, and erase a session. Every
+  request needs a bearer token from `replay.read_token_file`, and without
+  that file every request answers 401. Erasure deletes every object of
+  the session, is idempotent and reports what it removed. The
+  `o11yrum-gateway` command serves the API on its own listener,
+  `replay.read_listen`, never on the public `/_o11y/` path. The
+  configuration is refused when `read_listen` overlaps `listen` or has no
+  `read_token_file`.
+- Replay retention: `replay.retention` (default 720h). The read API never
+  serves a segment stored longer ago, and a sweeper deletes older replay
+  objects every `replay.sweep_interval` (default 1h, `0s` disables). The
+  sweeper runs for any object store that can list and delete, also when
+  no app records, so a gateway with a filesystem or S3 store that holds
+  only source maps now lists `replay/` once an interval. Set
+  `sweep_interval: 0s` there to skip it.
+
+### Changed
+
+- `FileStore.Delete` removes the directories a deletion leaves empty, up
+  to the store's root, so an erased session leaves no directory named
+  after it. `FileStore.Put` recreates them. It never removes a symbolic
+  link.
+- `FileStore.List` reports a temporary file older than ten minutes, the
+  remains of a `Put` whose process died, as an object, so erasure and
+  retention delete it.
+- Two apps can no longer share a replay namespace, which would let the
+  read API and erasure of one reach the other's recordings.
 
 ## [0.1.0] - 2026-11-27
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 )
 
 const replayApp = "apps:\n  - service_name: shop-web\n    origins: [https://shop.example]\n    replay: {enabled: true}\n"
@@ -137,5 +138,76 @@ func TestReplayMaxConcurrent(t *testing.T) {
 	}
 	if _, err := ParseConfig([]byte("replay: {max_concurrent: -1}\n" + replayApp)); err == nil || !strings.Contains(err.Error(), "replay.max_concurrent") {
 		t.Fatalf("negative: %v", err)
+	}
+}
+
+func TestReplayRetentionDefaults(t *testing.T) {
+	cfg, err := ParseConfig([]byte(replayApp))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := cfg.Replay
+	if r.Retention != 720*time.Hour {
+		t.Errorf("retention %v, want 720h", r.Retention)
+	}
+	if r.SweepInterval == nil || *r.SweepInterval != time.Hour {
+		t.Errorf("sweep interval %v, want 1h", r.SweepInterval)
+	}
+	if r.sweepEvery() != time.Hour {
+		t.Errorf("sweepEvery %v", r.sweepEvery())
+	}
+	if r.ReadListen != "" || r.ReadTokenFile != "" {
+		t.Errorf("the read API is on by default: %+v", r)
+	}
+	off, err := ParseConfig([]byte("replay: {sweep_interval: 0s, retention: 48h}\n" + replayApp))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if off.Replay.sweepEvery() != 0 || off.Replay.Retention != 48*time.Hour {
+		t.Errorf("explicit values %+v", off.Replay)
+	}
+	// A Config built in code takes the defaults for zero fields too.
+	code := &Config{Apps: []AppConfig{{ServiceName: "a", AllowMissingOrigin: true}}}
+	code.applyDefaults()
+	if code.Replay.Retention != 720*time.Hour || code.Replay.sweepEvery() != time.Hour {
+		t.Errorf("code-built defaults %+v", code.Replay)
+	}
+}
+
+func TestReplayReadValidation(t *testing.T) {
+	for name, tc := range map[string]struct{ yaml, want string }{
+		"negative retention":    {"replay: {retention: -1h}\n" + replayApp, "replay.retention"},
+		"negative sweep":        {"replay: {sweep_interval: -1m}\n" + replayApp, "replay.sweep_interval"},
+		"listen without tokens": {"replay: {read_listen: \"127.0.0.1:9090\"}\n" + replayApp, "replay.read_token_file"},
+		"same as listen":        {"listen: \":8080\"\nreplay: {read_listen: \":8080\", read_token_file: t}\n" + replayApp, "replay.read_listen"},
+		"default listen":        {"replay: {read_listen: \"0.0.0.0:8080\", read_token_file: t}\n" + replayApp, "listen"},
+		"wildcard ingest":       {"listen: \":9000\"\nreplay: {read_listen: \"127.0.0.1:9000\", read_token_file: t}\n" + replayApp, "replay.read_listen"},
+		"wildcard read":         {"listen: \"10.0.0.5:9000\"\nreplay: {read_listen: \"[::]:9000\", read_token_file: t}\n" + replayApp, "replay.read_listen"},
+		"shared namespace":      {"apps:\n  - service_name: web\n    origins: [https://a.example]\n    replay: {enabled: true}\n  - service_name: admin\n    origins: [https://a.example]\n    replay: {namespace: web}\n", "replay namespace web"},
+		"bad read address":      {"replay: {read_listen: \"no-port\", read_token_file: t}\n" + replayApp, "replay.read_listen"},
+	} {
+		_, err := ParseConfig([]byte(tc.yaml))
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err %v, want it to mention %q", name, err, tc.want)
+		}
+	}
+	for name, yaml := range map[string]string{
+		"own port":       "listen: \":8080\"\nreplay: {read_listen: \"127.0.0.1:9090\", read_token_file: t}\n" + replayApp,
+		"both ephemeral": "listen: \"127.0.0.1:0\"\nreplay: {read_listen: \"127.0.0.1:0\", read_token_file: t}\n" + replayApp,
+		"other host":     "listen: \"10.0.0.5:8080\"\nreplay: {read_listen: \"127.0.0.1:8080\", read_token_file: t}\n" + replayApp,
+	} {
+		if _, err := ParseConfig([]byte(yaml)); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+func TestReplayConfigCloneSweepInterval(t *testing.T) {
+	every := time.Minute
+	cfg := &Config{Replay: ReplayConfig{SweepInterval: &every}}
+	c := cfg.clone()
+	*c.Replay.SweepInterval = time.Hour
+	if every != time.Minute {
+		t.Fatal("clone shares the sweep interval")
 	}
 }

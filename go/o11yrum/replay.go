@@ -151,7 +151,7 @@ func (h *Handler) serveReplay(w http.ResponseWriter, r *http.Request) {
 	}
 	meta, gz, err := encodeReplay(doc, events)
 	if err != nil {
-		h.log.ErrorContext(ctx, "o11yrum: encoding a replay segment", slog.String(telApp, label), slog.Any("error", err))
+		h.log.ErrorContext(ctx, "o11yrum: encoding a replay segment", slog.String(telApp, label), replayErrorAttr(err))
 		refuse(a.origins, rejection{status: http.StatusInternalServerError, reason: "encode"})
 		return
 	}
@@ -165,7 +165,7 @@ func (h *Handler) serveReplay(w http.ResponseWriter, r *http.Request) {
 		{replayMetaKey(a.replayNS, session, segment), meta},
 	} {
 		if err := h.putReplay(ctx, o.key, o.data); err != nil {
-			h.log.WarnContext(ctx, "o11yrum: storing a replay segment failed", slog.String(telApp, label), slog.Any("error", err))
+			h.log.WarnContext(ctx, "o11yrum: storing a replay segment failed", slog.String(telApp, label), replayErrorAttr(err))
 			refuse(a.origins, rejection{status: http.StatusServiceUnavailable, reason: "store", retryAfter: storeRetryAfterDuration})
 			return
 		}

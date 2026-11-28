@@ -528,3 +528,27 @@ func TestReplaySlowUploadHoldsNoSlot(t *testing.T) {
 		t.Errorf("truncated upload: %d", code)
 	}
 }
+
+// keyedFailStore fails every write with an error naming the key, as the
+// S3 store's errors do.
+type keyedFailStore struct{ failingReplayStore }
+
+func (keyedFailStore) Put(_ context.Context, key string, _ []byte) error {
+	return fmt.Errorf("put %s: disk full", key)
+}
+
+func TestReplayStoreFailureLogsNoSession(t *testing.T) {
+	f := newReplayFixture(t, replayConfig, keyedFailStore{})
+	if w := postReplay(t, f.h, replayQuery("shop-web"), sampleEnvelope(), true); w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status %d", w.Code)
+	}
+	logs := f.rec.Logs()
+	if len(logs) == 0 {
+		t.Fatal("the store failure was not logged")
+	}
+	for _, l := range logs {
+		if line := l.Record.Message + attrsOf(l); strings.Contains(line, replaySession) {
+			t.Errorf("log %q names the session", line)
+		}
+	}
+}

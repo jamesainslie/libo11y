@@ -1,6 +1,7 @@
 package o11yrum
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -31,6 +32,11 @@ type Handler struct {
 	symbols *symbolicator
 	// replaySlots holds one token per replay segment being handled.
 	replaySlots chan struct{}
+	// reader serves the replay read API on its own listener.
+	reader *replayReader
+	// sweepStop is nil without a retention sweeper; sweepDone waits for it.
+	sweepStop context.CancelFunc
+	sweepDone sync.WaitGroup
 
 	// derive is nil without WithMetricProducer.
 	derive           *deriver
@@ -113,6 +119,9 @@ func NewHandler(opts ...Option) (*Handler, error) {
 		}
 	}
 	h.replaySlots = make(chan struct{}, cfg.Replay.MaxConcurrent)
+	if h.reader, err = newReplayReader(h, cfg.resolvePath(cfg.Replay.ReadTokenFile)); err != nil {
+		return nil, err
+	}
 	if h.store != nil {
 		h.symbols = newSymbolicator(h.store, cfg.Symbolication, symbolicatorDeps{
 			maxValueLen: cfg.Limits.MaxValueLength,
@@ -146,6 +155,13 @@ func NewHandler(opts ...Option) (*Handler, error) {
 			return nil, err
 		}
 	}
+	// The sweeper starts last, so a failed NewHandler leaves none running.
+	// It runs for any store that can list and delete, not only while an
+	// app records, so recordings stored before replay was switched off
+	// still expire.
+	if every := cfg.Replay.sweepEvery(); every > 0 && checkReplayStore(h.store) == nil {
+		h.startSweeper(every)
+	}
 	return h, nil
 }
 
@@ -166,6 +182,10 @@ func objectStore(cfg *Config, given ObjectStore) (ObjectStore, error) {
 // Close releases background resources. It is safe to call more than once.
 func (h *Handler) Close() error {
 	h.closeOnce.Do(func() {
+		if h.sweepStop != nil {
+			h.sweepStop()
+			h.sweepDone.Wait()
+		}
 		if h.unregisterDerive != nil {
 			h.closeErr = h.unregisterDerive()
 		}

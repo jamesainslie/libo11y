@@ -137,12 +137,9 @@ func (s *FileStore) Put(_ context.Context, key string, data []byte) (err error) 
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(p), 0o750); err != nil {
-		return fmt.Errorf("o11yrum: file store: %w", err)
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(p), ".put-*")
+	tmp, err := s.createTemp(filepath.Dir(p))
 	if err != nil {
-		return fmt.Errorf("o11yrum: file store: %w", err)
+		return err
 	}
 	defer func() {
 		if err != nil {
@@ -162,6 +159,29 @@ func (s *FileStore) Put(_ context.Context, key string, data []byte) (err error) 
 	return nil
 }
 
+// createTemp creates the temporary file for an object in dir, creating dir
+// first. Delete removes directories it empties, so a Delete between the
+// two steps, or inside MkdirAll, can remove a directory again; the steps
+// are then retried.
+func (s *FileStore) createTemp(dir string) (*os.File, error) {
+	var err error
+	for range 8 {
+		var tmp *os.File
+		if err = os.MkdirAll(dir, 0o750); err == nil {
+			tmp, err = os.CreateTemp(dir, tempPrefix+"*")
+		}
+		if err == nil {
+			return tmp, nil
+		}
+		// MkdirAll answers either error when a directory it walks is
+		// removed under it.
+		if !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, fs.ErrExist) {
+			break
+		}
+	}
+	return nil, fmt.Errorf("o11yrum: file store: %w", err)
+}
+
 // Get reads the object under key.
 func (s *FileStore) Get(_ context.Context, key string) ([]byte, error) {
 	p, err := s.path(key)
@@ -179,8 +199,21 @@ func (s *FileStore) Get(_ context.Context, key string) ([]byte, error) {
 }
 
 // tempPrefix starts the name of the temporary file Put writes beside an
-// object. List skips such files: they are not objects yet.
+// object. List skips such files while they are fresh: they are not
+// objects yet.
 const tempPrefix = ".put-"
+
+// staleTempAge is how old a temporary file must be before List treats it
+// as the remains of a Put that died, such as when the process was killed.
+// Such a file can hold a segment, so List reports it as an object, and
+// erasure and the retention sweeper delete it like any other.
+const staleTempAge = 10 * time.Minute
+
+// staleTemp reports whether a temporary file is older than staleTempAge.
+func staleTemp(e fs.DirEntry) bool {
+	info, err := e.Info()
+	return err == nil && time.Since(info.ModTime()) > staleTempAge
+}
 
 // List calls fn for every object whose key starts with prefix, in key
 // order. prefix follows the key rules of Put, except that it may be empty
@@ -242,7 +275,7 @@ func (s *FileStore) walk(ctx context.Context, dir, prefix string, fn func(Object
 			if d := key + "/"; strings.HasPrefix(d, prefix) || strings.HasPrefix(prefix, d) {
 				list = append(list, entry{key: d, isDir: true, e: e})
 			}
-		case e.Type().IsRegular() && !strings.HasPrefix(e.Name(), tempPrefix) && strings.HasPrefix(key, prefix):
+		case e.Type().IsRegular() && strings.HasPrefix(key, prefix) && (!strings.HasPrefix(e.Name(), tempPrefix) || staleTemp(e)):
 			list = append(list, entry{key: key, e: e})
 		}
 	}
@@ -269,7 +302,9 @@ func (s *FileStore) walk(ctx context.Context, dir, prefix string, fn func(Object
 }
 
 // Delete removes the object under key. A missing key is not an error.
-// Directories the deletion leaves empty stay: Put recreates them anyway.
+// Directories the deletion leaves empty are removed too, up to the root,
+// so an erased session leaves no directory named after it and expired
+// sessions do not pile up as empty directories. Put recreates them.
 func (s *FileStore) Delete(_ context.Context, key string) error {
 	p, err := s.path(key)
 	if err != nil {
@@ -278,5 +313,24 @@ func (s *FileStore) Delete(_ context.Context, key string) error {
 	if err := os.Remove(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("o11yrum: file store: %w", err)
 	}
+	s.removeEmptyParents(filepath.Dir(p))
 	return nil
+}
+
+// removeEmptyParents removes dir and its parents below the root while they
+// are empty. Removing a directory that still holds anything, such as
+// another object or a Put's temporary file, fails and ends the walk; that
+// is the expected way out, not an error.
+// A symbolic link is never removed, even when what it points to is empty.
+func (s *FileStore) removeEmptyParents(dir string) {
+	for {
+		rel, err := filepath.Rel(s.root, dir)
+		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return
+		}
+		if fi, err := os.Lstat(dir); err != nil || !fi.IsDir() || os.Remove(dir) != nil {
+			return
+		}
+		dir = filepath.Dir(dir)
+	}
 }
