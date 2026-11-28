@@ -16,7 +16,9 @@
 // set it must include o11yrum.
 //
 // With an object_store configured, the gateway accepts source map uploads
-// at /_o11y/v1/sourcemaps and symbolicates error stacks. An s3 store
+// at /_o11y/v1/sourcemaps and symbolicates error stacks, and stores the
+// session replay segments of apps that enable replay at
+// /_o11y/v1/replay. An s3 store
 // authenticates with the AWS SDK's default credential chain, so on EKS
 // Pod Identity or IRSA supplies credentials and no static key is needed.
 package main

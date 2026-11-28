@@ -8,6 +8,22 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Session replay ingest at `POST /_o11y/v1/replay`, off until an app sets
+  `replay.enabled`. Each segment is scrubbed again with the collector's
+  rules, which the shared vectors in `conformance/rum-replay` hold both
+  implementations to, and stored with its metadata under
+  `replay/<namespace>/<session.id>/`. The gateway masks all text unless
+  the operator sets the app's `replay.unmasked_text`. The `replay` section
+  caps the body, the inflated body and the events of one segment.
+- `ObjectLister`, `ObjectDeleter` and `ObjectInfo`, optional interfaces
+  of an object store, implemented by `FileStore` and the S3 store. Replay
+  needs both.
+- Self-telemetry for replay: `o11yrum.replay.segments`,
+  `o11yrum.replay.bytes`, `o11yrum.replay.events.dropped` and
+  `o11yrum.replay.store.duration`.
+
 ## [0.1.0] - 2026-11-27
 
 The first release. It requires `github.com/jamesainslie/libo11y/go`

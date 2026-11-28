@@ -641,3 +641,85 @@ func writeTestFile(t *testing.T, path, content string) {
 		t.Fatal(err)
 	}
 }
+
+func TestServeReplay(t *testing.T) {
+	quietTelemetry(t)
+	dir := t.TempDir()
+	writeTestFile(t, filepath.Join(dir, "gateway.yaml"), `listen: 127.0.0.1:0
+environment: test
+object_store: {filesystem: {root: store}}
+apps:
+  - service_name: shop-web
+    origins: ["https://shop.example"]
+    replay: {enabled: true}
+`)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pr, pw := io.Pipe()
+	defer func() { _ = pw.Close() }()
+	done := make(chan int, 1)
+	go func() { done <- run(ctx, []string{"-config", filepath.Join(dir, "gateway.yaml")}, io.Discard, pw) }()
+	base := "http://" + waitForListening(t, pr)
+	const session = "0b7e5c1e-6f2a-4c55-9b1e-1f2d3c4b5a69"
+	var body bytes.Buffer
+	zw := gzip.NewWriter(&body)
+	_, _ = io.WriteString(zw, `{"format":1,"recording":"rec_0123456789","start":1,"end":2,"views":[],"requests":[],
+	  "events":[{"type":2,"timestamp":1,"data":{"node":{"type":3,"id":1,"textContent":"Jane Doe"},"initialOffset":{"top":0,"left":0}}}]}`)
+	_ = zw.Close()
+	req, err := http.NewRequest(http.MethodPost, base+"/_o11y/v1/replay?service=shop-web&segment=0&session="+session, &body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Encoding", "gzip")
+	req.Header.Set("Origin", "https://shop.example")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+	entries, err := os.ReadDir(filepath.Join(dir, "store", "replay", "shop-web", session))
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("stored objects: %v %v", entries, err)
+	}
+	cancel()
+	if code := <-done; code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+}
+
+func TestCheckConfigReplay(t *testing.T) {
+	t.Setenv("AWS_ACCESS_KEY_ID", "test")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
+	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
+	t.Setenv("AWS_CONFIG_FILE", "/nonexistent")
+	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", "/nonexistent")
+	const apps = `apps:
+  - service_name: shop-web
+    origins: ["https://shop.example"]
+    replay: {enabled: true}
+`
+	for name, tc := range map[string]struct {
+		yaml string
+		ok   bool
+	}{
+		"s3 store": {"environment: test\nobject_store:\n  s3: {bucket: b, region: eu-west-1, endpoint: \"http://127.0.0.1:1\", use_path_style: true}\n" + apps, true},
+		"no store": {"environment: test\n" + apps, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeTestFile(t, filepath.Join(dir, "gateway.yaml"), tc.yaml)
+			var errOut bytes.Buffer
+			code := run(context.Background(), []string{"-check-config", "-config", filepath.Join(dir, "gateway.yaml")}, io.Discard, &errOut)
+			if (code == 0) != tc.ok {
+				t.Fatalf("code %d: %s", code, errOut.String())
+			}
+			if !tc.ok && !strings.Contains(errOut.String(), "replay needs an object store") {
+				t.Fatalf("stderr %q", errOut.String())
+			}
+		})
+	}
+}

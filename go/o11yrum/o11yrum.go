@@ -195,6 +195,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.serveUpload(w, r)
+	case pathPrefix + "replay":
+		if h.store == nil {
+			http.NotFound(w, r)
+			return
+		}
+		h.serveReplay(w, r)
 	default:
 		http.NotFound(w, r)
 	}
