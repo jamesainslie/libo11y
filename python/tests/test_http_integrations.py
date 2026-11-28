@@ -114,8 +114,8 @@ async def test_asgi_starlette_route_canonical_server_timing_and_exemplars() -> N
             resp = await client.get("/orders/99")
             assert resp.status_code == 200
             assert resp.text == "order:99"
-            st_hdr = resp.headers.get("server-timing", "")
-            assert st_hdr.startswith('traceparent;desc="00-')
+            # Server-Timing goes on HTML responses only, as in go/o11yhttp.
+            assert "server-timing" not in resp.headers
 
             # Ignored paths emit nothing; /debug/a/b is NOT ignored because * doesn't cross /
             assert (await client.get("/healthz")).status_code == 200
@@ -320,8 +320,13 @@ def test_wsgi_django_route_template() -> None:
 
     dj_wsgi = importlib.import_module("django.core.wsgi")
     dj_app = cast(o11y_wsgi.WSGIApp, dj_wsgi.get_wsgi_application())
+    # Settings are configured once per process, possibly by another test module.
+    overrides = importlib.import_module("django.test.utils")
 
-    with start_recorder(service_name="wsgi-django") as rec:
+    with (
+        overrides.override_settings(ROOT_URLCONF=__name__),
+        start_recorder(service_name="wsgi-django") as rec,
+    ):
         wrapped = o11y_wsgi.WSGIMiddleware(dj_app, telemetry=rec.telemetry)
         statuses: list[str] = []
 

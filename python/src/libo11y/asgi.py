@@ -2,94 +2,261 @@
 
 from __future__ import annotations
 
-import importlib
-import sys
-import time
-from collections.abc import Awaitable, Callable, MutableMapping, Sequence
-from typing import TYPE_CHECKING, Any, cast
+from collections.abc import Awaitable, Callable, Iterable, Mapping, MutableMapping, Sequence
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Final, Protocol, cast
 
-from opentelemetry import context, trace
-from opentelemetry.trace import INVALID_SPAN, Link, SpanKind, StatusCode
+from opentelemetry import context
+from opentelemetry.util.types import AttributeValue
 
 from libo11y._internal.http_common import (
+    InstrumentResolver,
+    ServerExchange,
+    bind_route_slot,
     compile_ignore_patterns,
-    emit_http_summary,
-    error_type_for_exception,
-    error_type_for_status,
-    extract_inbound_context,
+    django_route,
+    is_django_handler,
     is_path_ignored,
-    normalize_method,
-    resolve_http_primitives,
-    server_status_code,
-    server_timing_header,
-    span_method_name,
+    reset_route_slot,
+    set_current_route,
 )
 from libo11y.record import start_record
 
 if TYPE_CHECKING:
     from libo11y.telemetry import Telemetry
 
+# ASGI scopes and messages are dicts whose value types depend on the key. The
+# value type is Any, as in Starlette's and asgiref's aliases, so Starlette,
+# FastAPI and Django applications type-check when passed in. The middleware
+# checks the type of every value it reads.
 type ASGIScope = MutableMapping[str, Any]
-type ASGIReceive = Callable[[], Awaitable[MutableMapping[str, Any]]]
-type ASGISend = Callable[[MutableMapping[str, Any]], Awaitable[None]]
+type ASGIMessage = MutableMapping[str, Any]
+type ASGIReceive = Callable[[], Awaitable[ASGIMessage]]
+type ASGISend = Callable[[ASGIMessage], Awaitable[None]]
 type ASGIApp = Callable[[ASGIScope, ASGIReceive, ASGISend], Awaitable[None]]
 type ASGIFilter = Callable[[ASGIScope], bool]
 type ASGISpanNameFormatter = Callable[[ASGIScope, str | None], str]
 
-_SCOPE_NAME = "libo11y.asgi"
+_SCOPE_NAME: Final[str] = "libo11y.asgi"
+# Mounts nest only as deep as an application's routing tree; this bounds the
+# walk over a router that does not behave like Starlette's.
+_MAX_MOUNT_DEPTH: Final[int] = 32
 
 
-def _extract_asgi_headers(scope: ASGIScope) -> dict[str, str]:
+def set_route(route: str) -> None:
+    """Set the route template of the ASGI request being handled.
+
+    For applications that route inside their own handler, where the middleware
+    cannot read a matched route from the scope. Pass the low-cardinality
+    template, such as ``"/projects/{id}"``, never the raw path. When the request
+    ends, the route set last names the span (``"<METHOD> <route>"``) and is the
+    ``http.route`` of the span, the ``http.server.request.duration`` metric and
+    the canonical line, in place of any route the framework matched. A route
+    that starts with a method and a space, such as ``"POST /rpc/{name}"``,
+    names the span verbatim and contributes only the part after the space to
+    ``http.route``.
+
+    It finds the request through the current context, so call it from the
+    handler's task or a task it started. Outside an instrumented request, after
+    the request has ended, or with an empty route, it does nothing.
+    """
+    set_current_route(route)
+
+
+def _header_pairs(raw: object) -> list[tuple[bytes, bytes]]:
+    """Return the well-formed (name, value) byte pairs of an ASGI header list."""
+    pairs: list[tuple[bytes, bytes]] = []
+    if not isinstance(raw, Iterable):
+        return pairs
+    for pair in cast(Iterable[object], raw):
+        if isinstance(pair, bytes | str) or not isinstance(pair, Sequence):
+            continue
+        items = cast(Sequence[object], pair)
+        if len(items) == 2:
+            name, value = items
+            if isinstance(name, bytes) and isinstance(value, bytes):
+                pairs.append((name, value))
+    return pairs
+
+
+def _decode_headers(scope: ASGIScope) -> dict[str, str]:
     headers: dict[str, str] = {}
-    raw_headers = scope.get("headers") or ()
-    for k_bytes, v_bytes in raw_headers:
-        k = k_bytes.decode("latin1").lower()
-        v = v_bytes.decode("latin1")
-        if k in headers:
-            headers[k] = f"{headers[k]},{v}"
-        else:
-            headers[k] = v
+    for name, value in _header_pairs(scope.get("headers")):
+        key = name.decode("latin1").lower()
+        text = value.decode("latin1")
+        headers[key] = f"{headers[key]},{text}" if key in headers else text
     return headers
 
 
-def _extract_asgi_route(scope: ASGIScope, path: str) -> str | None:
-    explicit = scope.get("http.route")
-    if isinstance(explicit, str) and explicit:
-        return explicit
+def _response_content_type(raw_headers: object) -> str | None:
+    for name, value in _header_pairs(raw_headers):
+        if name.lower() == b"content-type":
+            return value.decode("latin1")
+    return None
 
-    # Starlette / FastAPI attach the matched route object to scope["route"].
-    route_obj = scope.get("route")
-    if route_obj is not None:
-        route_path = getattr(route_obj, "path", None)
-        if isinstance(route_path, str) and route_path:
-            root_path = scope.get("root_path", "")
-            if isinstance(root_path, str) and root_path:
-                return root_path.rstrip("/") + route_path
-            return route_path
 
-    # Django ASGI resolver_match (either placed on scope or resolved via django.urls).
-    resolver_match = scope.get("resolver_match")
-    if resolver_match is not None:
-        dj_route = getattr(resolver_match, "route", None)
-        if isinstance(dj_route, str) and dj_route:
-            return dj_route if dj_route.startswith("/") else "/" + dj_route
+@dataclass(frozen=True, slots=True)
+class _RequestStart:
+    """The parts of the scope as the server sent them, before any router changed it."""
 
-    if "django.urls" in sys.modules:
-        try:
-            dj_conf = importlib.import_module("django.conf")
-            dj_urls = importlib.import_module("django.urls")
-            if getattr(getattr(dj_conf, "settings", None), "configured", False):
-                match = dj_urls.resolve(path)
-                dj_route = getattr(match, "route", None)
-                if isinstance(dj_route, str) and dj_route:
-                    return dj_route if dj_route.startswith("/") else "/" + dj_route
-        except Exception:
+    path: str
+    root_path: str
+    method: str
+    headers: object
+
+
+class _Route(Protocol):
+    def matches(self, scope: ASGIScope) -> tuple[object, Mapping[str, object]]: ...
+
+
+def _routes_of(router: object) -> Sequence[object]:
+    routes: object = getattr(router, "routes", None)
+    if isinstance(routes, list | tuple):
+        return cast(Sequence[object], routes)
+    return ()
+
+
+def _mount_child_scope(route: object, scratch: ASGIScope, final_root: str) -> ASGIScope | None:
+    """Return the child scope route gives scratch when it is a mount on the way to final_root."""
+    if not callable(getattr(route, "matches", None)) or not isinstance(
+        getattr(route, "path", None), str
+    ):
+        return None
+    try:
+        match, child = cast(_Route, route).matches(scratch)
+    except Exception:
+        return None
+    if getattr(match, "name", None) != "FULL":
+        return None
+    child_root = child.get("root_path")
+    current_root = scratch.get("root_path", "")
+    if not isinstance(child_root, str) or not isinstance(current_root, str):
+        return None
+    if len(child_root) <= len(current_root) or not final_root.startswith(child_root):
+        return None
+    if len(final_root) > len(child_root) and final_root[len(child_root)] != "/":
+        return None
+    return {**scratch, **child}
+
+
+def _mount_templates(
+    router: object, start: _RequestStart, final_root: str
+) -> tuple[str, object] | None:
+    """Find the mounts a Starlette-style router took to reach final_root.
+
+    Returns their joined path templates, such as "/org/{org}", and the last
+    mount, or None when the router's mounts do not account for final_root.
+    """
+    scratch: ASGIScope = {
+        "type": "http",
+        "path": start.path,
+        "root_path": start.root_path,
+        "method": start.method,
+        "headers": start.headers,
+    }
+    routes = _routes_of(router)
+    template = ""
+    last: object = None
+    for _ in range(_MAX_MOUNT_DEPTH):
+        if scratch.get("root_path") == final_root:
+            return template, last
+        for route in routes:
+            child = _mount_child_scope(route, scratch, final_root)
+            if child is not None:
+                template += cast(str, getattr(route, "path", ""))
+                last = route
+                scratch = child
+                routes = _routes_of(route)
+                break
+        else:
             return None
     return None
 
 
+def _leaf_template(scope: ASGIScope, route_obj: object) -> str | None:
+    """Return the matched route's template, relative to the innermost application."""
+    # FastAPI keeps the include_router prefix out of the route's own path and
+    # records the full template on the route context it selected.
+    fastapi_state: object = scope.get("fastapi")
+    if isinstance(fastapi_state, Mapping):
+        selected: object = cast(Mapping[str, object], fastapi_state).get("effective_route_context")
+        if selected is not None and getattr(selected, "original_route", None) is route_obj:
+            full: object = getattr(selected, "path", None)
+            if isinstance(full, str) and full.startswith("/"):
+                return full
+    path: object = getattr(route_obj, "path", None)
+    return path if isinstance(path, str) and path else None
+
+
+def _starlette_route(scope: ASGIScope, route_obj: object, start: _RequestStart) -> str | None:
+    prefix = start.root_path.rstrip("/")
+    final_root: object = scope.get("root_path", "")
+    if not isinstance(final_root, str):
+        return None
+    if final_root == start.root_path:
+        leaf = _leaf_template(scope, route_obj)
+        return prefix + leaf if leaf else None
+    mounts = _mount_templates(scope.get("router"), start, final_root)
+    if mounts is None:
+        # The concrete root_path holds mount parameters; never report it.
+        return None
+    template, last_mount = mounts
+    if route_obj is last_mount:
+        # A mounted application with no routes of its own.
+        return f"{prefix}{template}/{{path}}"
+    leaf = _leaf_template(scope, route_obj)
+    return prefix + template + leaf if leaf else None
+
+
+def _resolve_route(scope: ASGIScope, start: _RequestStart, django: bool) -> str | None:
+    explicit: object = scope.get("http.route")
+    if isinstance(explicit, str) and explicit:
+        return explicit
+    route_obj: object = scope.get("route")
+    if route_obj is not None:
+        return _starlette_route(scope, route_obj, start)
+    resolver_match: object = scope.get("resolver_match")
+    matched: object = getattr(resolver_match, "route", None)
+    if isinstance(matched, str) and matched:
+        return matched if matched.startswith("/") else "/" + matched
+    if django:
+        return django_route(start.path)
+    return None
+
+
+def _request_attributes(
+    scope: ASGIScope, path: str, headers: Mapping[str, str]
+) -> dict[str, AttributeValue]:
+    attrs: dict[str, AttributeValue] = {"url.path": path}
+    query: object = scope.get("query_string")
+    if isinstance(query, bytes | bytearray) and query:
+        attrs["url.query"] = bytes(query).decode("latin1")
+    server: object = scope.get("server")
+    if isinstance(server, list | tuple):
+        server_seq = cast(Sequence[object], server)
+        if server_seq and isinstance(server_seq[0], str) and server_seq[0]:
+            attrs["server.address"] = server_seq[0]
+            if len(server_seq) >= 2 and isinstance(server_seq[1], int):
+                attrs["server.port"] = server_seq[1]
+    client: object = scope.get("client")
+    if isinstance(client, list | tuple):
+        client_seq = cast(Sequence[object], client)
+        if client_seq and isinstance(client_seq[0], str) and client_seq[0]:
+            attrs["client.address"] = client_seq[0]
+    user_agent = headers.get("user-agent")
+    if user_agent:
+        attrs["user_agent.original"] = user_agent
+    return attrs
+
+
 class ASGIMiddleware:
-    """ASGI 3 middleware recording server spans, metrics, and optional canonical lines."""
+    """ASGI 3 middleware recording server spans, metrics, and optional canonical lines.
+
+    Routes come from, in order: ``set_route``, a ``"http.route"`` scope key, the
+    route Starlette or FastAPI matched (with the templates of any mounts), and
+    Django's URL resolver when the wrapped application is Django's ASGI handler.
+    ``canonical_line`` requires ``telemetry``.
+    """
 
     def __init__(
         self,
@@ -103,6 +270,8 @@ class ASGIMiddleware:
         server_timing: bool = False,
         span_name_formatter: ASGISpanNameFormatter | None = None,
     ) -> None:
+        if canonical_line and telemetry is None:
+            raise ValueError("o11yasgi: canonical_line requires telemetry")
         self._app = app
         self._telemetry = telemetry
         self._public_endpoint = public_endpoint
@@ -111,162 +280,88 @@ class ASGIMiddleware:
         self._canonical_line = canonical_line
         self._server_timing = server_timing
         self._span_name_formatter = span_name_formatter
+        self._django = is_django_handler(app)
+        self._instruments = InstrumentResolver(
+            telemetry,
+            scope=_SCOPE_NAME,
+            metric_name="http.server.request.duration",
+            description="Duration of HTTP server requests.",
+        )
 
     async def __call__(self, scope: ASGIScope, receive: ASGIReceive, send: ASGISend) -> None:
         if scope.get("type") != "http":
             await self._app(scope, receive, send)
             return
-
-        path = str(scope.get("path", "") or "")
-        if is_path_ignored(path, self._ignore_patterns):
+        raw_path: object = scope.get("path")
+        path = raw_path if isinstance(raw_path, str) else ""
+        if is_path_ignored(path, self._ignore_patterns) or (
+            self._filter is not None and not self._filter(scope)
+        ):
             await self._app(scope, receive, send)
             return
-        if self._filter is not None and not self._filter(scope):
-            await self._app(scope, receive, send)
-            return
 
-        tracer, duration_hist, propagator = resolve_http_primitives(
-            self._telemetry,
-            _SCOPE_NAME,
-            "http.server.request.duration",
-            "Duration of HTTP server requests.",
+        headers = _decode_headers(scope)
+        method: object = scope.get("method")
+        scheme: object = scope.get("scheme")
+        version: object = scope.get("http_version")
+        root_path: object = scope.get("root_path")
+        start = _RequestStart(
+            path=path,
+            root_path=root_path if isinstance(root_path, str) else "",
+            method=method if isinstance(method, str) else "",
+            headers=scope.get("headers"),
+        )
+        exchange = ServerExchange(
+            self._instruments.resolve(),
+            telemetry=self._telemetry,
+            canonical_line=self._canonical_line,
+            public_endpoint=self._public_endpoint,
+            method_raw=start.method,
+            scheme=scheme if isinstance(scheme, str) and scheme else "http",
+            protocol_version=version if isinstance(version, str) and version else None,
+            headers=headers,
+            attributes=_request_attributes(scope, path, headers),
         )
 
-        method_raw = str(scope.get("method", "") or "")
-        method, exact = normalize_method(method_raw)
-        sp_method = span_method_name(method)
-        scheme = str(scope.get("scheme", "http") or "http")
-        headers = _extract_asgi_headers(scope)
-        extracted_ctx = extract_inbound_context(propagator, headers)
+        async def send_with_status(message: ASGIMessage) -> None:
+            if message.get("type") == "http.response.start":
+                status: object = message.get("status")
+                if isinstance(status, int):
+                    exchange.status_code = status
+                if self._server_timing:
+                    message = self._with_server_timing(message, exchange)
+            await send(message)
 
-        links: list[Link] = []
-        if self._public_endpoint:
-            remote_sc = trace.get_current_span(extracted_ctx).get_span_context()
-            if remote_sc.is_valid:
-                links.append(Link(remote_sc))
-            parent_ctx = trace.set_span_in_context(INVALID_SPAN, extracted_ctx)
-        else:
-            parent_ctx = extracted_ctx
-
-        initial_attrs: dict[str, Any] = {
-            "http.request.method": method,
-            "url.path": path,
-            "url.scheme": scheme,
-        }
-        if not exact:
-            initial_attrs["http.request.method_original"] = method_raw
-        query_bytes = scope.get("query_string")
-        if isinstance(query_bytes, (bytes, bytearray)) and query_bytes:
-            initial_attrs["url.query"] = query_bytes.decode("latin1")
-        http_ver = scope.get("http_version")
-        if isinstance(http_ver, str) and http_ver:
-            initial_attrs["network.protocol.version"] = http_ver
-        server_info = scope.get("server")
-        if isinstance(server_info, (tuple, list)):
-            srv_seq = cast(Sequence[Any], server_info)
-            if len(srv_seq) >= 1 and srv_seq[0]:
-                initial_attrs["server.address"] = str(srv_seq[0])
-                if len(srv_seq) >= 2 and isinstance(srv_seq[1], int):
-                    initial_attrs["server.port"] = srv_seq[1]
-        client_info = scope.get("client")
-        if isinstance(client_info, (tuple, list)):
-            cli_seq = cast(Sequence[Any], client_info)
-            if len(cli_seq) >= 1 and cli_seq[0]:
-                initial_attrs["client.address"] = str(cli_seq[0])
-        ua = headers.get("user-agent")
-        if ua:
-            initial_attrs["user_agent.original"] = ua
-
-        start_ns = time.perf_counter_ns()
-        status_code: int | None = None
-        raised: BaseException | None = None
-
-        token = context.attach(parent_ctx)
+        token = context.attach(exchange.context)
+        slot_token = bind_route_slot(exchange.route_slot)
         try:
-            with tracer.start_as_current_span(
-                sp_method,
-                context=parent_ctx,
-                kind=SpanKind.SERVER,
-                attributes=initial_attrs,
-                links=links,
-            ) as span:
-                st_header = server_timing_header(span.get_span_context())
-
-                async def _wrapped_send(message: MutableMapping[str, Any]) -> None:
-                    nonlocal status_code
-                    if message.get("type") == "http.response.start":
-                        raw_status = message.get("status")
-                        if isinstance(raw_status, int):
-                            status_code = raw_status
-                        if self._server_timing and st_header is not None:
-                            raw_hdrs: list[tuple[bytes, bytes]] = list(message.get("headers") or ())
-                            raw_hdrs.append((b"server-timing", st_header.encode("latin1")))
-                            message = {**message, "headers": raw_hdrs}
-                    await send(message)
-
-                with start_record() as record:
-                    try:
-                        await self._app(scope, receive, _wrapped_send)
-                    except Exception as exc:
-                        raised = exc
-                        span.record_exception(exc)
-                        raise
-                    finally:
-                        elapsed_s = (time.perf_counter_ns() - start_ns) / 1e9
-                        route = _extract_asgi_route(scope, path)
-                        if self._span_name_formatter is not None:
-                            span.update_name(self._span_name_formatter(scope, route))
-                        elif route:
-                            span.update_name(f"{sp_method} {route}")
-                        if route:
-                            span.set_attribute("http.route", route)
-
-                        effective_status = status_code
-                        if effective_status is None and raised is not None:
-                            effective_status = 500
-                        if effective_status is not None:
-                            span.set_attribute("http.response.status_code", effective_status)
-
-                        err_type: str | None = None
-                        if raised is not None:
-                            err_type = error_type_for_exception(raised)
-                        elif effective_status is not None and effective_status >= 500:
-                            err_type = error_type_for_status(effective_status)
-                        if err_type is not None:
-                            span.set_attribute("error.type", err_type)
-
-                        sp_status = server_status_code(effective_status, raised)
-                        if sp_status is StatusCode.ERROR:
-                            span.set_status(StatusCode.ERROR)
-
-                        metric_attrs: dict[str, Any] = {
-                            "http.request.method": method,
-                            "url.scheme": scheme,
-                        }
-                        if route:
-                            metric_attrs["http.route"] = route
-                        if effective_status is not None:
-                            metric_attrs["http.response.status_code"] = effective_status
-                        if err_type is not None:
-                            metric_attrs["error.type"] = err_type
-                        if isinstance(http_ver, str) and http_ver:
-                            metric_attrs["network.protocol.version"] = http_ver
-                        duration_hist.record(elapsed_s, metric_attrs)
-
-                        if self._canonical_line and self._telemetry is not None:
-                            emit_http_summary(
-                                record,
-                                self._telemetry,
-                                method_raw=method_raw,
-                                status_code=effective_status
-                                if effective_status is not None
-                                else 200,
-                                duration_s=elapsed_s,
-                                route=route,
-                                failed=raised is not None,
-                            )
+            with start_record() as record:
+                exchange.record = record
+                try:
+                    await self._app(scope, receive, send_with_status)
+                except Exception as exc:
+                    exchange.fail(exc)
+                    raise
+                finally:
+                    route = exchange.chosen_route(
+                        lambda: _resolve_route(scope, start, self._django)
+                    )
+                    name = None
+                    if self._span_name_formatter is not None:
+                        name = self._span_name_formatter(scope, route)
+                    exchange.finish(route, name)
         finally:
+            reset_route_slot(slot_token)
             context.detach(token)
+
+    @staticmethod
+    def _with_server_timing(message: ASGIMessage, exchange: ServerExchange) -> ASGIMessage:
+        raw: object = message.get("headers") or ()
+        entry = exchange.server_timing(_response_content_type(raw))
+        if entry is None or not isinstance(raw, Iterable):
+            return message
+        headers = [*cast(Iterable[object], raw), (b"server-timing", entry.encode("latin1"))]
+        return {**message, "headers": headers}
 
 
 def instrument_asgi(
@@ -296,8 +391,12 @@ def instrument_asgi(
 __all__ = [
     "ASGIApp",
     "ASGIFilter",
+    "ASGIMessage",
     "ASGIMiddleware",
+    "ASGIReceive",
     "ASGIScope",
+    "ASGISend",
     "ASGISpanNameFormatter",
     "instrument_asgi",
+    "set_route",
 ]

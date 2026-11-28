@@ -6,47 +6,112 @@ exporter's own sessions are never instrumented.
 
 from __future__ import annotations
 
-import time
+import threading
+from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 from urllib.parse import urlsplit
 
 import requests
 import requests.adapters
-from opentelemetry.trace import SpanKind, StatusCode
+from opentelemetry import trace
 
 from libo11y._internal.http_common import (
-    HEADER_SETTER,
-    client_status_code,
-    error_type_for_exception,
-    error_type_for_status,
-    normalize_method,
-    resolve_http_primitives,
+    ClientExchange,
+    InstrumentResolver,
+    Origin,
+    origin_of,
     sanitize_url_full,
-    span_method_name,
+    should_propagate,
 )
 
 if TYPE_CHECKING:
     from libo11y.telemetry import Telemetry
 
 type RequestsFilter = Callable[[requests.PreparedRequest], bool]
+type RequestsPropagateFn = Callable[[str], bool]
 
-_SCOPE_NAME = "libo11y.requests"
+_SCOPE_NAME: Final[str] = "libo11y.requests"
+# Redirect responses whose follow-up hop has not arrived yet. A session that
+# does not follow redirects leaves its entries behind, so the table is bounded.
+_MAX_PENDING_REDIRECTS: Final[int] = 1024
+# urllib3 reports the response's HTTP version as an int.
+_HTTP_VERSIONS: Final[Mapping[int, str]] = {9: "0.9", 10: "1.0", 11: "1.1", 20: "2", 30: "3"}
+
+type _Carried = tuple[tuple[str, str], ...]
+
+
+class _PendingRedirects:
+    """Remembers the trace context sent on hops answered with a redirect.
+
+    requests follows a redirect by copying the previous hop's headers onto a
+    new PreparedRequest and sending it through the adapter again, with nothing
+    else to tie the two together. The propagated headers this adapter injected
+    identify the follow-up hop, so a redirect to another origin can be sent
+    without them.
+    """
+
+    __slots__ = ("_lock", "_origins")
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._origins: OrderedDict[_Carried, Origin] = OrderedDict()
+
+    def remember(self, carried: _Carried, first_origin: Origin) -> None:
+        if not carried:
+            return
+        with self._lock:
+            self._origins[carried] = first_origin
+            while len(self._origins) > _MAX_PENDING_REDIRECTS:
+                self._origins.popitem(last=False)
+
+    def take(self, carried: _Carried) -> Origin | None:
+        if not carried:
+            return None
+        with self._lock:
+            return self._origins.pop(carried, None)
+
+
+def _carried(fields: Sequence[str], request: requests.PreparedRequest) -> _Carried:
+    headers = request.headers
+    return tuple((name, value) for name in fields if (value := headers.get(name)) is not None)
+
+
+def _protocol_version(response: requests.Response) -> str | None:
+    version: object = getattr(response.raw, "version", None)
+    return _HTTP_VERSIONS.get(version) if isinstance(version, int) else None
 
 
 class HTTPAdapter(requests.adapters.HTTPAdapter):
-    """requests HTTPAdapter recording client spans, metrics, and context injection."""
+    """requests HTTPAdapter recording client spans, metrics, and context injection.
+
+    ``propagate_fn`` decides per destination URL whether the trace context and
+    baggage are injected (default: always). ``peer_service`` sets
+    ``peer.service``, the logical name of the service called. ``filter``
+    excludes whole requests from instrumentation. A redirect the session
+    follows to another origin is sent without the trace context.
+    """
 
     def __init__(
         self,
         *args: Any,
         telemetry: Telemetry | None = None,
         filter: RequestsFilter | None = None,
+        propagate_fn: RequestsPropagateFn | None = None,
+        peer_service: str | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
-        self._telemetry = telemetry
         self._filter = filter
+        self._propagate_fn = propagate_fn
+        self._peer_service = peer_service
+        self._pending_redirects = _PendingRedirects()
+        self._instruments = InstrumentResolver(
+            telemetry,
+            scope=_SCOPE_NAME,
+            metric_name="http.client.request.duration",
+            description="Duration of HTTP client requests.",
+        )
 
     def send(
         self,
@@ -59,50 +124,32 @@ class HTTPAdapter(requests.adapters.HTTPAdapter):
     ) -> requests.Response:
         if self._filter is not None and not self._filter(request):
             return super().send(
-                request,
-                stream=stream,
-                timeout=timeout,
-                verify=verify,
-                cert=cert,
-                proxies=proxies,
+                request, stream=stream, timeout=timeout, verify=verify, cert=cert, proxies=proxies
             )
 
-        tracer, duration_hist, propagator = resolve_http_primitives(
-            self._telemetry,
-            _SCOPE_NAME,
-            "http.client.request.duration",
-            "Duration of HTTP client requests.",
-        )
-
-        method_raw = request.method or ""
-        method, exact = normalize_method(method_raw)
-        sp_method = span_method_name(method)
+        instruments = self._instruments.resolve()
+        fields = sorted(instruments.propagator.fields)
         raw_url = request.url or ""
         parsed = urlsplit(raw_url)
-        host = parsed.hostname or ""
-        port = parsed.port
+        exchange = ClientExchange(
+            instruments,
+            method_raw=request.method or "",
+            url_full=sanitize_url_full(raw_url),
+            host=parsed.hostname or "",
+            port=parsed.port,
+            peer_service=self._peer_service,
+        )
+        origin = origin_of(parsed.scheme, parsed.hostname or "", parsed.port)
+        first_origin = self._pending_redirects.take(_carried(fields, request))
+        redirected = first_origin is not None
+        if (not redirected or first_origin == origin) and should_propagate(
+            self._propagate_fn, raw_url
+        ):
+            exchange.inject(request.headers)
+        elif redirected:
+            exchange.strip(request.headers)
 
-        initial_attrs: dict[str, Any] = {
-            "http.request.method": method,
-            "url.full": sanitize_url_full(raw_url),
-        }
-        if not exact:
-            initial_attrs["http.request.method_original"] = method_raw
-        if host:
-            initial_attrs["server.address"] = host
-        if port is not None:
-            initial_attrs["server.port"] = port
-
-        start_ns = time.perf_counter_ns()
-        status_code: int | None = None
-        raised: BaseException | None = None
-
-        with tracer.start_as_current_span(
-            sp_method,
-            kind=SpanKind.CLIENT,
-            attributes=initial_attrs,
-        ) as span:
-            propagator.inject(request.headers, setter=HEADER_SETTER)
+        with trace.use_span(exchange.span, record_exception=False, set_status_on_exception=False):
             try:
                 response = super().send(
                     request,
@@ -112,38 +159,17 @@ class HTTPAdapter(requests.adapters.HTTPAdapter):
                     cert=cert,
                     proxies=proxies,
                 )
-                status_code = response.status_code
-                return response
             except Exception as exc:
-                raised = exc
-                span.record_exception(exc)
+                exchange.finish(error=exc)
                 raise
-            finally:
-                elapsed_s = (time.perf_counter_ns() - start_ns) / 1e9
-                if status_code is not None:
-                    span.set_attribute("http.response.status_code", status_code)
-                err_type: str | None = None
-                if raised is not None:
-                    err_type = error_type_for_exception(raised)
-                elif status_code is not None and status_code >= 400:
-                    err_type = error_type_for_status(status_code)
-                if err_type is not None:
-                    span.set_attribute("error.type", err_type)
-                if client_status_code(status_code, raised) is StatusCode.ERROR:
-                    span.set_status(StatusCode.ERROR)
-
-                metric_attrs: dict[str, Any] = {
-                    "http.request.method": method,
-                }
-                if host:
-                    metric_attrs["server.address"] = host
-                if port is not None:
-                    metric_attrs["server.port"] = port
-                if status_code is not None:
-                    metric_attrs["http.response.status_code"] = status_code
-                if err_type is not None:
-                    metric_attrs["error.type"] = err_type
-                duration_hist.record(elapsed_s, metric_attrs)
+            if response.is_redirect:
+                self._pending_redirects.remember(
+                    _carried(fields, request), first_origin if first_origin is not None else origin
+                )
+            exchange.finish(
+                status_code=response.status_code, protocol_version=_protocol_version(response)
+            )
+            return response
 
 
 def mount(
@@ -151,11 +177,19 @@ def mount(
     *,
     telemetry: Telemetry | None = None,
     filter: RequestsFilter | None = None,
+    propagate_fn: RequestsPropagateFn | None = None,
+    peer_service: str | None = None,
     prefixes: Sequence[str] = ("http://", "https://"),
     **adapter_kwargs: Any,
 ) -> HTTPAdapter:
     """Mount an instrumented HTTPAdapter on session for the given URL prefixes."""
-    adapter = HTTPAdapter(telemetry=telemetry, filter=filter, **adapter_kwargs)
+    adapter = HTTPAdapter(
+        telemetry=telemetry,
+        filter=filter,
+        propagate_fn=propagate_fn,
+        peer_service=peer_service,
+        **adapter_kwargs,
+    )
     for prefix in prefixes:
         session.mount(prefix, adapter)
     return adapter
@@ -164,5 +198,6 @@ def mount(
 __all__ = [
     "HTTPAdapter",
     "RequestsFilter",
+    "RequestsPropagateFn",
     "mount",
 ]
