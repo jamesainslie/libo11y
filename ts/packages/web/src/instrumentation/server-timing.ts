@@ -1,5 +1,5 @@
 /**
- * WP4 (instrumentation). Reading `Server-Timing: traceparent;desc="..."` from a timing entry.
+ * Reading `Server-Timing: traceparent;desc="..."` from a timing entry.
  */
 import type { SpanContext } from "@opentelemetry/api";
 

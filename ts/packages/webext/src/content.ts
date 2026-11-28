@@ -1,5 +1,5 @@
 /**
- * WP5 (webext). setupContentScript for content scripts and extension pages.
+ * setupContentScript for content scripts and extension pages.
  */
 import {
   createTelemetryWith,

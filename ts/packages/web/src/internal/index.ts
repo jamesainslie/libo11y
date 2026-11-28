@@ -1,8 +1,6 @@
 /**
  * @libo11y/web/internal: the building blocks @libo11y/webext and @libo11y/rum compose. For
  * libo11y packages only. It follows the package version and carries no compatibility promise.
- *
- * Scaffold, frozen. Changing it needs the architect's sign-off.
  */
 
 export { activeConsent, setActiveConsent } from "../consent/active.ts";

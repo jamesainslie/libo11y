@@ -11,11 +11,11 @@
  * Each new action ends the open one at its last activity, then starts the span "action <type>" as
  * a root at the event's time, with o11y.rum.span.shape action, the type, the name (actionName,
  * when there is one), o11y.rum.element.selector and the view ID, linked to the view span. It is
- * the open action until it settles (decision P10): the RUM context manager makes it the parent of
+ * the open action until it settles: the RUM context manager makes it the parent of
  * requests started meanwhile, and the requests whose parent it is, DOM mutations and view starts
  * are its activity. Its breadcrumb (type and name, else the tag) is published when it starts.
  *
- * Frustration (decision P11, frustration not false): clicks feed rage and dead detection, and
+ * Frustration (when frustration is not false): clicks feed rage and dead detection, and
  * errors feed error clicks. A click is not dead-eligible on a form field, label, contenteditable,
  * a link with an href, or inside a text selection. Requests, mutations and view starts within the
  * dead window count as activity, so the mutation observer stays connected while an action is open

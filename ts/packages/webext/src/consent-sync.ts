@@ -1,5 +1,5 @@
 /**
- * WP5 (webext). One consent state for the whole extension, in chrome.storage.local.
+ * One consent state for the whole extension, in chrome.storage.local.
  */
 import type { ConsentController, ConsentState } from "@libo11y/web/internal";
 import { diag } from "@opentelemetry/api";

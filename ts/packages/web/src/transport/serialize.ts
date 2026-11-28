@@ -1,5 +1,5 @@
 /**
- * WP1 (transport). OTLP JSON serialization of each signal, as strings.
+ * OTLP JSON serialization of each signal, as strings.
  */
 import { OtlpJsonMetricsSerializer, type ResourceMetricsWithExemplars } from "@libo11y/core";
 import { JsonLogsSerializer, JsonTraceSerializer } from "@opentelemetry/otlp-transformer";

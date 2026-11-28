@@ -1,6 +1,4 @@
 /**
- * Contract, frozen by the L4 scaffold. Changing it needs the architect's sign-off.
- *
  * The consent gate. Consent is the public face (telemetry.consent). ConsentController is what the
  * platforms wire: core reads it as the RecordingGate, the Delivery reads it before every send, and
  * revocation runs the hooks that clear every queue.
@@ -62,7 +60,7 @@ export interface PrivacySignalSource {
   readonly globalPrivacyControl?: boolean;
 }
 
-/** Options for createConsentController (WP2). */
+/** Options for createConsentController. */
 export interface ConsentControllerOptions extends ConsentOptions {
   /** Where DNT and GPC are read. Default globalThis.navigator. */
   readonly navigator?: PrivacySignalSource;

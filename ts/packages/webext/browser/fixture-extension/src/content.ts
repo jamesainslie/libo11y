@@ -1,5 +1,5 @@
 /**
- * WP5. The test extension's content script on http://127.0.0.1 pages. It marks the page (the
+ * The test extension's content script on http://127.0.0.1 pages. It marks the page (the
  * harness spec checks the mark), runs setupContentScript, and takes commands from the page by
  * window.postMessage, because a spec's page.evaluate runs in the page's world and the content
  * script in its own:

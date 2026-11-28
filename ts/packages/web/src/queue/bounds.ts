@@ -1,5 +1,5 @@
 /**
- * WP2 (queue and consent). What the memory and IndexedDB queues share: the resolved bounds, entry
+ * What the memory and IndexedDB queues share: the resolved bounds, entry
  * ids, and the eviction plan put follows, so both queues bound, expire and order alike.
  */
 import type { NewQueueEntry, QueueEntry, QueueOptions } from "../contracts/queue.ts";

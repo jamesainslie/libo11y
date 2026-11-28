@@ -1,4 +1,4 @@
-/** Contract, frozen by R3a, extended by R3b. Views: a page or route. performance.now() times. */
+/** Views: a page or route. performance.now() times. */
 import type { RUMViewKind } from "@libo11y/spec";
 import type { SpanContext } from "@opentelemetry/api";
 
@@ -10,7 +10,7 @@ export interface ViewState {
   readonly startTime: number;
   /** The session the view belongs to. */
   readonly sessionId: string;
-  /** The view span's context, once R3b's tracker has started it. */
+  /** The view span's context, once the view tracker has started it. */
   readonly spanContext?: SpanContext;
 }
 
@@ -40,7 +40,7 @@ export interface ViewStartOptions {
   readonly name?: string;
   /** Default now. */
   readonly startTime?: number;
-  /** The action that caused the view, linked from the view span (R3b). */
+  /** The action that caused the view, linked from the view span. */
   readonly cause?: SpanContext;
   /** The view's content is already on screen, as after a session change: its span ends at the next paint. */
   readonly rendered?: boolean;

@@ -1,5 +1,5 @@
 /**
- * WP1 (transport). Delivery: the gate, persist-first, retry from the queue, Retry-After and drain.
+ * Delivery: the gate, persist-first, retry from the queue, Retry-After and drain.
  */
 import { diag } from "@opentelemetry/api";
 import type { OtlpBatch, OtlpSignal } from "../contracts/otlp.ts";

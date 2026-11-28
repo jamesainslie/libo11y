@@ -1,5 +1,5 @@
 /**
- * WP5 (webext). Trace context across runtime messages.
+ * Trace context across runtime messages.
  */
 import {
   context,

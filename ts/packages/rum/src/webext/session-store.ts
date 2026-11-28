@@ -1,5 +1,5 @@
 /**
- * The extension session store (decision P20): the session record in chrome.storage.session, which
+ * The extension session store: the session record in chrome.storage.session, which
  * every context of the extension shares and the browser clears when it closes, and
  * storage.onChanged, which tells the other contexts of a save. Records are the web store's version
  * 1 JSON plus w, a token naming the store that wrote it, so a store ignores its own saves when the

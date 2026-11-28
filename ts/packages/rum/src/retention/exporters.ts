@@ -1,5 +1,5 @@
 /**
- * The retention router (decision P2). Wraps the exporters @libo11y/web builds, so each batch is
+ * The retention router. Wraps the exporters @libo11y/web builds, so each batch is
  * split by the session.id of its records: kept sessions go to the inner exporter, the current
  * unkept session is serialized into the retention buffer, and an old unkept session is dropped.
  * Every o11y.rum.view.summary record goes to the inner exporter, because summaries are sent for

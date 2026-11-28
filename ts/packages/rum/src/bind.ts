@@ -1,5 +1,5 @@
 /**
- * The web's platform binding and lifecycle (R3f, R5a). setupRumCore builds the RUM core, then hands
+ * The web's platform binding and lifecycle. setupRumCore builds the RUM core, then hands
  * a binding the setup options with RUM's span processor, context manager and forwarding span
  * exporter in place, and the wrappers (contracts/binding.ts). webBinding runs web's setupWithDeps
  * with them; @libo11y/rum/webext's contentBinding runs @libo11y/webext's setupContentScriptWith.

@@ -1,5 +1,5 @@
 /**
- * WP1 (transport). gzip through CompressionStream.
+ * gzip through CompressionStream.
  */
 
 type CompressionStreamCtor = new (format: "gzip") => CompressionStream;

@@ -1,5 +1,5 @@
 /**
- * The bootstrap buffer (decision P9), shared by the tiny `@libo11y/rum/bootstrap` entry and the
+ * The bootstrap buffer, shared by the tiny `@libo11y/rum/bootstrap` entry and the
  * collectors through a global registered symbol, so the two meet even when bundled apart. It has no
  * imports.
  *

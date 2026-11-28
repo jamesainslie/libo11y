@@ -1,6 +1,5 @@
 /**
- * Remote configuration of replay (design decision P3). The gateway's configuration document (R3d's
- * GET /_o11y/v1/config) may carry an optional replay object:
+ * Remote configuration of replay. The gateway's configuration document (GET /_o11y/v1/config) may carry an optional replay object:
  * { enabled?: false, sampleRate?: number, onRetain?: false, mask?: string[], block?: string[], unmask?: string[] }.
  *
  * Remote configuration can only make replay stricter:
@@ -13,7 +12,7 @@
  * - A selector that is not a string, is empty or fails validSelector is dropped, and so is every
  *   unknown field.
  *
- * The clamped settings are pinned for the session by the collector, like the rest of R3d's
+ * The clamped settings are pinned for the session by the collector, like the rest of
  * document.
  */
 import { O11yError } from "@libo11y/core";

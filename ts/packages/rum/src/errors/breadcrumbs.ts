@@ -1,5 +1,5 @@
 /**
- * The breadcrumb ring (decision P18): the last actions, view changes and requests, which every
+ * The breadcrumb ring: the last actions, view changes and requests, which every
  * o11y.rum.error carries as o11y.rum.error.breadcrumbs, one per line, oldest first.
  */
 

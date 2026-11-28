@@ -1,5 +1,5 @@
 /**
- * Frustration signals (decision P11).
+ * Frustration signals.
  *
  * Rage: rageClicks or more clicks on the same element selector within rageWindowMillis, reported
  * once per burst, on the click that reaches the count. A burst ends when a click on that selector

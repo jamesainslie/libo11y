@@ -1,5 +1,5 @@
 /**
- * Contract, frozen by R3a. The session: one per user visit, shared by every tab of an origin (and
+ * The session: one per user visit, shared by every tab of an origin (and
  * every context of an extension), ending after sessionIdleMillis without activity or after
  * sessionMaxMillis.
  */

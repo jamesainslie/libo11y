@@ -1,5 +1,5 @@
 /**
- * WP2 (queue and consent). The in-memory PersistentQueue: the fallback where IndexedDB is missing
+ * The in-memory PersistentQueue: the fallback where IndexedDB is missing
  * or broken, and the content-script queue in webext. Same bounds and lease semantics as IndexedDB.
  */
 import type {

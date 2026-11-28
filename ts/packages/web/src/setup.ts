@@ -1,5 +1,5 @@
 /**
- * WP3 (web platform and setup). setup and createTelemetry for browsers.
+ * setup and createTelemetry for browsers.
  */
 import {
   createTelemetryWith,

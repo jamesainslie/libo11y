@@ -1,5 +1,5 @@
 /**
- * WP4 (instrumentation). Client spans for fetch.
+ * Client spans for fetch.
  */
 
 import type { Telemetry } from "@libo11y/core";

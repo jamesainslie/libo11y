@@ -1,7 +1,6 @@
 /**
- * Scaffold, frozen. A minimal core Platform that runs in browsers, Bun and Node, so the
- * instrumentation (WP4) and others can drive real core telemetry before the web platform (WP3)
- * exists: StackContextManager, no environment, an empty resource, no exporters of its own (inject
+ * A minimal core Platform that runs in browsers, Bun and Node, so tests can drive real core
+ * telemetry without the full browser setup: StackContextManager, no environment, an empty resource, no exporters of its own (inject
  * spanExporter, metricReader or logExporter through the options), console lines collected, Web
  * Crypto hashing. Tests and browser fixtures only; never built.
  */

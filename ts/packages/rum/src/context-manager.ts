@@ -1,5 +1,5 @@
 /**
- * Parents requests to the open action (decision P10). When the inner context manager has no active
+ * Parents requests to the open action. When the inner context manager has no active
  * span, the open action's context is active, so fetch and XHR spans a click handler starts, even
  * after an await the StackContextManager cannot follow, become the action's children. An action
  * that has ended is never active.

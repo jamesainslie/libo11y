@@ -1,5 +1,5 @@
 /**
- * Cuts the scrubbed event stream into self-contained segments (design decision P5).
+ * Cuts the scrubbed event stream into self-contained segments.
  *
  * - A segment opens with a Meta event (type 4), which rrweb emits before every full snapshot. A
  *   Meta event while a segment is open closes it and opens the next, so every segment starts with

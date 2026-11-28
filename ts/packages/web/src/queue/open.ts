@@ -1,5 +1,5 @@
 /**
- * WP2 (queue and consent). Opens the best queue the runtime has.
+ * Opens the best queue the runtime has.
  */
 import { diag } from "@opentelemetry/api";
 import type { PersistentQueue, QueueOptions } from "../contracts/queue.ts";

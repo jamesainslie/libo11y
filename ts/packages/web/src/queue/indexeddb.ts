@@ -1,5 +1,5 @@
 /**
- * WP2 (queue and consent). The IndexedDB PersistentQueue.
+ * The IndexedDB PersistentQueue.
  *
  * Database opts.databaseName (default "libo11y"), version 1, one object store "otlp-batches" with
  * keyPath "id" and an index "enqueuedAt". claim, put (with its evictions), reschedule, remove,

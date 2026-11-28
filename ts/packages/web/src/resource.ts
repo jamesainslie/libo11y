@@ -1,5 +1,5 @@
 /**
- * WP3 (web platform and setup). Browser resource detection, in the two layers core merges.
+ * Browser resource detection, in the two layers core merges.
  */
 import type { ResourceLayers } from "@libo11y/core";
 import type { Attributes } from "@opentelemetry/api";

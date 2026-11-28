@@ -301,7 +301,7 @@ export type RumSignal = {
     readonly at: number;
     readonly key?: string;
 }
-/** An event the bootstrap buffered before RUM loaded, replayed once the collectors started (R3d). */
+/** An event the bootstrap buffered before RUM loaded, replayed once the collectors started. */
 | {
     readonly type: "bootstrap";
     readonly entry: BootstrapEntry;

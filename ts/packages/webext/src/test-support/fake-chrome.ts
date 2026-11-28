@@ -1,5 +1,5 @@
 /**
- * WP5. A fake extension for tests: one shared message bus and storage area, and a ChromeLike per
+ * A fake extension for tests: one shared message bus and storage area, and a ChromeLike per
  * context (the worker, an extension page, a content script in a tab). It behaves as Chrome does
  * where libo11y depends on it: messages and replies are JSON-serialized, delivered asynchronously
  * to every other context's listeners (never the sender's own), the first sendResponse wins, a

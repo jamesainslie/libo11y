@@ -1,5 +1,5 @@
 /**
- * WP4 (instrumentation). Client spans for XMLHttpRequest.
+ * Client spans for XMLHttpRequest.
  */
 import type { Telemetry } from "@libo11y/core";
 import { context, ROOT_CONTEXT, type Span, SpanKind, SpanStatusCode, trace } from "@opentelemetry/api";

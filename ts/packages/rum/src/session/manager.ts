@@ -150,7 +150,7 @@ export function createSessionManager(opts: SessionManagerOptions): SessionManage
       if (stored !== undefined && state === undefined) {
         state = stored;
         remember(stored);
-        // A live stored session was started elsewhere. An expired one is ended here (decision P13):
+        // A live stored session was started elsewhere. An expired one is ended here:
         // live() below rotates it and emits its local end.
         if (!expired(stored, now())) emit({ type: "start", session: stored, local: false });
       }

@@ -1,6 +1,4 @@
 /**
- * Scaffold, implemented. Owned by WP1.
- *
  * The fetch and sendBeacon this module saw when it was first evaluated, before setup patches
  * globalThis.fetch, so export requests never pass through libo11y's own instrumentation.
  */

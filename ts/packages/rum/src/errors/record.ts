@@ -1,7 +1,7 @@
 /**
  * The one path every error takes, from the errors() collector and from rum.addError: it is counted
  * in the current view's summary for every consented session, published on the bus for frustration
- * detection, retains the session (decision P12), and is emitted as o11y.rum.error (detail, so it is
+ * detection, retains the session, and is emitted as o11y.rum.error (detail, so it is
  * buffered for an unkept session) with the breadcrumbs, at most 100 events per view. An error while
  * an action is open is emitted in the action's context.
  */

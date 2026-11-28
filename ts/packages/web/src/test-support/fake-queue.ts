@@ -1,6 +1,6 @@
 /**
- * Scaffold, frozen. A minimal unbounded PersistentQueue with the contract's lease semantics, so the
- * transport (WP1) and webext (WP5) can test before the real queues (WP2) exist. Not the memory
+ * A minimal unbounded PersistentQueue with the contract's lease semantics, for transport and
+ * extension tests. Not the memory
  * queue: it has no bounds and no expiry. Tests only; never built.
  */
 import type { NewQueueEntry, PersistentQueue, QueueEntry, QueueSize } from "../contracts/queue.ts";

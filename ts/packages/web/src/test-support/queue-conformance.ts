@@ -1,5 +1,5 @@
 /**
- * WP2 (queue and consent). The PersistentQueue conformance suite: every queue (memory, IndexedDB)
+ * The PersistentQueue conformance suite: every queue (memory, IndexedDB)
  * runs it, so they share one behaviour for order, leases, bounds, expiry and failure. Also the
  * IDBFactory doubles the IndexedDB and openQueue tests use. Tests only;
  * never built.

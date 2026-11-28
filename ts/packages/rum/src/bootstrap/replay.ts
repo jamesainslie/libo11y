@@ -2,7 +2,7 @@
  * Replays the bootstrap buffer once the collectors started: each entry goes out on the bus as a
  * bootstrap signal with its original time, and the collector of its kind records it (errors()
  * the errors, actions() the clicks), so a kind whose collector the app did not install is dropped.
- * Nothing is replayed unless consent is granted (decision P9).
+ * Nothing is replayed unless consent is granted.
  */
 import type { RumRuntime } from "../contracts/runtime.ts";
 import type { BootstrapBuffer } from "./buffer.ts";

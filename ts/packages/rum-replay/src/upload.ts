@@ -1,5 +1,5 @@
 /**
- * Compression and upload of closed segments (design decision P8). Each segment is gzipped with
+ * Compression and upload of closed segments. Each segment is gzipped with
  * CompressionStream and posted to the gateway's POST /_o11y/v1/replay as
  * ?service=&session=&segment=&sent_at=&client_token= (the client token only when the app has one,
  * sent_at taken per attempt so the gateway can correct clock skew), with credentials omitted and

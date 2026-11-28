@@ -1,5 +1,5 @@
 /**
- * WP1 (transport). The SDK exporters over a Delivery, and the ExporterSet a platform builds.
+ * The SDK exporters over a Delivery, and the ExporterSet a platform builds.
  */
 import {
   type ExporterRequest,

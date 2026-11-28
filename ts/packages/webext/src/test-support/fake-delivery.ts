@@ -1,5 +1,5 @@
 /**
- * WP5. A recording Delivery, so webext tests run before WP1's delivery exists: deliver answers
+ * A recording Delivery for webext tests: deliver answers
  * "sent", and every call is logged in order. Tests only; never built.
  */
 import type { Delivery, DeliveryOptions } from "@libo11y/web/internal";

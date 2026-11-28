@@ -1,8 +1,7 @@
 /**
- * WP2 (queue and consent). The recording gate in core: the sampler and span processor wrappers the
- * tracer provider uses, the log record processor wrapper the logger provider uses, and the check the meter and log
- * pipelines share. telemetry.ts, metrics.ts and logger.ts call these; only WP2 edits those files in
- * L4.
+ * The recording gate in core: the sampler and span processor wrappers the tracer provider uses,
+ * the log record processor wrapper the logger provider uses, and the check the meter and log
+ * pipelines share.
  */
 import type { LogRecordProcessor } from "@opentelemetry/sdk-logs";
 import { type Sampler, SamplingDecision, type SpanProcessor } from "@opentelemetry/sdk-trace";

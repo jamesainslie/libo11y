@@ -3,8 +3,6 @@
  * every batch to IndexedDB before sending because the worker can stop at any time, and
  * setupContentScript for content scripts and extension pages, which forward their records to the
  * worker by runtime messaging. Trace context crosses with every traced message. No RUM features.
- *
- * Scaffold, frozen: the public API. Changing it needs the architect's sign-off.
  */
 
 export type { Consent, ConsentOptions, ConsentState, WebTelemetry } from "@libo11y/web";

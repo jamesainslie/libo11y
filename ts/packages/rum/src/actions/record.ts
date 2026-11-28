@@ -1,4 +1,4 @@
-/** Instant actions: custom actions (rum.addAction) and clicks replayed from the bootstrap (R3d). */
+/** Instant actions: custom actions (rum.addAction) and clicks replayed from the bootstrap. */
 import {
   ATTR_RUM_ACTION_NAME,
   ATTR_RUM_ACTION_TYPE,

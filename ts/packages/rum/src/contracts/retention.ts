@@ -1,4 +1,4 @@
-/** Contract, frozen by R3a, extended by R3b. The retention buffer for sessions not yet kept. */
+/** The retention buffer for sessions not yet kept. */
 import type { Delivery, OtlpBatch, QueueSize } from "@libo11y/web/internal";
 import type { SessionDecision } from "./session.ts";
 
