@@ -22,6 +22,7 @@ import { diag } from "@opentelemetry/api";
 import type { RumReactNativeEnv } from "../contracts/env.ts";
 import { installRejectionTracker } from "./rejections.ts";
 
+/** The options of errors() on React Native. */
 export interface RnErrorsOptions {
   /** Capture console.error calls as errors with source console. Default false. */
   readonly console?: boolean;
