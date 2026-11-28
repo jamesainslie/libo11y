@@ -216,9 +216,11 @@ The Ruby gem in `ruby/` targets Ruby 3.3 and 3.4 on OpenTelemetry Ruby
   under `ruby/lib/libo11y/spec/generated`.
 - **Tests.** `bundle exec rspec` runs the unit, shared `conformance/`,
   integration and OTLP/HTTP wire suites.
-- **Hygiene gate.** `scripts/ruby-hygiene.sh` rejects `puts`, `pp`,
-  `binding.pry`, `binding.irb`, `debugger`, `byebug` and `rescue Exception`
-  under `ruby/lib`, outside the generated files.
+- **Hygiene gate.** `scripts/ruby-hygiene.sh` (tested by
+  `make ruby-hygiene-test`) rejects `puts`, `pp`, `binding.pry`,
+  `binding.irb`, `debugger`, `byebug` and `rescue Exception` under
+  `ruby/lib`, outside the generated files. It reads the files with Ruby's
+  lexer, so a word in a comment or a string is not a finding.
 - **Packaging.** The gem ships `lib/`, `exe/libo11y`, `LICENSE`,
   `README.md` and `CHANGELOG.md`. `ruby/LICENSE` is a copy of the
   repository's `LICENSE`. The gem version comes from
