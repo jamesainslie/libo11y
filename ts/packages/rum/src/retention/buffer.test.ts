@@ -133,3 +133,24 @@ test("each batch is removed as soon as it was handed over", async () => {
   assert.deepEqual(sizes, [2, 1]);
   buffer.close();
 });
+
+test("discard removes only the batches match accepts and leaves the rest claimable", async () => {
+  const idb = new IDBFactory();
+  const a = createRetentionBuffer({ open: () => openQueue({ ...RETENTION_QUEUE_DEFAULTS, indexedDB: idb }) });
+  const b = createRetentionBuffer({ open: () => openQueue({ ...RETENTION_QUEUE_DEFAULTS, indexedDB: idb }) });
+  await a.put({ signal: "logs", body: "mine-1" });
+  await b.put({ signal: "logs", body: "theirs" });
+  await a.put({ signal: "traces", body: "mine-2" });
+  assert.equal(await a.discard((batch) => batch.body.startsWith("mine")), 2);
+  const d = recordingDelivery();
+  assert.equal(await b.flush(d), 1, "the other batch is still claimable at once");
+  assert.deepEqual(d.sent, [{ signal: "logs", body: "theirs" }]);
+  a.close();
+  b.close();
+});
+
+test("discard never rejects, even when the queue cannot open", async () => {
+  const buffer = createRetentionBuffer({ open: () => Promise.reject(new Error("blocked")) });
+  assert.equal(await buffer.discard(() => true), 0);
+  buffer.close();
+});

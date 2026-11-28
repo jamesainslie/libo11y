@@ -41,7 +41,7 @@ The Rust columns describe the eleven-crate `rust/` workspace (`rust/v0.1.0`:
 1.88; `libo11y-sqlx` requires 1.94), `tracing` 0.1.44, and OpenTelemetry Rust
 0.33.1.
 
-The matrix describes the latest releases: `go/v0.3.0`, `ts/v0.2.1`,
+The matrix describes the latest releases: `go/v0.4.0`, `ts/v0.2.1`,
 `zig/v0.1.0`, `python/v0.1.0`, `c/v0.1.0`, and `rust/v0.1.0`.
 
 A status describes how a capability is designed and built. It does not say

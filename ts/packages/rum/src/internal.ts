@@ -3,6 +3,7 @@
  * libo11y packages only. It follows the package version, carries no compatibility promise and has
  * no API report.
  */
+export { actionName, actionTarget, elementSelector } from "./actions/naming.ts";
 export { ATTR_SESSION_ID, ATTR_USER_ID, summaryCountKey, summaryVitalKey } from "./attrs.ts";
 export { createBus } from "./bus.ts";
 export type { RetentionBuffer, RetentionRouting } from "./contracts/retention.ts";

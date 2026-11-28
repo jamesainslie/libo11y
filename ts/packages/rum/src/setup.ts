@@ -28,8 +28,9 @@ import {
   EVENT_RUM_SESSION_START,
   EVENT_RUM_VIEW_SUMMARY,
   RUM_CONNECTION_EFFECTIVE_VALUES,
+  type RUMSessionRetained,
 } from "@libo11y/spec";
-import type { WebTelemetry } from "@libo11y/web";
+import { createContextManager, type WebTelemetry } from "@libo11y/web";
 import {
   browserEnv,
   type ConsentController,
@@ -43,14 +44,18 @@ import {
   type SetupDeps,
   setupWithDeps,
 } from "@libo11y/web/internal";
-import { diag } from "@opentelemetry/api";
+import { diag, type Span } from "@opentelemetry/api";
 import { type ExportResult, ExportResultCode } from "@opentelemetry/core";
 import { ConsoleSpanExporter, type SpanExporter, type SpanProcessor } from "@opentelemetry/sdk-trace";
+import { recordInstantAction } from "./actions/record.ts";
 import { ATTR_SESSION_ID, ATTR_USER_ID } from "./attrs.ts";
 import { createBus } from "./bus.ts";
+import { rumContextManager } from "./context-manager.ts";
 import type { RetentionRouting } from "./contracts/retention.ts";
 import type { RequestStartHook, RumRuntime, RumSettings } from "./contracts/runtime.ts";
 import type { SessionStore } from "./contracts/session.ts";
+import { createBreadcrumbs } from "./errors/breadcrumbs.ts";
+import { recordError } from "./errors/record.ts";
 import type { Rum, RumSetupOptions, RumTelemetry } from "./options.ts";
 import { createRetentionBuffer, RETENTION_QUEUE_DEFAULTS } from "./retention/buffer.ts";
 import { retainingSpanExporter, withRetention } from "./retention/exporters.ts";
@@ -74,11 +79,15 @@ export interface RumDeps {
   readonly now: () => number;
   /** performance.now(). */
   readonly perfNow: () => number;
+  /** performance.timeOrigin, the origin of perfNow. Unset where perfNow is a fake clock. */
+  readonly timeOrigin?: number;
   readonly location: () => string;
   readonly prerendered: () => boolean;
   readonly connection: () => string | undefined;
   readonly document: (EventTarget & { readonly visibilityState?: string }) | undefined;
   readonly window: EventTarget | undefined;
+  /** Install the telemetry globally, as setup does. Default true; tests that run two tabs in one process pass false. */
+  readonly install?: boolean;
 }
 
 /** The real dependencies of a page. */
@@ -95,6 +104,7 @@ export function defaultRumDeps(): RumDeps {
     sessionStore: () => localStorageSessionStore(),
     now: Date.now,
     perfNow: () => performance.now(),
+    timeOrigin: performance.timeOrigin,
     location: () => g.location?.href ?? "about:blank",
     prerendered: () => {
       if (g.document?.prerendering === true) return true;
@@ -140,6 +150,16 @@ function composeProcessors(first: SpanProcessor, second: SpanProcessor | undefin
 }
 
 const SUCCESS: ExportResult = { code: ExportResultCode.SUCCESS };
+
+/** A kept session this tab ended, and the session its rotation started. */
+interface EndingSession {
+  readonly id: string;
+  readonly retained: RUMSessionRetained;
+  successor: string | undefined;
+}
+
+/** How long a tab that ended a session waits to hear whether another tab's rotation won. */
+export const SESSION_END_ELECTION_MILLIS = 500;
 
 /** A span exporter that hands every batch to the target set later, and succeeds while there is none. */
 function forwardingSpanExporter(target: () => SpanExporter | undefined): SpanExporter {
@@ -201,6 +221,14 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
     now: deps.now,
   });
   const bus = createBus();
+  // The breadcrumb ring every error carries (decision P18): actions, view starts and requests.
+  const crumbs = createBreadcrumbs();
+  // A request that ends after a revoke must not leave a breadcrumb for the next grant.
+  bus.subscribe((s) => {
+    if (s.type === "breadcrumb" && controller?.recording() === true) crumbs.add(s.kind, s.label, s.at);
+  });
+  /** The open action, so requests started meanwhile become its children (decision P10). */
+  let active: Span | undefined;
   const hooks = new Set<RequestStartHook>();
   let userId: string | undefined;
   let telemetry: WebTelemetry | undefined;
@@ -238,6 +266,10 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
     prerendered: deps.prerendered,
     ...(deps.window === undefined ? {} : { window: deps.window }),
   });
+  views.subscribe((e) => {
+    if (e.type === "start")
+      bus.publish({ type: "breadcrumb", kind: "view", label: e.view.name, at: e.view.startTime });
+  });
   const processor = rumSpanProcessor({
     platform: "web",
     session,
@@ -246,6 +278,7 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
     userId: () => userId,
     bus,
     now: deps.perfNow,
+    ...(deps.timeOrigin === undefined ? {} : { timeOrigin: deps.timeOrigin }),
   });
   const onStart: RequestStartHook = (span, request) => {
     for (const h of hooks) {
@@ -303,9 +336,13 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
       }
       deps.web.onPlatform?.(platform, po);
     },
-    // Traces are injected, so web builds no span exporter here; logs are routed by session.
+    // Traces are injected, so web builds no span exporter here; logs are routed by session. The
+    // gateway accepts only delta sums and histograms, so app metrics export with delta temporality.
     createExporterSet: (req, d, endpoints, eo) =>
-      withRetention(deps.web.createExporterSet(req, d, endpoints, eo), routing),
+      withRetention(
+        deps.web.createExporterSet(req, d, endpoints, { ...eo, metricTemporality: "delta" }),
+        routing,
+      ),
     installFetchInstrumentation: (o) => deps.web.installFetchInstrumentation({ ...o, onStart }),
     installXhrInstrumentation: (o) => deps.web.installXhrInstrumentation({ ...o, onStart }),
   };
@@ -316,10 +353,12 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
       {
         ...webOptions,
         spanProcessor: composeProcessors(processor, webOptions.spanProcessor),
+        contextManager: () =>
+          rumContextManager((webOptions.contextManager ?? createContextManager)(), () => active),
         ...(forward ? { spanExporter: forwardingSpanExporter(() => spanTarget) } : {}),
       },
       webDeps,
-      true,
+      deps.install !== false,
     );
   } catch (err) {
     views.close();
@@ -364,6 +403,11 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
       hooks.add(hook);
       return () => hooks.delete(hook);
     },
+    activeAction: () => active,
+    setActiveAction(span) {
+      active = span;
+    },
+    breadcrumbs: () => crumbs.snapshot(deps.perfNow()),
   };
 
   // Collectors run only while consent is granted.
@@ -371,11 +415,15 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
   let starting: Promise<void> | undefined;
   /** Consent was granted at some point in this page, so RUM may have stored something. */
   let everStarted = false;
+  /** Bumped by stopAll, so a start whose session load outlived a revoke does nothing. */
+  let generation = 0;
   const startAll = (): Promise<void> => {
     everStarted = true;
+    const gen = generation;
     starting ??= (async () => {
       await session.start();
-      if (!gate.recording()) return; // revoked while the session loaded
+      // Revoked while the session loaded, and maybe granted again: that later start runs instead.
+      if (gen !== generation || !gate.recording()) return;
       views.begin();
       // A kept session may find batches an earlier page of it left in the buffer.
       if (session.kept()) {
@@ -393,6 +441,7 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
     return starting;
   };
   const stopAll = (): void => {
+    generation++;
     while (running.length > 0) {
       try {
         running.pop()?.();
@@ -408,10 +457,19 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
     await settled();
     if (delivery !== undefined && gate.recording()) await retention.flush(delivery, keep);
   };
+  // Session end (decision P13): when tabs rotate an expired session at the same moment, each ends
+  // it and starts a session of its own, then all adopt the same newest one. The tab whose session
+  // won emits o11y.rum.session.end, so it is emitted once: each tab waits SESSION_END_ELECTION_MILLIS
+  // for the others' broadcasts and emits only if its successor is still the current session. An
+  // unkept session that ends removes only its own records from the shared retention buffer.
+  const endTimers = new Set<ReturnType<typeof setTimeout>>();
+  let endingSession: EndingSession | undefined;
   const offSession = session.subscribe((e) => {
     if (e.type === "kept") {
       flushRetention().catch((err: unknown) => diag.warn("o11y: rum: retention flush failed", err));
     } else if (e.type === "start" && e.local) {
+      if (endingSession !== undefined && e.previous?.id === endingSession.id)
+        endingSession.successor = e.session.id;
       t.event(EVENT_RUM_SESSION_START, {
         [ATTR_SESSION_ID]: e.session.id,
         [ATTR_RUM_PLATFORM]: "web",
@@ -420,18 +478,34 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
           : { [ATTR_RUM_CONFIG_VERSION]: e.session.configVersion }),
       });
     } else if (e.type === "end" && e.local) {
-      if (e.session.retained === undefined) void retention.clear();
-      else {
-        t.event(EVENT_RUM_SESSION_END, {
-          [ATTR_SESSION_ID]: e.session.id,
-          [ATTR_RUM_SESSION_RETAINED]: e.session.retained,
-        });
+      const ended = e.session;
+      if (ended.retained === undefined) {
+        void (async () => {
+          await settled();
+          await retention.discard((b) => sessionsIn(b)?.has(ended.id) === true);
+        })();
+        return;
       }
+      const candidate: EndingSession = { id: ended.id, retained: ended.retained, successor: undefined };
+      endingSession = candidate;
+      const timer = setTimeout(() => {
+        endTimers.delete(timer);
+        if (endingSession === candidate) endingSession = undefined;
+        if (!gate.recording() || candidate.successor === undefined) return;
+        if (session.current()?.id !== candidate.successor) return; // another tab's rotation won
+        t.event(EVENT_RUM_SESSION_END, {
+          [ATTR_SESSION_ID]: candidate.id,
+          [ATTR_RUM_SESSION_RETAINED]: candidate.retained,
+        });
+      }, SESSION_END_ELECTION_MILLIS);
+      endTimers.add(timer);
     }
   });
 
   const stopRecording = (): void => {
     stopAll();
+    active = undefined;
+    crumbs.clear();
     summary.reset();
     views.end();
     session.clear();
@@ -478,6 +552,33 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
       userId = id;
     },
     onRequestStart: (hook) => runtime.onRequestStart(hook),
+    startView(o) {
+      if (!gate.recording()) return;
+      const cause = active?.isRecording() === true ? active.spanContext() : undefined;
+      views.start({
+        kind: "soft",
+        ...(o?.name === undefined ? {} : { name: o.name }),
+        ...(cause === undefined ? {} : { cause }),
+      });
+    },
+    setViewName(name) {
+      if (gate.recording()) views.rename(name);
+    },
+    viewRendered() {
+      if (gate.recording()) views.rendered();
+    },
+    addAction(name) {
+      if (gate.recording()) recordInstantAction(runtime, "custom", name);
+    },
+    addError(error, o) {
+      if (!gate.recording()) return;
+      recordError(
+        runtime,
+        o?.source ?? "custom",
+        error,
+        o?.componentStack === undefined ? {} : { componentStack: o.componentStack },
+      );
+    },
   };
 
   const handle = t as WebTelemetry & { readonly rum: Rum };
@@ -496,6 +597,8 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
       offGate();
       offRevoke();
       offSession();
+      for (const timer of endTimers) clearTimeout(timer);
+      endTimers.clear();
       const report = await webShutdown(opts);
       views.close();
       session.close();

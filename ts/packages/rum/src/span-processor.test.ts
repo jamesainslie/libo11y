@@ -6,7 +6,7 @@ import { createBus } from "./bus.ts";
 import type { RumSignal } from "./contracts/runtime.ts";
 import { APP_LOAD_SPAN, rumSpanProcessor } from "./span-processor.ts";
 
-function setup(session: { id: string } | null = { id: "s1" }) {
+function setup(session: { id: string } | null = { id: "s1" }, timeOrigin?: number) {
   const exporter = new InMemorySpanExporter();
   const bus = createBus();
   const signals: RumSignal[] = [];
@@ -27,6 +27,7 @@ function setup(session: { id: string } | null = { id: "s1" }) {
     userId: () => "u-123",
     bus,
     now: () => 5,
+    ...(timeOrigin === undefined ? {} : { timeOrigin }),
   });
   const tp = new TracerProvider({ spanProcessors: [processor, new SimpleSpanProcessor({ exporter })] });
   return { tp, exporter, signals, appLoads };
@@ -74,7 +75,7 @@ test("client request spans lose disallowed query parameters and reach the bus", 
   assert.equal(exporter.getFinishedSpans()[0]?.attributes["url.full"], "https://api.test/q?page=1");
   assert.deepEqual(
     signals.map((s) => s.type),
-    ["request-start", "request-end"],
+    ["request-start", "request-end", "breadcrumb"],
   );
   const start = signals[0];
   assert.equal(start?.type === "request-start" ? start.url : "", "https://api.test/q?page=1");
@@ -101,4 +102,83 @@ test("web's documentFetch belongs to the load view and is not a request", async 
   await tp.forceFlush();
   assert.equal(exporter.getFinishedSpans()[0]?.attributes["o11y.rum.view.id"], "v0");
   assert.deepEqual(signals, []);
+});
+
+test("a finished request leaves a breadcrumb of its method, host and status, never its path", async () => {
+  const { tp, signals } = setup();
+  const t = tp.getTracer("@libo11y/web");
+  t.startSpan("GET", {
+    kind: SpanKind.CLIENT,
+    attributes: {
+      "http.request.method": "GET",
+      "url.full": "https://api.test/docs/42",
+      "server.address": "api.test",
+      "http.response.status_code": 200,
+    },
+  }).end();
+  t.startSpan("POST", {
+    kind: SpanKind.CLIENT,
+    attributes: { "http.request.method": "POST", "url.full": "https://api.test/sign" },
+  }).end();
+  t.startSpan("rpc", {
+    kind: SpanKind.CLIENT,
+    attributes: {
+      "http.request.method": "POST",
+      "url.full": "https://api.test/docs.v1.Docs/Get",
+      "rpc.method": "docs.v1.Docs/Get",
+    },
+  }).end();
+  await tp.forceFlush();
+  assert.deepEqual(
+    signals.filter((s) => s.type === "breadcrumb"),
+    [
+      { type: "breadcrumb", kind: "fetch", label: "GET api.test 200", at: 5 },
+      { type: "breadcrumb", kind: "fetch", label: "POST api.test failed", at: 5 },
+      { type: "breadcrumb", kind: "rpc", label: "docs.v1.Docs/Get", at: 5 },
+    ],
+  );
+});
+
+test("a span that names its view and session keeps them", async () => {
+  const { tp, exporter } = setup();
+  tp.getTracer("@libo11y/rum")
+    .startSpan("view /old", { attributes: { "o11y.rum.view.id": "v-old", "session.id": "s-old" } })
+    .end();
+  await tp.forceFlush();
+  const [s] = exporter.getFinishedSpans();
+  assert.equal(s?.attributes["o11y.rum.view.id"], "v-old");
+  assert.equal(s?.attributes["session.id"], "s-old");
+});
+
+test("a request that ends without a response carries its error.type to the bus", async () => {
+  const { tp, signals } = setup();
+  tp.getTracer("@libo11y/web")
+    .startSpan("GET", {
+      kind: SpanKind.CLIENT,
+      attributes: {
+        "http.request.method": "GET",
+        "url.full": "https://api.test/q",
+        "error.type": "AbortError",
+      },
+    })
+    .end();
+  await tp.forceFlush();
+  const end = signals.find((s) => s.type === "request-end");
+  assert.equal(end?.type === "request-end" ? end.errorType : undefined, "AbortError");
+});
+
+test("a request's end on the bus is never earlier than the span's own end time", async () => {
+  // WebKit's span end can trail performance.now() by a millisecond. An action that settled at
+  // the bus time would then end before its child request, so the bus reports the later of the two.
+  const { tp, signals } = setup({ id: "s1" }, 1_000_000);
+  tp.getTracer("@libo11y/web")
+    .startSpan("GET", {
+      kind: SpanKind.CLIENT,
+      startTime: 1_000_002,
+      attributes: { "http.request.method": "GET", "url.full": "https://api.test/q" },
+    })
+    .end(1_000_009);
+  await tp.forceFlush();
+  const end = signals.find((s) => s.type === "request-end");
+  assert.equal(end?.at, 9);
 });

@@ -10,10 +10,10 @@ and [its README](o11ysql/README.md) explains why.
 ## Installation
 
 ```sh
-go get github.com/jamesainslie/libo11y/go@v0.3.0
-go get github.com/jamesainslie/libo11y/go/o11ygin@v0.3.0       # only for Gin
-go get github.com/jamesainslie/libo11y/go/o11yconnect@v0.3.0   # only for Connect
-go get github.com/jamesainslie/libo11y/go/o11ysql@v0.3.0       # only for database/sql
+go get github.com/jamesainslie/libo11y/go@v0.4.0
+go get github.com/jamesainslie/libo11y/go/o11ygin@v0.4.0       # only for Gin
+go get github.com/jamesainslie/libo11y/go/o11yconnect@v0.4.0   # only for Connect
+go get github.com/jamesainslie/libo11y/go/o11ysql@v0.4.0       # only for database/sql
 ```
 
 The Gin, Connect, and database/sql integrations are separate modules
@@ -316,7 +316,7 @@ link rather than adopt untrusted inbound context), `WithCanonicalLine`, and
 `WithServerTiming`. `WithServerTiming` adds
 `Server-Timing: traceparent;desc="00-<trace-id>-<span-id>-<flags>"` to HTML
 responses, so a page instrumented with `@libo11y/web` makes the server span
-the parent of its `documentLoad` span and the first page load joins the
+the parent of its `app_load` span and the first page load joins the
 backend trace. A Server-Timing value the handler set is kept. Set
 `Content-Type` before the headers are committed; without one, the entry is
 added only when net/http sniffs `text/html` from the first bytes written.

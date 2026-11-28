@@ -228,7 +228,7 @@ func TestServerTimingNamesTheServerSpan(t *testing.T) {
 
 // TestServerTimingNamesTheServerSpanNotAChild checks that a handler which
 // puts a child span in c.Request before rendering still sends the server
-// span, the parent the browser's documentLoad span should adopt.
+// span, the parent the browser's app_load span should adopt.
 func TestServerTimingNamesTheServerSpanNotAChild(t *testing.T) {
 	sdk, recorder := newSDK(t)
 	gin.SetMode(gin.TestMode)

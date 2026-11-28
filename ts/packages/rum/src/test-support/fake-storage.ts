@@ -13,8 +13,13 @@ export function createFakeStorage(): Pick<Storage, "getItem" | "setItem" | "remo
   };
 }
 
-/** Channels that deliver to every other channel of the same hub, synchronously, as tabs would. */
-export function createChannelHub(): { channel(): BroadcastChannelLike } {
+/**
+ * Channels that deliver to every other channel of the same hub, as tabs would: synchronously, or
+ * with async in a later task, so two tabs can act before either hears the other.
+ */
+export function createChannelHub(opts: { readonly async?: boolean } = {}): {
+  channel(): BroadcastChannelLike;
+} {
   const members = new Set<{ listeners: Set<(e: { data: unknown }) => void> }>();
   return {
     channel() {
@@ -23,7 +28,11 @@ export function createChannelHub(): { channel(): BroadcastChannelLike } {
       return {
         postMessage(data) {
           const copy = structuredClone(data);
-          for (const m of members) if (m !== me) for (const l of m.listeners) l({ data: copy });
+          const deliver = (): void => {
+            for (const m of members) if (m !== me) for (const l of m.listeners) l({ data: copy });
+          };
+          if (opts.async === true) setTimeout(deliver, 0);
+          else deliver();
         },
         addEventListener: (_t, l) => void me.listeners.add(l),
         removeEventListener: (_t, l) => void me.listeners.delete(l),
