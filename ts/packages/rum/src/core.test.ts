@@ -25,6 +25,10 @@ const DENIED_FILES = [
   "actions/collector.ts",
   "actions/naming.ts",
   "errors/collector.ts",
+  // The web's views collector and its History API watcher. A later milestone that admits them
+  // takes them off this list on purpose.
+  "views/collector.ts",
+  "views/history.ts",
 ];
 const DENIED_DIRS = ["vitals/", "resources/", "bootstrap/", "webext/"];
 
@@ -39,8 +43,9 @@ const ALLOWED_PACKAGES = new Set([
   "@opentelemetry/sdk-trace",
 ]);
 
-test("@libo11y/rum/core reaches no browser-only module", () => {
-  const { files } = valueImports(ENTRY);
+test("@libo11y/rum/core reaches no browser-only module and imports nothing at run time", () => {
+  const { files, dynamic } = valueImports(ENTRY);
+  assert.deepEqual([...dynamic], [], "a run-time import the graph cannot follow");
   const rel = [...files].map((f) => f.slice(SRC.length + 1));
   for (const f of DENIED_FILES) assert.ok(!rel.includes(f), `core reaches ${f}`);
   for (const d of DENIED_DIRS) assert.ok(!rel.some((f) => f.startsWith(d)), `core reaches ${d}`);
@@ -62,4 +67,25 @@ test("@libo11y/rum/core evaluates and makes IDs with every browser global remove
   const node = process.versions.bun === undefined ? process.execPath : "node";
   const out = execFileSync(node, ["--input-type=module", "-e", script], { cwd: SRC, encoding: "utf8" });
   assert.equal(out.trim(), "ok");
+});
+
+test("setupRumCore runs a session, an action and a hide with every browser global removed", () => {
+  const bare = pathToFileURL(join(SRC, "test-support", "bare-core.ts")).href;
+  const script = [
+    `for (const k of ${JSON.stringify(BROWSER_GLOBALS)}) Object.defineProperty(globalThis, k, { value: undefined, configurable: true, writable: true });`,
+    `const { runBareCore } = await import(${JSON.stringify(bare)});`,
+    "console.log(JSON.stringify(await runBareCore()));",
+  ].join("\n");
+  const node = process.versions.bun === undefined ? process.execPath : "node";
+  const out = execFileSync(node, ["--input-type=module", "-e", script], { cwd: SRC, encoding: "utf8" });
+  const run = JSON.parse(out.trim().split("\n").at(-1) ?? "{}") as {
+    sessionId?: string;
+    events: string[];
+    spans: string[];
+    unsubscribed: boolean;
+  };
+  assert.match(run.sessionId ?? "", /^[0-9a-f-]{36}$/);
+  assert.ok(run.spans.includes("action custom"), `spans: ${run.spans.join(", ")}`);
+  assert.deepEqual(run.events, ["o11y.rum.session.start", "o11y.rum.view.summary"]);
+  assert.equal(run.unsubscribed, true);
 });

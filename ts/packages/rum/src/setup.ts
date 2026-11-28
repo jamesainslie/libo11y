@@ -21,7 +21,7 @@ export { runtimeOf, SESSION_END_ELECTION_MILLIS } from "./core-setup.ts";
 export interface RumDeps
   extends Omit<
     RumCoreDeps<WebSetupOptions, WebTelemetry>,
-    "platform" | "bind" | "lifecycle" | "window" | "bootstrap"
+    "platform" | "bind" | "lifecycle" | "window" | "bootstrap" | "storage"
   > {
   readonly web: SetupDeps;
   readonly document: (EventTarget & { readonly visibilityState?: string }) | undefined;
@@ -34,6 +34,11 @@ export interface RumDeps
   readonly bind?: RumBind<WebSetupOptions, WebTelemetry>;
   /** Default webLifecycle(document, window). */
   readonly lifecycle?: RumLifecycle;
+  /**
+   * Where remote configuration is cached. Default localStorage. Called only once consent is granted.
+   * It may resolve later, as a cache in chrome.storage.local does once it has read the stored value.
+   */
+  readonly storage?: RumCoreDeps<WebSetupOptions, WebTelemetry>["storage"];
 }
 
 /** The real dependencies of a page. */

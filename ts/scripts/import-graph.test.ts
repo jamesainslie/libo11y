@@ -101,3 +101,35 @@ test("follows subdirectories and parent paths", () => {
     "src/sub/a.ts",
   ]);
 });
+
+test("a comment with a brace inside an import list does not hide the import", () => {
+  const dir = tree({
+    "entry.ts": 'import {\n  a, // see {x}\n  /* b } */\n} from "./a.ts";\nexport const x = a;',
+    "a.ts": "export const a = 1;",
+  });
+  assert.deepEqual(relative(dir, valueImports(join(dir, "entry.ts")).files), ["a.ts", "entry.ts"]);
+});
+
+test("follows single-quoted specifiers and a second statement on one line", () => {
+  const dir = tree({
+    "entry.ts": "import { a } from './a.ts'; import { b } from \"./b.ts\";\nexport const x = [a, b];",
+    "a.ts": "export const a = 1;",
+    "b.ts": "export const b = 1;",
+  });
+  assert.deepEqual(relative(dir, valueImports(join(dir, "entry.ts")).files), ["a.ts", "b.ts", "entry.ts"]);
+});
+
+test("reports the modules that import or require at run time, which the graph cannot follow", () => {
+  const dir = tree({
+    "entry.ts": 'import { a } from "./a.ts";\nexport const x = a;',
+    "a.ts": [
+      "/** A doc comment may say import() or require(). */",
+      '// and so may import("./c.ts") in a line comment',
+      'export const a = () => import("./b.ts");',
+    ].join("\n"),
+    "b.ts": "export const b = 1;",
+    "c.ts": 'export const c = require("./d.ts");',
+  });
+  const { dynamic } = valueImports(join(dir, "entry.ts"));
+  assert.deepEqual(relative(dir, dynamic), ["a.ts"]);
+});

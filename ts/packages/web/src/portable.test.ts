@@ -25,7 +25,10 @@ const DENIED = [
   "instrumentation/document-load.ts",
 ];
 
-/** The packages portable code may import. @opentelemetry/resources and web-vitals are not among them. */
+/**
+ * The packages portable modules import directly. @libo11y/core is a platform-neutral package of its
+ * own (it brings @opentelemetry/resources), so the graph stops there.
+ */
 const ALLOWED_PACKAGES = new Set([
   "@libo11y/core",
   "@opentelemetry/api",
@@ -37,7 +40,8 @@ const ALLOWED_PACKAGES = new Set([
 ]);
 
 test("the portable entry reaches no browser-only module and no browser-only package", () => {
-  const { files, packages } = valueImports(ENTRY);
+  const { files, packages, dynamic } = valueImports(ENTRY);
+  assert.deepEqual([...dynamic], [], "a run-time import the graph cannot follow");
   const rel = [...files].map((f) => f.slice(SRC.length + 1));
   for (const denied of DENIED) assert.ok(!rel.includes(denied), `portable reaches ${denied}`);
   for (const p of packages) assert.ok(ALLOWED_PACKAGES.has(p), `portable imports ${p}`);
