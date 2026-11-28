@@ -30,6 +30,7 @@ import type { RumCollector, RumRuntime } from "../contracts/runtime.ts";
 import type { VitalName } from "../contracts/summary.ts";
 import type { ViewState } from "../contracts/views.ts";
 import { attributionAttributes, type VitalMetric, vitalValue } from "./attribution.ts";
+import { type LcpMetric, staleLcpAttribution } from "./lcp.ts";
 
 export type { VitalMetric } from "./attribution.ts";
 
@@ -211,7 +212,46 @@ const registerWebVitals: VitalRegistrar = (report) => {
       navigationType: m.navigationType,
       attribution: targets.clean(m.attribution as Readonly<Record<string, unknown>>),
     });
-  onLCP(forward, opts);
+  // A later LCP candidate of the same paint (Firefox) updates the metric's entries without a
+  // report (see lcp.ts). web-vitals names each candidate's element before it processes the entry,
+  // so once a batch of entries is processed, a metric whose latest entry is not the one attributed
+  // is attributed again and reported again with the same value.
+  const lcpTargets = new WeakMap<Node, string>();
+  let lastLcp: Parameters<Parameters<typeof onLCP>[0]>[0] | undefined;
+  let catchUpQueued = false;
+  const catchUp = (): void => {
+    catchUpQueued = false;
+    const m = lastLcp;
+    if (m === undefined) return;
+    const attribution = staleLcpAttribution(
+      m as unknown as LcpMetric,
+      (e) => (e.element ? lcpTargets.get(e.element) : undefined),
+      (url) =>
+        performance.getEntriesByType("resource").find((r) => r.name === url) as
+          | PerformanceResourceTiming
+          | undefined,
+    );
+    if (attribution === undefined) return;
+    // As web-vitals does on each report, so the next batch compares against this entry.
+    Object.assign(m, { attribution });
+    forward(m);
+  };
+  const lcpOpts = {
+    reportAllChanges: true,
+    generateTarget: (node: Node | null): string | undefined => {
+      const selector = targets.generateTarget(node);
+      if (node !== null && selector !== undefined) lcpTargets.set(node, selector);
+      if (!catchUpQueued) {
+        catchUpQueued = true;
+        queueMicrotask(catchUp);
+      }
+      return selector;
+    },
+  };
+  onLCP((m) => {
+    lastLcp = m;
+    forward(m);
+  }, lcpOpts);
   onINP(forward, opts);
   onCLS(forward, opts);
   onFCP(forward, opts);

@@ -195,15 +195,19 @@ event. Its body holds the vital's `name` (`lcp`, `inp`, `cls`, `fcp` or
 same units. Its attributes are the view, the session and the attribution:
 the `o11y.rum.vital.attribution.*` phases of INP and LCP, the largest shift
 of CLS, and the element as `o11y.rum.element.selector`. The selector is
-built as for actions, never from text.
+built as for actions, never from text. When one frame paints several LCP
+candidates, the LCP element is the largest of them. Firefox reports each of
+them with the same time, and RUM attributes LCP to the last one.
 
 RUM never sends a rating. The gateway rates each vital against the
 thresholds the spec publishes.
 
 A browser that does not support a vital records nothing for it. Firefox
-and WebKit, for example, report no CLS.
+and WebKit, for example, report no CLS. A page load whose navigation entry
+reports a response start of zero records no TTFB, because `web-vitals`
+treats that value as unknown. Firefox reports zero at times.
 
-On a navigation away, Chromium fires `pagehide` before the page is hidden,
+On a navigation away, browsers fire `pagehide` before the page is hidden,
 and RUM takes the values at `pagehide`. An interaction that the browser has
 not yet reported by then, such as the click that started the navigation,
 is not in INP.
