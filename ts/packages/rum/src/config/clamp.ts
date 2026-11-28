@@ -51,7 +51,7 @@ function isObject(v: unknown): v is Record<string, unknown> {
 
 /**
  * The limits for a code sample rate. The default range is [rate, rate]: no change. Throws O11yError
- * INVALID_OPTION unless 0 <= min <= max <= 1.
+ * INVALID_OPTION unless `0 <= min <= max <= 1`.
  */
 export function resolveLimits(rate: number, limits: RemoteConfigLimits | undefined): ResolvedLimits {
   const range = limits?.sessionSampleRate;

@@ -36,7 +36,7 @@ import type { StorageQueueOptions } from "./storage/queue.ts";
 
 /**
  * What setupReactNativeWith builds on. Internal: the default is the real modules and React
- * Native's AppState and Platform (env.ts); tests and @libo11y/rum-react-native's binding replace
+ * Native's AppState and Platform (env.ts); tests and `@libo11y/rum-react-native`'s binding replace
  * or wrap any of them.
  */
 export interface ReactNativeDeps {

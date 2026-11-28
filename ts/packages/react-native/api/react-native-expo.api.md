@@ -39,21 +39,31 @@ export interface KeyValueStorage {
 }
 
 // @public
+export interface ReactNativeConsentOptions {
+    readonly initial?: ConsentState;
+}
+
+// @public
+export interface ReactNativeInstrumentationOptions {
+    readonly fetch?: boolean;
+    readonly ignoreUrls?: readonly UrlMatcher[];
+    readonly propagateTo?: readonly UrlMatcher[];
+    readonly xhr?: boolean;
+}
+
+// @public
 export interface ReactNativeSetupOptions extends TelemetryOptions {
-    // Warning: (ae-forgotten-export) The symbol "ReactNativeConsentOptions" needs to be exported by the entry point expo.d.ts
     readonly consent?: ReactNativeConsentOptions;
     readonly contextManager?: () => ContextManager;
     readonly endpoint?: string;
     readonly env?: Readonly<Record<string, string>>;
     readonly getRandomValues?: (array: Uint8Array) => Uint8Array;
     readonly headers?: Readonly<Record<string, string>>;
-    // Warning: (ae-forgotten-export) The symbol "ReactNativeInstrumentationOptions" needs to be exported by the entry point expo.d.ts
     readonly instrumentations?: ReactNativeInstrumentationOptions;
     readonly logsEndpoint?: string;
     readonly metricsEndpoint?: string;
     readonly storage?: KeyValueStorage;
     readonly tracesEndpoint?: string;
-    // Warning: (ae-forgotten-export) The symbol "ReactNativeTransportOptions" needs to be exported by the entry point expo.d.ts
     readonly transport?: ReactNativeTransportOptions;
 }
 
@@ -61,6 +71,16 @@ export interface ReactNativeSetupOptions extends TelemetryOptions {
 export interface ReactNativeTelemetry extends Telemetry {
     readonly consent: Consent;
     traceFetch<F extends typeof fetch>(fetchImpl: F): F;
+}
+
+// @public
+export interface ReactNativeTransportOptions {
+    readonly initialBackoffMillis?: number;
+    readonly maxBackoffMillis?: number;
+    readonly maxQueueAgeMillis?: number;
+    readonly maxQueueBytes?: number;
+    readonly maxQueueEntries?: number;
+    readonly timeoutMillis?: number;
 }
 
 // @public

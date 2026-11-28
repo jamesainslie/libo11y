@@ -3,8 +3,6 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { test } from "node:test";
 
-const OUT_OF_SCOPE = /^@libo11y\/(?:rum(?:-.*)?|react-native|sourcemaps)$/;
-
 // The entry points for libo11y packages only. They carry no compatibility promise, so a report of a
 // public entry point must not depend on one.
 const INTERNAL_ENTRY = /^@libo11y\/[^/']+\/(?:internal|portable|env|core)$/;
@@ -27,8 +25,7 @@ function packages(): Package[] {
       };
       const entries = typeof json.exports === "object" ? Object.keys(json.exports) : ["."];
       return { dir, name: json.name, entries };
-    })
-    .filter((p) => !OUT_OF_SCOPE.test(p.name));
+    });
 }
 
 // reportName is the report api-extractor writes for an entry point: <dir>.api.md for the root and
@@ -38,9 +35,9 @@ function reportName(dir: string, entry: string): string {
   return entry === "." ? `${base}.api.md` : `${base}-${entry.slice(2).replaceAll("/", "-")}.api.md`;
 }
 
-test("every entry point of the core and platform packages has an API report", () => {
+test("every entry point of every workspace package has an API report", () => {
   const pkgs = packages();
-  assert.ok(pkgs.length >= 6, "expected at least spec, core, server, test, web and webext");
+  assert.ok(pkgs.length >= 14, "expected every workspace package to be checked");
   for (const pkg of pkgs) {
     for (const entry of pkg.entries) {
       const report = join(pkg.dir, "api", reportName(pkg.dir, entry));

@@ -22,7 +22,7 @@ export interface ViewTrackerOptions {
   readonly location: () => string;
   /** performance.now(). */
   readonly now: () => number;
-  /** document.prerendering, or a navigation entry with activationStart > 0. */
+  /** document.prerendering, or a navigation entry with `activationStart > 0`. */
   readonly prerendered: () => boolean;
   /** Where pageshow fires, for back/forward-cache restores. */
   readonly window?: EventTarget;

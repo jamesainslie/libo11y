@@ -1,8 +1,8 @@
 /**
  * @libo11y/react-native/env: the real React Native dependencies, for @libo11y/rum-react-native's
- * binding, which wraps them. For libo11y packages only: it follows the package version, carries no
- * compatibility promise and has no API report. The only module of this package that imports a
- * value from react-native, so node tests never load it (boundary.test.ts enforces that).
+ * binding, which wraps them. For libo11y packages only: it follows the package version and carries
+ * no compatibility promise. The only module of this package that imports a value from react-native,
+ * so node tests never load it (boundary.test.ts enforces that).
  */
 import {
   createConsentController,
@@ -16,6 +16,12 @@ import { installNetworkInstrumentation } from "./instrumentation/network.ts";
 import { appStateLifecycle } from "./lifecycle.ts";
 import type { ReactNativeDeps } from "./setup.ts";
 import { openStorageQueue } from "./storage/queue.ts";
+
+export type { AppLifecycle, AppStateLike, ReactNativeEnv } from "./contracts/env.ts";
+export type { KeyValueStorage } from "./contracts/storage.ts";
+export type { NetworkInstrumentation, NetworkInstrumentationOptions } from "./instrumentation/network.ts";
+export type { ReactNativeDeps } from "./setup.ts";
+export type { StorageQueueOptions } from "./storage/queue.ts";
 
 declare const __DEV__: boolean | undefined;
 

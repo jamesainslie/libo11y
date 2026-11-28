@@ -31,7 +31,7 @@ export interface RumPlatformOptions {
 export interface RumPlatformInfo {
   readonly endpoints: SignalEndpoints;
   readonly delivery: Delivery;
-  /** The send mode, for the exporters' unload splitting. Default () => "normal". */
+  /** The send mode, for the exporters' unload splitting. Default `() => "normal"`. */
   readonly mode?: () => SendMode;
 }
 

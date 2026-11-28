@@ -19,7 +19,13 @@ import { setupReactNative } from "./index.ts";
 import type { ReactNativeSetupOptions, ReactNativeTelemetry } from "./options.ts";
 
 export type { KeyValueStorage } from "./contracts/storage.ts";
-export type { ReactNativeSetupOptions, ReactNativeTelemetry } from "./options.ts";
+export type {
+  ReactNativeConsentOptions,
+  ReactNativeInstrumentationOptions,
+  ReactNativeSetupOptions,
+  ReactNativeTelemetry,
+  ReactNativeTransportOptions,
+} from "./options.ts";
 export type { ExpoAppInfo, ExpoOptions };
 
 /** The directory under the app's documents that expoFileStorage keeps its files in. */

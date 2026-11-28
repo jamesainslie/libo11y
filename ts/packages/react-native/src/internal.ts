@@ -1,8 +1,8 @@
 /**
  * @libo11y/react-native/internal: the platform's building blocks, for @libo11y/rum-react-native.
- * For libo11y packages only: it follows the package version, carries no compatibility promise and
- * has no API report. Nothing reachable from here imports react-native or Expo (boundary.test.ts
- * enforces that), so node tests can load it; the binding takes the real env from ./env.
+ * For libo11y packages only: it follows the package version and carries no compatibility promise.
+ * Nothing reachable from here imports react-native or Expo (boundary.test.ts enforces that), so
+ * node tests can load it; the binding takes the real env from ./env.
  */
 
 export type { AppLifecycle, AppStateLike, ReactNativeEnv } from "./contracts/env.ts";
@@ -18,6 +18,13 @@ export {
   RN_SCOPE,
 } from "./instrumentation/network.ts";
 export { appStateLifecycle } from "./lifecycle.ts";
+export type {
+  ReactNativeConsentOptions,
+  ReactNativeInstrumentationOptions,
+  ReactNativeSetupOptions,
+  ReactNativeTelemetry,
+  ReactNativeTransportOptions,
+} from "./options.ts";
 export { MOBILE_ENV_DEFAULTS, type ReactNativePlatformOptions, reactNativePlatform } from "./platform.ts";
 export { uuidCrypto } from "./random.ts";
 export { detectReactNativeResource, type ReactNativeResourceOptions } from "./resource.ts";
