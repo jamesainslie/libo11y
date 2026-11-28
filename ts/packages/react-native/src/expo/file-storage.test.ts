@@ -72,6 +72,44 @@ test("a failing file system rejects, as KeyValueStorage allows", async () => {
   await assert.rejects(s.getItem("k"), /io/);
 });
 
+test("a write torn by a crash leaves the old value and no extra key", async () => {
+  const fs = fakeFileSystem();
+  const s = expoFileStorageWith(fs);
+  await s.setItem("index", '{"entries":[1,2,3]}');
+  fs.tearNextWrite();
+  await assert.rejects(s.setItem("index", '{"entries":[1,2,3,4]}'), /torn/);
+  assert.equal(await s.getItem("index"), '{"entries":[1,2,3]}');
+  assert.deepEqual(await s.getAllKeys(), ["index"]);
+  await s.setItem("index", "next");
+  assert.equal(await s.getItem("index"), "next");
+});
+
+test("a crash between deleting the old file and moving the new one in still reads the new value", async () => {
+  const fs = fakeFileSystem();
+  const s = expoFileStorageWith(fs);
+  await s.setItem("index", "old");
+  fs.stopNextReplace();
+  await assert.rejects(s.setItem("index", "new"), /stopped/);
+  assert.equal(await s.getItem("index"), "new");
+  assert.deepEqual(await s.getAllKeys(), ["index"]);
+  await s.removeItem("index");
+  assert.equal(await s.getItem("index"), null, "remove also deletes the half-moved value");
+  assert.deepEqual(await s.getAllKeys(), []);
+});
+
+test("operations on one key run in order, so overlapping writes end with the last value", async () => {
+  const fs = fakeFileSystem();
+  const s = expoFileStorageWith(fs);
+  const release = fs.holdWrites();
+  const writes = [s.setItem("k", "1"), s.setItem("k", "2"), s.setItem("k", "3")];
+  const read = s.getItem("k");
+  release();
+  await Promise.all(writes);
+  assert.equal(await read, "3");
+  assert.equal(await s.getItem("k"), "3");
+  assert.deepEqual([...fs.files.keys()], ["k"]);
+});
+
 test("the storage queue works over it, and opening it creates nothing", async () => {
   const fs = fakeFileSystem();
   const q = await openStorageQueue({ storage: expoFileStorageWith(fs) });

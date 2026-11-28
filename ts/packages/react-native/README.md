@@ -32,7 +32,9 @@ own:
 
 - `storage` is `expoFileStorage()`, one file per key in the `libo11y`
   directory of the app's documents (`expo-file-system`). The directory is
-  created on the first write, not before.
+  created on the first write, not before. Each value goes to a temporary
+  file that then replaces the key's file, so an app killed mid-write keeps
+  the old value.
 - `serviceVersion` is the native app version (`expo-application`).
 - `o11y.rum.app.update_id` is the ID of the over-the-air update the app
   runs (`expo-updates`). It is absent for the bundle embedded in the
@@ -42,6 +44,8 @@ own:
   device type.
 
 An option the app sets wins, and `resourceAttributes` merge key by key.
+An attribute the app sets in `env` (`OTEL_RESOURCE_ATTRIBUTES`) also beats
+Expo's, `service.version` included.
 `expoOptions()`, `expoAppInfo()` and `expoFileStorage()` are exported for
 apps that call `setupReactNative` themselves.
 

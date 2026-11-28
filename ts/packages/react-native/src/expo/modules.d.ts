@@ -18,6 +18,7 @@ declare module "expo-file-system" {
     text(): Promise<string>;
     write(content: string): Promise<void>;
     delete(): void;
+    move(destination: File | Directory, options?: { readonly overwrite?: boolean }): Promise<void>;
   }
   export const Paths: { readonly document: Directory };
 }

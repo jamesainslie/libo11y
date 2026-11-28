@@ -53,6 +53,42 @@ test("an option the app leaves undefined does not hide expo's", () => {
   assert.equal("resourceAttributes" in merged, false);
 });
 
+test("Expo's values yield to the attributes the app sets in env", () => {
+  const expo = expoOptionsFrom(
+    { serviceVersion: "1.0.0", updateId: "u-1", deviceClass: "mobile" },
+    memoryStorage(),
+  );
+  const merged = withExpoOptions(expo, {
+    env: { OTEL_RESOURCE_ATTRIBUTES: "service.version=2.0.0,o11y.rum.device.class=tv" },
+  });
+  assert.equal(merged.serviceVersion, undefined);
+  assert.deepEqual(merged.resourceAttributes, { "o11y.rum.app.update_id": "u-1" });
+});
+
+test("a hermetic setup ignores env, so Expo's values stay", () => {
+  const expo = expoOptionsFrom({ serviceVersion: "1.0.0", deviceClass: "mobile" }, memoryStorage());
+  const merged = withExpoOptions(expo, {
+    hermetic: true,
+    env: { OTEL_RESOURCE_ATTRIBUTES: "service.version=2.0.0,o11y.rum.device.class=tv" },
+  });
+  assert.equal(merged.serviceVersion, "1.0.0");
+  assert.deepEqual(merged.resourceAttributes, { "o11y.rum.device.class": "mobile" });
+});
+
+test("on the built resource, the app's env beats Expo's version and device class", async () => {
+  const expo = expoOptionsFrom({ serviceVersion: "1.0.0", deviceClass: "mobile" }, memoryStorage());
+  const merged = withExpoOptions(expo, {
+    env: { OTEL_RESOURCE_ATTRIBUTES: "service.version=2.0.0,o11y.rum.device.class=tv" },
+  });
+  // The harness passes serviceVersion "1.0.0" unless told otherwise; this app sets none.
+  const h = await rnHarness({ ...merged, serviceVersion: undefined } as unknown as ReactNativeSetupOptions, {
+    memory: true,
+  });
+  assert.equal(h.telemetry.resource.attributes["service.version"], "2.0.0");
+  assert.equal(h.telemetry.resource.attributes["o11y.rum.device.class"], "tv");
+  await h.telemetry.shutdown();
+});
+
 test("resourceAttributes override the detected device class and add the update ID on the built resource", async () => {
   const expo = expoOptionsFrom({ updateId: "u-1", deviceClass: "tablet" }, memoryStorage());
   const h = await rnHarness(withExpoOptions(expo, { consent: { initial: "granted" } }), { memory: true });

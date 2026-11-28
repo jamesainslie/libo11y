@@ -37,6 +37,7 @@ export function expoFileStorage(): KeyValueStorage {
     createDirectory: () => dir.create({ intermediates: true, idempotent: true }),
     fileNames: () => dir.list().flatMap((e) => (e instanceof File ? [e.name] : [])),
     file: (name) => new File(dir, name),
+    replace: (from, to) => new File(dir, from).move(new File(dir, to), { overwrite: true }),
   });
 }
 

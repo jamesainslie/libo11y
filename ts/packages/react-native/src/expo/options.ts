@@ -3,6 +3,7 @@
  */
 
 import { ATTR_RUM_APP_UPDATE_ID, ATTR_RUM_DEVICE_CLASS } from "@libo11y/spec";
+import { parseResourceAttributes } from "@libo11y/web/portable";
 import type { Attributes } from "@opentelemetry/api";
 import type { KeyValueStorage } from "../contracts/storage.ts";
 import type { ReactNativeSetupOptions } from "../options.ts";
@@ -32,13 +33,27 @@ export function expoOptionsFrom(info: ExpoAppInfo, storage: KeyValueStorage): Ex
 
 /**
  * options over expo: an option the app sets beats expo's, and resourceAttributes merge key by key
- * with the app's winning. An option the app leaves undefined keeps expo's.
+ * with the app's winning. An option the app leaves undefined keeps expo's. Expo's values are
+ * defaults, so an attribute the app sets in env (OTEL_RESOURCE_ATTRIBUTES, unless hermetic) also
+ * beats expo's, service.version included, as it would beat a detected one.
  */
-export function withExpoOptions<O extends ReactNativeSetupOptions>(expo: ExpoOptions, options: O): O {
+export function withExpoOptions<O extends ReactNativeSetupOptions>(
+  expo: ExpoOptions,
+  options: O,
+): O & ExpoOptions {
+  const fromEnv =
+    options.hermetic === true ? {} : parseResourceAttributes(options.env?.OTEL_RESOURCE_ATTRIBUTES);
+  const expoAttrs = Object.fromEntries(
+    Object.entries(expo.resourceAttributes ?? {}).filter(([k]) => !(k in fromEnv)),
+  );
   const own = Object.fromEntries(Object.entries(options).filter(([, v]) => v !== undefined)) as O;
-  const attrs =
-    expo.resourceAttributes === undefined && options.resourceAttributes === undefined
-      ? undefined
-      : { ...expo.resourceAttributes, ...options.resourceAttributes };
-  return { ...expo, ...own, ...(attrs === undefined ? {} : { resourceAttributes: attrs }) };
+  const attrs = { ...expoAttrs, ...options.resourceAttributes };
+  return {
+    ...(expo.storage === undefined ? {} : { storage: expo.storage }),
+    ...(expo.serviceVersion === undefined || "service.version" in fromEnv
+      ? {}
+      : { serviceVersion: expo.serviceVersion }),
+    ...own,
+    ...(Object.keys(attrs).length === 0 ? {} : { resourceAttributes: attrs }),
+  };
 }

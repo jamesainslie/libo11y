@@ -27,7 +27,18 @@ export interface FileSystemLike {
   fileNames(): readonly string[];
   /** The file called name in the directory, which need not exist. */
   file(name: string): FileLike;
+  /**
+   * Moves the file called from over the file called to. expo-file-system deletes the target first,
+   * then moves the file in, so a crash between the two leaves from in place and to missing.
+   */
+  replace(from: string, to: string): void | Promise<void>;
 }
+
+/**
+ * The suffix of the file a value is written to before it replaces the key's file. "." never
+ * appears in a key's file name, so a temporary file is never taken for a key.
+ */
+const TEMPORARY = ".tmp";
 
 /** Characters a file name keeps as they are: lowercase, so no two names differ only in case. */
 const PLAIN = /^[a-z0-9_-]$/;
@@ -66,27 +77,53 @@ function keyOf(name: string): string | undefined {
  * nothing; the directory is created on the first setItem, so nothing is written to the device
  * before the first write, which the delivery makes only once consent is granted. getAllKeys lists
  * only the keys of files this storage wrote, never subdirectories or other files.
+ *
+ * A value is written whole to a temporary file that then replaces the key's file, because neither
+ * platform's write is atomic: an app killed during a write keeps the old value. Killed between the
+ * replace's delete and move, the key reads the new value from the temporary file. The operations
+ * on one key run one at a time, in call order.
  */
 export function expoFileStorageWith(fs: FileSystemLike): KeyValueStorage {
+  const pending = new Map<string, Promise<unknown>>();
+  const inOrder = <T>(key: string, op: () => Promise<T>): Promise<T> => {
+    const result = (pending.get(key) ?? Promise.resolve()).then(op, op);
+    const settled = result.then(
+      () => {},
+      () => {},
+    );
+    pending.set(key, settled);
+    void settled.then(() => {
+      if (pending.get(key) === settled) pending.delete(key);
+    });
+    return result;
+  };
   return {
-    async getItem(key) {
-      const f = fs.file(fileNameOf(key));
-      return f.exists ? await f.text() : null;
-    },
-    async setItem(key, value) {
-      if (!fs.directoryExists()) fs.createDirectory();
-      await fs.file(fileNameOf(key)).write(value);
-    },
-    async removeItem(key) {
-      const f = fs.file(fileNameOf(key));
-      if (f.exists) f.delete();
-    },
+    getItem: (key) =>
+      inOrder(key, async () => {
+        const name = fileNameOf(key);
+        for (const f of [fs.file(name), fs.file(name + TEMPORARY)]) if (f.exists) return await f.text();
+        return null;
+      }),
+    setItem: (key, value) =>
+      inOrder(key, async () => {
+        if (!fs.directoryExists()) fs.createDirectory();
+        const name = fileNameOf(key);
+        await fs.file(name + TEMPORARY).write(value);
+        await fs.replace(name + TEMPORARY, name);
+      }),
+    removeItem: (key) =>
+      inOrder(key, async () => {
+        const name = fileNameOf(key);
+        for (const f of [fs.file(name), fs.file(name + TEMPORARY)]) if (f.exists) f.delete();
+      }),
     async getAllKeys() {
       if (!fs.directoryExists()) return [];
-      return fs.fileNames().flatMap((name) => {
-        const key = keyOf(name);
-        return key === undefined ? [] : [key];
-      });
+      const keys = new Set<string>();
+      for (const file of fs.fileNames()) {
+        const key = keyOf(file.endsWith(TEMPORARY) ? file.slice(0, -TEMPORARY.length) : file);
+        if (key !== undefined) keys.add(key);
+      }
+      return [...keys];
     },
   };
 }

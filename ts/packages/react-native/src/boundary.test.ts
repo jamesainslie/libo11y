@@ -95,7 +95,7 @@ test("the internal entry evaluates and sets up with every browser global removed
     `const m = await import(${JSON.stringify(pathToFileURL(join(SRC, "internal.ts")).href)});`,
     `const q = await m.openStorageQueue({ storage: m.memoryStorage() });`,
     `const files = new Map();`,
-    `const fs = { directoryExists: () => true, createDirectory() {}, fileNames: () => [...files.keys()], file: (n) => ({ get exists() { return files.has(n); }, text: async () => files.get(n), write: async (v) => { files.set(n, v); }, delete: () => files.delete(n) }) };`,
+    `const fs = { directoryExists: () => true, createDirectory() {}, fileNames: () => [...files.keys()], file: (n) => ({ get exists() { return files.has(n); }, text: async () => files.get(n), write: async (v) => { files.set(n, v); }, delete: () => files.delete(n) }), replace: (a, b) => { files.set(b, files.get(a)); files.delete(a); } };`,
     `await m.expoFileStorageWith(fs).setItem("k", "v");`,
     `const info = m.expoAppInfoFrom({ application: { nativeApplicationVersion: "1.0.0" }, updates: { isEnabled: false, isEmbeddedLaunch: true, updateId: null }, device: { deviceType: 2 } });`,
     `const o = m.withExpoOptions(m.expoOptionsFrom(info, m.memoryStorage()), {});`,
