@@ -225,8 +225,12 @@ pub fn capture_with(cx: &Context, propagator: &dyn TextMapPropagator) -> Carrier
 ///
 /// An empty carrier starts an unlinked root span. The returned [`Context`]
 /// carries the merged baggage (with carrier members replacing matching keys in
-/// `cx`) and the new span's context. With an [`Sdk`] built by
-/// [`Builder::build`](crate::Builder::build), prefer [`Sdk::start_linked`].
+/// `cx`) and a context-only reference to the new span's context for child spans
+/// and log correlation. It does not own the span, and mutating or ending
+/// `cx.span()` is a no-op: keep the returned span alive until the detached
+/// operation completes, record any attributes or status on it, and end or drop
+/// it when done. With an [`Sdk`] built by [`Builder::build`](crate::Builder::build),
+/// prefer [`Sdk::start_linked`].
 #[must_use]
 pub fn start_linked(
     cx: &Context,
@@ -237,8 +241,10 @@ pub fn start_linked(
 }
 
 /// Like [`start_linked`], allowing the caller to customize the [`SpanBuilder`]
-/// (for example setting [`SpanKind::Consumer`](opentelemetry::trace::SpanKind::Consumer)
-/// or initial attributes) after the root and link options are applied.
+/// (for example setting [`SpanKind::Consumer`](opentelemetry::trace::SpanKind::Consumer),
+/// initial attributes, or extra links). Any valid carrier link is always
+/// preserved at the front of the span's links even when `configure` calls
+/// [`SpanBuilder::with_links`].
 #[must_use]
 pub fn start_linked_with(
     cx: &Context,
@@ -265,7 +271,11 @@ impl Sdk {
     /// and merges `carrier`'s baggage onto `cx`.
     ///
     /// An empty carrier starts an unlinked root span. The returned [`Context`]
-    /// carries the merged baggage and the new root span's context.
+    /// carries the merged baggage and a context-only reference to the new root
+    /// span's context for child spans and log correlation; it does not own the
+    /// span, and mutating or ending `cx.span()` is a no-op. Keep the returned
+    /// span alive until the detached operation completes, record any attributes
+    /// or status on it, and end or drop it when done.
     #[must_use]
     pub fn start_linked(
         &self,
@@ -278,8 +288,10 @@ impl Sdk {
 
     /// Like [`Sdk::start_linked`], allowing the caller to customize the
     /// [`SpanBuilder`] (for example setting
-    /// [`SpanKind::Consumer`](opentelemetry::trace::SpanKind::Consumer) or
-    /// attributes) after the carrier link is attached.
+    /// [`SpanKind::Consumer`](opentelemetry::trace::SpanKind::Consumer),
+    /// attributes, or extra links). Any valid carrier link is always preserved
+    /// at the front of the span's links even when `configure` calls
+    /// [`SpanBuilder::with_links`].
     #[must_use]
     pub fn start_linked_with(
         &self,
@@ -304,12 +316,15 @@ fn start_linked_on_tracer<T: Tracer>(
     // ambient span (nor an unsampled NONE span) affects the ParentBased
     // sampler or leaks under a no-op tracer.
     let root_cx = detached_root_context(cx, &carrier.baggage);
-    let mut builder = tracer.span_builder(name);
+    let mut builder = configure(tracer.span_builder(name));
     let sc = carrier.span_context();
     if sc.is_valid() {
-        builder = builder.with_links(vec![Link::new(sc, Vec::new(), 0)]);
+        let carrier_link = Link::new(sc, Vec::new(), 0);
+        builder
+            .links
+            .get_or_insert_with(Vec::new)
+            .insert(0, carrier_link);
     }
-    let builder = configure(builder);
     let span = tracer.build_with_context(builder, &root_cx);
     let new_cx = if span.span_context().is_valid() {
         root_cx.with_remote_span_context(span.span_context().clone())
@@ -881,6 +896,31 @@ mod tests {
             child_span.span_context.trace_id(),
             span.span_context.trace_id()
         );
+    }
+
+    #[test]
+    fn start_linked_with_preserves_carrier_link_when_configure_sets_links() {
+        let spans = CaptureSpans::default();
+        let sdk = test_sdk(spans.clone());
+        let (origin_cx, origin_sc) = remote_context("");
+        let carrier = sdk.capture(&origin_cx);
+
+        let extra_sc = SpanContext::new(
+            TraceId::from(0x1111_2222_3333_4444_5555_6666_7777_8888_u128),
+            SpanId::from(0x9999_aaaa_bbbb_cccc_u64),
+            TraceFlags::SAMPLED,
+            true,
+            TraceState::default(),
+        );
+        let (_, mut job) = sdk.start_linked_with(&Context::new(), &carrier, "multi-link", |b| {
+            b.with_links(vec![Link::new(extra_sc.clone(), Vec::new(), 0)])
+        });
+        job.end();
+
+        let span = spans.named("multi-link");
+        assert_eq!(span.links.len(), 2, "{:?}", span.links);
+        assert_eq!(span.links[0].span_context.span_id(), origin_sc.span_id());
+        assert_eq!(span.links[1].span_context.span_id(), extra_sc.span_id());
     }
 
     // go/detached_test.go TestStartLinkedWithZeroCarrierStartsUnlinkedRoot

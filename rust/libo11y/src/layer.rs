@@ -1,17 +1,18 @@
 //! libo11y's `tracing` stack: the layers [`Sdk::tracing_layer`] hands out
 //! and [`Builder::setup`] installs as the global default.
 //!
-//! The stack is a list of boxed layers built by [`layers`] over a
+//! The stack is a composite layer built by [`layers`] over a
 //! [`PartsCell`], the SDK parts the layers read at each callback:
 //!
 //! 1. [`DiagnosticsLayer`] reports the warnings and errors among the
 //!    OpenTelemetry crates' own diagnostic events to the error handler.
 //! 2. The span layer, tracing-opentelemetry's `OpenTelemetryLayer` on the
 //!    SDK's tracer, with context activation on so `Context::current()` is
-//!    the entered span, behind a per-layer filter that passes every span and
-//!    only `ERROR` events. An error event sets the span's status; it adds no
-//!    exception event. Every event, error ones included, belongs to the
-//!    logs.
+//!    the entered span, behind a per-layer filter that passes spans at or above
+//!    the configured span level (`INFO` by default) when telemetry is not
+//!    suppressed, and only `ERROR` events. An error event sets the span's
+//!    status; it adds no exception event. Every event, error ones included,
+//!    belongs to the logs.
 //! 3. The log layer goes after the span layer.
 //!
 //! Every layer runs behind a per-layer filter, and every one but the
@@ -34,9 +35,10 @@ use std::sync::{Arc, OnceLock, PoisonError, RwLock};
 use opentelemetry::Context;
 use opentelemetry::trace::SpanBuilder;
 use opentelemetry_sdk::trace::SdkTracer;
+use tracing::subscriber::Interest;
 use tracing::{Level, Metadata, Subscriber};
 use tracing_subscriber::Layer;
-use tracing_subscriber::filter::filter_fn;
+use tracing_subscriber::filter::{dynamic_filter_fn, filter_fn};
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::registry::LookupSpan;
 
@@ -49,6 +51,10 @@ use crate::log_layer::{LogLayer, LogPipeline};
 pub(crate) struct Parts {
     /// The tracer the span layer starts spans on.
     pub(crate) tracer: SdkTracer,
+    /// Minimum verbosity for `tracing` spans exported to OpenTelemetry
+    /// (defaults to `Level::INFO`, so library `DEBUG` and `TRACE` spans such as
+    /// `h2` frame traces are not exported).
+    pub(crate) span_level: Level,
     /// Where OpenTelemetry's diagnostics go.
     pub(crate) handler: ErrorHandler,
     /// Where application log events go.
@@ -95,15 +101,19 @@ impl opentelemetry::trace::Tracer for CellTracer {
     }
 }
 
-/// A boxed layer of the libo11y stack.
-pub(crate) type BoxedLayer<S> = Box<dyn Layer<S> + Send + Sync + 'static>;
-
-/// Whether the span layer sees `metadata`: every span, and only `ERROR`
-/// events, so an error event sets the span's status and every other event
-/// is a log record only.
-fn span_layer_accepts(metadata: &Metadata<'_>) -> bool {
-    !is_diagnostic(metadata)
-        && (metadata.is_span() || (metadata.is_event() && *metadata.level() == Level::ERROR))
+/// Whether `metadata` is eligible for the span layer at `span_level`:
+/// non-diagnostic spans at or above `span_level`, and only `ERROR` events, so
+/// an error event sets the span's status and every other event is a log record
+/// only.
+fn span_layer_eligible(metadata: &Metadata<'_>, span_level: Level) -> bool {
+    if is_diagnostic(metadata) {
+        return false;
+    }
+    if metadata.is_span() {
+        *metadata.level() <= span_level
+    } else {
+        metadata.is_event() && *metadata.level() == Level::ERROR
+    }
 }
 
 /// Whether the log layer sees `metadata`: every non-diagnostic event, so the
@@ -114,22 +124,34 @@ fn log_layer_accepts(metadata: &Metadata<'_>) -> bool {
 
 /// The libo11y layers over `cell`, in stack order. A new layer is added
 /// here, and every public way to get the stack picks it up.
-pub(crate) fn layers<S>(cell: &Arc<PartsCell>) -> Vec<BoxedLayer<S>>
+pub(crate) fn layers<S>(cell: Arc<PartsCell>) -> impl Layer<S> + Send + Sync + 'static
 where
     S: Subscriber + for<'span> LookupSpan<'span> + Send + Sync,
 {
-    let for_handler = Arc::clone(cell);
+    let for_handler = Arc::clone(&cell);
     let diagnostics = DiagnosticsLayer::new(move || Arc::clone(&for_handler.current().handler))
         .with_filter(filter_fn(reports));
-    let spans = tracing_opentelemetry::OpenTelemetryLayer::new(CellTracer(Arc::clone(cell)))
+    let for_spans = Arc::clone(&cell);
+    let for_callsite = Arc::clone(&cell);
+    let span_filter = dynamic_filter_fn(move |metadata, _ctx| {
+        !Context::is_current_telemetry_suppressed()
+            && span_layer_eligible(metadata, for_spans.current().span_level)
+    })
+    .with_callsite_filter(move |metadata| {
+        if span_layer_eligible(metadata, for_callsite.current().span_level) {
+            Interest::sometimes()
+        } else {
+            Interest::never()
+        }
+    });
+    let spans = tracing_opentelemetry::OpenTelemetryLayer::new(CellTracer(Arc::clone(&cell)))
         .with_context_activation(true)
         .with_error_events_to_status(true)
         .with_error_events_to_exceptions(false)
-        .with_filter(filter_fn(span_layer_accepts));
-    let for_logs = Arc::clone(cell);
-    let logs = LogLayer::new(move || Arc::clone(&for_logs.current().logs))
+        .with_filter(span_filter);
+    let logs = LogLayer::new(move || Arc::clone(&cell.current().logs))
         .with_filter(filter_fn(log_layer_accepts));
-    vec![Box::new(diagnostics), Box::new(spans), Box::new(logs)]
+    diagnostics.and_then(spans).and_then(logs)
 }
 
 /// The cell of the global stack, once libo11y installed it.
@@ -165,7 +187,7 @@ pub(crate) fn install_tracing_default(parts: Arc<Parts>) -> Result<(), Error> {
         return Ok(());
     }
     let cell = Arc::new(PartsCell::new(parts));
-    let subscriber = tracing_subscriber::registry().with(layers(&cell));
+    let subscriber = tracing_subscriber::registry().with(layers(Arc::clone(&cell)));
     tracing::subscriber::set_global_default(subscriber)
         .map_err(|_| Error::ForeignTracingSubscriber)?;
     // Only the setup holding the guard gets here, and only once.
