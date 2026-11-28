@@ -1,10 +1,10 @@
 # libo11y for TypeScript
 
-The TypeScript implementation of libo11y, as a Bun workspace of fourteen
+The TypeScript implementation of libo11y, as a Bun workspace of fifteen
 `@libo11y/*` packages. `@libo11y/server`, `@libo11y/test` and
 `@libo11y/sourcemaps` run on Bun 1.3.13 and Node 24. `@libo11y/web`, `@libo11y/webext`, `@libo11y/rum`, `@libo11y/rum-replay` and the
 RUM adapters run in browsers and Manifest V3 extensions. `@libo11y/react-native` and
-`@libo11y/rum-react-native` run in React Native apps on Hermes. `@libo11y/spec` and `@libo11y/core` run in
+`@libo11y/rum-react-native` and `@libo11y/rum-expo-router` run in React Native apps on Hermes. `@libo11y/spec` and `@libo11y/core` run in
 all of them. The packages are built on
 OpenTelemetry JS 3.x (`@opentelemetry/api` 1.10.0, the SDK packages at
 3.1.1, and upstream's OTLP exporter base and serializers at 0.301.1 over
@@ -28,6 +28,7 @@ each release.
 | [`@libo11y/rum-replay`](packages/rum-replay)                   | privacy-first session replay for `@libo11y/rum`. `replay()` records with rrweb behind libo11y's scrubber, masks text by default, never records input values and loads rrweb only to record                                                                                                  |
 | [`@libo11y/react-native`](packages/react-native)               | the React Native platform: `setupReactNative`, the mobile resource, a retry queue that saves each batch on device storage before sending, AppState flushing, consent, and `fetch` and XHR spans. `./expo` adds `setupExpo`. A preview                                                       |
 | [`@libo11y/rum-react-native`](packages/rum-react-native)       | RUM for React Native over `@libo11y/react-native`: `setupRumReactNative`, sessions that survive a relaunch, screens, the `app_load` span and per-screen summaries, with the `Rum` handle `@libo11y/rum-react` and `@libo11y/rum-connect` take. `./expo` adds `setupRumExpo`. In development |
+| [`@libo11y/rum-expo-router`](packages/rum-expo-router)         | the Expo Router adapter for `@libo11y/rum-react-native`: `useRumExpoRouter` names screens by route template, such as `/(studio)/projects/[projectId]`, and marks each rendered, so the first screen ends `app_load`. In development                                                         |
 
 `@libo11y/web` and `@libo11y/webext` first ship in `ts/v0.2.1`.
 `@libo11y/rum`, `@libo11y/rum-react`, `@libo11y/rum-tanstack-router`,
@@ -38,8 +39,9 @@ in a minor release. These seven packages are not on npm yet. Until their
 first npm publish, they install from the tarballs attached to the
 [`ts/v0.4.0` GitHub Release](https://github.com/jamesainslie/libo11y/releases/tag/ts/v0.4.0),
 whose notes list the exact URLs.
-`@libo11y/rum-react-native` is in development and has not shipped yet.
-It first ships in the next TypeScript release.
+`@libo11y/rum-react-native` and `@libo11y/rum-expo-router` are in
+development and have not shipped yet. They first ship in the next
+TypeScript release.
 Every package implements spec 1.3.0.
 [docs/PARITY.md](../docs/PARITY.md) compares every capability with Go.
 
@@ -106,6 +108,7 @@ ts/
   packages/sourcemaps/ @libo11y/sourcemaps, with the gateway end-to-end journey in src/e2e/
   packages/react-native/ @libo11y/react-native, tested under Node and Bun with fakes for React Native
   packages/rum-react-native/ @libo11y/rum-react-native, tested the same way
+  packages/rum-expo-router/ @libo11y/rum-expo-router, tested under Node and Bun, and under jest-expo in the fixture app
   fixtures/expo-app/   an Expo SDK 58 app outside the workspace that installs the packed packages, with a jest-expo suite
   examples/            bun-server and node-server, private workspace apps
   scripts/             release.ts sets the version and packs the packages; size.ts checks the bundle size budgets

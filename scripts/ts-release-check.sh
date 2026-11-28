@@ -135,8 +135,8 @@ printf '{ "name": "libo11y-consumer", "private": true, "type": "module" }\n' >"$
 	# They must bundle with the react-native condition, React Native and
 	# Expo left external, from every entry point.
 	"$repo_root/scripts/ts-rn-bundle-check.sh" "$consumer" @libo11y/react-native=setupReactNative \
-		@libo11y/rum-react-native=setupRumReactNative,screens
-	echo "ts-release-check: @libo11y/react-native and @libo11y/rum-react-native bundle for React Native"
+		@libo11y/rum-react-native=setupRumReactNative,screens @libo11y/rum-expo-router=useRumExpoRouter,routeTemplate
+	echo "ts-release-check: @libo11y/react-native, @libo11y/rum-react-native and @libo11y/rum-expo-router bundle for React Native"
 
 	# The published declarations must typecheck for a nodenext consumer.
 	cat >check.ts <<'TS'
