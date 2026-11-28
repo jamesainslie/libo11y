@@ -176,13 +176,21 @@ mod test_support {
     /// The path of `relative` under the repository's `conformance/`
     /// directory, or `None` outside the repository, as when the published
     /// crate's tests run, which leaves those tests nothing to check.
+    ///
+    /// Panics if the repository checkout itself is present (`Makefile` and
+    /// `docs/SPEC.md` exist) while `conformance/<relative>` is missing, so a
+    /// moved or deleted conformance fixture never turns into a silent pass.
     pub(crate) fn conformance(relative: &str) -> Option<PathBuf> {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../conformance")
-            .join(relative);
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let path = repo_root.join("conformance").join(relative);
         if path.exists() {
             Some(path)
         } else {
+            assert!(
+                !(repo_root.join("Makefile").exists() && repo_root.join("docs/SPEC.md").exists()),
+                "conformance path {} is missing inside the repository",
+                path.display()
+            );
             eprintln!("skipped: {} is outside this package", path.display());
             None
         }

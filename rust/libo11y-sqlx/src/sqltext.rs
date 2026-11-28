@@ -6,7 +6,8 @@
 //! values. [`summarize`] extracts bounded `db.operation.name` and
 //! `db.collection.name` values from sanitized SQL text.
 //!
-//! Ported directly from Go's `go/o11ysql/internal/sqltext`.
+//! Ported from Go's `go/o11ysql/internal/sqltext`, with `IN (?, ?, ...)` list
+//! collapsing added on top of the Go port.
 
 /// Maximum byte length of `db.query.text` (4096 bytes, cut on a UTF-8 boundary).
 pub const MAX_QUERY_TEXT: usize = 4096;
