@@ -25,10 +25,20 @@ type Artifact struct {
 	Data []byte
 }
 
+// UIDs are the UIDs of every dashboard the pack has, in the order Dashboards
+// returns them. Dashboard links may name only these.
+var UIDs = []string{
+	"libo11y-rum-overview",
+	"libo11y-rum-vitals",
+	"libo11y-rum-errors",
+	"libo11y-rum-session-explorer",
+	"libo11y-rum-gateway",
+}
+
 // Dashboards returns the pack's dashboards, in the order the kustomization
 // lists them.
-func Dashboards(_ thresholds.Thresholds) []dash.Dashboard {
-	return nil
+func Dashboards(t thresholds.Thresholds) []dash.Dashboard {
+	return []dash.Dashboard{overview(t), vitals(t), errorsDashboard(), explorer()}
 }
 
 // RuleFiles returns the pack's Prometheus rule files by path. version goes

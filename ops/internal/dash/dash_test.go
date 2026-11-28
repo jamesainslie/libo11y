@@ -237,3 +237,99 @@ func TestVariableErrors(t *testing.T) {
 		t.Error("a dashboard without a uid was accepted")
 	}
 }
+
+// A dashboard opens on the last six hours unless it names its own range.
+func TestTimeFrom(t *testing.T) {
+	for from, want := range map[string]string{"": "now-6h", "now-24h": "now-24h"} {
+		b, err := Dashboard{UID: "u", Title: "t", TimeFrom: from}.JSON()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got struct {
+			Time struct{ From, To string } `json:"time"`
+		}
+		if err := json.Unmarshal(b, &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.Time.From != want || got.Time.To != "now" {
+			t.Errorf("TimeFrom %q: time %+v, want from %s to now", from, got.Time, want)
+		}
+	}
+}
+
+// Custom goes into fieldConfig.defaults.custom, where Grafana keeps the
+// panel type's own field options, such as a threshold line style.
+func TestCustomFieldConfig(t *testing.T) {
+	p := Panel{Type: "timeseries", W: 24, Custom: map[string]any{"thresholdsStyle": map[string]any{"mode": "line"}}}
+	b, err := Dashboard{UID: "u", Title: "t", Rows: [][]Panel{{p}, {{Type: "stat", W: 24}}}}.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Panels []struct {
+			FieldConfig struct {
+				Defaults map[string]any `json:"defaults"`
+			} `json:"fieldConfig"`
+		} `json:"panels"`
+	}
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	custom, _ := got.Panels[0].FieldConfig.Defaults["custom"].(map[string]any)
+	style, _ := custom["thresholdsStyle"].(map[string]any)
+	if style["mode"] != "line" {
+		t.Errorf("custom field config %v", got.Panels[0].FieldConfig.Defaults)
+	}
+	if _, set := got.Panels[1].FieldConfig.Defaults["custom"]; set {
+		t.Error("a panel without Custom renders a custom field config")
+	}
+}
+
+// Grafana's Loki datasource reads a variable query as a label_values()
+// string, while Prometheus takes the {query, refId} object.
+func TestLokiVariableQueryIsAString(t *testing.T) {
+	d := Dashboard{UID: "u", Title: "t", Variables: []Variable{
+		{Name: "loki", Label: "Loki", Type: "datasource", Query: "loki"},
+		{Name: "app", Label: "App", Type: "query", Datasource: &Loki, Query: "label_values(service_name)", IncludeAll: true, AllValue: ".+"},
+		{Name: "papp", Label: "App", Type: "query", Datasource: &Prometheus, Query: "label_values(up, job)"},
+	}}
+	b, err := d.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Templating struct {
+			List []struct {
+				Query any `json:"query"`
+			} `json:"list"`
+		} `json:"templating"`
+	}
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	if q := got.Templating.List[1].Query; q != "label_values(service_name)" {
+		t.Errorf("loki variable query %v, want the label_values() string", q)
+	}
+	if q, ok := got.Templating.List[2].Query.(map[string]any); !ok || q["query"] != "label_values(up, job)" {
+		t.Errorf("prometheus variable query %v, want {query, refId}", got.Templating.List[2].Query)
+	}
+}
+
+// Queries and link URLs keep &, < and > as written, so the committed JSON
+// reads like the query an operator types.
+func TestNoHTMLEscaping(t *testing.T) {
+	d := Dashboard{UID: "u", Title: "t", Rows: [][]Panel{{{
+		Type: "table", W: 24, Datasource: &Tempo,
+		Targets: []Target{TempoSearch("A", `{ span.a = "1" && span.b > 2 }`, "spans", 20)},
+		Links:   []Link{{Title: "x", URL: "/d/x?var-a=1&var-b=2"}},
+	}}}}
+	b, err := d.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`span.a = \"1\" && span.b > 2`, `/d/x?var-a=1&var-b=2`} {
+		if !bytes.Contains(b, []byte(want)) {
+			t.Errorf("missing %s in\n%s", want, b)
+		}
+	}
+}
