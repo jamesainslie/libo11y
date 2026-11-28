@@ -49,17 +49,31 @@ const (
 	browserViewID  = "v2 a&b/c"
 )
 
-// The windows Grafana gives a panel query. dsQuery sends intervalMs 15000,
-// so Grafana steps range queries every 15s and floors the range's end to
-// a step: the last point it evaluates can be up to one step before now.
-// The provisioned datasource sets no scrape interval, so Grafana assumes
-// 15s and resolves $__rate_interval to max(step + 15s, 4 * 15s), one
-// minute.
+// The windows Grafana gives a panel query. dsQuery sends intervalMs as
+// grafanaStep, so Grafana steps range queries every 15s and floors the
+// range's end to a step: the last point it evaluates can be up to one step
+// before now. ops/datasources/example.yaml sets no timeInterval, so
+// Grafana assumes a 15s scrape interval, whatever Prometheus really
+// scrapes at, and resolves $__rate_interval from it. dsQuery asks for the
+// last hour.
 const (
-	grafanaStep         = 15 * time.Second
-	grafanaRateInterval = time.Minute
-	grafanaRange        = time.Hour
+	grafanaStep           = 15 * time.Second
+	grafanaScrapeInterval = 15 * time.Second
+	grafanaRateInterval   = max(grafanaStep+grafanaScrapeInterval, 4*grafanaScrapeInterval)
+	grafanaRange          = time.Hour
 )
+
+// grafanaWindows are the values Grafana gives its built-in window variables
+// in dsQuery's queries.
+var grafanaWindows = map[string]string{
+	"__rate_interval":    model.Duration(grafanaRateInterval).String(),
+	"__rate_interval_ms": strconv.FormatInt(grafanaRateInterval.Milliseconds(), 10),
+	"__interval":         model.Duration(grafanaStep).String(),
+	"__interval_ms":      strconv.FormatInt(grafanaStep.Milliseconds(), 10),
+	"__range":            model.Duration(grafanaRange).String(),
+	"__range_s":          strconv.FormatInt(int64(grafanaRange.Seconds()), 10),
+	"__range_ms":         strconv.FormatInt(grafanaRange.Milliseconds(), 10),
+}
 
 // client bounds every call to a backend, so one hung request fails the
 // test long before go test's own timeout.
@@ -208,19 +222,13 @@ func TestIntegration(t *testing.T) {
 	for name, uid := range datasourceUIDs {
 		vars[name] = uid
 	}
-	for _, d := range dashboards {
-		for _, v := range d.Templating.List {
-			if _, set := vars[v.Name]; !set && v.AllValue != "" {
-				vars[v.Name] = v.AllValue
-			}
-		}
-	}
 	waitForRangeSamples(t, dashboards, vars)
 	for _, name := range grafanaBuiltins {
 		vars[name] = "$" + name
 	}
 	t.Run("every panel query answers through grafana", func(t *testing.T) {
 		for _, d := range dashboards {
+			addAllValues(vars, d)
 			want := mustHaveData[d.UID]
 			seen := map[string]bool{}
 			for _, p := range d.Panels {
@@ -338,26 +346,35 @@ func waitFor(t *testing.T, what string, timeout time.Duration, check func() (don
 	}
 }
 
+// addAllValues sets each of the dashboard's variables that vars does not
+// set yet to its All value.
+func addAllValues(vars map[string]string, d dashboard) {
+	for _, v := range d.Templating.List {
+		if _, set := vars[v.Name]; !set && v.AllValue != "" {
+			vars[v.Name] = v.AllValue
+		}
+	}
+}
+
 // waitForRangeSamples waits until every range selector in the Prometheus
 // queries of the panels mustHaveData lists has at least two samples per
 // series in the window Grafana gives it, evaluated one Grafana step
 // before now. rate() and increase() answer only from two samples, and
 // the gateway's series are as young as the fixture traffic, so without
 // this wait the last point Grafana evaluates, floored to a step, can see
-// only the first scrape. The gateway is scraped continuously, so a window
-// that ends later holds at least as many samples, and the points Grafana
-// evaluates afterwards have the two samples too. vars are the dashboard
-// variables; the built-ins become the windows Grafana resolves.
+// only the first scrape. Grafana evaluates later, and the gateway is
+// scraped continuously, so the windows Grafana evaluates hold at least
+// two samples too. Waiting for every series, not only one, also checks
+// that every label set the fixture sends is scraped. vars are the
+// dashboard variables, expanded as the panel subtest expands them; the
+// built-ins become the windows Grafana resolves.
 func waitForRangeSamples(t *testing.T, dashboards []dashboard, vars map[string]string) {
 	t.Helper()
 	pv := maps.Clone(vars)
-	for name, d := range map[string]time.Duration{"__rate_interval": grafanaRateInterval, "__interval": grafanaStep, "__range": grafanaRange} {
-		pv[name] = model.Duration(d).String()
-		pv[name+"_ms"] = strconv.FormatInt(d.Milliseconds(), 10)
-	}
-	pv["__range_s"] = strconv.FormatInt(int64(grafanaRange.Seconds()), 10)
+	maps.Copy(pv, grafanaWindows)
 	var queries []string
 	for _, d := range dashboards {
+		addAllValues(pv, d)
 		want := mustHaveData[d.UID]
 		for _, p := range d.Panels {
 			if !slices.Contains(want, p.Title) {
@@ -558,8 +575,8 @@ type queryResult struct {
 }
 
 // diagnose describes the query and its answer, and for Prometheus what
-// Prometheus itself answers to the query with the built-in intervals
-// fixed, so an empty panel shows whether Grafana or the data is short.
+// Prometheus itself answers now to the query with the windows Grafana
+// resolves, so an empty panel shows whether Grafana or the data is short.
 func (r queryResult) diagnose() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "  sent: %s\n  grafana: %s", r.sent, trim(r.raw, 1500))
@@ -570,9 +587,14 @@ func (r queryResult) diagnose() string {
 		Expr string `json:"expr"`
 	}
 	if json.Unmarshal([]byte(r.sent), &q) == nil && q.Datasource.Type == "prometheus" {
-		expr := strings.NewReplacer("$__rate_interval", "5m", "$__interval", "1m", "$__range", "1h").Replace(q.Expr)
-		var direct any
-		detail, err := getJSON(prometheusURL+"/api/v1/query?"+url.Values{"query": {expr}}.Encode(), &direct)
+		expr, err := lint.Expand(q.Expr, grafanaWindows)
+		detail := ""
+		if err != nil {
+			expr = q.Expr
+		} else {
+			var direct any
+			detail, err = getJSON(prometheusURL+"/api/v1/query?"+url.Values{"query": {expr}}.Encode(), &direct)
+		}
 		if err != nil {
 			detail = err.Error()
 		}

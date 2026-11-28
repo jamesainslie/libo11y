@@ -15,7 +15,9 @@ var promParser = parser.NewParser(parser.Options{})
 // that range: min(count_over_time(sel[range])). rate() and increase()
 // answer for a series only when it has at least two samples in the range,
 // so the integration test waits for each of these to reach two before it
-// asks Grafana for the panel.
+// asks Grafana for the panel. A subquery, such as rate(x[5m:1m]), is
+// evaluated from its own steps rather than raw samples, so it yields no
+// query.
 func sampleCountQueries(expr string) ([]string, error) {
 	root, err := promParser.ParseExpr(expr)
 	if err != nil {
@@ -53,6 +55,16 @@ func TestSampleCountQueries(t *testing.T) {
 			name: "each range selector once, in order",
 			expr: `sum(increase(a_total[1h])) / scalar(sum(increase(a_total[1h]))) + sum(rate(b_total[1m]))`,
 			want: []string{`min(count_over_time(a_total[1h]))`, `min(count_over_time(b_total[1m]))`},
+		},
+		{
+			name: "offset kept",
+			expr: `rate(a_total[1m] offset 5m)`,
+			want: []string{`min(count_over_time(a_total[1m] offset 5m))`},
+		},
+		{
+			name: "subquery skipped",
+			expr: `max_over_time(rate(a_total[1m])[5m:1m])`,
+			want: []string{`min(count_over_time(a_total[1m]))`},
 		},
 		{
 			name: "no range selector",
