@@ -93,14 +93,20 @@ every suite on Bun 1.3.13 and Node 24.
 - **Overhead benchmark.** `bun run bench:browser` (in `ts/`) measures the
   extra main-thread task time `@libo11y/rum` adds per soft navigation and
   per click in Chromium, through the DevTools protocol's `TaskDuration`,
-  as the median of five runs with and without RUM. It writes
-  `ts/dist/bench/overhead.json`, and `bun scripts/overhead-report.ts` turns
-  that into a table and fails above `--max-view-ms` and
-  `--max-interaction-ms`. The `ts-bench` workflow runs both on pushes to
-  `main` and on pull requests that touch `ts/`, puts the table in the job
-  summary and uploads the JSON as the `rum-overhead` artifact. The limits
-  (8 ms per view, 4 ms per interaction) guard against regressions and are
-  not a target. It is a benchmark: never run it on a shared machine
+  as the median of five runs with and without RUM. A third variant adds
+  `replay()` from `@libo11y/rum-replay`, and its rows ("replay per view",
+  "replay per interaction") are what replay adds over RUM alone. Every
+  variant loads the same page, `ts/packages/rum-replay/browser/fixtures/bench.ts`.
+  It writes `ts/dist/bench/overhead.json`, and `bun scripts/overhead-report.ts`
+  turns that into a table and fails above `--max-view-ms`,
+  `--max-interaction-ms`, `--max-replay-view-ms` and
+  `--max-replay-interaction-ms`. The `ts-bench` workflow runs both on
+  pushes to `main` and on pull requests that touch `ts/`, puts the table
+  in the job summary and uploads the JSON as the `rum-overhead` artifact.
+  The limits (8 ms per view and 4 ms per interaction for RUM, 12 ms per
+  view and 4 ms per interaction for replay) guard against regressions and
+  are not a target. A first measurement above a limit is reported, not
+  met by raising the limit. It is a benchmark: never run it on a shared machine
   without the owner's approval. CI runs it; elsewhere it skips itself
   unless `LIBO11Y_BENCH=1` is set.
 - **Packing.** `ts/scripts/release.ts` sets the lockstep version

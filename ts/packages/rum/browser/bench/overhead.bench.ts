@@ -1,17 +1,18 @@
 /**
  * The RUM overhead benchmark (CI only). For each of RUNS runs it opens the bench fixture without
- * and with RUM (every collector, vitals, resources and long animation frames included), in
- * alternating order, and reads Chromium's main-thread TaskDuration through the
- * DevTools protocol before and after VIEWS soft navigations, and separately before and after
- * CLICKS clicks. The overhead per view is the median over runs of (with - without) / VIEWS, per
- * interaction (with - without) / CLICKS, in milliseconds. It writes dist/bench/overhead.json for
- * scripts/overhead-report.ts.
+ * RUM, with RUM (every collector, vitals, resources and long animation frames included), and with
+ * RUM and replay() (default options), in an order that rotates each run, and reads Chromium's
+ * main-thread TaskDuration through the DevTools protocol before and after VIEWS soft navigations,
+ * and separately before and after CLICKS clicks. The overhead per view is the median over runs of
+ * (with - without) / VIEWS, per interaction (with - without) / CLICKS, in milliseconds. Replay's
+ * overhead is the same over RUM alone: (with replay - with RUM). It writes
+ * dist/bench/overhead.json for scripts/overhead-report.ts.
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { type Page, test } from "@playwright/test";
 import { createSink } from "../../../web/browser/harness/sink.ts";
-import { openBench } from "../harness/bench.ts";
+import { type BenchVariant, openBench } from "../harness/bench.ts";
 
 const RUNS = 5;
 const VIEWS = 20;
@@ -38,8 +39,8 @@ async function taskMillis(
   return task.value * 1000;
 }
 
-async function measure(page: Page, rum: boolean, endpoint: string): Promise<Totals> {
-  await openBench(page, rum, endpoint);
+async function measure(page: Page, variant: BenchVariant, endpoint: string): Promise<Totals> {
+  await openBench(page, variant, endpoint);
   await page.waitForTimeout(500);
   const cdp = await page.context().newCDPSession(page);
   await cdp.send("Performance.enable");
@@ -71,18 +72,25 @@ test.skip(
   "a benchmark: CI runs it; set LIBO11Y_BENCH=1 to run it on a machine whose owner agreed",
 );
 
-test("RUM overhead per view and per interaction", async ({ page, request, baseURL }) => {
+const VARIANTS: readonly BenchVariant[] = ["bare", "rum", "replay"];
+
+test("RUM and replay overhead per view and per interaction", async ({ page, request, baseURL }) => {
   const sink = createSink(request, baseURL ?? "");
-  const without: Totals[] = [];
-  const withRum: Totals[] = [];
+  const totals: Record<BenchVariant, Totals[]> = { bare: [], rum: [], replay: [] };
   for (let run = 0; run < RUNS; run++) {
-    // Alternate the order, so warm-up and drift do not favor one side.
-    for (const rum of run % 2 === 0 ? [false, true] : [true, false]) {
-      (rum ? withRum : without).push(await measure(page, rum, sink.endpoint));
+    // Rotate the order, so warm-up and drift do not favor one variant.
+    for (let k = 0; k < VARIANTS.length; k++) {
+      const variant = VARIANTS[(run + k) % VARIANTS.length] ?? "bare";
+      totals[variant].push(await measure(page, variant, sink.endpoint));
     }
   }
+  const { bare: without, rum: withRum, replay: withReplay } = totals;
   const perView = without.map((w, i) => ((withRum[i]?.views ?? 0) - w.views) / VIEWS);
   const perClick = without.map((w, i) => ((withRum[i]?.interactions ?? 0) - w.interactions) / CLICKS);
+  const replayPerView = withRum.map((r, i) => ((withReplay[i]?.views ?? 0) - r.views) / VIEWS);
+  const replayPerClick = withRum.map(
+    (r, i) => ((withReplay[i]?.interactions ?? 0) - r.interactions) / CLICKS,
+  );
   const result = {
     browser: `chromium ${page.context().browser()?.version() ?? "unknown"}`,
     runs: RUNS,
@@ -95,6 +103,12 @@ test("RUM overhead per view and per interaction", async ({ page, request, baseUR
     withRum: {
       views: median(withRum.map((t) => t.views)),
       interactions: median(withRum.map((t) => t.interactions)),
+    },
+    replayViewMillis: median(replayPerView),
+    replayInteractionMillis: median(replayPerClick),
+    withReplay: {
+      views: median(withReplay.map((t) => t.views)),
+      interactions: median(withReplay.map((t) => t.interactions)),
     },
   };
   mkdirSync(dirname(OUT), { recursive: true });

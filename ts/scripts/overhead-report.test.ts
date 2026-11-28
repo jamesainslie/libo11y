@@ -49,3 +49,55 @@ test("parseLimits reads the threshold flags and refuses a value that is not a nu
   assert.deepEqual(parseLimits(["f.json"]), {});
   assert.throws(() => parseLimits(["--max-view-ms", "x"]), /--max-view-ms/);
 });
+
+const WITH_REPLAY: OverheadResult = {
+  ...RESULT,
+  replayViewMillis: 6.789,
+  replayInteractionMillis: 2.5,
+  withReplay: { views: 615.4, interactions: 405 },
+};
+
+test("a result with a replay run has two more rows, the overhead replay adds over RUM", () => {
+  const limits = {
+    maxViewMillis: 8,
+    maxInteractionMillis: 4,
+    maxReplayViewMillis: 12,
+    maxReplayInteractionMillis: 4,
+  };
+  const { markdown, over } = reportOverhead(WITH_REPLAY, limits);
+  assert.deepEqual(over, []);
+  assert.match(markdown, /\| replay per view \| 6\.79 \| 12\.00 \| ok \|/);
+  assert.match(markdown, /\| replay per interaction \| 2\.50 \| 4\.00 \| ok \|/);
+  const tight = reportOverhead(
+    { ...WITH_REPLAY, replayViewMillis: 12.5, replayInteractionMillis: 4.01 },
+    limits,
+  );
+  assert.deepEqual(tight.over, [
+    "replay per view 12.50 ms > 12.00 ms",
+    "replay per interaction 4.01 ms > 4.00 ms",
+  ]);
+});
+
+test("a result without a replay run renders as before, and a replay limit for it is an error", () => {
+  const { markdown } = reportOverhead(RESULT, {});
+  assert.doesNotMatch(markdown, /replay/);
+  assert.throws(() => reportOverhead(RESULT, { maxReplayViewMillis: 12 }), /no replay run/);
+});
+
+test("parseOverhead reads the replay run, which is all there or not at all", () => {
+  assert.deepEqual(parseOverhead(JSON.parse(JSON.stringify(WITH_REPLAY))), WITH_REPLAY);
+  const { withReplay: _, ...partial } = WITH_REPLAY;
+  assert.throws(() => parseOverhead(partial), /withReplay/);
+  assert.throws(() => parseOverhead({ ...WITH_REPLAY, replayViewMillis: "6" }), /replayViewMillis/);
+});
+
+test("parseLimits reads the replay threshold flags", () => {
+  assert.deepEqual(
+    parseLimits(["f.json", "--max-replay-view-ms", "12", "--max-replay-interaction-ms", "4"]),
+    {
+      maxReplayViewMillis: 12,
+      maxReplayInteractionMillis: 4,
+    },
+  );
+  assert.throws(() => parseLimits(["--max-replay-interaction-ms", ""]), /--max-replay-interaction-ms/);
+});
