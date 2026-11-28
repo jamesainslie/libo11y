@@ -515,11 +515,12 @@ pub const Telemetry = struct {
             self.validateEventContract(info, deduped);
         }
 
-        const full = arena.alloc(log_record.KeyValue, deduped.len + 1) catch return;
-        full[0] = log_record.kv(spec.event_name_key, name);
-        @memcpy(full[1..], deduped);
-
-        try self.log_pipeline.emitFallible(.info, ctx.withForceEmit(), name, full);
+        // The name is reserved: the pipeline writes it after it has run the
+        // attribute replacer, so nothing can add a second name or change
+        // this one.
+        try self.log_pipeline.emitWith(.info, ctx.withForceEmit(), name, deduped, .{
+            .reserved = log_record.kv(spec.event_name_key, name),
+        });
     }
 
     fn validateEventContract(self: *const Telemetry, info: *const spec.EventInfo, attrs: []const log_record.KeyValue) void {
@@ -1868,6 +1869,45 @@ test "app_registries accepts a registry the caller already parsed, and validates
     }));
     try testing.expect(std.mem.indexOf(u8, diag.message(), "built-in") != null);
     try testing.expect(std.mem.indexOf(u8, diag.message(), "libo11y_app_namespace_reserved") != null);
+}
+
+test "an event carries exactly one event.name, which a replacer cannot see or add" {
+    var console: TestConsole = .{ .gpa = testing.allocator };
+    defer console.deinit();
+
+    const replacer: log_pipeline_mod.AttrReplacer = .{
+        .replace = struct {
+            fn f(_: ?*anyopaque, _: []const []const u8, attr: log_record.KeyValue, _: Allocator) ?log_record.KeyValue {
+                // Tries to rewrite the name of the event, and to add another.
+                if (std.mem.eql(u8, attr.key, spec.event_name_key)) return .{ .key = attr.key, .value = .{ .string = "rewritten" } };
+                if (std.mem.eql(u8, attr.key, "alias")) return .{ .key = spec.event_name_key, .value = attr.value };
+                return attr;
+            }
+        }.f,
+    };
+    const t = try init(testing.allocator, testing.io, .{
+        .service_name = "svc",
+        .environment = "test",
+        .console_writer = console.writer(),
+        .runtime_metrics = false,
+        .startup_summary = false,
+        .attr_replacer = replacer,
+    });
+    defer t.deinit();
+
+    t.event(.background, "order.placed", .{ .alias = "spoofed", .@"order.id" = "o-1" });
+    const line = console.buf.items;
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, line, "\"event.name\":"));
+    try testing.expect(std.mem.indexOf(u8, line, "\"event.name\":\"order.placed\"") != null);
+    try testing.expect(std.mem.indexOf(u8, line, "spoofed") == null);
+    try testing.expect(std.mem.indexOf(u8, line, "rewritten") == null);
+    try testing.expect(std.mem.indexOf(u8, line, "\"order.id\":\"o-1\"") != null);
+
+    // A plain record that carries its own event.name attribute is unchanged:
+    // the replacer sees it like any other attribute.
+    console.buf.clearRetainingCapacity();
+    t.logger().info(.background, "plain", .{ .@"event.name" = "mine" });
+    try testing.expect(std.mem.indexOf(u8, console.buf.items, "\"event.name\":\"rewritten\"") != null);
 }
 
 test "propagator wraps custom propagator in baggage egress filter without globals" {

@@ -179,22 +179,34 @@ pub const LogPipeline = struct {
     /// Emits a log record to all configured legs, returning `error.CanaryRejected`
     /// if the console writer or any extra sink rejects the record.
     pub fn emitFallible(self: *LogPipeline, level: Level, ctx: Context, msg: []const u8, raw_attrs: []const log_record.KeyValue) error{CanaryRejected}!void {
-        return self.emitScoped(level, ctx, msg, raw_attrs, null);
+        return self.emitWith(level, ctx, msg, raw_attrs, .{});
     }
 
-    /// Emits like `emitFallible`, under the instrumentation scope
-    /// `scope_name` when it is set. The OTLP leg exports the record under
-    /// that scope. The console and the extra sinks have no scope, so they
-    /// carry the name as the semconv attribute `otel.scope.name`.
-    fn emitScoped(
+    /// What `emitWith` adds to a record beyond the caller's attributes.
+    pub const Extras = struct {
+        /// The record's instrumentation scope. The OTLP leg exports the
+        /// record under it. The console and the extra sinks have no scope,
+        /// so they carry the name as the semconv attribute
+        /// `otel.scope.name`.
+        scope_name: ?[]const u8 = null,
+        /// An attribute only the library may write, such as the
+        /// `event.name` of an event. It is written first, the replacer
+        /// never sees it, and a caller's or a replacer's top-level
+        /// attribute with the same key is dropped, as in Go.
+        reserved: ?log_record.KeyValue = null,
+    };
+
+    /// Emits like `emitFallible`, with `extras`.
+    pub fn emitWith(
         self: *LogPipeline,
         level: Level,
         ctx: Context,
         msg: []const u8,
         raw_attrs: []const log_record.KeyValue,
-        scope_name: ?[]const u8,
+        extras: Extras,
     ) error{CanaryRejected}!void {
         if (!self.enabled(ctx, level)) return;
+        const scope_name = extras.scope_name;
 
         var stack_buf: [4096]u8 = undefined;
         var first: std.heap.BufferFirstAllocator = .init(&stack_buf, self.gpa);
@@ -204,7 +216,18 @@ pub const LogPipeline = struct {
 
         const now = span_mod.nowUnixNano(self.io);
         var walk: ProcessWalk = .{};
-        const processed = self.processAttrs(arena, &.{}, raw_attrs, 0, &walk);
+        const from_caller = self.processAttrs(arena, &.{}, raw_attrs, 0, &walk);
+        const processed: []const log_record.KeyValue = if (extras.reserved) |reserved| blk: {
+            const out = arena.alloc(log_record.KeyValue, from_caller.len + 1) catch break :blk from_caller;
+            out[0] = reserved;
+            var n: usize = 1;
+            for (from_caller) |a| {
+                if (std.mem.eql(u8, a.key, reserved.key)) continue;
+                out[n] = a;
+                n += 1;
+            }
+            break :blk out[0..n];
+        } else from_caller;
         // What the legs without a scope of their own see.
         const unscoped: []const log_record.KeyValue = if (scope_name) |name| blk: {
             const with_scope = arena.alloc(log_record.KeyValue, processed.len + 1) catch break :blk processed;
@@ -311,6 +334,14 @@ pub const LogPipeline = struct {
         var out = std.ArrayList(log_record.KeyValue).initCapacity(arena, attrs.len) catch return &.{};
         for (attrs) |a| {
             if (path.len == 0 and isReservedKey(a.key)) continue;
+            // A group or list under a key the policy drops or hashes is
+            // judged whole, so it passes as it is. Pruning it here, at the
+            // walk's depth bound, would change the value the token is
+            // computed over. The policy's own walk is bounded.
+            if (a.key.len > 0 and (a.value == .map or a.value == .array) and self.judgedWhole(arena, path, a.key)) {
+                out.append(arena, a) catch {};
+                continue;
+            }
             if (a.value == .map) {
                 if (depth >= policy_runtime.max_composite_depth or !walk.spend()) continue;
                 const members = a.value.map;
@@ -349,6 +380,19 @@ pub const LogPipeline = struct {
             out.append(arena, cur) catch {};
         }
         return out.items;
+    }
+
+    /// Reports whether the policy drops or rewrites the attribute at
+    /// `path` and `key`, judged on its dotted key.
+    fn judgedWhole(self: *const LogPipeline, arena: Allocator, path: []const []const u8, key: []const u8) bool {
+        if (path.len == 0) return self.policy.decide(.logs, key) != .keep;
+        var dotted: Io.Writer.Allocating = .init(arena);
+        for (path) |segment| {
+            dotted.writer.writeAll(segment) catch return false;
+            dotted.writer.writeByte('.') catch return false;
+        }
+        dotted.writer.writeAll(key) catch return false;
+        return self.policy.decide(.logs, dotted.written()) != .keep;
     }
 
     fn processArray(
@@ -878,7 +922,7 @@ pub fn stdLogFn(
     // A std.log scope is the record's instrumentation scope, as log
     // bridges map a logger name.
     const scope_name: ?[]const u8 = if (scope == .default) null else @tagName(scope);
-    pl.emitScoped(Level.fromStdLog(level), ctx, msg, &attrs, scope_name) catch {};
+    pl.emitWith(Level.fromStdLog(level), ctx, msg, &attrs, .{ .scope_name = scope_name }) catch {};
 }
 
 const testing = std.testing;
@@ -1166,4 +1210,42 @@ test "the text console writes a nested group as dotted keys at every depth" {
     try testing.expect(std.mem.indexOf(u8, line, " http.route=/a") != null);
     try testing.expect(std.mem.indexOf(u8, line, " ok=true") != null);
     try testing.expect(std.mem.indexOf(u8, line, "{") == null);
+}
+
+test "a group under a hashed PII key is tokenized whole, however deep it is" {
+    var policy = try policy_runtime.Policy.init(testing.allocator, .hash, "0123456789abcdef0123456789abcdef", .empty, null);
+    defer policy.deinit();
+
+    var cap: TestBufferWriter = .{ .gpa = testing.allocator };
+    defer cap.deinit();
+    var pl = try LogPipeline.init(testing.allocator, testing.io, .info, true, .json, cap.writer(), null, null, &.{}, &policy);
+    defer pl.deinit();
+
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    // Twenty maps deep, past the bound of the attribute walk, with a
+    // shallow sibling beside the deep branch.
+    var deep: log_record.Value = .{ .string = "leaf" };
+    for (0..20) |_| {
+        const pair = try arena.alloc(log_record.KeyValue, 1);
+        pair[0] = .{ .key = "k", .value = deep };
+        deep = .{ .map = pair };
+    }
+    const members = try arena.alloc(log_record.KeyValue, 2);
+    members[0] = .{ .key = "deep", .value = deep };
+    members[1] = .{ .key = "near", .value = .{ .string = "10.0.0.1" } };
+    const value: log_record.Value = .{ .map = members };
+
+    // The token of the whole value, as every signal computes it and as
+    // conformance/vectors/pii-hash.json defines it: the canonical walk marks
+    // what lies past its own bound as truncated.
+    const want = policy.tokenizeLogValue(arena, value).?;
+
+    pl.emit(.info, .background, "req", &.{.{ .key = "host.ip", .value = value }});
+    const got_key = "\"host.ip\":\"";
+    const at = std.mem.indexOf(u8, cap.buf.items, got_key) orelse return error.TestExpectedEqual;
+    const rest = cap.buf.items[at + got_key.len ..];
+    try testing.expectEqualStrings(want, rest[0..std.mem.indexOfScalar(u8, rest, '"').?]);
 }

@@ -90,6 +90,15 @@ Requires Zig 0.17.1.
   `span_id`. The reserved keys were dropped before the replacer ran but not
   after it, so a renamed attribute produced a duplicate JSON key on the
   console.
+- `Telemetry.event` writes exactly one `event.name`. The name went through
+  the `attr_replacer` like any attribute, so a replacer could rewrite it,
+  and one that renamed another attribute to `event.name` added a second.
+  The replacer no longer sees the name of an event, as in Go. A plain
+  record that carries its own `event.name` attribute is unchanged.
+- A group or list under a key the policy hashes is tokenized whole. The
+  log pipeline pruned it at its walk's depth bound first, so a value nested
+  more than 16 levels deep got a token that differed from the one in
+  `conformance/vectors/pii-hash.json` and from the other signals.
 - The text console writes a nested group as one `group.member=value` per
   leaf at every depth, as Go's `slog.TextHandler` does. A group inside a
   group was written as a JSON object.
