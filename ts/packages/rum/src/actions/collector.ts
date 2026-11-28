@@ -20,7 +20,8 @@
  * a link with an href, or inside a text selection. Requests, mutations and view starts within the
  * dead window count as activity, so the mutation observer stays connected while an action is open
  * or a dead window is. Each signal counts in the summary, is published, retains the session and is
- * emitted as o11y.rum.frustration in the open action's context. Stop removes every listener, ends
+ * emitted as o11y.rum.frustration in the open action's context. A runtime scope's action filter
+ * (a content script's UI root) drops every other event before any of this. Stop removes every listener, ends
  * the open action and cancels every timer.
  */
 import {
@@ -225,19 +226,21 @@ export function actionsWith(opts: ActionsOptions, env: ActionsEnv): RumCollector
       const sameGesture = (timeStamp: number): boolean =>
         current !== undefined && timeStamp - current.start < GESTURE_MILLIS;
 
+      // A scope (a content script) limits actions to the events it accepts, such as its own UI's.
+      const refused = (e: Event): boolean => rt.scope?.action?.(e) === false;
       const onClick = (e: Event): void => {
-        if (!isElement(e.target)) return;
+        if (!isElement(e.target) || refused(e)) return;
         if ((e as MouseEvent).detail === 0 && current?.type === "key_press") return;
         begin("click", e.target, e.timeStamp);
       };
       const onKey = (e: Event): void => {
         const k = e as KeyboardEvent;
         if (k.repeat === true || (k.key !== "Enter" && k.key !== " ")) return;
-        if (!isElement(e.target) || isTextField(e.target)) return;
+        if (!isElement(e.target) || isTextField(e.target) || refused(e)) return;
         begin("key_press", e.target, e.timeStamp);
       };
       const onSubmit = (e: Event): void => {
-        if (!isElement(e.target)) return;
+        if (!isElement(e.target) || refused(e)) return;
         if ((current?.type === "click" || current?.type === "key_press") && sameGesture(e.timeStamp)) return;
         begin("submit", e.target, e.timeStamp);
       };

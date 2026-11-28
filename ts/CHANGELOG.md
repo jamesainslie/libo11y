@@ -13,8 +13,36 @@ adhere to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- `@libo11y/rum`, browser RUM over `@libo11y/web`. In development; it is
-  not on npm yet. `setupRum` takes the options of the web `setup` and RUM's
+- `@libo11y/rum-replay`, privacy-first session replay for `@libo11y/rum`.
+  In development; it is not on npm yet, and it is not yet a working
+  collector. This version holds the privacy core. Every rrweb event
+  passes through libo11y's own scrubber, an allow-list of event types,
+  sources, node fields and attributes, before anything is buffered. Text
+  is masked by default: every character except ASCII whitespace becomes
+  `*`. Text under the code's `privacy.unmask` selectors is kept unless a
+  mask or block covers it, and markup alone never unmasks. Input values,
+  input events, editable content, canvas, fonts, console logs, custom and
+  plugin events are never recorded. URLs in attributes, `srcset` and CSS
+  keep their path and the allowed query parameters only, and every scheme
+  but `http` and `https` becomes empty. Remote configuration can only
+  tighten replay. rrweb's recorder, `@rrweb/record`, is pinned at 2.2.2.
+- `conformance/rum-replay/`, the replay scrubbing vectors that the
+  collector and the RUM gateway both run.
+
+## [0.3.0] - 2026-11-27
+
+This release adds browser RUM: `@libo11y/rum`, its adapters
+`@libo11y/rum-react`, `@libo11y/rum-tanstack-router` and
+`@libo11y/rum-connect`, and `@libo11y/sourcemaps`. These five packages are
+not on npm yet. Until their first npm publish they install from the
+tarballs attached to the GitHub Release for `ts/v0.3.0`, whose notes end
+with the exact `npm install` URLs. Every package now implements spec
+1.3.0.
+
+### Added
+
+- `@libo11y/rum`, browser RUM over `@libo11y/web`. It is not on npm
+  yet. `setupRum` takes the options of the web `setup` and RUM's
   own under `rum`. It shares one session across the tabs of an origin
   through `localStorage` and a `BroadcastChannel`, ending a session after
   15 minutes idle or 4 hours. It records, stores and sends nothing until
@@ -41,10 +69,10 @@ adhere to [Semantic Versioning](https://semver.org/).
   `rum` handle gains `startView`, `setViewName`, `viewRendered`,
   `addAction` and `addError`.
 - `@libo11y/rum-react`, `@libo11y/rum-tanstack-router` and
-  `@libo11y/rum-connect`, the RUM adapters. In development; they are not on
-  npm yet. `@libo11y/rum-react` has `RumProvider`, `useRum` and
-  `RumErrorBoundary`, which records a render error as `o11y.rum.error`
-  with source `boundary` and the component stack. React 18.3 and 19 are
+  `@libo11y/rum-connect`, the RUM adapters. They are not on npm yet.
+  `@libo11y/rum-react` has `RumProvider`, `useRum` and `RumErrorBoundary`,
+  which records a render error as `o11y.rum.error` with source `boundary`
+  and the component stack. React 18.3 and 19 are
   its peers. `@libo11y/rum-tanstack-router` has `instrumentTanStackRouter`,
   which names views by route template, never by URL, starts a soft view
   when a navigation changes the path, and ends the view span at the first
@@ -94,38 +122,57 @@ adhere to [Semantic Versioning](https://semver.org/).
   span events. `longAnimationFrames()` counts long animation frames per
   view on engines that report them.
 - `@libo11y/web/internal` exports `remoteParentFromTraceparent`.
+- `@libo11y/rum/webext`, RUM in Manifest V3 extensions.
+  `setupRumExtension({ context })` runs in extension pages
+  (`context: "page"`) and content scripts (`context: "content"`) and sends
+  their records to the worker through `@libo11y/webext`. Every context
+  shares one session through `chrome.storage.session`, and the platform is
+  `webext`. A content script keeps one view named `content-script` (or
+  `content.viewName`) whose span carries only the host page's
+  `url.domain`, records actions only inside `content.uiRoot` and errors
+  only from the extension's own scripts, buffers in memory, and refuses
+  `vitals()`, `resources()`, `longAnimationFrames()` and `documentLoad`.
+  `setupRumWorker` sets up the worker with the gateway's wire parameters
+  and opens `chrome.storage.session` to content scripts, as
+  `allowRumSessionInContentScripts` does on its own. Remote configuration
+  works in every context, needs an absolute URL there and caches in
+  `chrome.storage.local`.
+- `@libo11y/webext/internal`, the content script and worker seams
+  `@libo11y/rum/webext` builds on.
 - `@libo11y/rum`: app metrics export with delta temporality, as the RUM
   gateway requires. `@libo11y/web` on its own still exports cumulative
   metrics.
 - `@libo11y/web/internal` exports `setupWithDeps`, `defaultSetupDeps` and
   `SetupDeps`, the seam `@libo11y/rum` builds on.
+- `@libo11y/rum`: the `o11y.rum.session.start` of a kept session waits
+  for the 500 ms session election, so two tabs or extension contexts that
+  create the first session at once send one start. A hide sends a pending
+  start at once. An unkept session's start goes to the retention buffer at
+  once, as before.
+- `@libo11y/rum`: spans that start between a grant and the session
+  loading, such as `app_load` right after a late grant, wait for the
+  session and carry its `session.id` and view. This matters where the
+  session store answers later, as `chrome.storage.session` does.
 - Size budgets for the browser bundles in `ts/size-budget.json`, checked by
   `bun scripts/size.ts --check` (`make ts-size`) in CI.
 - `conformance/rum-summary/`, the view summary vectors the TypeScript
   suite checks.
-- `@libo11y/sourcemaps`, a new package for Bun and Node. In development; it
-  is not on npm yet. `findSourceMaps` finds the scripts of a build that
+- `@libo11y/sourcemaps`, a new package for Bun and Node. It is not on npm
+  yet. `findSourceMaps` finds the scripts of a build that
   have an external source map, `uploadSourceMaps` uploads each map gzipped
   to the RUM gateway's `POST /_o11y/v1/sourcemaps` with a bearer token,
   retrying 429 and 5xx answers, and can delete the uploaded maps and their
   `sourceMappingURL` comments from the build output. The
   `libo11y-sourcemaps upload` command does the same from a build job and
   reads the token only from an environment variable.
-- `@libo11y/rum-replay`, privacy-first session replay for `@libo11y/rum`.
-  In development; it is not on npm yet, and it is not yet a working
-  collector. This version holds the privacy core. Every rrweb event
-  passes through libo11y's own scrubber, an allow-list of event types,
-  sources, node fields and attributes, before anything is buffered. Text
-  is masked by default: every character except ASCII whitespace becomes
-  `*`. Text under the code's `privacy.unmask` selectors is kept unless a
-  mask or block covers it, and markup alone never unmasks. Input values,
-  input events, editable content, canvas, fonts, console logs, custom and
-  plugin events are never recorded. URLs in attributes, `srcset` and CSS
-  keep their path and the allowed query parameters only, and every scheme
-  but `http` and `https` becomes empty. Remote configuration can only
-  tighten replay. rrweb's recorder, `@rrweb/record`, is pinned at 2.2.2.
-- `conformance/rum-replay/`, the replay scrubbing vectors that the
-  collector and the RUM gateway both run.
+
+### Changed
+
+- `@libo11y/spec`: spec 1.3.0. `SPEC_VERSION` is `1.3.0` and `SCHEMA_URL`
+  is `https://schemas.o11y.ing/libo11y/1.3.0`, so every resource carries
+  the new schema URL. The new constants cover the view summary event and
+  its attributes, the RUM span shape marker, the RUM detail attributes and
+  `o11y.rum.app.update_id`.
 
 ### Fixed
 
@@ -539,7 +586,8 @@ adhere to [Semantic Versioning](https://semver.org/).
   protobuf. `decodeOtlpProtobuf` and `normalizeOtlp` decode and compare
   bodies directly.
 
-[Unreleased]: https://github.com/jamesainslie/libo11y/compare/ts/v0.2.1...HEAD
+[Unreleased]: https://github.com/jamesainslie/libo11y/compare/ts/v0.3.0...HEAD
+[0.3.0]: https://github.com/jamesainslie/libo11y/compare/ts/v0.2.1...ts/v0.3.0
 [0.2.1]: https://github.com/jamesainslie/libo11y/compare/ts/v0.2.0...ts/v0.2.1
 [0.2.0]: https://github.com/jamesainslie/libo11y/compare/ts/v0.1.2...ts/v0.2.0
 [0.1.2]: https://github.com/jamesainslie/libo11y/compare/ts/v0.1.1...ts/v0.1.2

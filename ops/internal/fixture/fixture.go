@@ -5,6 +5,7 @@
 package fixture
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"net/http"
 	"time"
@@ -78,10 +79,29 @@ var views = []view{
 // frames; two o11y.rum.error events, one o11y.rum.frustration event, and
 // the session start.
 func Traffic(now time.Time) []Request {
+	return TrafficFor(now, SessionID)
+}
+
+// TrafficFor returns the same requests as Traffic for the session with ID
+// sessionID. Its trace IDs are derived from sessionID, so the traces of two
+// sessions never collide in a trace store.
+func TrafficFor(now time.Time, sessionID string) []Request {
 	return []Request{
-		{Path: PathTraces, Body: mustJSON(ptraceotlp.NewExportRequestFromTraces(spans(now)).MarshalJSON())},
-		{Path: PathLogs, Body: mustJSON(plogotlp.NewExportRequestFromLogs(events(now)).MarshalJSON())},
+		{Path: PathTraces, Body: mustJSON(ptraceotlp.NewExportRequestFromTraces(spans(now, sessionID)).MarshalJSON())},
+		{Path: PathLogs, Body: mustJSON(plogotlp.NewExportRequestFromLogs(events(now, sessionID)).MarshalJSON())},
 	}
+}
+
+// ViewSummary returns a logs request with one view summary, for the initial
+// view of the fixture, in the session sessionID with the view ID viewID.
+// It is sent on its own when a test needs an ID the fixture views do not
+// have.
+func ViewSummary(at time.Time, sessionID, viewID string) Request {
+	ld, sl := newLogs()
+	v := views[0]
+	v.id = viewID
+	summary(record(sl, at, "o11y.rum.view.summary", sessionID, viewID), v)
+	return Request{Path: PathLogs, Body: mustJSON(plogotlp.NewExportRequestFromLogs(ld).MarshalJSON())}
 }
 
 // Policy returns a logs request the gateway accepts in part: an
@@ -89,7 +109,7 @@ func Traffic(now time.Time) []Request {
 // log record carrying Unminted, which the policy removes.
 func Policy(now time.Time) Request {
 	ld, sl := newLogs()
-	broken := record(sl, now.Add(9*time.Second), "o11y.rum.error", View1)
+	broken := record(sl, now.Add(9*time.Second), "o11y.rum.error", SessionID, View1)
 	broken.Attributes().PutStr("o11y.rum.error.source", "uncaught")
 	kept := sl.LogRecords().AppendEmpty()
 	kept.SetTimestamp(pcommon.NewTimestampFromTime(now.Add(9 * time.Second)))
@@ -104,7 +124,7 @@ func Policy(now time.Time) Request {
 // the app allows, and the headers to send it with.
 func Bad(now time.Time) (Request, http.Header) {
 	ld, sl := newLogs()
-	record(sl, now, "o11y.rum.session.start", "")
+	record(sl, now, "o11y.rum.session.start", SessionID, "")
 	h := http.Header{}
 	h.Set("Origin", "https://elsewhere.example")
 	h.Set("Content-Type", "application/json")
@@ -117,30 +137,31 @@ func resource(m pcommon.Map) {
 	m.PutStr("telemetry.sdk.language", "webjs")
 }
 
-func spans(now time.Time) ptrace.Traces {
+func spans(now time.Time, sessionID string) ptrace.Traces {
 	td := ptrace.NewTraces()
 	rs := td.ResourceSpans().AppendEmpty()
 	resource(rs.Resource().Attributes())
 	ss := rs.ScopeSpans().AppendEmpty()
 	ss.Scope().SetName("@libo11y/rum")
+	prefix := sha256.Sum256([]byte(sessionID))
 	at := func(d time.Duration) pcommon.Timestamp { return pcommon.NewTimestampFromTime(now.Add(d)) }
 
 	// The initial view and the app load inside it.
-	v0 := span(ss, 1, 1, 0, views[0].name, ptrace.SpanKindInternal, at(0), at(5*time.Second))
-	viewAttrs(v0, views[0])
-	load := span(ss, 1, 2, 1, "app_load", ptrace.SpanKindInternal, at(0), at(1500*time.Millisecond))
-	rum(load, View0)
+	v0 := span(ss, prefix, 1, 1, 0, views[0].name, ptrace.SpanKindInternal, at(0), at(5*time.Second))
+	viewAttrs(v0, sessionID, views[0])
+	load := span(ss, prefix, 1, 2, 1, "app_load", ptrace.SpanKindInternal, at(0), at(1500*time.Millisecond))
+	rum(load, sessionID, View0)
 	load.Attributes().PutStr("o11y.rum.span.shape", "app_load")
 
 	// The soft view, a click on it and the fetch the click made.
-	v1 := span(ss, 2, 3, 0, views[1].name, ptrace.SpanKindInternal, at(5*time.Second), at(9*time.Second))
-	viewAttrs(v1, views[1])
-	click := span(ss, 2, 4, 3, "click button#add-to-cart", ptrace.SpanKindInternal, at(6*time.Second), at(6200*time.Millisecond))
-	rum(click, View1)
+	v1 := span(ss, prefix, 2, 3, 0, views[1].name, ptrace.SpanKindInternal, at(5*time.Second), at(9*time.Second))
+	viewAttrs(v1, sessionID, views[1])
+	click := span(ss, prefix, 2, 4, 3, "click button#add-to-cart", ptrace.SpanKindInternal, at(6*time.Second), at(6200*time.Millisecond))
+	rum(click, sessionID, View1)
 	click.Attributes().PutStr("o11y.rum.span.shape", "action")
 	click.Attributes().PutStr("o11y.rum.action.type", "click")
-	fetch := span(ss, 2, 5, 4, "POST", ptrace.SpanKindClient, at(6050*time.Millisecond), at(6180*time.Millisecond))
-	rum(fetch, View1)
+	fetch := span(ss, prefix, 2, 5, 4, "POST", ptrace.SpanKindClient, at(6050*time.Millisecond), at(6180*time.Millisecond))
+	rum(fetch, sessionID, View1)
 	fetch.Attributes().PutStr("http.request.method", "POST")
 	fetch.Attributes().PutStr("url.full", Origin+"/api/cart")
 	fetch.Attributes().PutInt("http.response.status_code", 200)
@@ -149,9 +170,14 @@ func spans(now time.Time) ptrace.Traces {
 
 // span appends a span. trace, id and parent are small numbers turned into
 // fixed IDs, so the traffic is the same on every call; parent 0 is a root.
-func span(ss ptrace.ScopeSpans, trace, id, parent byte, name string, kind ptrace.SpanKind, start, end pcommon.Timestamp) ptrace.Span {
+// The trace ID starts with the first eight bytes of prefix, a digest of the
+// session ID.
+func span(ss ptrace.ScopeSpans, prefix [32]byte, trace, id, parent byte, name string, kind ptrace.SpanKind, start, end pcommon.Timestamp) ptrace.Span {
 	s := ss.Spans().AppendEmpty()
-	s.SetTraceID(pcommon.TraceID{0x0b, 0x7e, 15: trace})
+	var tid pcommon.TraceID
+	copy(tid[:8], prefix[:8])
+	tid[15] = trace
+	s.SetTraceID(tid)
 	s.SetSpanID(pcommon.SpanID{0x5e, 7: id})
 	if parent != 0 {
 		s.SetParentSpanID(pcommon.SpanID{0x5e, 7: parent})
@@ -163,13 +189,13 @@ func span(ss ptrace.ScopeSpans, trace, id, parent byte, name string, kind ptrace
 	return s
 }
 
-func rum(s ptrace.Span, viewID string) {
-	s.Attributes().PutStr("session.id", SessionID)
+func rum(s ptrace.Span, sessionID, viewID string) {
+	s.Attributes().PutStr("session.id", sessionID)
 	s.Attributes().PutStr("o11y.rum.view.id", viewID)
 }
 
-func viewAttrs(s ptrace.Span, v view) {
-	rum(s, v.id)
+func viewAttrs(s ptrace.Span, sessionID string, v view) {
+	rum(s, sessionID, v.id)
 	a := s.Attributes()
 	a.PutStr("o11y.rum.span.shape", "view")
 	a.PutStr("o11y.rum.platform", "web")
@@ -188,7 +214,7 @@ func newLogs() (plog.Logs, plog.ScopeLogs) {
 
 // record appends an event. It names the event in the EventName field and
 // in the event.name attribute, as the libo11y cores do.
-func record(sl plog.ScopeLogs, at time.Time, name, viewID string) plog.LogRecord {
+func record(sl plog.ScopeLogs, at time.Time, name, sessionID, viewID string) plog.LogRecord {
 	lr := sl.LogRecords().AppendEmpty()
 	ts := pcommon.NewTimestampFromTime(at)
 	lr.SetTimestamp(ts)
@@ -196,32 +222,32 @@ func record(sl plog.ScopeLogs, at time.Time, name, viewID string) plog.LogRecord
 	lr.SetEventName(name)
 	a := lr.Attributes()
 	a.PutStr("event.name", name)
-	a.PutStr("session.id", SessionID)
+	a.PutStr("session.id", sessionID)
 	if viewID != "" {
 		a.PutStr("o11y.rum.view.id", viewID)
 	}
 	return lr
 }
 
-func events(now time.Time) plog.Logs {
+func events(now time.Time, sessionID string) plog.Logs {
 	ld, sl := newLogs()
-	record(sl, now, "o11y.rum.session.start", "")
+	record(sl, now, "o11y.rum.session.start", sessionID, "")
 
 	for i, v := range views {
 		viewEnd := now.Add(v.start + time.Duration(v.timeOnViewSec*float64(time.Second)))
-		e := record(sl, now.Add(v.start+time.Second), "o11y.rum.error", v.id)
+		e := record(sl, now.Add(v.start+time.Second), "o11y.rum.error", sessionID, v.id)
 		e.SetSeverityNumber(plog.SeverityNumberError)
 		e.SetSeverityText("ERROR")
 		e.Attributes().PutStr("o11y.rum.error.source", "uncaught")
 		e.Attributes().PutStr("exception.type", "TypeError")
 		e.Attributes().PutStr("o11y.rum.view.name", v.name)
 		if i == 1 {
-			f := record(sl, now.Add(v.start+2*time.Second), "o11y.rum.frustration", v.id)
+			f := record(sl, now.Add(v.start+2*time.Second), "o11y.rum.frustration", sessionID, v.id)
 			f.Attributes().PutStr("o11y.rum.frustration.type", "rage")
 			f.Attributes().PutStr("o11y.rum.view.name", v.name)
 			f.Attributes().PutStr("o11y.rum.element.selector", "button#add-to-cart")
 		}
-		summary(record(sl, viewEnd, "o11y.rum.view.summary", v.id), v)
+		summary(record(sl, viewEnd, "o11y.rum.view.summary", sessionID, v.id), v)
 	}
 	return ld
 }
@@ -264,7 +290,7 @@ func mustJSON(b []byte, err error) []byte {
 func Symbolicated(now time.Time) Request {
 	ld, sl := newLogs()
 	ld.ResourceLogs().At(0).Resource().Attributes().PutStr("service.version", Version)
-	e := record(sl, now.Add(7*time.Second), "o11y.rum.error", View1)
+	e := record(sl, now.Add(7*time.Second), "o11y.rum.error", SessionID, View1)
 	e.SetSeverityNumber(plog.SeverityNumberError)
 	e.SetSeverityText("ERROR")
 	a := e.Attributes()

@@ -10,8 +10,9 @@ are never recorded.
 
 ## Status
 
-The package is in development and is not on npm yet. It releases with
-`@libo11y/rum` at the same version. This version holds the privacy core:
+The package is in development and has not shipped yet. It is not part of
+`ts/v0.3.0` and first ships in the next TypeScript release, at the same
+version as `@libo11y/rum`. This version holds the privacy core:
 text masking, URL and CSS stripping, the event scrubber, the DOM-backed
 scrub context and the remote configuration clamp. The `replay()`
 collector, segments and upload come in a later change, so the package

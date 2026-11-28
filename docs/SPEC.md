@@ -545,7 +545,9 @@ item is never renamed or removed without a major version bump.
 Status: spec 1.3.0 is released. Its schema file is served at its schema
 URL, and the commit is tagged `spec/v1.3.0`. Spec 1.2.0 is tagged
 `spec/v1.2.0`, spec 1.1.0 is tagged `spec/v1.1.0`, and spec 1.0.0 is
-tagged `spec/v1.0.0` together with `go/v0.1.0`.
+tagged `spec/v1.0.0` together with `go/v0.1.0`. The TypeScript packages
+implement spec 1.3.0 from `ts/v0.3.0`, and `ts/v0.2.1` implements spec
+1.2.0.
 
 ## 8. Enforcement layers
 

@@ -10,7 +10,8 @@ contexts never post to the collector. They forward their batches to the
 worker by runtime messaging. Trace context crosses with every traced
 message, and consent is one state for the whole extension.
 
-It has no RUM features. Those belong to `@libo11y/rum`.
+It has no RUM features. Those belong to `@libo11y/rum`, whose
+`@libo11y/rum/webext` entry point builds on this package.
 
 ```sh
 npm install @libo11y/webext

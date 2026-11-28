@@ -1,6 +1,6 @@
 /**
  * The remote configuration client (decision P15). It fetches the gateway's
- * GET /_o11y/v1/config?service=<service.name> with credentials omitted and cache no-cache, sending
+ * GET /_o11y/v1/config?service=<service.name> with credentials omitted, cache no-cache and no referrer, sending
  * If-None-Match with the cached ETag. A 200 whose body parseRemoteConfig accepts is the newest
  * document; a 304 changes nothing; a 404 means the app has no configuration any more; anything
  * else (a failure, a bad body, a request that takes longer than REQUEST_TIMEOUT_MILLIS) keeps what
@@ -125,6 +125,8 @@ export function createRemoteConfig(o: RemoteConfigClientOptions): RemoteConfigCl
         method: "GET",
         credentials: "omit",
         cache: "no-cache",
+        // No Referer: from a content script it would be the host page's URL.
+        referrerPolicy: "no-referrer",
         headers,
         ...(abort === undefined ? {} : { signal: abort.signal }),
       });

@@ -8,7 +8,7 @@ GO_TEST_P ?= 4
 # gate runs on each module separately.
 GO_MODULES := go go/o11ygin go/o11yconnect go/o11ysql go/o11yrum ops
 
-.PHONY: spec-check spec-generate spec-drift ops-generate ops-check ops-promtool-test test lint vet tidy-check vuln release-check zig-release-check python-release-check rust-release-check rust-release-check-test c-release-check o11yrum-release-check print-o11yrum-release-version o11yrum-image schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-npm-plan-test ts-install ts-check ts-size ts-browser-test rum-e2e rust-check rust-msrv zig-check zig-integrations-check zig-hygiene-test python-check python-hygiene-test c-check ruby-check dotnet-check ci
+.PHONY: spec-check spec-generate spec-drift ops-generate ops-check ops-integration-up ops-integration-down ops-integration ops-promtool-test ops-release-check ops-release-check-test test lint vet tidy-check vuln release-check zig-release-check python-release-check rust-release-check rust-release-check-test c-release-check o11yrum-release-check print-o11yrum-release-version o11yrum-image schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-npm-plan-test ts-install ts-check ts-size ts-browser-test rum-e2e rust-check rust-msrv zig-check zig-integrations-check zig-hygiene-test python-check python-hygiene-test c-check ruby-check dotnet-check ci
 
 # Validate the spec registry against the libo11y policy suite (naming,
 # ownership, sensitivity, cardinality, events, units).
@@ -46,6 +46,28 @@ ops-check:
 	scripts/ops-promtool.sh check rules ops/alerts/*.rules.yaml
 	scripts/ops-promtool.sh test rules ops/alerts/tests/*.test.yaml
 	kubectl kustomize ops >/dev/null
+
+# The ops integration environment (ops/test/compose.yaml): Loki, Tempo,
+# Prometheus, Grafana and an OpenTelemetry Collector, published on loopback.
+OPS_COMPOSE := docker compose -p libo11y-ops-it -f ops/test/compose.yaml
+
+ops-integration-up:
+	$(OPS_COMPOSE) up -d --wait --wait-timeout 180
+
+ops-integration-down:
+	$(OPS_COMPOSE) down -v --remove-orphans
+
+# Run every ops pack panel query through Grafana against real Loki, Tempo
+# and Prometheus, behind the gateway built from this checkout, and check the
+# explorer in headless Chrome (needs Docker with compose, and Chrome or
+# Chromium). CI runs it; it starts five containers, so run it locally only
+# on a machine with room for them. On failure it writes the containers'
+# logs to ops-integration.log. It always tears the environment down.
+ops-integration:
+	@$(MAKE) ops-integration-up || { $(OPS_COMPOSE) logs --no-color >ops-integration.log 2>&1; $(MAKE) ops-integration-down; exit 1; }
+	@status=0; (cd ops && go test -tags opsintegration -run '^TestIntegration$$' -count=1 -timeout 10m -v .) || status=$$?; \
+	if [ $$status -ne 0 ]; then $(OPS_COMPOSE) logs --no-color >ops-integration.log 2>&1; fi; \
+	$(MAKE) ops-integration-down; exit $$status
 
 # TypeScript workspace (ts/): install the pinned dependencies, then lint,
 # typecheck, build, check the committed API reports, and run every suite
@@ -126,7 +148,7 @@ RELEASE_VERSION ?= v0.4.0
 # validates. Like RELEASE_VERSION, it moves only in a release commit,
 # together with the packages' versions (bun scripts/release.ts version).
 # The packages stay at 0.0.0 until the first TypeScript release.
-TS_RELEASE_VERSION ?= v0.2.1
+TS_RELEASE_VERSION ?= v0.3.0
 
 # The version the Zig package manifests (build.zig.zon and zig/build.zig.zon)
 # carry, which zig-release-check.sh validates. Moves only in a release commit.
@@ -149,6 +171,11 @@ C_RELEASE_VERSION ?= v0.1.0
 # match the tag. Moves only in a release commit, together with the
 # script's default and a dated go/o11yrum/CHANGELOG.md section.
 O11YRUM_RELEASE_VERSION ?= v0.1.0
+
+# The ops pack version (ops/vX.Y.Z), which ops-release-check.sh validates
+# against ops/internal/version/version.go, ops/CHANGELOG.md and the
+# runbook links in the generated rules. Moves only in a release commit.
+OPS_RELEASE_VERSION ?= v0.1.0
 
 # Validate the Zig package at ZIG_RELEASE_VERSION as an external consumer
 # fetches and runs it against an in-process OTLP receiver.
@@ -188,7 +215,8 @@ c-release-check:
 # PYTHON_RELEASE_VERSION, validate the Rust workspace at
 # RUST_RELEASE_VERSION, and validate the C11 install prefix at
 # C_RELEASE_VERSION. The o11yrum module is checked at
-# O11YRUM_RELEASE_VERSION after the lockstep Go modules.
+# O11YRUM_RELEASE_VERSION after the lockstep Go modules, and the ops pack
+# and its release archive at OPS_RELEASE_VERSION.
 # Needs a clean working tree.
 release-check:
 	scripts/release-check.sh $(RELEASE_VERSION)
@@ -198,6 +226,7 @@ release-check:
 	scripts/python-release-check.sh $(PYTHON_RELEASE_VERSION)
 	scripts/rust-release-check.sh $(RUST_RELEASE_VERSION)
 	scripts/c-release-check.sh $(C_RELEASE_VERSION)
+	scripts/ops-release-check.sh $(OPS_RELEASE_VERSION)
 
 # Validate the o11yrum release at O11YRUM_RELEASE_VERSION against a
 # throwaway local remote: the parent version it requires is a real go/
@@ -206,6 +235,17 @@ release-check:
 # builds. Needs a clean working tree.
 o11yrum-release-check:
 	scripts/o11yrum-release-check.sh $(O11YRUM_RELEASE_VERSION)
+
+# Validate the ops pack at OPS_RELEASE_VERSION: version.go, the changelog,
+# generator drift for that version, the runbook links, the release archive
+# contents and, when kubectl is on PATH, kustomize of the unpacked archive.
+ops-release-check:
+	scripts/ops-release-check.sh $(OPS_RELEASE_VERSION)
+
+# Test ops-release-check.sh against this checkout, including the --archive
+# mode the release workflow uses.
+ops-release-check-test:
+	OPS_RELEASE_VERSION=$(OPS_RELEASE_VERSION) scripts/ops-release-check_test.sh
 
 # Prints O11YRUM_RELEASE_VERSION, for the release workflow.
 print-o11yrum-release-version:
@@ -334,4 +374,4 @@ dotnet-check:
 
 # vuln runs last: it depends on the advisory database and the toolchain's
 # patch level, so local runs exercise every other gate first.
-ci: lint vet test tidy-check spec-check spec-drift ops-check ts-check ts-size ts-browser-test rum-e2e o11yrum-image rust-check rust-msrv zig-check python-check c-check ruby-check dotnet-check schema-published-test release-notes-test release-tag-test ops-promtool-test rust-release-check-test ts-browser-bundle-test ts-npm-plan-test release-check vuln
+ci: lint vet test tidy-check spec-check spec-drift ops-check ops-integration ts-check ts-size ts-browser-test rum-e2e o11yrum-image rust-check rust-msrv zig-check python-check c-check ruby-check dotnet-check schema-published-test release-notes-test release-tag-test ops-promtool-test ops-release-check-test rust-release-check-test ts-browser-bundle-test ts-npm-plan-test release-check vuln

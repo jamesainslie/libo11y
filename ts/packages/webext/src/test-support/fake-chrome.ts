@@ -4,7 +4,9 @@
  * where libo11y depends on it: messages and replies are JSON-serialized, delivered asynchronously
  * to every other context's listeners (never the sender's own), the first sendResponse wins, a
  * message nobody answers rejects, tabs.sendMessage reaches only that tab, and storage.local.set
- * reports onChanged to every context. Tests only; never built.
+ * and remove report onChanged to every context. storage.session is shared the same way, but a
+ * content script can use it, and hears its changes, only after setAccessLevel opened it to
+ * untrusted contexts, as in Chrome. Tests only; never built.
  */
 import type {
   ChromeLike,
@@ -28,9 +30,30 @@ export interface FakeContextOptions {
   readonly withoutStorage?: boolean;
 }
 
+/** A storage area of the fake: get, set and remove. */
+export interface FakeStorageArea {
+  get(key: string): Promise<Record<string, unknown>>;
+  set(items: Record<string, unknown>): Promise<void>;
+  remove(key: string): Promise<void>;
+}
+
+/** The access levels of storage.session. */
+export type FakeAccessLevel = "TRUSTED_CONTEXTS" | "TRUSTED_AND_UNTRUSTED_CONTEXTS";
+
+/** ChromeLike with the storage areas the fake has beyond it, and runtime.getURL. */
+export type FakeChrome = ChromeLike & {
+  readonly runtime: ChromeLike["runtime"] & { getURL(path: string): string };
+  readonly storage?: NonNullable<ChromeLike["storage"]> & {
+    readonly local: FakeStorageArea;
+    readonly session: FakeStorageArea & {
+      setAccessLevel(o: { readonly accessLevel: FakeAccessLevel }): Promise<void>;
+    };
+  };
+};
+
 /** One context's view of the fake extension. */
 export interface FakeContext {
-  readonly chrome: ChromeLike;
+  readonly chrome: FakeChrome;
   /** The runtime.onMessage listeners registered in this context now. */
   listeners(): readonly RuntimeMessageListener[];
 }
@@ -41,6 +64,8 @@ export interface FakeExtension {
   context(opts?: FakeContextOptions): FakeContext;
   /** The storage area, as stored (JSON values). */
   readonly stored: Map<string, unknown>;
+  /** storage.session, as stored (JSON values). */
+  readonly sessionStored: Map<string, unknown>;
   /** Every storage.local.set call, in order. */
   readonly writes: Record<string, unknown>[];
   /** Every message sent by any context, as delivered (after JSON serialization). */
@@ -82,6 +107,8 @@ export function createFakeExtension(
   }
   const contexts: Ctx[] = [];
   const stored = new Map<string, unknown>();
+  const sessionStored = new Map<string, unknown>();
+  let sessionAccess: FakeAccessLevel = "TRUSTED_CONTEXTS";
   const writes: Record<string, unknown>[] = [];
   const sent: unknown[] = [];
   let pending: Promise<unknown> = Promise.resolve();
@@ -130,9 +157,66 @@ export function createFakeExtension(
     );
   }
 
+  /** A storage area over map, reporting changes as areaName to the contexts hears accepts. */
+  function area(
+    map: Map<string, unknown>,
+    areaName: string,
+    allowed: () => boolean,
+    hears: (c: Ctx) => boolean,
+    record?: (items: Record<string, unknown>) => void,
+  ): FakeStorageArea {
+    const notify = (changes: Record<string, StorageChangeLike>): void => {
+      for (const c of contexts) {
+        if (!hears(c)) continue;
+        for (const l of [...c.onChanged.listeners]) void later(() => l(changes, areaName));
+      }
+    };
+    const denied = (): never => {
+      throw new Error("Access to storage is not allowed from this context.");
+    };
+    return {
+      get: (key) =>
+        later(() => {
+          if (!allowed()) denied();
+          return map.has(key) ? { [key]: roundTrip(map.get(key)) } : {};
+        }),
+      set: (items) =>
+        later(() => {
+          if (!allowed()) denied();
+          record?.(roundTrip(items) as Record<string, unknown>);
+          const changes: Record<string, StorageChangeLike> = {};
+          for (const [k, v] of Object.entries(items)) {
+            const old = map.get(k);
+            map.set(k, roundTrip(v));
+            changes[k] = { ...(old === undefined ? {} : { oldValue: old }), newValue: roundTrip(v) };
+          }
+          notify(changes);
+        }),
+      remove: (key) =>
+        later(() => {
+          if (!allowed()) denied();
+          if (!map.has(key)) return;
+          const old = map.get(key);
+          map.delete(key);
+          notify({ [key]: { oldValue: old } });
+        }),
+    };
+  }
+  const local = area(
+    stored,
+    "local",
+    () => true,
+    () => true,
+    (items) => writes.push(items),
+  );
+  const untrusted = (c: Ctx): boolean => c.opts.tabId !== undefined;
+  const sessionOpen = (c: Ctx): boolean =>
+    !untrusted(c) || sessionAccess === "TRUSTED_AND_UNTRUSTED_CONTEXTS";
+
   return {
     id,
     stored,
+    sessionStored,
     writes,
     sent,
     async settle() {
@@ -144,10 +228,12 @@ export function createFakeExtension(
     context(opts = {}) {
       const ctx: Ctx = { opts, onMessage: event(), onChanged: event() };
       contexts.push(ctx);
-      const chrome: ChromeLike = {
+      const session = area(sessionStored, "session", () => sessionOpen(ctx), sessionOpen);
+      const chrome: FakeChrome = {
         runtime: {
           id,
           getManifest: () => manifest,
+          getURL: (path: string) => `chrome-extension://${id}/${path.replace(/^\//, "")}`,
           sendMessage: (message) =>
             deliver(
               ctx,
@@ -172,24 +258,14 @@ export function createFakeExtension(
           ? {}
           : {
               storage: {
-                local: {
-                  get: (key: string) =>
-                    later(() => (stored.has(key) ? { [key]: roundTrip(stored.get(key)) } : {})),
-                  set: (items: Record<string, unknown>) =>
+                local,
+                session: {
+                  ...session,
+                  setAccessLevel: (o: { readonly accessLevel: FakeAccessLevel }) =>
                     later(() => {
-                      writes.push(roundTrip(items) as Record<string, unknown>);
-                      const changes: Record<string, StorageChangeLike> = {};
-                      for (const [k, v] of Object.entries(items)) {
-                        const old = stored.get(k);
-                        stored.set(k, roundTrip(v));
-                        changes[k] = {
-                          ...(old === undefined ? {} : { oldValue: old }),
-                          newValue: roundTrip(v),
-                        };
-                      }
-                      for (const c of contexts) {
-                        for (const l of [...c.onChanged.listeners]) void later(() => l(changes, "local"));
-                      }
+                      if (untrusted(ctx))
+                        throw new Error("setAccessLevel is not allowed from a content script.");
+                      sessionAccess = o.accessLevel;
                     }),
                 },
                 onChanged: ctx.onChanged,

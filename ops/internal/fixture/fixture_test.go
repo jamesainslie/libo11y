@@ -301,3 +301,56 @@ func TestSymbolicatedShape(t *testing.T) {
 		t.Errorf("source map %+v is not a version 3 map with mappings", m)
 	}
 }
+
+// TestTrafficForSession checks that TrafficFor tags every span and event
+// with the session it is given and gives each session its own trace IDs,
+// so several sessions can share one Tempo without colliding.
+func TestTrafficForSession(t *testing.T) {
+	const other = "5d1a2b3c-0000-4000-8000-00000000beef"
+	if !slices.EqualFunc(Traffic(now), TrafficFor(now, SessionID), func(a, b Request) bool {
+		return a.Path == b.Path && string(a.Body) == string(b.Body)
+	}) {
+		t.Error("Traffic differs from TrafficFor with SessionID")
+	}
+	d := decode(t, TrafficFor(now, other))
+	if len(d.spans) == 0 || len(d.logs) == 0 {
+		t.Fatalf("%d spans and %d events, want both", len(d.spans), len(d.logs))
+	}
+	for _, s := range d.spans {
+		if got := str(s.span.Attributes(), "session.id"); got != other {
+			t.Errorf("span %q: session.id %q, want %q", s.span.Name(), got, other)
+		}
+	}
+	for _, l := range d.logs {
+		if got := str(l.rec.Attributes(), "session.id"); got != other {
+			t.Errorf("%s: session.id %q, want %q", eventName(l.rec), got, other)
+		}
+	}
+	traces := map[pcommon.TraceID]bool{}
+	for _, s := range decode(t, Traffic(now)).spans {
+		traces[s.span.TraceID()] = true
+	}
+	for _, s := range d.spans {
+		if traces[s.span.TraceID()] {
+			t.Errorf("span %q of another session reuses trace %s", s.span.Name(), s.span.TraceID())
+		}
+	}
+}
+
+// TestViewSummary checks the single view summary keeps the IDs it is given
+// verbatim, characters a URL must escape included.
+func TestViewSummary(t *testing.T) {
+	const session, viewID = "browser-session", "v2 a&b/c"
+	d := decode(t, []Request{ViewSummary(now, session, viewID)})
+	if len(d.spans) != 0 || len(d.logs) != 1 {
+		t.Fatalf("%d spans and %d events, want one event", len(d.spans), len(d.logs))
+	}
+	lr := d.logs[0].rec
+	a := lr.Attributes()
+	if eventName(lr) != "o11y.rum.view.summary" || str(a, "session.id") != session || str(a, "o11y.rum.view.id") != viewID {
+		t.Errorf("event %s with session.id %q and o11y.rum.view.id %q", eventName(lr), str(a, "session.id"), str(a, "o11y.rum.view.id"))
+	}
+	if str(a, "o11y.rum.view.name") == "" || str(a, "o11y.rum.summary.lcp.value") == "" {
+		t.Errorf("the summary lacks its view name or vitals: %v", a.AsRaw())
+	}
+}

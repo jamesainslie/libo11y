@@ -1,10 +1,28 @@
 # libo11y RUM ops pack
 
-Status: in development. Nothing is released yet, and the first release will be `ops/v0.1.0`.
+The current release is `ops/v0.1.0`. Its GitHub Release, `libo11y-ops v0.1.0`, attaches the pack as `libo11y-ops-v0.1.0.tar.gz` with `SHA256SUMS`. The changes are in [CHANGELOG.md](CHANGELOG.md).
 
 The ops pack is a generic Grafana and Prometheus pack for libo11y RUM. It holds dashboards for the metrics the `o11yrum-gateway` derives, error and frustration views, a session explorer over Tempo and Loki, a dashboard for the gateway's own telemetry, and Prometheus recording and alert rules.
 
 The dashboards and rules are generated from Go code in this module, so operators import the committed JSON and YAML and never need Go. Every dashboard selects the datasources it uses through the `prometheus`, `loki` and `tempo` variables, so no datasource UID is written into the pack.
+
+The pack covers RUM. Dashboards for core services (RED by route and RPC, dependencies, runtime) and latency SLO burn-rate alerts are planned for `ops/v0.2.0`, and a Grafana app plugin with a session list and a replay player for a later release.
+
+## Requirements
+
+- Grafana 11.0 or later. The dashboards use `schemaVersion` 39, and the integration test runs them on Grafana 13.3.1.
+- Prometheus 2.x or 3.x scraping the gateway, with the default OpenTelemetry name translation (dots become underscores, counters gain `_total`, seconds histograms gain `_seconds`). The pack is tested against Prometheus 3.15.1.
+- Loki 3.0 or later, receiving logs through its native OTLP endpoint (`/otlp`). Loki then indexes `service.name` as the `service_name` label and keeps log attributes as structured metadata. Do not promote `session.id` or `o11y.rum.view.id` to index labels in `otlp_config`: both are unbounded, and every Loki query in the pack reads them as structured metadata after the stream selector. The pack is tested against Loki 3.7.10 with the default `otlp_config`.
+- Tempo with TraceQL (2.4 or later). Declaring `session.id` and `o11y.rum.view.id` as dedicated span attribute columns makes the session explorer faster, and it works without them. The pack is tested against Tempo 3.1.1.
+- The gateway's Prometheus reader (`OTEL_METRICS_EXPORTER=prometheus`) for the gateway dashboard and alerts.
+
+## Install
+
+- **Grafana import.** Import each file in `dashboards/` (Dashboards, New, Import), and pick your Prometheus, Loki and Tempo datasources in the variables at the top.
+- **Grafana provisioning.** Point a file dashboard provider at a directory holding `dashboards/*.json`, and load the rule files in `alerts/*.rules.yaml` through Prometheus's `rule_files`.
+- **Kubernetes.** Apply the kustomization, which needs the Prometheus Operator and Grafana's dashboard sidecar (see [Kubernetes](#kubernetes)). Use the unpacked release archive or the remote base `https://github.com/jamesainslie/libo11y//ops?ref=ops/v0.1.0`.
+
+To check a downloaded archive, run `sha256sum -c SHA256SUMS` (or `shasum -a 256 -c SHA256SUMS`) next to it.
 
 ## Dashboards
 
@@ -17,6 +35,8 @@ The generated dashboards are in `dashboards/`. Each is plain Grafana JSON for Gr
 | libo11y RUM: errors and frustration | `libo11y-rum-errors` | Error and frustration rates from the derived metrics, and from Loki the error inbox, the most frustrated elements and the sessions behind them. |
 | libo11y RUM: session explorer | `libo11y-rum-session-explorer` | One session rebuilt from its Loki events and Tempo traces by `session.id`, and one of its views by `o11y.rum.view.id`. |
 | libo11y RUM: gateway | `libo11y-rum-gateway` | The gateway's own telemetry: requests by outcome and signal, rejections and dropped records by reason, attributes the policy removed, sink latency and outcomes, the derived metric aggregator, symbolicated frames and source map uploads. |
+
+The session explorer is a dashboard, not an app. It shows one session at a time, by the `session.id` you paste or follow from the errors dashboard, and it cannot list sessions. Its events come from Loki, so they exist only for sessions the sampler kept. Its traces come from Tempo, and a fetch span's backend children share its trace, so backend spans come with them. "Select this view" on a row of 'Views in this session' fills `view_id` and shows that view's spans and events.
 
 The Prometheus panels count every consented session, because the gateway derives the metrics from view summaries. Error and frustration events reach Loki only for sessions the sampler kept, so the errors dashboard's Loki panels say so in their descriptions.
 
@@ -165,5 +185,10 @@ labels:
 - A drift test fails when the committed artifacts differ from what the generator produces. Run `make ops-generate` from the repository root to regenerate them.
 - promtool 3.15.1 checks the rule files and runs the unit tests in `alerts/tests/`, which are written by hand and work out each expected p75 in a comment. `scripts/ops-promtool.sh` downloads promtool on first use and refuses a tarball whose SHA-256 differs from the pinned one. It has pins for Linux and macOS on amd64 and arm64, caches the binary under `${XDG_CACHE_HOME:-~/.cache}/libo11y/`, and takes `OPS_PROMTOOL_BASE_URL` for a mirror, whose tarball must still match the pin.
 - `kubectl kustomize ops` renders the kustomization.
+- `make ops-integration`, which CI runs in the `ops-integration` job, starts Loki 3.7.10, Tempo 3.1.1, Prometheus 3.15.1, Grafana 13.3.1 and an OpenTelemetry Collector in Docker Compose (`test/compose.yaml`), behind the gateway built from this checkout. Grafana provisions `datasources/example.yaml` and `dashboards/`, and Prometheus loads `alerts/`. The test sends three fixture sessions and runs every panel query through Grafana's query API. It requires data in the panels the fixture covers and checks that Loki never indexes `session_id` or `o11y_rum_view_id` and that Prometheus loads every rule with health `ok`. In headless Chrome it checks that the explorer's view link percent-encodes the view ID once and that its Loki app variable lists the app. It needs Docker and Chrome or Chromium, starts five containers with memory limits, and always tears them down.
 
 Run every check with `make ops-check` from the repository root. It needs `kubectl`, and the first time it downloads promtool it needs network access, `curl`, `tar`, and `sha256sum` or `shasum`. `make ops-promtool-test` tests the promtool installer itself.
+
+## The release archive
+
+Each `ops/vX.Y.Z` tag publishes the GitHub Release `libo11y-ops vX.Y.Z`, never marked Latest, with `libo11y-ops-vX.Y.Z.tar.gz` and `SHA256SUMS`. The archive unpacks into `libo11y-ops-vX.Y.Z/` with `dashboards/`, `alerts/` (the rule files and their promtool tests), `kubernetes/`, `datasources/`, `kustomization.yaml`, `thresholds.yaml`, this README, the changelog and the repository's `LICENSE`. It leaves out the Go module that generates the pack and the integration environment in `test/`. `scripts/ops-release-check.sh` builds it and checks it before a release (`make ops-release-check`), and the release workflow attaches the same archive.

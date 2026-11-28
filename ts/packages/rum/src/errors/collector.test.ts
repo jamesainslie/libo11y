@@ -232,3 +232,21 @@ test("a console.error of an error object while an error is being recorded is not
   stop();
   assert.deepEqual(rt.counts, ["errors.console"]);
 });
+
+test("a scope that refuses an error event leaves it unrecorded", () => {
+  const rt = fakeRuntime();
+  rt.scope = { error: (e) => (e as ErrorEvent).filename?.startsWith("chrome-extension://") === true };
+  const window = new EventTarget();
+  const stop = errorsWith({}, { window }).start(rt);
+  window.dispatchEvent(event("error", { error: new Error("host"), filename: "https://host.test/app.js" }));
+  window.dispatchEvent(event("unhandledrejection", { reason: new Error("host") }));
+  window.dispatchEvent(
+    event("securitypolicyviolation", { effectiveDirective: "img-src", blockedURI: "https://x.test/" }),
+  );
+  window.dispatchEvent(
+    event("error", { error: new Error("mine"), filename: "chrome-extension://id/content.js" }),
+  );
+  stop();
+  assert.deepEqual(rt.counts, ["errors.uncaught"]);
+  assert.equal(rt.events[0]?.attrs["exception.message"], "mine");
+});

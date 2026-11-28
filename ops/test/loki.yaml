@@ -1,0 +1,44 @@
+# Single-binary Loki with filesystem storage. Logs arrive through Loki's
+# native OTLP endpoint (/otlp) with the default otlp_config, so
+# service.name becomes the service_name index label and every log
+# attribute, session.id and o11y.rum.view.id included, becomes structured
+# metadata. Nothing here promotes either ID to a label; the test checks it.
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  log_level: warn
+
+common:
+  path_prefix: /tmp/loki
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+  storage:
+    filesystem:
+      chunks_directory: /tmp/loki/chunks
+      rules_directory: /tmp/loki/rules
+
+schema_config:
+  configs:
+    - from: 2024-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+limits_config:
+  allow_structured_metadata: true
+  volume_enabled: true
+
+query_range:
+  results_cache:
+    cache:
+      embedded_cache:
+        enabled: false
+
+analytics:
+  reporting_enabled: false

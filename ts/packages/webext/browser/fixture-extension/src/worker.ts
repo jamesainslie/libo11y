@@ -10,11 +10,16 @@
  *   { type: "fixture-queue" }                { entries } in the libo11y IndexedDB queue
  *   { type: "fixture-consent" }              { state }
  * and the traced payload { op: "child", name } by starting and ending a span named name in the
- * sender's context, answering its { traceId, spanId }.
+ * sender's context, answering its { traceId, spanId }. It opens chrome.storage.session to content
+ * scripts on every wake, for the RUM content script.
  */
 import * as webext from "@libo11y/webext";
+import { allowRumSessionInContentScripts } from "../../../../rum/src/webext.ts";
 
 declare const chrome: webext.ChromeLike;
+
+// The RUM content script shares the extension's session through chrome.storage.session (R3f).
+void allowRumSessionInContentScripts(chrome);
 
 /** What a spec stores under "fixture.config". */
 interface FixtureConfig {

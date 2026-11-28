@@ -5,8 +5,8 @@ its conventions. The conventions are part of the specification from spec
 1.1.0 on, and spec 1.3.0 adds the view summary. They live in the
 registry under [`spec/registry`](../spec/registry). Where this document and
 the registry disagree, the registry wins. Every RUM group has development
-stability. The RUM libraries themselves arrive in later releases, starting
-with `@libo11y/rum` in `ts/v0.3.0`.
+stability. The first RUM libraries, `@libo11y/rum` and its adapters, ship
+in `ts/v0.3.0`.
 
 ## Charter
 
@@ -31,21 +31,26 @@ a set of new platforms under both products, not a third product.
 | Product | Go | Bun and Node | Browser | MV3 extension | React Native | iOS (Swift) | Android (Kotlin) |
 |---|---|---|---|---|---|---|---|
 | Core (setup) | `go` | `@libo11y/server` | `@libo11y/web` | `@libo11y/webext` | `@libo11y/react-native` | `Libo11y` Swift package | `libo11y-android` |
-| RUM (experience) | gateway `go/o11yrum` | none | `@libo11y/rum` | `@libo11y/rum` | `@libo11y/rum-react-native` | `Libo11yRUM` | `libo11y-rum-android` |
+| RUM (experience) | gateway `go/o11yrum` | none | `@libo11y/rum` | `@libo11y/rum/webext` | `@libo11y/rum-react-native` | `Libo11yRUM` | `libo11y-rum-android` |
 
-Five cells exist today: the Go core (`go`), the Bun and Node core
+Seven cells exist today: the Go core (`go`), the Bun and Node core
 (`@libo11y/server`), the browser core (`@libo11y/web`), the MV3
-extension core (`@libo11y/webext`) and the RUM gateway (`go/o11yrum`).
-The two browser cores first ship in `ts/v0.2.1`. The gateway first ships
-in `go/o11yrum/v0.1.0`, with the `ghcr.io/jamesainslie/o11yrum-gateway`
-image, and [its README](../go/o11yrum/README.md) covers configuration and
-deployment. The browser RUM cell, `@libo11y/rum`, is in development in
-`ts/packages/rum` and has not shipped. Its adapters for React
-(`@libo11y/rum-react`), TanStack Router (`@libo11y/rum-tanstack-router`)
-and Connect (`@libo11y/rum-connect`) are in development beside it, and so
-is session replay (`@libo11y/rum-replay`), whose privacy core masks all
-text by default and never records input values. Every other named cell is
-planned.
+extension core (`@libo11y/webext`), the RUM gateway (`go/o11yrum`), the
+browser RUM cell (`@libo11y/rum`) and the MV3 extension RUM cell (its
+`@libo11y/rum/webext` entry point). The two browser cores first ship in
+`ts/v0.2.1`. The gateway first ships in `go/o11yrum/v0.1.0`, with the
+`ghcr.io/jamesainslie/o11yrum-gateway` image, and
+[its README](../go/o11yrum/README.md) covers configuration and
+deployment. The two RUM cells first ship in `ts/v0.3.0`, together with
+the adapters for React (`@libo11y/rum-react`), TanStack Router
+(`@libo11y/rum-tanstack-router`) and Connect (`@libo11y/rum-connect`) and
+the source map uploader `@libo11y/sourcemaps`. These five packages are not
+on npm yet. Until their first npm publish, they install from the tarballs
+attached to the `ts/v0.3.0` GitHub Release. Session replay
+(`@libo11y/rum-replay`), whose privacy core masks all text by default and
+never records input values, is in development in `ts/packages/rum-replay`
+and has not shipped. It first ships in the next TypeScript release. Every
+other named cell is planned.
 
 ## Data model
 
@@ -71,7 +76,8 @@ caused. A resource is a request the view made, and it carries
 RUM span and event carries `session.id`. Every span shape and the error,
 frustration and view summary events also carry `o11y.rum.view.id`, and the
 session start and end events do not. With those two attributes the gateway
-and the planned Grafana session explorer can rebuild the timeline of a session.
+([`go/o11yrum`](../go/o11yrum/README.md)) and the Grafana session explorer
+in the ops pack ([`ops`](../ops/README.md)) rebuild the timeline of a session.
 Metrics carry neither attribute, because both are unbounded. The registry
 defines span shapes for views, actions and app loads. It defines none for
 resources yet.
@@ -263,6 +269,28 @@ ends it and starts a session of its own, and then all of them adopt the
 newest one. Only the tab whose new session won sends
 `o11y.rum.session.end`. A session that ends without being kept removes
 only its own records from the shared retention buffer.
+
+The same race happens when two contexts find no session stored and both
+create the first one, as an extension's side panel and content script
+can. So a client sends the `o11y.rum.session.start` of a kept session
+only after the same 500 ms election, and only if its new session is still
+the one every context shares. A page that hides before then sends a
+pending start whose session is still current. The start of a session that
+is not kept goes to the retention buffer at once: a session that lost the
+election is never kept, so its start is never sent.
+
+### Extensions
+
+In an MV3 extension, extension pages and content scripts record RUM and
+the service worker sends their records. Every context of the extension
+shares one session through `chrome.storage.session`, and the remote
+configuration cache lives in `chrome.storage.local`. The platform is
+`webext`. A content script shares the host page's document, so it records
+only what is the extension's own: one view named `content-script` whose
+span carries the host page's `url.domain` and no other URL, actions only
+inside the extension's UI root, and errors only from the extension's own
+scripts. It records no vitals, resources, long animation frames or
+`app_load`, because those would measure the host page.
 
 ### Remote configuration
 

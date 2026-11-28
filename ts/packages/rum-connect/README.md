@@ -17,8 +17,17 @@ and 2.x transports.
 
 ## Status
 
-The package is in development and is not on npm yet. It releases with
-`@libo11y/rum` at the same version.
+The package first ships in `ts/v0.3.0`, and it releases with
+`@libo11y/rum` at the same version. Neither is on npm yet. Until their
+first npm publish, install both from the tarballs attached to the
+[`ts/v0.3.0` GitHub Release](https://github.com/jamesainslie/libo11y/releases/tag/ts/v0.3.0),
+whose notes list the exact URLs:
+
+```sh
+npm install \
+  https://github.com/jamesainslie/libo11y/releases/download/ts/v0.3.0/libo11y-rum-0.3.0.tgz \
+  https://github.com/jamesainslie/libo11y/releases/download/ts/v0.3.0/libo11y-rum-connect-0.3.0.tgz
+```
 
 ## Usage
 
