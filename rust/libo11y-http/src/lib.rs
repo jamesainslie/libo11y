@@ -30,6 +30,7 @@
 
 mod carrier;
 mod client;
+mod error_type;
 mod method;
 mod path_match;
 mod server;

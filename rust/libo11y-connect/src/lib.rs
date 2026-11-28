@@ -36,6 +36,7 @@
 
 mod body;
 mod canonical;
+mod error;
 mod interceptor;
 mod layer;
 mod semconv;

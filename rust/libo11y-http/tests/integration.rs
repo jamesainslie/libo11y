@@ -1454,3 +1454,164 @@ async fn server_timing_emits_unsampled_flags_for_unsampled_spans() {
     );
     let _ = sdk.shutdown();
 }
+
+#[tokio::test]
+async fn server_clamps_arbitrary_schemes_to_http_on_spans_and_metrics() {
+    let rec = Recorder::start("http-server-scheme-clamp");
+    let mut svc = ServerLayer::new(rec.sdk()).layer(service_fn(|_req: Request<()>| async {
+        Ok::<_, Infallible>(Response::new(EmptyBody::new()))
+    }));
+    for uri in ["x1://a/ok", "x2://a/ok", "HTTPS://a/ok", "/ok"] {
+        svc.ready()
+            .await
+            .unwrap()
+            .call(Request::builder().uri(uri).body(()).unwrap())
+            .await
+            .unwrap();
+    }
+
+    let schemes: Vec<_> = rec
+        .spans()
+        .iter()
+        .map(|s| span_attr(s, "url.scheme").unwrap())
+        .collect();
+    assert_eq!(schemes, ["http", "http", "https", "http"]);
+
+    let points = histogram_points(&rec, "http.server.request.duration");
+    let mut metric_schemes: Vec<_> = points
+        .iter()
+        .map(|p| (p.attrs["url.scheme"].clone(), p.count))
+        .collect();
+    metric_schemes.sort();
+    assert_eq!(
+        metric_schemes,
+        [("http".to_owned(), 3), ("https".to_owned(), 1)]
+    );
+    rec.assert_conforms();
+}
+
+#[tokio::test]
+async fn client_future_dropped_before_the_head_records_a_canceled_request() {
+    let rec = Recorder::start("http-client-canceled");
+    let mut svc = ClientLayer::new(rec.sdk()).layer(service_fn(|_req: Request<()>| {
+        std::future::pending::<Result<Response<EmptyBody>, Infallible>>()
+    }));
+
+    let fut = svc.ready().await.unwrap().call(
+        Request::builder()
+            .uri("http://example.com/slow")
+            .body(())
+            .unwrap(),
+    );
+    {
+        let mut fut = std::pin::pin!(fut);
+        let mut cx = TaskContext::from_waker(std::task::Waker::noop());
+        assert!(fut.as_mut().poll(&mut cx).is_pending());
+    }
+
+    let spans = rec.spans();
+    assert_eq!(spans.len(), 1);
+    assert_eq!(spans[0].span_kind, SpanKind::Client);
+    assert_eq!(
+        span_attr(&spans[0], "error.type").as_deref(),
+        Some("canceled")
+    );
+    assert_eq!(spans[0].status, Status::error("canceled"));
+    assert_eq!(span_attr(&spans[0], "http.response.status_code"), None);
+    let points = histogram_points(&rec, "http.client.request.duration");
+    assert_eq!(points.len(), 1);
+    assert_eq!(points[0].count, 1);
+    assert_eq!(
+        points[0].attrs.get("error.type").map(String::as_str),
+        Some("canceled")
+    );
+    rec.assert_conforms();
+}
+
+#[tokio::test]
+async fn client_future_dropped_unpolled_records_a_canceled_request() {
+    let rec = Recorder::start("http-client-canceled-unpolled");
+    let mut svc = ClientLayer::new(rec.sdk()).layer(service_fn(|_req: Request<()>| {
+        std::future::pending::<Result<Response<EmptyBody>, Infallible>>()
+    }));
+    drop(
+        svc.ready().await.unwrap().call(
+            Request::builder()
+                .uri("http://example.com/never")
+                .body(())
+                .unwrap(),
+        ),
+    );
+    let spans = rec.spans();
+    assert_eq!(spans.len(), 1);
+    assert_eq!(
+        span_attr(&spans[0], "error.type").as_deref(),
+        Some("canceled")
+    );
+    rec.assert_conforms();
+}
+
+#[tokio::test]
+async fn service_errors_record_a_short_error_type() {
+    #[derive(Debug)]
+    struct DownstreamErr;
+
+    type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
+    let rec = Recorder::start("http-short-error-type");
+    let mut server = ServerLayer::new(rec.sdk()).layer(service_fn(|_req: Request<()>| async {
+        Err::<Response<EmptyBody>, DownstreamErr>(DownstreamErr)
+    }));
+    let _ = server
+        .ready()
+        .await
+        .unwrap()
+        .call(Request::builder().uri("/a").body(()).unwrap())
+        .await;
+    let mut boxed = ServerLayer::new(rec.sdk()).layer(service_fn(|_req: Request<()>| async {
+        Err::<Response<EmptyBody>, BoxError>("boom".into())
+    }));
+    let _ = boxed
+        .ready()
+        .await
+        .unwrap()
+        .call(Request::builder().uri("/b").body(()).unwrap())
+        .await;
+    let mut client = ClientLayer::new(rec.sdk()).layer(service_fn(|_req: Request<()>| async {
+        Err::<Response<EmptyBody>, BoxError>("boom".into())
+    }));
+    let _ = client
+        .ready()
+        .await
+        .unwrap()
+        .call(Request::builder().uri("http://e.com/c").body(()).unwrap())
+        .await;
+    let mut typed_client =
+        ClientLayer::new(rec.sdk()).layer(service_fn(|_req: Request<()>| async {
+            Err::<Response<EmptyBody>, DownstreamErr>(DownstreamErr)
+        }));
+    let _ = typed_client
+        .ready()
+        .await
+        .unwrap()
+        .call(Request::builder().uri("http://e.com/d").body(()).unwrap())
+        .await;
+
+    let kinds: Vec<_> = rec
+        .spans()
+        .iter()
+        .map(|s| span_attr(s, "error.type").unwrap())
+        .collect();
+    assert_eq!(
+        kinds,
+        ["DownstreamErr", "_OTHER", "_OTHER", "DownstreamErr"]
+    );
+    for point in histogram_points(&rec, "http.server.request.duration")
+        .iter()
+        .chain(&histogram_points(&rec, "http.client.request.duration"))
+    {
+        let kind = &point.attrs["error.type"];
+        assert!(!kind.contains("::") && !kind.contains("dyn"), "{kind}");
+    }
+    rec.assert_conforms();
+}

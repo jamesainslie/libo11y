@@ -29,6 +29,7 @@ use tower_layer::Layer;
 use tower_service::Service;
 
 use crate::carrier::HeaderExtractor;
+use crate::error_type::short_error_type;
 use crate::method::{default_span_name, normalize_method, route_only};
 use crate::path_match::path_match;
 use crate::url::{
@@ -296,16 +297,17 @@ struct RequestState {
 }
 
 /// How an instrumented request ended.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 enum Ending {
     /// The response completed: its body reached the end of the stream, or
     /// was dropped after the head was ready.
     Complete,
     /// The service future failed before producing a response; carries the
-    /// error's type name.
-    ServiceError(&'static str),
-    /// The response body yielded an error; carries the error's type name.
-    BodyError(&'static str),
+    /// error's short type name.
+    ServiceError(Cow<'static, str>),
+    /// The response body yielded an error; carries the error's short type
+    /// name.
+    BodyError(Cow<'static, str>),
     /// The service or the response body panicked.
     Panic,
     /// The request future was dropped before the response head was ready.
@@ -433,18 +435,25 @@ impl RequestState {
         }
         self.finished = true;
 
-        let (error_type, description): (Option<Cow<'static, str>>, &'static str) = match ending {
+        let status = self.status.map(i64::from);
+        let canonical_status = status.unwrap_or(match ending {
+            Ending::Canceled => CLIENT_CLOSED_REQUEST,
+            Ending::Complete | Ending::ServiceError(_) | Ending::BodyError(_) | Ending::Panic => {
+                500
+            }
+        });
+
+        let (error_type, description): (Option<Cow<'static, str>>, Cow<'static, str>) = match ending
+        {
             Ending::Complete => (
                 self.status
                     .filter(|code| *code >= 500)
                     .map(|code| Cow::Owned(code.to_string())),
-                "",
+                Cow::Borrowed(""),
             ),
-            Ending::ServiceError(kind) | Ending::BodyError(kind) => {
-                (Some(Cow::Borrowed(kind)), kind)
-            }
-            Ending::Panic => (Some(Cow::Borrowed(PANIC)), PANIC),
-            Ending::Canceled => (Some(Cow::Borrowed(CANCELED)), CANCELED),
+            Ending::ServiceError(kind) | Ending::BodyError(kind) => (Some(kind.clone()), kind),
+            Ending::Panic => (Some(Cow::Borrowed(PANIC)), Cow::Borrowed(PANIC)),
+            Ending::Canceled => (Some(Cow::Borrowed(CANCELED)), Cow::Borrowed(CANCELED)),
         };
 
         let span = self.cx.span();
@@ -453,13 +462,6 @@ impl RequestState {
             span.set_status(Status::error(description));
         }
 
-        let status = self.status.map(i64::from);
-        let canonical_status = status.unwrap_or(match ending {
-            Ending::Canceled => CLIENT_CLOSED_REQUEST,
-            Ending::Complete | Ending::ServiceError(_) | Ending::BodyError(_) | Ending::Panic => {
-                500
-            }
-        });
         let outcome = if error_type.is_some() {
             Outcome::Failure
         } else {
@@ -632,7 +634,7 @@ impl<B: Body> Body for ServerBody<B> {
         let ending = match &item {
             Some(Ok(_)) if !this.inner.is_end_stream() => None,
             Some(Ok(_)) | None => Some(Ending::Complete),
-            Some(Err(_)) => Some(Ending::BodyError(std::any::type_name::<B::Error>())),
+            Some(Err(_)) => Some(Ending::BodyError(short_error_type::<B::Error>())),
         };
         if let Some(ending) = ending
             && let Some(mut st) = this.state.take()
@@ -735,7 +737,7 @@ where
                     }
                     Ok(Poll::Ready(Err(err))) => {
                         if let Some(mut st) = state.take() {
-                            st.finish(Ending::ServiceError(std::any::type_name::<E>()));
+                            st.finish(Ending::ServiceError(short_error_type::<E>()));
                         }
                         Poll::Ready(Err(err))
                     }

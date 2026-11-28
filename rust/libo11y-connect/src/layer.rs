@@ -23,7 +23,7 @@ use crate::interceptor::context_with_only_baggage;
 use crate::semconv::{
     CLIENT_CALL_DURATION, DURATION_BUCKETS, HEALTH_PROCEDURE_PREFIX, HeaderExtractor,
     HeaderInjector, RPC_METHOD, RPC_SYSTEM_NAME, SCOPE_NAME, SERVER_ADDRESS, SERVER_CALL_DURATION,
-    SERVER_PORT, parse_procedure, parse_server_address, rpc_system,
+    SERVER_PORT, normalize_http_method, parse_procedure, parse_server_address, rpc_system,
 };
 
 /// Predicate deciding whether a Connect procedure path (such as
@@ -174,7 +174,7 @@ impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for ServerService<S>
 where
     S: Service<Request<ReqBody>, Response = Response<ResBody>>,
     ResBody: Body,
-    S::Error: fmt::Display,
+    S::Error: fmt::Display + 'static,
 {
     type Response = Response<InstrumentedBody<ResBody>>;
     type Error = S::Error;
@@ -201,7 +201,9 @@ where
             base_attrs.push(KeyValue::new(RPC_METHOD, method.to_owned()));
         }
 
-        let mut span_attrs = base_attrs.clone();
+        // `rpc.method` joins the server span when the call finishes, as
+        // `_OTHER` if the procedure turns out not to exist.
+        let mut span_attrs = vec![KeyValue::new(RPC_SYSTEM_NAME, system)];
         if let Some(addr) = server_addr {
             span_attrs.push(KeyValue::new(SERVER_ADDRESS, addr));
         }
@@ -243,7 +245,7 @@ where
                 sdk: self.config.sdk.clone(),
                 record,
                 procedure: procedure.clone(),
-                http_method: req.method().as_str().to_owned(),
+                http_method: normalize_http_method(req.method().as_str()).to_owned(),
             })
         } else {
             None
@@ -473,7 +475,7 @@ impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for ClientService<S>
 where
     S: Service<Request<ReqBody>, Response = Response<ResBody>>,
     ResBody: Body,
-    S::Error: fmt::Display,
+    S::Error: fmt::Display + 'static,
 {
     type Response = Response<InstrumentedBody<ResBody>>;
     type Error = S::Error;
@@ -531,7 +533,7 @@ impl<T> InstrumentedTransport<T> {
 impl<T> ClientTransport for InstrumentedTransport<T>
 where
     T: ClientTransport,
-    <T::ResponseBody as Body>::Error: fmt::Display,
+    <T::ResponseBody as Body>::Error: fmt::Display + 'static,
 {
     type ResponseBody = InstrumentedBody<T::ResponseBody>;
     type Error = T::Error;

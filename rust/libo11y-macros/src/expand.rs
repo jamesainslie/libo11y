@@ -87,10 +87,12 @@ impl Context {
             let record = shape.record(&krate, &self.type_name, Some((index, &variant_name)));
             let floor = level_tokens(&krate, declared.level);
             let pattern = shape.pattern(&quote!(Self::#ident));
+            // The record goes through the floor as a whole, not only its
+            // fields: under a mask floor the variant name is data too.
             arms.push(quote! {
                 #pattern => {
                     let __o11y_floor = ::core::cmp::max(__o11y_floor, #floor);
-                    #record
+                    #krate::Protected::at_floor(#record, __o11y_floor)
                 }
             });
         }
@@ -342,27 +344,128 @@ fn level_tokens(krate: &Path, level: Level) -> TokenStream {
 /// types (`T::Output`) and lets `Secret<T>` or `PhantomData<T>` hold any
 /// `T`. Fields that are redacted or omitted are never rendered and add no
 /// bound.
+///
+/// A field type that names the deriving type itself, such as
+/// `Option<Box<Node<T>>>` or `Vec<Self>`, cannot be bounded directly because
+/// proving it would recurse into the impl being declared (E0275). Instead,
+/// non-self sub-types alongside the recursion (such as `K` in
+/// `BTreeMap<K, Trie<K, V>>` or `T` in `Option<(T, Box<List<T>>)>`) still get
+/// bounded, while the self-reference itself is skipped.
 fn bounded_generics(input: &DeriveInput, krate: &Path, rendered: &[Type]) -> syn::Generics {
     let params: Vec<&Ident> = input.generics.type_params().map(|p| &p.ident).collect();
     let mut generics = input.generics.clone();
     let mut seen: Vec<String> = Vec::new();
     for ty in rendered {
-        if !mentions(ty.to_token_stream(), &params) {
-            continue;
-        }
+        collect_field_bounds(ty, &input.ident, &params, krate, &mut seen, &mut generics);
+    }
+    generics
+}
+
+fn collect_field_bounds(
+    ty: &Type,
+    own: &Ident,
+    params: &[&Ident],
+    krate: &Path,
+    seen: &mut Vec<String>,
+    generics: &mut syn::Generics,
+) {
+    if !mentions(ty.to_token_stream(), params) {
+        return;
+    }
+    if !contains_self_type(ty, own) {
         // syn compares types only with its extra-traits feature, so the
         // tokens deduplicate the bounds.
         let text = ty.to_token_stream().to_string();
-        if seen.contains(&text) {
-            continue;
+        if !seen.contains(&text) {
+            seen.push(text);
+            generics
+                .make_where_clause()
+                .predicates
+                .push(parse_quote!(#ty: #krate::Redact));
         }
-        seen.push(text);
-        generics
-            .make_where_clause()
-            .predicates
-            .push(parse_quote!(#ty: #krate::Redact));
+        return;
     }
-    generics
+    match ty {
+        Type::Path(tp) => {
+            if is_self_type_path(tp, own) {
+                return;
+            }
+            if let Some(qself) = &tp.qself {
+                collect_field_bounds(&qself.ty, own, params, krate, seen, generics);
+            }
+            for seg in &tp.path.segments {
+                if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
+                    for arg in &args.args {
+                        if let syn::GenericArgument::Type(inner) = arg {
+                            collect_field_bounds(inner, own, params, krate, seen, generics);
+                        } else if let syn::GenericArgument::AssocType(assoc) = arg {
+                            collect_field_bounds(&assoc.ty, own, params, krate, seen, generics);
+                        }
+                    }
+                }
+            }
+        }
+        Type::Tuple(tuple) => {
+            for elem in &tuple.elems {
+                collect_field_bounds(elem, own, params, krate, seen, generics);
+            }
+        }
+        Type::Array(array) => {
+            collect_field_bounds(&array.elem, own, params, krate, seen, generics);
+        }
+        Type::Slice(slice) => {
+            collect_field_bounds(&slice.elem, own, params, krate, seen, generics);
+        }
+        Type::Reference(reference) => {
+            collect_field_bounds(&reference.elem, own, params, krate, seen, generics);
+        }
+        Type::Paren(paren) => {
+            collect_field_bounds(&paren.elem, own, params, krate, seen, generics);
+        }
+        Type::Group(group) => {
+            collect_field_bounds(&group.elem, own, params, krate, seen, generics);
+        }
+        _ => {}
+    }
+}
+
+fn is_self_type_path(tp: &syn::TypePath, own: &Ident) -> bool {
+    tp.qself.is_none()
+        && tp.path.leading_colon.is_none()
+        && tp.path.segments.len() == 1
+        && (tp.path.segments[0].ident == "Self" || tp.path.segments[0].ident == *own)
+}
+
+fn contains_self_type(ty: &Type, own: &Ident) -> bool {
+    match ty {
+        Type::Path(tp) => {
+            if is_self_type_path(tp, own) {
+                return true;
+            }
+            if tp
+                .qself
+                .as_ref()
+                .is_some_and(|q| contains_self_type(&q.ty, own))
+            {
+                return true;
+            }
+            tp.path.segments.iter().any(|seg| match &seg.arguments {
+                syn::PathArguments::AngleBracketed(args) => args.args.iter().any(|arg| match arg {
+                    syn::GenericArgument::Type(inner) => contains_self_type(inner, own),
+                    syn::GenericArgument::AssocType(assoc) => contains_self_type(&assoc.ty, own),
+                    _ => false,
+                }),
+                _ => false,
+            })
+        }
+        Type::Tuple(tuple) => tuple.elems.iter().any(|e| contains_self_type(e, own)),
+        Type::Array(array) => contains_self_type(&array.elem, own),
+        Type::Slice(slice) => contains_self_type(&slice.elem, own),
+        Type::Reference(reference) => contains_self_type(&reference.elem, own),
+        Type::Paren(paren) => contains_self_type(&paren.elem, own),
+        Type::Group(group) => contains_self_type(&group.elem, own),
+        _ => false,
+    }
 }
 
 fn mentions(tokens: TokenStream, params: &[&Ident]) -> bool {
@@ -423,6 +526,33 @@ mod tests {
             "{out}"
         );
         assert!(!out.contains("T : :: libo11y_redact :: Redact"), "{out}");
+    }
+
+    #[test]
+    fn self_referential_field_types_are_not_bound() {
+        let out = expand(&parse_quote! {
+            struct Node<T> {
+                val: T,
+                next: Option<Box<Node<T>>>,
+                kids: Vec<Self>,
+            }
+        });
+        assert!(out.contains("T : :: libo11y_redact :: Redact"), "{out}");
+        assert!(!out.contains("Node < T > > > :"), "{out}");
+        assert!(!out.contains("Vec < Self > :"), "{out}");
+    }
+
+    #[test]
+    fn enum_records_pass_through_the_floor() {
+        let out = expand(&parse_quote! {
+            enum Tier {
+                Gold,
+            }
+        });
+        assert!(
+            out.contains(":: libo11y_redact :: Protected :: at_floor (:: libo11y_redact :: Protected :: Record"),
+            "{out}"
+        );
     }
 
     #[test]

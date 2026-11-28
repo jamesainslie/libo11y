@@ -29,6 +29,7 @@
 //! ```
 
 mod body;
+mod error;
 mod layer;
 mod semconv;
 

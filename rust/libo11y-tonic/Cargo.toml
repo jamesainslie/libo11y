@@ -13,11 +13,16 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
+# h2, hyper and tonic name the error types a failed call is classified by,
+# as tonic::Status::from_error does. Only their error types are used.
+h2 = "0.4.21"
 http = "1.5.0"
 http-body = "1.1.0"
+hyper = { version = "1.13.0", default-features = false }
 libo11y.workspace = true
 opentelemetry = { version = "0.33.1", default-features = false, features = ["metrics", "trace"] }
 pin-project-lite = "0.2.17"
+tonic = { version = "0.14.9", default-features = false, features = ["channel"] }
 tower-layer = "0.3.3"
 tower-service = "0.3.3"
 

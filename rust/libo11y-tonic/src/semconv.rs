@@ -16,6 +16,9 @@ pub(crate) const RPC_SYSTEM_NAME: &str = "rpc.system.name";
 pub(crate) const RPC_SYSTEM_GRPC: &str = "grpc";
 /// Semconv `rpc.method` attribute key.
 pub(crate) const RPC_METHOD: &str = "rpc.method";
+/// Semconv `rpc.method` value, and span name, for a method the server does
+/// not implement, so unrouted paths cannot create unbounded series.
+pub(crate) const RPC_METHOD_OTHER: &str = "_OTHER";
 /// Semconv `rpc.response.status_code` attribute key.
 pub(crate) const RPC_RESPONSE_STATUS_CODE: &str = "rpc.response.status_code";
 /// Semconv `server.address` attribute key.
@@ -49,7 +52,10 @@ pub(crate) const CODE_OK: i32 = 0;
 pub(crate) const CODE_CANCELLED: i32 = 1;
 pub(crate) const CODE_UNKNOWN: i32 = 2;
 pub(crate) const CODE_DEADLINE_EXCEEDED: i32 = 4;
+#[cfg(test)]
+pub(crate) const CODE_NOT_FOUND: i32 = 5;
 pub(crate) const CODE_PERMISSION_DENIED: i32 = 7;
+pub(crate) const CODE_RESOURCE_EXHAUSTED: i32 = 8;
 pub(crate) const CODE_UNIMPLEMENTED: i32 = 12;
 pub(crate) const CODE_INTERNAL: i32 = 13;
 pub(crate) const CODE_UNAVAILABLE: i32 = 14;
@@ -99,9 +105,13 @@ impl GrpcStatus {
 
     /// Maps an HTTP status code to a gRPC status code per the gRPC over HTTP/2
     /// specification when no `grpc-status` header or trailer was delivered.
+    ///
+    /// An HTTP 200 without `grpc-status` is a truncated response, not a
+    /// success: the stream ended before the trailers, so it reads `UNKNOWN`,
+    /// as tonic and grpc-go report it.
     pub(crate) fn from_http_status(status: StatusCode) -> Self {
         if status == StatusCode::OK {
-            return Self::new(CODE_OK);
+            return Self::with_message(CODE_UNKNOWN, "missing grpc-status trailer");
         }
         let code = match status.as_u16() {
             400 => CODE_INTERNAL,
@@ -408,7 +418,10 @@ mod tests {
             Some(GrpcStatus::with_message(5, "item missing"))
         );
 
-        assert_eq!(GrpcStatus::from_http_status(StatusCode::OK).code, CODE_OK);
+        assert_eq!(
+            GrpcStatus::from_http_status(StatusCode::OK),
+            GrpcStatus::with_message(CODE_UNKNOWN, "missing grpc-status trailer")
+        );
         assert_eq!(
             GrpcStatus::from_http_status(StatusCode::NOT_FOUND).code,
             CODE_UNIMPLEMENTED

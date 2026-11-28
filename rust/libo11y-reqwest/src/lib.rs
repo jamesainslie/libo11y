@@ -241,11 +241,16 @@ impl SpanGuard {
     }
 
     fn finish_error(&mut self, err: &MiddlewareError) {
+        self.finish_kind(classify_error(err));
+    }
+
+    /// Ends the span as failed with `error_type` and records the duration
+    /// with it and no status code.
+    fn finish_kind(&mut self, error_type: &'static str) {
         if self.finished {
             return;
         }
         self.finished = true;
-        let error_type = classify_error(err);
         let span = self.cx.span();
         span.set_attribute(KeyValue::new("error.type", error_type));
         span.set_status(Status::error(error_type));
@@ -277,27 +282,31 @@ impl SpanGuard {
     }
 }
 
+/// `error.type` for a request whose future was dropped before it finished,
+/// as `libo11y-http` records a canceled request.
+const CANCELED: &str = "canceled";
+
 impl Drop for SpanGuard {
+    /// A guard still open when dropped means the request never finished:
+    /// a panic unwound through it, or the caller dropped the request future,
+    /// as a timeout or a `select!` does.
     fn drop(&mut self) {
-        if !self.finished {
-            self.finished = true;
-            if std::thread::panicking() {
-                let span = self.cx.span();
-                span.set_attribute(KeyValue::new("error.type", "panic"));
-                span.set_status(Status::error("panic"));
-                let elapsed = self.start.elapsed().as_secs_f64();
-                let _attached = self.cx.clone().attach();
-                self.record_duration(elapsed, None, Some("panic"));
-            }
-            self.cx.span().end();
+        if std::thread::panicking() {
+            self.finish_kind("panic");
+        } else {
+            self.finish_kind(CANCELED);
         }
     }
 }
 
+/// Renders `url` for `url.full`: userinfo stripped, sensitive query values
+/// redacted, and the fragment dropped, since a fragment such as
+/// `#access_token=...` never reaches the server and can hold a credential.
 fn sanitize_reqwest_url(url: &Url) -> String {
     let mut clean = url.clone();
     let _ = clean.set_username("");
     let _ = clean.set_password(None);
+    clean.set_fragment(None);
     if let Some(query) = clean.query() {
         let redacted = redact_query(query);
         clean.set_query(Some(&redacted));
@@ -341,6 +350,27 @@ mod tests {
         assert_eq!(
             sanitize_reqwest_url(&url),
             "https://example.com:8443/v1/items?page=1&token=REDACTED"
+        );
+    }
+
+    #[test]
+    fn sanitize_reqwest_url_drops_the_fragment() {
+        let url = Url::parse("https://example.com/cb?page=1#access_token=tok&state=x")
+            .expect("valid url");
+        assert_eq!(sanitize_reqwest_url(&url), "https://example.com/cb?page=1");
+        let url = Url::parse("https://example.com/cb#frag").expect("valid url");
+        assert_eq!(sanitize_reqwest_url(&url), "https://example.com/cb");
+    }
+
+    #[test]
+    fn sanitize_reqwest_url_redacts_aws_presigned_params() {
+        let url = Url::parse(
+            "https://bucket.s3.amazonaws.com/k?X-Amz-Credential=AKIA&X-Amz-Signature=sig&X-Amz-Security-Token=tok&X-Amz-Expires=60",
+        )
+        .expect("valid url");
+        assert_eq!(
+            sanitize_reqwest_url(&url),
+            "https://bucket.s3.amazonaws.com/k?X-Amz-Credential=REDACTED&X-Amz-Signature=REDACTED&X-Amz-Security-Token=REDACTED&X-Amz-Expires=60"
         );
     }
 

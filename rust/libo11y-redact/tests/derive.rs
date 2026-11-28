@@ -930,3 +930,232 @@ mod public_api {
 fn private_field_types_in_bounds_compile_cleanly() {
     assert_eq!(public_api::Outer::new(3).to_string(), "{inner:3}");
 }
+
+#[derive(Redact)]
+#[o11y(mask)]
+enum Status {
+    Active,
+    Suspended { reason: String },
+    Code(u32),
+    Pair(u32, u32),
+}
+
+#[derive(Redact)]
+#[o11y(confidential)]
+enum Condition {
+    Asthma,
+    Allergy { to: String },
+}
+
+fn assert_hidden(outs: &[String], names: &[&str]) {
+    for out in outs {
+        for name in names {
+            assert!(!out.contains(name), "mask floor leaked {name}: {out}");
+        }
+    }
+}
+
+fn surfaces<T: Redact + fmt::Display + fmt::Debug + serde::Serialize>(v: &T) -> Vec<String> {
+    vec![v.to_string(), format!("{v:?}"), json(v)]
+}
+
+#[test]
+fn container_mask_hides_the_variant_name() {
+    let active = Status::Active;
+    assert_hidden(&surfaces(&active), &["Active"]);
+    assert_eq!(active.to_string(), "XXXXXX");
+    assert_eq!(json(&active), r#""XXXXXX""#);
+
+    let suspended = Status::Suspended {
+        reason: "fraud".into(),
+    };
+    assert_hidden(&surfaces(&suspended), &["Suspended", "fraud"]);
+    assert_eq!(suspended.to_string(), "{reason:XXXXX}");
+    assert_eq!(format!("{suspended:?}"), r#"Status { reason: "XXXXX" }"#);
+    assert_eq!(json(&suspended), r#"{"reason":"XXXXX"}"#);
+
+    let code = Status::Code(42);
+    assert_hidden(&surfaces(&code), &["Code", "42"]);
+    assert_eq!(code.to_string(), "XX");
+    assert_eq!(json(&code), r#""XX""#);
+
+    let pair = Status::Pair(1, 2);
+    assert_hidden(&surfaces(&pair), &["Pair"]);
+    assert_eq!(pair.to_string(), "(X X)");
+    assert_eq!(json(&pair), r#"["X","X"]"#);
+
+    let allergy = Condition::Allergy {
+        to: "peanuts".into(),
+    };
+    assert_hidden(&surfaces(&allergy), &["Allergy", "peanuts"]);
+    assert_hidden(&surfaces(&Condition::Asthma), &["Asthma"]);
+    assert_eq!(Condition::Asthma.to_string(), "XXXXXX");
+}
+
+#[derive(Redact)]
+enum Plan {
+    Free,
+    #[o11y(mask)]
+    Premium,
+    #[o11y(confidential)]
+    Trial {
+        days: u32,
+    },
+    #[o11y(mask)]
+    Seats(u32, u32),
+    #[o11y(mask)]
+    Credit(u32),
+}
+
+#[test]
+fn variant_mask_hides_that_variant_name() {
+    assert_eq!(Plan::Free.to_string(), "Free");
+    assert_eq!(json(&Plan::Free), r#""Free""#);
+
+    let premium = Plan::Premium;
+    assert_hidden(&surfaces(&premium), &["Premium"]);
+    assert_eq!(premium.to_string(), "XXXXXXX");
+
+    let trial = Plan::Trial { days: 14 };
+    assert_hidden(&surfaces(&trial), &["Trial", "14"]);
+    assert_eq!(trial.to_string(), "{days:XX}");
+    assert_eq!(json(&trial), r#"{"days":"XX"}"#);
+
+    let seats = Plan::Seats(3, 10);
+    assert_hidden(&surfaces(&seats), &["Seats", "10"]);
+    assert_eq!(seats.to_string(), "(X XX)");
+
+    let credit = Plan::Credit(500);
+    assert_hidden(&surfaces(&credit), &["Credit", "500"]);
+    assert_eq!(credit.to_string(), "XXX");
+}
+
+#[test]
+fn unannotated_field_holding_a_masked_enum_hides_the_variant() {
+    #[derive(Redact)]
+    struct Account {
+        id: u32,
+        status: Status,
+        plan: Plan,
+    }
+    let account = Account {
+        id: 7,
+        status: Status::Suspended {
+            reason: "fraud".into(),
+        },
+        plan: Plan::Premium,
+    };
+    assert_hidden(&surfaces(&account), &["Suspended", "fraud", "Premium"]);
+    assert_eq!(
+        account.to_string(),
+        "{id:7 status:{reason:XXXXX} plan:XXXXXXX}"
+    );
+    let active = Account {
+        id: 8,
+        status: Status::Active,
+        plan: Plan::Free,
+    };
+    assert_eq!(active.to_string(), "{id:8 status:XXXXXX plan:Free}");
+}
+
+#[test]
+fn direct_mask_floor_hides_the_variant_name() {
+    for (value, raw) in [
+        (Diagnosis::Hiv.redact(Protection::Mask), "Hiv"),
+        (Tier::Gold { since: 2024 }.redact(Protection::Mask), "Gold"),
+        (Tier::Silver(7).redact(Protection::Mask), "Silver"),
+        (Tier::Bronze(1, 2).redact(Protection::Mask), "Bronze"),
+        (Plan::Free.redact(Protection::Mask), "Free"),
+    ] {
+        let outs = [value.to_string(), format!("{value:?}"), json(&value)];
+        assert_hidden(&outs, &[raw, "2024"]);
+    }
+    assert_eq!(Diagnosis::Hiv.redact(Protection::Mask).to_string(), "XXX");
+    assert_eq!(
+        Tier::Gold { since: 2024 }
+            .redact(Protection::Mask)
+            .to_string(),
+        "{since:XXXX}"
+    );
+    // Passthrough still names the variant.
+    assert_eq!(Diagnosis::Hiv.to_string(), "Hiv");
+}
+
+#[derive(Redact)]
+struct GenericNode<T> {
+    val: T,
+    next: Option<Box<GenericNode<T>>>,
+}
+
+#[derive(Redact)]
+enum GenericTree<T> {
+    Leaf(T),
+    Branch(Vec<GenericTree<T>>),
+    Boxed(Box<Self>),
+}
+
+#[test]
+fn recursive_generic_types_compile_and_redact() {
+    let list = GenericNode {
+        val: Secret::new("raw-1"),
+        next: Some(Box::new(GenericNode {
+            val: Secret::new("raw-2"),
+            next: None,
+        })),
+    };
+    let out = list.to_string();
+    assert!(!out.contains("raw-"), "{out}");
+    assert_eq!(out, "{val:REDACTED next:{val:REDACTED next:None}}");
+
+    let plain = GenericNode {
+        val: 1_u32,
+        next: Some(Box::new(GenericNode { val: 2, next: None })),
+    };
+    assert_eq!(plain.to_string(), "{val:1 next:{val:2 next:None}}");
+
+    let tree = GenericTree::Branch(vec![
+        GenericTree::Leaf(Masked::new("ab".to_owned())),
+        GenericTree::Boxed(Box::new(GenericTree::Leaf(Masked::new("c".to_owned())))),
+    ]);
+    assert_eq!(tree.to_string(), "Branch([Leaf(XX) Boxed(Leaf(X))])");
+}
+
+#[test]
+fn secret_and_phantom_of_non_redact_parameters_still_compile() {
+    struct NoTraits;
+    #[derive(Redact)]
+    struct Holder<T> {
+        secret: Secret<T>,
+        marker: std::marker::PhantomData<T>,
+        next: Option<Box<Holder<T>>>,
+    }
+    let h = Holder {
+        secret: Secret::new(NoTraits),
+        marker: std::marker::PhantomData,
+        next: None,
+    };
+    assert_eq!(h.to_string(), "{secret:REDACTED marker:None next:None}");
+}
+
+#[test]
+fn recursive_generic_types_bound_non_self_type_parameters_alongside_self() {
+    #[derive(Redact)]
+    struct PairList<T> {
+        head: Option<(T, Box<PairList<T>>)>,
+    }
+
+    let list = PairList {
+        head: Some((
+            Secret::new("hidden"),
+            Box::new(PairList {
+                head: Some((
+                    Secret::new("also-hidden"),
+                    Box::new(PairList { head: None }),
+                )),
+            }),
+        )),
+    };
+    let out = list.to_string();
+    assert!(!out.contains("hidden"), "{out}");
+    assert_eq!(out, "{head:[REDACTED {head:[REDACTED {head:None}]}]}");
+}

@@ -345,3 +345,114 @@ async fn reqwest_normalizes_unknown_http_methods() {
     rec.assert_conforms();
     server_handle.abort();
 }
+
+#[tokio::test]
+async fn reqwest_records_a_canceled_request_when_the_future_is_dropped() {
+    use std::future::Future as _;
+    use std::task::{Context, Waker};
+
+    // A listener that never accepts: the connection sits in the backlog and
+    // no response ever arrives, so the request stays pending.
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+
+    let rec = Recorder::start("reqwest-canceled");
+    let client = ClientBuilder::new(reqwest::Client::new())
+        .with(O11yMiddleware::new(rec.sdk()))
+        .build();
+    {
+        let fut = client
+            .get(format!("http://127.0.0.1:{port}/hang#access_token=frag"))
+            .send();
+        let mut fut = std::pin::pin!(fut);
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(fut.as_mut().poll(&mut cx).is_pending());
+    }
+
+    let spans = rec.spans();
+    assert_eq!(spans.len(), 1);
+    assert_eq!(spans[0].span_kind, SpanKind::Client);
+    assert_eq!(
+        span_attr(&spans[0], "error.type").as_deref(),
+        Some("canceled")
+    );
+    assert_eq!(spans[0].status, Status::error("canceled"));
+    assert_eq!(span_attr(&spans[0], "http.response.status_code"), None);
+    let url_full = span_attr(&spans[0], "url.full").expect("url.full");
+    assert!(!url_full.contains("access_token"), "{url_full}");
+    assert!(!url_full.contains('#'), "{url_full}");
+
+    let points = duration_points(&rec);
+    assert_eq!(points.len(), 1);
+    assert_eq!(points[0].0, 1);
+    assert_eq!(points[0].1.as_deref(), Some("canceled"));
+    rec.assert_conforms();
+    drop(listener);
+}
+
+/// Returns `(count, error.type)` for each latest data point of
+/// `http.client.request.duration`.
+fn duration_points(rec: &Recorder) -> Vec<(u64, Option<String>)> {
+    use libo11y::opentelemetry_proto::tonic::common::v1::any_value::Value as ProtoValue;
+    use libo11y::opentelemetry_proto::tonic::metrics::v1::metric::Data;
+
+    let mut latest = Vec::new();
+    for batch in rec.metrics() {
+        for rm in batch.resource_metrics {
+            for sm in rm.scope_metrics {
+                for m in sm.metrics {
+                    if m.name != "http.client.request.duration" {
+                        continue;
+                    }
+                    let Some(Data::Histogram(hist)) = m.data else {
+                        continue;
+                    };
+                    latest = hist
+                        .data_points
+                        .into_iter()
+                        .map(|dp| {
+                            let error_type = dp.attributes.into_iter().find_map(|kv| {
+                                match (kv.key.as_str(), kv.value.and_then(|v| v.value)) {
+                                    ("error.type", Some(ProtoValue::StringValue(s))) => Some(s),
+                                    _ => None,
+                                }
+                            });
+                            (dp.count, error_type)
+                        })
+                        .collect();
+                }
+            }
+        }
+    }
+    latest
+}
+
+#[tokio::test]
+async fn reqwest_strips_the_fragment_from_url_full() {
+    let (addr, _seen, server_handle) = start_loopback_server().await;
+    let rec = Recorder::start("reqwest-fragment");
+    let client = ClientBuilder::new(reqwest::Client::new())
+        .with(O11yMiddleware::new(rec.sdk()))
+        .build();
+    client
+        .get(format!(
+            "http://127.0.0.1:{}/cb?X-Amz-Signature=sig#access_token=tok",
+            addr.port()
+        ))
+        .send()
+        .await
+        .expect("request succeeded");
+    let spans = rec.spans();
+    assert_eq!(
+        span_attr(&spans[0], "url.full").as_deref(),
+        Some(
+            format!(
+                "http://127.0.0.1:{}/cb?X-Amz-Signature=REDACTED",
+                addr.port()
+            )
+            .as_str()
+        )
+    );
+    rec.assert_conforms();
+    server_handle.abort();
+}

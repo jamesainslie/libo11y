@@ -1481,9 +1481,11 @@ name = "libo11y-tonic"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "h2",
  "http",
  "http-body",
  "http-body-util",
+ "hyper",
  "libo11y",
  "libo11y-test",
  "opentelemetry",

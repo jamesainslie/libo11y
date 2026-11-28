@@ -10,7 +10,17 @@ clients, built on `libo11y` and following OpenTelemetry RPC semantic conventions
   through the SDK's exemplar-aware meter with trace-linked exemplars.
 - Propagates W3C Trace Context and Baggage over HTTP/2 headers via `sdk.propagator()`.
 - Reads `grpc-status` from both trailers-only response headers and HTTP/2
-  response trailers.
+  response trailers. An HTTP 200 response that ends without `grpc-status` was
+  truncated and records `UNKNOWN` ("missing grpc-status trailer"), as tonic
+  and grpc-go report it.
+- Classifies transport and body errors as tonic's client does: a carried
+  `tonic::Status` keeps its code, a refused or reset connection records
+  `UNAVAILABLE`, an expired tonic timeout or a canceled stream `CANCELLED`, and
+  an HTTP/2 reset maps by its reason. Boxed errors are looked through, and an
+  error with nothing recognizable records `UNKNOWN`.
+- A server call that ends `UNIMPLEMENTED` records `rpc.method` `_OTHER` on the
+  span and the duration metric and renames the span `_OTHER`, so unrouted
+  paths cannot create unbounded series.
 - Supports `with_ignore_health_checks()`, `with_public_endpoint()`, and custom
   `with_filter(...)` predicates without touching process globals.
 

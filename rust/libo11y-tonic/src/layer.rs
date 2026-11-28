@@ -169,7 +169,7 @@ impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for ServerService<S>
 where
     S: Service<Request<ReqBody>, Response = Response<ResBody>>,
     ResBody: Body,
-    S::Error: fmt::Display,
+    S::Error: fmt::Display + 'static,
 {
     type Response = Response<InstrumentedBody<ResBody>>;
     type Error = S::Error;
@@ -203,7 +203,9 @@ where
             base_attrs.push(KeyValue::new(RPC_METHOD, method.to_owned()));
         }
 
-        let mut span_attrs = base_attrs.clone();
+        // `rpc.method` joins the server span when the call finishes, as
+        // `_OTHER` if the method turns out not to exist.
+        let mut span_attrs = vec![KeyValue::new(RPC_SYSTEM_NAME, RPC_SYSTEM_GRPC)];
         if let Some(addr) = server_addr {
             span_attrs.push(KeyValue::new(SERVER_ADDRESS, addr));
         }
@@ -395,7 +397,7 @@ impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for ClientService<S>
 where
     S: Service<Request<ReqBody>, Response = Response<ResBody>>,
     ResBody: Body,
-    S::Error: fmt::Display,
+    S::Error: fmt::Display + 'static,
 {
     type Response = Response<InstrumentedBody<ResBody>>;
     type Error = S::Error;
