@@ -74,7 +74,7 @@ jobs:
           go-version: "1.26.x"
           check-latest: true
           cache-dependency-path: go/go.sum
-      - run: make spec-check spec-drift schema-published-test release-notes-test release-tag-test
+      - run: make spec-check spec-drift schema-published-test release-notes-test release-tag-test ruby-gem-plan-test
 
   # The ops pack: generator drift, the metric catalog from the gateway built
   # from this checkout, query lint, promtool checks and unit tests of the
@@ -558,4 +558,8 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "10.0.x"
+      # The Ruby half builds the gem and installs it into a throwaway gem home.
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4"
       - run: make release-check ZIG_BUILD_J=4

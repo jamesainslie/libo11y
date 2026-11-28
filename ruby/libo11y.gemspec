@@ -1,8 +1,10 @@
 # frozen_string_literal: true
 
+require_relative "lib/libo11y/version"
+
 Gem::Specification.new do |spec|
   spec.name = "libo11y"
-  spec.version = "0.1.0"
+  spec.version = Libo11y::VERSION
   spec.authors = ["James Ainslie"]
   spec.summary = "Opinionated, elegant observability for Ruby built purely on OpenTelemetry."
   spec.description = "One-call OpenTelemetry setup with unified configuration, W3C context propagation, " \
@@ -15,10 +17,10 @@ Gem::Specification.new do |spec|
   spec.metadata["homepage_uri"] = spec.homepage
   spec.metadata["source_code_uri"] = "#{spec.homepage}/tree/main/ruby"
   spec.metadata["changelog_uri"] = "#{spec.homepage}/blob/main/ruby/CHANGELOG.md"
+  spec.metadata["bug_tracker_uri"] = "#{spec.homepage}/issues"
   spec.metadata["rubygems_mfa_required"] = "true"
 
-  spec.files = Dir.glob("{lib,exe}/**/*", File::FNM_DOTMATCH).select { |f| File.file?(f) } +
-               %w[README.md CHANGELOG.md]
+  spec.files = Dir.glob("lib/**/*.rb", base: __dir__) + %w[exe/libo11y LICENSE README.md CHANGELOG.md]
   spec.bindir = "exe"
   spec.executables = ["libo11y"]
   spec.require_paths = ["lib"]

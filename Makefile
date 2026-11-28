@@ -8,7 +8,7 @@ GO_TEST_P ?= 4
 # gate runs on each module separately.
 GO_MODULES := go go/o11ygin go/o11yconnect go/o11ysql go/o11yrum ops
 
-.PHONY: spec-check spec-generate spec-drift ops-generate ops-check ops-integration-up ops-integration-down ops-integration ops-promtool-test ops-release-check ops-release-check-test test lint vet tidy-check vuln release-check zig-release-check python-release-check rust-release-check rust-release-check-test c-release-check dotnet-release-check o11yrum-release-check print-o11yrum-release-version o11yrum-image schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-rn-bundle-test ts-npm-plan-test ts-install ts-check ts-size ts-browser-test ts-rn-check rum-e2e rust-check rust-msrv zig-check zig-integrations-check zig-hygiene-test python-check python-hygiene-test c-check ruby-check dotnet-check java-check ci
+.PHONY: spec-check spec-generate spec-drift ops-generate ops-check ops-integration-up ops-integration-down ops-integration ops-promtool-test ops-release-check ops-release-check-test test lint vet tidy-check vuln release-check zig-release-check python-release-check rust-release-check rust-release-check-test c-release-check dotnet-release-check o11yrum-release-check print-o11yrum-release-version o11yrum-image schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-rn-bundle-test ts-npm-plan-test ts-install ts-check ts-size ts-browser-test ts-rn-check rum-e2e rust-check rust-msrv zig-check zig-integrations-check zig-hygiene-test python-check python-hygiene-test c-check ruby-check ruby-release-check ruby-gem-plan-test dotnet-check java-check ci
 
 # Validate the spec registry against the libo11y policy suite (naming,
 # ownership, sensitivity, cardinality, events, units).
@@ -188,6 +188,10 @@ C_RELEASE_VERSION ?= v0.1.0
 # dotnet-release-check.sh validates. Moves only in a release commit.
 DOTNET_RELEASE_VERSION ?= v0.1.0
 
+# The version ruby/lib/libo11y/version.rb carries, which
+# ruby-release-check.sh validates. Moves only in a release commit.
+RUBY_RELEASE_VERSION ?= v0.1.0
+
 # The o11yrum gateway module's own version line (go/o11yrum/vX.Y.Z), which
 # o11yrum-release-check.sh validates and the release workflow requires to
 # match the tag. Moves only in a release commit, together with the
@@ -234,6 +238,17 @@ c-release-check:
 dotnet-release-check:
 	scripts/dotnet-release-check.sh $(DOTNET_RELEASE_VERSION)
 
+# Build the gem at RUBY_RELEASE_VERSION, verify what it ships, install it
+# into a throwaway gem home, and run a consumer smoke test against the
+# recorder, an in-process OTLP/HTTP receiver, and the installed CLI.
+ruby-release-check:
+	scripts/ruby-release-check.sh $(RUBY_RELEASE_VERSION)
+
+# Test ruby-gem-plan.sh, which decides in the release workflow whether a
+# gem version publishes to RubyGems.org, against a fake curl.
+ruby-gem-plan-test:
+	scripts/ruby-gem-plan_test.sh
+
 # Validate the release sequence (go/RELEASE_VERSION and
 # go/<sub>/RELEASE_VERSION for every Go submodule, o11ygin, o11yconnect
 # and o11ysql, on HEAD) against a throwaway local remote. Then build and
@@ -243,8 +258,9 @@ dotnet-release-check:
 # ZIG_RELEASE_VERSION, validate the Python wheel and sdist at
 # PYTHON_RELEASE_VERSION, validate the Rust workspace at
 # RUST_RELEASE_VERSION, validate the C11 install prefix at
-# C_RELEASE_VERSION, and validate the .NET packages at
-# DOTNET_RELEASE_VERSION. The o11yrum module is checked at
+# C_RELEASE_VERSION, validate the .NET packages at
+# DOTNET_RELEASE_VERSION, and validate the Ruby gem at
+# RUBY_RELEASE_VERSION. The o11yrum module is checked at
 # O11YRUM_RELEASE_VERSION after the lockstep Go modules, and the ops pack
 # and its release archive at OPS_RELEASE_VERSION.
 # Needs a clean working tree.
@@ -257,6 +273,7 @@ release-check:
 	scripts/rust-release-check.sh $(RUST_RELEASE_VERSION)
 	scripts/c-release-check.sh $(C_RELEASE_VERSION)
 	scripts/dotnet-release-check.sh $(DOTNET_RELEASE_VERSION)
+	scripts/ruby-release-check.sh $(RUBY_RELEASE_VERSION)
 	scripts/ops-release-check.sh $(OPS_RELEASE_VERSION)
 
 # Validate the o11yrum release at O11YRUM_RELEASE_VERSION against a
@@ -396,7 +413,7 @@ c-check:
 # Ruby gem (ruby/): install locked/bundle deps, RSpec (including shared
 # conformance, integrations, and OTLP wire suites), RuboCop, and hygiene check.
 ruby-check:
-	cd ruby && bundle check || bundle install
+	cd ruby && (bundle check || bundle install)
 	cd ruby && bundle exec rspec
 	cd ruby && bundle exec rubocop --format simple
 	scripts/ruby-hygiene.sh ruby/lib
@@ -420,4 +437,4 @@ java-check:
 
 # vuln runs last: it depends on the advisory database and the toolchain's
 # patch level, so local runs exercise every other gate first.
-ci: lint vet test tidy-check spec-check spec-drift ops-check ops-integration ts-check ts-size ts-browser-test ts-rn-check rum-e2e o11yrum-image rust-check rust-msrv zig-check python-check c-check ruby-check dotnet-check java-check schema-published-test release-notes-test release-tag-test ops-promtool-test ops-release-check-test rust-release-check-test ts-browser-bundle-test ts-rn-bundle-test ts-npm-plan-test release-check vuln
+ci: lint vet test tidy-check spec-check spec-drift ops-check ops-integration ts-check ts-size ts-browser-test ts-rn-check rum-e2e o11yrum-image rust-check rust-msrv zig-check python-check c-check ruby-check dotnet-check java-check schema-published-test release-notes-test release-tag-test ops-promtool-test ops-release-check-test rust-release-check-test ts-browser-bundle-test ts-rn-bundle-test ts-npm-plan-test ruby-gem-plan-test release-check vuln
