@@ -36,7 +36,7 @@ docker buildx build --load \
 	-f "$root/go/o11yrum/Dockerfile" \
 	--build-arg "VERSION=$version" \
 	-t "$image" \
-	"$root/go"
+	"$root/go/o11yrum"
 
 got="$(docker run --rm "$image" -version)"
 [[ "$got" == "$version" ]] || fail "-version printed \"$got\", want $version"

@@ -2,13 +2,14 @@
 #
 # The o11yrum-gateway image: one static binary on distroless, running as an
 # unprivileged numeric user, with nothing it writes to at runtime. Build it
-# from the repository root with go/ as the context, so the module's
-# `replace ../` directive resolves to the libo11y core in the same commit:
+# with go/o11yrum as the context. The module has no replace directive, so
+# the build resolves the libo11y core at the version go.mod requires, as
+# `go install` does:
 #
-#   docker buildx build -f go/o11yrum/Dockerfile --build-arg VERSION=v0.1.0 go
+#   docker buildx build -f go/o11yrum/Dockerfile --build-arg VERSION=v0.1.0 go/o11yrum
 #
-# Dockerfile.dockerignore, beside this file, admits only the sources the
-# command builds from.
+# Dockerfile.dockerignore, beside this file, admits only the module's
+# go.mod, go.sum and non-test Go sources.
 
 FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS build
 ARG TARGETOS
@@ -17,13 +18,12 @@ ARG VERSION=dev
 WORKDIR /src
 ENV GOWORK=off GOTOOLCHAIN=local CGO_ENABLED=0
 COPY go.mod go.sum ./
-COPY o11yrum/go.mod o11yrum/go.sum ./o11yrum/
 RUN --mount=type=cache,target=/go/pkg/mod \
-	cd o11yrum && go mod download
+	go mod download
 COPY . .
 RUN --mount=type=cache,target=/go/pkg/mod \
 	--mount=type=cache,target=/root/.cache/go-build \
-	cd o11yrum && GOOS=$TARGETOS GOARCH=$TARGETARCH \
+	GOOS=$TARGETOS GOARCH=$TARGETARCH \
 	go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" \
 	-o /out/o11yrum-gateway ./cmd/o11yrum-gateway
 

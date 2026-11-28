@@ -84,8 +84,3 @@ require (
 	google.golang.org/grpc v1.85.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 )
-
-// The parent module resolves from this checkout when the go.work
-// workspace is off. Downstream consumers ignore replace directives and
-// resolve the version required above.
-replace github.com/jamesainslie/libo11y/go => ../

@@ -1,18 +1,8 @@
-# The o11yrum-gateway image builds from go/ (see Dockerfile). Only the
-# sources the command compiles are admitted: the core module's root
-# package and the core packages the gateway imports, and the o11yrum
-# module without its tests. When the gateway starts importing another core
-# package, add it here; `make o11yrum-image` fails until then.
+# The o11yrum-gateway image builds from go/o11yrum (see Dockerfile). Only
+# the module's go.mod, go.sum and non-test Go sources are admitted.
 *
 !go.mod
 !go.sum
-!*.go
-!spec/*.go
-!internal/appregistry/*.go
-!internal/fanout/*.go
-!internal/specrules/*.go
-!internal/spectables/*.go
-!o11yrum/go.mod
-!o11yrum/go.sum
-!o11yrum/**/*.go
+!**/*.go
 **/*_test.go
+**/testdata

@@ -217,8 +217,12 @@ container (`O11Y_PG_TEST_DSN`).
 - `go/o11yrum`, the RUM gateway module with its `o11yrum-gateway` command
   and container image, versions independently of the four lockstep Go
   modules. Its `go.mod` requires the parent at any released version and
-  keeps `replace github.com/jamesainslie/libo11y/go => ../` for the
-  workspace. Its tag goes on any commit, on its own.
+  has no `replace` directive, because `go install` of the command at a
+  tag refuses one. The `go.work` workspace resolves the parent from the
+  checkout during development, and builds with `GOWORK=off`, such as
+  `make tidy-check` and the image, use the required release. o11yrum
+  therefore builds only against parent APIs that are already released.
+  Its tag goes on any commit, on its own.
   `O11YRUM_RELEASE_VERSION` in the `Makefile` and the default in
   `scripts/o11yrum-release-check.sh` name the version being released and
   move only in a release commit.
@@ -458,8 +462,8 @@ install that version locally. Keep the two in step when adding a gate.
 | `make ts-size` | the browser bundle size budgets in `ts/size-budget.json`. CI runs the same check, `bun scripts/size.ts --check --summary`, in the `ts` job and writes the table to the job summary |
 | `make rum-e2e` | builds `o11yrum-gateway` and runs the end-to-end journey in `ts/packages/sourcemaps/src/e2e` against the TS OTLP sink from `@libo11y/test`, under Node and Bun: derived metrics from a view summary, a source map upload that symbolicates an error, the 404 for an app without remote config, and the edge refusals. `make ts-check` skips the journey, because it runs only when `O11YRUM_GATEWAY_BIN` is set. CI runs it in the `rum-e2e` job |
 | `make ts-browser-bundle-test` | `scripts/ts-browser-bundle-check.sh` against fixture packages (needs bun). CI runs it in the `ts` job after `make ts-check` |
-| `make o11yrum-image` | `scripts/o11yrum-image-check.sh`: builds the `o11yrum-gateway` image for the local platform only, and checks the version it reports, the 40 MiB size budget, the numeric non-root user (65532), `-check-config` on the example configuration, and `/healthz` and `/readyz` from a read-only root filesystem with every capability dropped, then a clean exit on SIGTERM. It removes its container and image. CI runs it in the `o11yrum-image` job |
-| `make o11yrum-release-check` | `scripts/o11yrum-release-check.sh` at `O11YRUM_RELEASE_VERSION` against a throwaway local remote: the parent version o11yrum requires has a `go/` tag, the module builds, vets and tests without its replace directive, `go install` of the command at the tag reports the version, and an external consumer builds (needs a clean tree) |
+| `make o11yrum-image` | `scripts/o11yrum-image-check.sh`: builds the `o11yrum-gateway` image from `go/o11yrum` for the local platform only, and checks the version it reports, the 40 MiB size budget, the numeric non-root user (65532), `-check-config` on the example configuration, and `/healthz` and `/readyz` from a read-only root filesystem with every capability dropped, then a clean exit on SIGTERM. It removes its container and image. CI runs it in the `o11yrum-image` job |
+| `make o11yrum-release-check` | `scripts/o11yrum-release-check.sh` at `O11YRUM_RELEASE_VERSION` against a throwaway local remote: `go.mod` has no replace directive and the parent version it requires has a `go/` tag, the module is tidy and builds, vets and tests against that release, `go install` of the command at the tag reports the version, and an external consumer builds (needs a clean tree) |
 | `make release-check` | the Go release sequence, the o11yrum release check, packing and a consumer smoke test of the TypeScript packages (including the browser bundle check), the Zig consumer tarball smoke test, and the Python wheel/sdist build and consumer smoke test (needs a clean tree) |
 | `make release-notes-test`, `make release-tag-test` | the release workflow's scripts: changelog sections become release notes, and each release tag routes to its kind, module, version, version line and changelog |
 | `make schema-published-test` | the schema URL check against a loopback HTTP server |

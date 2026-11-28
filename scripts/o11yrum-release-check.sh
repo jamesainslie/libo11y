@@ -2,11 +2,13 @@
 # o11yrum-release-check.sh: validate an o11yrum release (tag
 # go/o11yrum/VERSION on HEAD) against a throwaway local remote. o11yrum
 # versions on its own line, so its go.mod may require any released parent
-# version. The check requires that version to be a real go/ tag, then
-# builds, vets and tests the module without its replace directive,
-# installs the o11yrum-gateway command at the tag and checks it reports
+# version. The check requires that version to be a real go/ tag and the
+# module to have no replace directive (`go install` refuses one), then
+# builds, vets and tests the module against that parent release, installs the o11yrum-gateway command at the tag and checks it reports
 # the version, and builds an external consumer. It never touches the real
 # repository's refs, its remote, or the shared module cache.
+#
+# Needs git, go and jq.
 #
 # Usage: o11yrum-release-check.sh [VERSION]   (default v0.1.0; `make
 # o11yrum-release-check` and `make release-check` pass
@@ -60,22 +62,24 @@ export GOFLAGS="-mod=mod -modcacherw" # writable cache, so cleanup needs no chmo
 export GOWORK=off
 export GOTOOLCHAIN=local
 
-# 1. The module as published: no replace, the parent resolved from the
-# go/ tag its go.mod requires.
+# 1. The module as published: the parent resolved from the go/ tag its
+# go.mod requires. The go.work workspace resolves it from the checkout
+# during development; GOWORK=off here, so nothing does.
 clone="$work/clone"
 git -c advice.detachedHead=false clone --quiet --branch "go/o11yrum/$version" "$remote" "$clone"
 (
 	cd "$clone/go/o11yrum"
-	# With the replace still in place, this reads the require line
-	# without resolving anything.
-	required="$(go list -m -f '{{.Version}}' "$module/go")"
+	if go mod edit -json | jq -e '(.Replace // []) | length > 0' >/dev/null; then
+		echo "o11yrum-release-check: go/o11yrum/go.mod has a replace directive; go install of the command at a tag refuses one" >&2
+		exit 1
+	fi
+	required="$(go mod edit -json | jq -r '.Require[] | select(.Path == "github.com/jamesainslie/libo11y/go") | .Version')"
 	if [[ -z "$required" ]] || ! git -C "$repo_root" rev-parse --verify --quiet "refs/tags/go/$required^{commit}" >/dev/null; then
 		echo "o11yrum-release-check: go/o11yrum/go.mod requires the parent at ${required:-nothing}, which has no go/ release tag" >&2
 		exit 1
 	fi
 	echo "$required" >"$work/required"
-	go mod edit -dropreplace="$module/go"
-	go mod tidy
+	go mod tidy -diff
 	go build ./...
 	go vet ./...
 	go test -count=1 -p 4 ./...
