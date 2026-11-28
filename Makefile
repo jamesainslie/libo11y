@@ -468,8 +468,16 @@ c-check:
 		'    o11y_test_destroy(rec);' \
 		'    return 0;' \
 		'}' >"$$tmp/test_link.c"; \
+	printf '%s\n' \
+		'#include "o11y/test.h"' \
+		'int main(void) {' \
+		'    o11y_test_recorder_t *rec = NULL;' \
+		'    if (o11y_test_start(NULL, &rec, NULL) != O11Y_OK) return 2;' \
+		'    o11y_test_destroy(rec);' \
+		'    return 0;' \
+		'}' >"$$tmp/recorder_only.c"; \
 	cc -std=c11 -Wall -Wextra -Werror -Wpedantic -Ic/zig-out/include "$$tmp/test_link.c" c/zig-out/lib/libo11ytest.a c/zig-out/lib/libo11y.a -lpthread -lm -o "$$tmp/tl-static1" && "$$tmp/tl-static1"; \
-	cc -std=c11 -Wall -Wextra -Werror -Wpedantic -Ic/zig-out/include "$$tmp/test_link.c" c/zig-out/lib/libo11y.a c/zig-out/lib/libo11ytest.a -lpthread -lm -o "$$tmp/tl-static2" && "$$tmp/tl-static2"; \
+	cc -std=c11 -Wall -Wextra -Werror -Wpedantic -Ic/zig-out/include "$$tmp/recorder_only.c" c/zig-out/lib/libo11ytest.a c/zig-out/lib/libo11y.a -lpthread -lm -o "$$tmp/tl-recorder-only" && "$$tmp/tl-recorder-only"; \
 	cc -std=c11 -Wall -Wextra -Werror -Wpedantic -Ic/zig-out/include "$$tmp/test_link.c" c/zig-out/lib/libo11ytest.a -Lc/zig-out/lib -Wl,-rpath,"$$(pwd)/c/zig-out/lib" -lo11y -lpthread -lm -o "$$tmp/tl-shared" && "$$tmp/tl-shared"; \
 	plain="$$(sed -nE 's/^[[:space:]]*\.version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' c/build.zig.zon | head -n 1)"; \
 	base_ver="$${plain%%-*}"; \

@@ -90,6 +90,16 @@ pub fn releaseNetSignals() void {
     }
 }
 
+/// Reports whether `sig` is managed internally by `libo11y`'s networked
+/// `std.Io.Threaded` cancellation or broken-pipe guard, so
+/// `o11y_shutdown_on_signals` must reject it rather than overwriting its
+/// handler or resetting it to `SIG_DFL`.
+pub fn isRuntimeReservedSignal(sig: std.posix.SIG) bool {
+    if (have_sig_io and sig == .IO) return true;
+    if (have_sig_pipe and sig == .PIPE) return true;
+    return false;
+}
+
 fn noOpSigHandler(_: std.posix.SIG) callconv(.c) void {}
 
 fn isDefaultHandler(act: std.posix.Sigaction) bool {
@@ -118,8 +128,9 @@ pub fn syncIo() Io {
 }
 
 /// Acquires a reference to the signal-free hermetic `std.Io` runtime used by
-/// `O11Y_ENV_HERMETIC` SDKs and the hermetic test recorder. Never touches POSIX
-/// signal handlers.
+/// `O11Y_ENV_HERMETIC` SDKs and the hermetic test recorder. Test OTLP
+/// receivers also share this I/O runtime and acquire `libo11y`'s shared POSIX
+/// signal refcount separately through `o11y__runtime_acquire_net_signals`.
 pub fn acquireHermeticIo() Io {
     hermetic_io_mutex.lock();
     defer hermetic_io_mutex.unlock();

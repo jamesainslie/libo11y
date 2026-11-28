@@ -219,16 +219,15 @@ There is no thread-local or global context.
 `libo11ytest.a` is a companion archive that exports only `o11y_test_*`, so it
 links cleanly with either `libo11y.a` or `libo11y.so`/`.dylib` with no
 duplicate symbols. When linking static archives directly, list `libo11ytest.a`
-before `libo11y.a` (`-lo11ytest -lo11y`). `o11y_test_start` verifies that the
-linked `libo11y` library matches the same version and build mode (`libo11y`
-exports three `o11y__*` helper symbols reserved for `libo11ytest.a` to share
-signal refcounts and check ABI layout). Include `"o11y/test.h"`, or use
-`pkg-config --cflags --libs libo11ytest` or CMake's `libo11y::o11ytest` (or
-`libo11y::o11ytest_static` for static core linking).
+before `libo11y.a` (`-lo11ytest -lo11y`). `libo11y` exports internal `o11y__*` helper symbols reserved for `libo11ytest.a`
+to share signal refcounts, check ABI layout, and release observable callbacks on
+recorder teardown). Include `"o11y/test.h"`, or use `pkg-config --cflags --libs
+libo11ytest` or CMake's `libo11y::o11ytest` (or `libo11y::o11ytest_static` for
+static core linking).
 
 - `o11y_test_start` creates a hermetic recorder. It reads no environment
-  variable and touches no global, so recorders run in parallel.
-  `o11y_test_sdk` returns its SDK, which the recorder owns.
+  variable and touches no POSIX signal handlers or network I/O, so recorders
+  run in parallel. `o11y_test_sdk` returns its SDK, which the recorder owns.
 - The recorder exposes the captured spans, log records, console output,
   metrics, exemplars and `o11y.schema.violations` counts.
 - `o11y_test_check_conforms`, `o11y_test_check_correlated` and
