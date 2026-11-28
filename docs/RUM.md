@@ -251,6 +251,27 @@ newest one. Only the tab whose new session won sends
 `o11y.rum.session.end`. A session that ends without being kept removes
 only its own records from the shared retention buffer.
 
+### Remote configuration
+
+A client fetches its remote configuration with
+`GET /_o11y/v1/config?service=<service.name>`, plus `client_token`, after
+consent is granted and without credentials. The gateway answers
+`{"version": "<16 hex>", "config": {...}}` with the version as the ETag,
+`304` to a matching `If-None-Match`, and `404` when the app has none.
+The gateway does not read the document. Clients own the keys inside
+`config` and ignore keys they do not know:
+
+| Key | Type | Meaning |
+|---|---|---|
+| `enabled` | boolean | `false` is a kill switch: the client stops recording at once, and `true` starts it again |
+| `sessionSampleRate` | number, 0 to 1 | the head-sampling rate of new sessions, kept within the range the app's code allows (by default no change) |
+| `collectors` | object of booleans | `false` switches off a collector the app installed; `true` never adds one |
+
+A document applies to the next session, never to the running one, except
+for `enabled: false`. Each session records the version it started under
+as `o11y.rum.config.version` on `o11y.rum.session.start` and on its view
+summaries. Remote configuration can never lower masking.
+
 ### Metrics
 
 The platform-neutral metrics are in
