@@ -12,6 +12,7 @@ const Context = @import("context.zig").Context;
 const detached_mod = @import("detached.zig");
 const error_handler_mod = @import("error_handler.zig");
 const goquote = @import("goquote.zig");
+const ids = @import("pipeline/ids.zig");
 const log_pipeline_mod = @import("log_pipeline.zig");
 const policy_runtime = @import("policy_runtime.zig");
 const process_metrics_mod = @import("process_metrics.zig");
@@ -76,6 +77,14 @@ pub const AppRegistrySource = union(enum) {
     bytes: struct {
         path: []const u8,
         content: []const u8,
+    },
+    /// A registry the caller already parsed, for example with
+    /// `o11y.appregistry.parse`, or built in code. Setup validates it
+    /// against the same rules as a file. `path` names it in diagnostics.
+    /// The value is only read during setup.
+    registry: struct {
+        path: []const u8,
+        value: appregistry.Registry,
     },
 };
 
@@ -161,6 +170,13 @@ pub const Options = struct {
     sdk_language: []const u8 = "zig",
     sdk_version: ?[]const u8 = null,
     emit_process_runtime: bool = true,
+    /// The instrumentation scope of the telemetry libo11y emits itself: the
+    /// `o11y.schema.violations` counter, the process metrics, the OTLP log
+    /// leg and detached-work spans. Borrowed: it must outlive the SDK.
+    scope_name: []const u8 = default_scope_name,
+
+    /// The scope name of the Zig package.
+    pub const default_scope_name = policy_runtime.scope_name;
 };
 
 var setup_active: std.atomic.Value(bool) = .init(false);
@@ -250,6 +266,9 @@ pub const Telemetry = struct {
     log_pipeline: log_pipeline_mod.LogPipeline,
     summary: summary_mod.Summary,
 
+    /// The instrumentation scope of libo11y's own telemetry (`Options.scope_name`).
+    scope_name: []const u8 = policy_runtime.scope_name,
+
     shutdown_started: std.atomic.Value(bool) = .init(false),
     shutdown_done: Io.Event = .unset,
     shutdown_report: ShutdownReport = .{},
@@ -266,17 +285,29 @@ pub const Telemetry = struct {
     }
 
     /// Shuts down logs, metrics, and traces concurrently under one shared
-    /// timeout (default 5 seconds). Idempotent: concurrent and later callers
-    /// wait and receive the same `ShutdownReport`.
+    /// timeout (default 5 seconds). Idempotent: the first call performs the
+    /// shutdown, and concurrent and later callers receive its
+    /// `ShutdownReport`. A caller whose own timeout passes while the first
+    /// call is still running stops waiting and gets `error.Timeout` for every
+    /// signal.
     pub fn shutdown(self: *Telemetry, timeout: ?Io.Duration) ShutdownReport {
         const dl = deadline_mod.after(self.io, timeout orelse signals_mod.default_shutdown_timeout);
         return self.shutdownBy(dl);
     }
 
     /// Shuts down logs, metrics, and traces concurrently under `deadline`.
+    /// See `shutdown` for what a concurrent or later caller receives.
     pub fn shutdownBy(self: *Telemetry, deadline: Deadline) ShutdownReport {
         if (self.shutdown_started.swap(true, .acq_rel)) {
-            self.shutdown_done.waitUncancelable(self.io);
+            // A finished shutdown wins over an expired deadline: the event
+            // is checked before the clock.
+            self.shutdown_done.waitTimeout(self.io, deadline_mod.timeout(deadline)) catch |err| {
+                const waiting: processor.ExportError = switch (err) {
+                    error.Timeout => error.Timeout,
+                    error.Canceled => error.Canceled,
+                };
+                return .{ .logs = waiting, .metrics = waiting, .traces = waiting };
+            };
             return self.shutdown_report;
         }
         defer self.shutdown_done.set(self.io);
@@ -375,7 +406,9 @@ pub const Telemetry = struct {
         return report;
     }
 
-    /// Returns a tracer for `name` (or the no-op tracer when disabled).
+    /// Returns a tracer for `name`, or the no-op tracer when disabled. A
+    /// span the no-op tracer starts records nothing and keeps its parent's
+    /// span context, so propagation and log correlation continue.
     pub fn tracer(self: *Telemetry, name: []const u8) *const tracer_mod.Tracer {
         return self.tracerWithScope(.{ .name = name });
     }
@@ -409,8 +442,12 @@ pub const Telemetry = struct {
         return self.logger_provider;
     }
 
-    /// Returns the underlying `TracerProvider`.
+    /// Returns the underlying `TracerProvider`, or null while
+    /// `OTEL_SDK_DISABLED` switches the SDK off, so no caller reaches a
+    /// provider that would still record spans in memory. Use `tracer`, which
+    /// then returns the no-op tracer.
     pub fn tracerProvider(self: *Telemetry) ?*tracer_mod.TracerProvider {
+        if (self.disabled) return null;
         return self.tracer_provider;
     }
 
@@ -478,11 +515,12 @@ pub const Telemetry = struct {
             self.validateEventContract(info, deduped);
         }
 
-        const full = arena.alloc(log_record.KeyValue, deduped.len + 1) catch return;
-        full[0] = log_record.kv(spec.event_name_key, name);
-        @memcpy(full[1..], deduped);
-
-        try self.log_pipeline.emitFallible(.info, ctx.withForceEmit(), name, full);
+        // The name is reserved: the pipeline writes it after it has run the
+        // attribute replacer, so nothing can add a second name or change
+        // this one.
+        try self.log_pipeline.emitWith(.info, ctx.withForceEmit(), name, deduped, .{
+            .reserved = log_record.kv(spec.event_name_key, name),
+        });
     }
 
     fn validateEventContract(self: *const Telemetry, info: *const spec.EventInfo, attrs: []const log_record.KeyValue) void {
@@ -504,6 +542,22 @@ pub const Telemetry = struct {
             if (!found) {
                 rec.record(.logs, "event_contract");
             }
+        }
+    }
+
+    /// Reports a configuration value that was ignored. Setup still
+    /// succeeds. Without a caller's error handler the warning goes to
+    /// stderr. With one it arrives under the component `configuration`,
+    /// so a handler can tell it from an export failure. `ExportError` has
+    /// no member for it, so the error is `error.ExportFailed`.
+    fn warnConfig(self: *Telemetry, options: Options, comptime fmt: []const u8, args: anytype) void {
+        var msg_buf: [256]u8 = undefined;
+        var w: Io.Writer = .fixed(&msg_buf);
+        w.print(fmt, args) catch {};
+        if (options.error_handler == null) {
+            self.default_error_handler.reportWarning(w.buffered());
+        } else {
+            self.error_handler.handle("configuration", error.ExportFailed, w.buffered());
         }
     }
 
@@ -651,19 +705,13 @@ fn finishBuild(
 
     // Install error handler.
     self.error_handler = options.error_handler orelse self.default_error_handler.handler();
+    self.scope_name = options.scope_name;
 
     // Check OTEL_SDK_DISABLED.
     const disabled_info = parseSdkDisabled(options.env);
     self.disabled = disabled_info.disabled;
     if (disabled_info.invalid_value) |bad| {
-        var msg_buf: [256]u8 = undefined;
-        var w: Io.Writer = .fixed(&msg_buf);
-        w.print("o11y: OTEL_SDK_DISABLED={s} is neither true nor false; the SDK stays enabled", .{bad}) catch {};
-        if (options.error_handler == null) {
-            self.default_error_handler.reportWarning(w.buffered());
-        } else {
-            self.error_handler.handle("o11y", error.ExportFailed, w.buffered());
-        }
+        self.warnConfig(options, "o11y: OTEL_SDK_DISABLED={s} is neither true nor false; the SDK stays enabled", .{bad});
     }
 
     // Propagator + inject-only baggage egress filter.
@@ -701,7 +749,7 @@ fn finishBuild(
             readers_buf[0] = r;
             reader_count = 1;
         } else if (!options.env.isHermetic()) {
-            const exp_name = std.mem.trim(u8, options.env.getOr("OTEL_METRICS_EXPORTER", "otlp"), " \t\r\n");
+            const exp_name = summary_mod.exporterName(options.env, "OTEL_METRICS_EXPORTER");
             if (std.ascii.eqlIgnoreCase(exp_name, "none")) {
                 // Disabled via env.
             } else if (std.ascii.eqlIgnoreCase(exp_name, "otlp")) {
@@ -746,14 +794,21 @@ fn finishBuild(
                 readers_buf[0] = self.owned_periodic_reader.?.reader();
                 reader_count = 1;
             } else {
-                return failDiag(options.diagnostic, error.Exporter, "o11y: unsupported OTEL_METRICS_EXPORTER");
+                return failExporter(options.diagnostic, "OTEL_METRICS_EXPORTER", exp_name);
             }
         }
     }
 
-    const exemplar_filter: metric_exemplar.Filter = options.exemplar_filter orelse
-        (if (!options.env.isHermetic()) metric_exemplar.filterFromEnv(options.env) else null) orelse
-        .trace_based;
+    const env_exemplar_filter = if (!options.env.isHermetic()) metric_exemplar.filterFromEnv(options.env) else null;
+    if (options.exemplar_filter == null and env_exemplar_filter == null and !options.env.isHermetic()) {
+        const raw = std.mem.trim(u8, options.env.getOr("OTEL_METRICS_EXEMPLAR_FILTER", ""), " \t\r\n");
+        if (raw.len > 0) self.warnConfig(
+            options,
+            "o11y: OTEL_METRICS_EXEMPLAR_FILTER={s} is not trace_based, always_on or always_off; trace_based applies",
+            .{raw},
+        );
+    }
+    const exemplar_filter: metric_exemplar.Filter = options.exemplar_filter orelse env_exemplar_filter orelse .trace_based;
 
     self.meter_provider = try metric_meter.MeterProvider.create(gpa, io, .{
         .resource = self.owned_resource.resource,
@@ -765,7 +820,7 @@ fn finishBuild(
 
     // Attach violation recorder and flush resource violations recorded before
     // the meter provider existed.
-    self.policy.attachRecorder(self.meter_provider.?);
+    self.policy.attachRecorder(self.meter_provider.?, self.scope_name);
     if (self.policy.recorder) |*rec| {
         resource_violations.recordAll(rec, .resource);
     }
@@ -773,7 +828,7 @@ fn finishBuild(
     // Default semantic-convention process metrics.
     const runtime_metrics_enabled = options.runtime_metrics and !self.disabled;
     if (runtime_metrics_enabled) {
-        self.process_metrics = try process_metrics_mod.ProcessMetrics.create(gpa, io, self.meter_provider.?);
+        self.process_metrics = try process_metrics_mod.ProcessMetrics.create(gpa, io, self.meter_provider.?, self.scope_name);
     }
 
     // TracerProvider.
@@ -783,6 +838,18 @@ fn finishBuild(
             options.env.get("OTEL_TRACES_SAMPLER"),
             options.env.get("OTEL_TRACES_SAMPLER_ARG"),
         );
+        if (env_s.problem) |problem| switch (problem) {
+            .unsupported_sampler => self.warnConfig(
+                options,
+                "o11y: OTEL_TRACES_SAMPLER={s} names no supported sampler; the default sampler applies",
+                .{options.env.getOr("OTEL_TRACES_SAMPLER", "")},
+            ),
+            .invalid_argument, .negative_ratio, .ratio_above_one => self.warnConfig(
+                options,
+                "o11y: OTEL_TRACES_SAMPLER_ARG={s} is not a ratio between 0 and 1; a ratio of 1 applies",
+                .{options.env.getOr("OTEL_TRACES_SAMPLER_ARG", "")},
+            ),
+        };
         break :blk env_s.sampler orelse .default;
     };
 
@@ -802,7 +869,7 @@ fn finishBuild(
             span_procs_buf[span_proc_count] = self.owned_batch_span_processor.?.processor();
             span_proc_count += 1;
         } else if (options.span_processor == null and !options.env.isHermetic()) {
-            const exp_name = std.mem.trim(u8, options.env.getOr("OTEL_TRACES_EXPORTER", "otlp"), " \t\r\n");
+            const exp_name = summary_mod.exporterName(options.env, "OTEL_TRACES_EXPORTER");
             if (std.ascii.eqlIgnoreCase(exp_name, "none")) {
                 // Disabled via env.
             } else if (std.ascii.eqlIgnoreCase(exp_name, "otlp")) {
@@ -842,7 +909,7 @@ fn finishBuild(
                 span_procs_buf[span_proc_count] = self.owned_batch_span_processor.?.processor();
                 span_proc_count += 1;
             } else {
-                return failDiag(options.diagnostic, error.Exporter, "o11y: unsupported OTEL_TRACES_EXPORTER");
+                return failExporter(options.diagnostic, "OTEL_TRACES_EXPORTER", exp_name);
             }
         }
     }
@@ -855,7 +922,7 @@ fn finishBuild(
     });
 
     // LoggerProvider (OTLP log export leg).
-    const env_logs_exporter = if (options.env.isHermetic()) "" else std.mem.trim(u8, options.env.getOr("OTEL_LOGS_EXPORTER", "otlp"), " \t\r\n");
+    const env_logs_exporter = if (options.env.isHermetic()) "" else summary_mod.exporterName(options.env, "OTEL_LOGS_EXPORTER");
     const log_export_enabled = !self.disabled and options.log_export and
         (options.log_exporter != null or (!options.env.isHermetic() and !std.ascii.eqlIgnoreCase(env_logs_exporter, "none")));
 
@@ -894,7 +961,7 @@ fn finishBuild(
                 },
             };
         } else {
-            return failDiag(options.diagnostic, error.Exporter, "o11y: unsupported OTEL_LOGS_EXPORTER");
+            return failExporter(options.diagnostic, "OTEL_LOGS_EXPORTER", env_logs_exporter);
         };
 
         const blrp_cfg = if (options.env.isHermetic())
@@ -918,7 +985,7 @@ fn finishBuild(
             .processors = &.{self.owned_batch_log_processor.?.processor()},
             .policy = self.policy.attributePolicy(),
         });
-        otlp_logger_ptr = self.logger_provider.?.logger(.{ .name = policy_runtime.scope_name });
+        otlp_logger_ptr = self.logger_provider.?.logger(.{ .name = self.scope_name });
     }
 
     // Fan-out structured log pipeline.
@@ -1032,11 +1099,13 @@ fn loadAppRegistries(
         const path: []const u8 = switch (src) {
             .file => |f| f.path,
             .bytes => |b| b.path,
+            .registry => |r| r.path,
         };
         var owned_bytes: ?[]u8 = null;
         defer if (owned_bytes) |b| gpa.free(b);
 
-        const raw: []const u8 = switch (src) {
+        const raw: ?[]const u8 = switch (src) {
+            .registry => null,
             .bytes => |b| b.content,
             .file => |f| blk: {
                 const content = f.dir.readFileAlloc(io, f.path, gpa, .limited(4 * 1024 * 1024)) catch |err| {
@@ -1048,7 +1117,10 @@ fn loadAppRegistries(
             },
         };
 
-        var result = try appregistry.check(gpa, raw, .{});
+        var result = if (raw) |bytes|
+            try appregistry.check(gpa, bytes, .{})
+        else
+            try checkParsed(gpa, src.registry.value);
         defer result.deinit();
 
         switch (result.outcome) {
@@ -1101,6 +1173,16 @@ fn loadAppRegistries(
         }
     }
     return classes;
+}
+
+/// Validates a registry the caller already parsed, as `appregistry.check`
+/// validates one it parsed itself.
+fn checkParsed(gpa: Allocator, registry: appregistry.Registry) Allocator.Error!appregistry.Result {
+    var result: appregistry.Result = .{ .arena = .init(gpa), .outcome = undefined };
+    errdefer result.arena.deinit();
+    const violations = try appregistry.validate(result.arena.allocator(), registry, .{});
+    result.outcome = if (violations.len == 0) .{ .valid = registry } else .{ .invalid = violations };
+    return result;
 }
 
 fn dedupeEventAttrs(arena: Allocator, attrs: []const log_record.KeyValue) Allocator.Error![]log_record.KeyValue {
@@ -1158,6 +1240,13 @@ fn bspConfigFromEnv(env: resource_mod.Env) batch.Config {
     }
     cfg.max_export_batch_size = @min(cfg.max_export_batch_size, cfg.max_queue_size);
     return cfg;
+}
+
+/// Fails setup for an `OTEL_*_EXPORTER` value that names no exporter this
+/// SDK has. Only `otlp` and `none` are supported.
+fn failExporter(diag: ?*resource_mod.Diagnostic, variable: []const u8, name: []const u8) SetupError {
+    if (diag) |d| d.print("o11y: unsupported {s}: {s}", .{ variable, name });
+    return error.Exporter;
 }
 
 fn failDiag(diag: ?*resource_mod.Diagnostic, err: SetupError, msg: []const u8) SetupError {
@@ -1421,6 +1510,127 @@ test "event contract validation increments o11y.schema.violations and Record emi
     try testing.expect(std.mem.indexOf(u8, console.buf.items, "\"db.queries\":3") != null);
 }
 
+test "shutdown and forceFlush report a trace or log batch the exporter rejects" {
+    // Exporters that reject every batch but shut down cleanly, as a
+    // collector that answers every request with an error does.
+    const RejectingSpans = struct {
+        fn exporter(self: *@This()) processor.SpanExporter {
+            return .{ .ptr = self, .vtable = &.{ .exportSpans = exportSpans, .shutdown = shutdownFn } };
+        }
+        fn exportSpans(_: *anyopaque, _: []const *const span_mod.SpanData, _: Deadline) processor.ExportError!void {
+            return error.ExportFailed;
+        }
+        fn shutdownFn(_: *anyopaque, _: Deadline) processor.ExportError!void {}
+    };
+    const RejectingLogs = struct {
+        fn exporter(self: *@This()) log_processor.LogExporter {
+            return .{ .ptr = self, .vtable = &.{ .exportLogs = exportLogs, .forceFlush = flushFn, .shutdown = shutdownFn } };
+        }
+        fn exportLogs(_: *anyopaque, _: []const *const log_record.LogData, _: Deadline) processor.ExportError!void {
+            return error.ExportFailed;
+        }
+        fn flushFn(_: *anyopaque, _: Deadline) processor.ExportError!void {}
+        fn shutdownFn(_: *anyopaque, _: Deadline) processor.ExportError!void {}
+    };
+    var bad_spans: RejectingSpans = .{};
+    var bad_logs: RejectingLogs = .{};
+    var reader = metric_reader.ManualReader.init(testing.io, .{});
+
+    const t = try init(testing.allocator, testing.io, .{
+        .service_name = "svc",
+        .environment = "test",
+        .metric_reader = reader.reader(),
+        .span_exporter = bad_spans.exporter(),
+        .log_exporter = bad_logs.exporter(),
+        .console_enabled = false,
+        .runtime_metrics = false,
+        // The rejections are the point of the test, so keep them off stderr.
+        .error_handler = .ignore,
+    });
+    defer t.deinit();
+
+    var sp = t.tracer("svc").start(.background, "op", .{});
+    t.logger().info(Context.background.withSpan(&sp), "first", .{});
+    sp.end();
+
+    const flushed = t.forceFlush(null);
+    try testing.expectEqual(@as(?processor.ExportError, error.ExportFailed), flushed.traces);
+    try testing.expectEqual(@as(?processor.ExportError, error.ExportFailed), flushed.logs);
+    try testing.expectEqual(@as(?processor.ExportError, null), flushed.metrics);
+
+    var sp2 = t.tracer("svc").start(.background, "op", .{});
+    t.logger().info(Context.background.withSpan(&sp2), "second", .{});
+    sp2.end();
+
+    const report = t.shutdown(null);
+    try testing.expectEqual(@as(?processor.ExportError, error.ExportFailed), report.traces);
+    try testing.expectEqual(@as(?processor.ExportError, error.ExportFailed), report.logs);
+    try testing.expectEqual(@as(?processor.ExportError, null), report.metrics);
+}
+
+test "a later shutdown caller stops waiting at its own deadline" {
+    // An exporter whose export hangs until the test releases it.
+    const HungSpans = struct {
+        entered: Io.Event = .unset,
+        release: Io.Event = .unset,
+
+        fn exporter(self: *@This()) processor.SpanExporter {
+            return .{ .ptr = self, .vtable = &.{ .exportSpans = exportSpans, .shutdown = shutdownFn } };
+        }
+        fn exportSpans(ptr: *anyopaque, _: []const *const span_mod.SpanData, _: Deadline) processor.ExportError!void {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            self.entered.set(testing.io);
+            self.release.wait(testing.io) catch return error.Canceled;
+        }
+        fn shutdownFn(_: *anyopaque, _: Deadline) processor.ExportError!void {}
+    };
+    var hung: HungSpans = .{};
+    var reader = metric_reader.ManualReader.init(testing.io, .{});
+
+    const t = try init(testing.allocator, testing.io, .{
+        .service_name = "svc",
+        .environment = "test",
+        .metric_reader = reader.reader(),
+        .span_exporter = hung.exporter(),
+        .log_export = false,
+        .console_enabled = false,
+        .runtime_metrics = false,
+    });
+    defer t.deinit();
+
+    var sp = t.tracer("svc").start(.background, "op", .{});
+    sp.end();
+
+    var first = try testing.io.concurrent(struct {
+        fn run(sdk: *Telemetry) ShutdownReport {
+            return sdk.shutdown(.fromSeconds(30));
+        }
+    }.run, .{t});
+    var first_done = false;
+    defer if (!first_done) {
+        hung.release.set(testing.io);
+        _ = first.await(testing.io);
+    };
+    try hung.entered.wait(testing.io);
+
+    // The first call is still draining. A second caller with a short
+    // deadline gets a timeout for every signal instead of waiting for it.
+    const started = Io.Clock.awake.now(testing.io);
+    const late = t.shutdown(.fromMilliseconds(20));
+    const waited = started.durationTo(Io.Clock.awake.now(testing.io));
+    try testing.expect(waited.toMilliseconds() < 10_000);
+    try testing.expectEqual(@as(?processor.ExportError, error.Timeout), late.traces);
+    try testing.expectEqual(@as(?processor.ExportError, error.Timeout), late.metrics);
+    try testing.expectEqual(@as(?processor.ExportError, error.Timeout), late.logs);
+
+    // Once the first call finishes, every caller gets its report.
+    hung.release.set(testing.io);
+    const report = first.await(testing.io);
+    first_done = true;
+    try testing.expect(report.ok());
+    try testing.expectEqual(report, t.shutdown(.fromMilliseconds(20)));
+}
+
 test "concurrent shutdown races emits safely and shares the same ShutdownReport" {
     var span_exp = memory_exporter.InMemoryExporter.init(testing.allocator, testing.io);
     defer span_exp.deinit();
@@ -1484,6 +1694,220 @@ test "process metrics disabled when runtime_metrics is false" {
             try testing.expect(!std.mem.startsWith(u8, m.name, "process."));
         }
     }
+}
+
+test "exporter variables take the first entry of a list, and a blank value means otlp" {
+    const name = summary_mod.exporterName;
+    try testing.expectEqualStrings("otlp", name(.{ .pairs = &.{} }, "OTEL_TRACES_EXPORTER"));
+    try testing.expectEqualStrings("otlp", name(.{ .pairs = &.{.{ "OTEL_TRACES_EXPORTER", " \t " }} }, "OTEL_TRACES_EXPORTER"));
+    try testing.expectEqualStrings("otlp", name(.{ .pairs = &.{.{ "OTEL_TRACES_EXPORTER", "otlp,console" }} }, "OTEL_TRACES_EXPORTER"));
+    try testing.expectEqualStrings("none", name(.{ .pairs = &.{.{ "OTEL_TRACES_EXPORTER", " none , otlp" }} }, "OTEL_TRACES_EXPORTER"));
+    try testing.expectEqualStrings("console", name(.{ .pairs = &.{.{ "OTEL_TRACES_EXPORTER", ", ,console" }} }, "OTEL_TRACES_EXPORTER"));
+
+    // A list whose first entry is none switches the signal off, as it does
+    // in TypeScript and Rust. It used to fail setup.
+    const t = try init(testing.allocator, testing.io, .{
+        .env = .{ .pairs = &.{
+            .{ "OTEL_TRACES_EXPORTER", "none,otlp" },
+            .{ "OTEL_METRICS_EXPORTER", " none , console" },
+            .{ "OTEL_LOGS_EXPORTER", "NONE,otlp" },
+        } },
+        .service_name = "svc",
+        .environment = "test",
+        .console_enabled = false,
+        .runtime_metrics = false,
+    });
+    defer t.deinit();
+    try testing.expect(std.mem.indexOf(u8, t.effectiveConfig(), "o11y.config.traces=none") != null);
+
+    // console is not an exporter this SDK has. The diagnostic names it.
+    var diag: resource_mod.Diagnostic = .{};
+    try testing.expectError(error.Exporter, init(testing.allocator, testing.io, .{
+        .env = .{ .pairs = &.{.{ "OTEL_TRACES_EXPORTER", "console" }} },
+        .service_name = "svc",
+        .environment = "test",
+        .console_enabled = false,
+        .runtime_metrics = false,
+        .diagnostic = &diag,
+    }));
+    try testing.expect(std.mem.indexOf(u8, diag.message(), "OTEL_TRACES_EXPORTER") != null);
+    try testing.expect(std.mem.indexOf(u8, diag.message(), "console") != null);
+}
+
+test "invalid sampler and exemplar filter variables are reported, not silently ignored" {
+    const Collector = struct {
+        buf: [2048]u8 = undefined,
+        len: usize = 0,
+
+        fn report(ptr: ?*anyopaque, _: []const u8, _: processor.ExportError, detail: []const u8) void {
+            const self: *@This() = @ptrCast(@alignCast(ptr.?));
+            const n = @min(detail.len, self.buf.len - self.len);
+            @memcpy(self.buf[self.len..][0..n], detail[0..n]);
+            self.len += n;
+        }
+    };
+    var seen: Collector = .{};
+
+    const t = try init(testing.allocator, testing.io, .{
+        .env = .{ .pairs = &.{
+            .{ "OTEL_TRACES_SAMPLER", "traceidratio" },
+            .{ "OTEL_TRACES_SAMPLER_ARG", "abc" },
+            .{ "OTEL_METRICS_EXEMPLAR_FILTER", "sometimes" },
+            .{ "OTEL_TRACES_EXPORTER", "none" },
+            .{ "OTEL_METRICS_EXPORTER", "none" },
+            .{ "OTEL_LOGS_EXPORTER", "none" },
+        } },
+        .service_name = "svc",
+        .environment = "test",
+        .console_enabled = false,
+        .runtime_metrics = false,
+        .error_handler = .{ .ptr = &seen, .report = Collector.report },
+    });
+    defer t.deinit();
+
+    const reported = seen.buf[0..seen.len];
+    try testing.expect(std.mem.indexOf(u8, reported, "OTEL_TRACES_SAMPLER_ARG") != null);
+    try testing.expect(std.mem.indexOf(u8, reported, "OTEL_METRICS_EXEMPLAR_FILTER") != null);
+    try testing.expect(std.mem.indexOf(u8, reported, "sometimes") != null);
+}
+
+test "a propagator that names no fields is reported as custom in the effective config" {
+    const Fieldless = struct {
+        fn propagator() propagation.Propagator {
+            return .{ .ptr = undefined, .vtable = &.{ .inject = inject, .extract = extract, .fields = fields } };
+        }
+        fn inject(_: *const anyopaque, _: Context, _: Allocator, _: propagation.Carrier) void {}
+        fn extract(_: *const anyopaque, ctx: Context, _: Allocator, _: propagation.Carrier) Context {
+            return ctx;
+        }
+        fn fields(_: *const anyopaque) []const []const u8 {
+            return &.{};
+        }
+    };
+    const t = try init(testing.allocator, testing.io, .{
+        .service_name = "svc",
+        .environment = "test",
+        .console_enabled = false,
+        .runtime_metrics = false,
+        .propagators = &.{Fieldless.propagator()},
+    });
+    defer t.deinit();
+    // As in Go: an empty value would be easy to misread.
+    try testing.expect(std.mem.indexOf(u8, t.effectiveConfig(), "o11y.config.propagators=custom") != null);
+}
+
+test "scope_name names the instrumentation scope of the SDK's own telemetry" {
+    var reader = metric_reader.ManualReader.init(testing.io, .{});
+    var log_exp = log_processor.InMemoryLogExporter.init(testing.allocator, testing.io);
+    defer log_exp.deinit();
+    const binding_scope = "github.com/jamesainslie/libo11y/c";
+
+    const t = try init(testing.allocator, testing.io, .{
+        .service_name = "svc",
+        .environment = "test",
+        .metric_reader = reader.reader(),
+        .log_exporter = log_exp.exporter(),
+        .console_enabled = false,
+        .runtime_metrics = false,
+        .scope_name = binding_scope,
+    });
+    defer t.deinit();
+
+    // A PII attribute is dropped and counted on o11y.schema.violations.
+    t.logger().info(.background, "hello", .{ .@"host.ip" = "10.0.0.1" });
+    try testing.expect(t.forceFlush(null).ok());
+    try testing.expectEqualStrings(binding_scope, log_exp.records.items[0].scope.name);
+
+    var rm = try reader.collect(testing.allocator);
+    defer rm.deinit();
+    var found = false;
+    for (rm.scope_metrics) |sm| {
+        for (sm.metrics) |m| {
+            if (!std.mem.eql(u8, m.name, spec.metric.schema_violations)) continue;
+            try testing.expectEqualStrings(binding_scope, sm.scope.name);
+            found = true;
+        }
+    }
+    try testing.expect(found);
+}
+
+test "app_registries accepts a registry the caller already parsed, and validates it" {
+    var console: TestConsole = .{ .gpa = testing.allocator };
+    defer console.deinit();
+
+    const registry: appregistry.Registry = .{
+        .schema = appregistry.schema_v1,
+        .namespace = "lor",
+        .attributes = &.{
+            .{ .name = "lor.client.email", .type = "string", .sensitivity = "pii", .cardinality = "unbounded", .values = &.{}, .brief = "" },
+            .{ .name = "lor.project.id", .type = "string", .sensitivity = "internal", .cardinality = "unbounded", .values = &.{}, .brief = "" },
+        },
+    };
+    const t = try init(testing.allocator, testing.io, .{
+        .service_name = "svc",
+        .environment = "test",
+        .console_writer = console.writer(),
+        .runtime_metrics = false,
+        .app_registries = &.{.{ .registry = .{ .path = "built-in", .value = registry } }},
+    });
+    defer t.deinit();
+    t.logger().info(.background, "hello", .{ .@"lor.client.email" = "a@example.com", .@"lor.project.id" = "p-1" });
+    try testing.expect(std.mem.indexOf(u8, console.buf.items, "a@example.com") == null);
+    try testing.expect(std.mem.indexOf(u8, console.buf.items, "\"lor.project.id\":\"p-1\"") != null);
+
+    // A parsed value goes through the same rules as a file.
+    var reserved = registry;
+    reserved.namespace = "otel";
+    var diag: resource_mod.Diagnostic = .{};
+    try testing.expectError(error.InvalidAppRegistry, init(testing.allocator, testing.io, .{
+        .service_name = "svc",
+        .environment = "test",
+        .console_enabled = false,
+        .runtime_metrics = false,
+        .app_registries = &.{.{ .registry = .{ .path = "built-in", .value = reserved } }},
+        .diagnostic = &diag,
+    }));
+    try testing.expect(std.mem.indexOf(u8, diag.message(), "built-in") != null);
+    try testing.expect(std.mem.indexOf(u8, diag.message(), "libo11y_app_namespace_reserved") != null);
+}
+
+test "an event carries exactly one event.name, which a replacer cannot see or add" {
+    var console: TestConsole = .{ .gpa = testing.allocator };
+    defer console.deinit();
+
+    const replacer: log_pipeline_mod.AttrReplacer = .{
+        .replace = struct {
+            fn f(_: ?*anyopaque, _: []const []const u8, attr: log_record.KeyValue, _: Allocator) ?log_record.KeyValue {
+                // Tries to rewrite the name of the event, and to add another.
+                if (std.mem.eql(u8, attr.key, spec.event_name_key)) return .{ .key = attr.key, .value = .{ .string = "rewritten" } };
+                if (std.mem.eql(u8, attr.key, "alias")) return .{ .key = spec.event_name_key, .value = attr.value };
+                return attr;
+            }
+        }.f,
+    };
+    const t = try init(testing.allocator, testing.io, .{
+        .service_name = "svc",
+        .environment = "test",
+        .console_writer = console.writer(),
+        .runtime_metrics = false,
+        .startup_summary = false,
+        .attr_replacer = replacer,
+    });
+    defer t.deinit();
+
+    t.event(.background, "order.placed", .{ .alias = "spoofed", .@"order.id" = "o-1" });
+    const line = console.buf.items;
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, line, "\"event.name\":"));
+    try testing.expect(std.mem.indexOf(u8, line, "\"event.name\":\"order.placed\"") != null);
+    try testing.expect(std.mem.indexOf(u8, line, "spoofed") == null);
+    try testing.expect(std.mem.indexOf(u8, line, "rewritten") == null);
+    try testing.expect(std.mem.indexOf(u8, line, "\"order.id\":\"o-1\"") != null);
+
+    // A plain record that carries its own event.name attribute is unchanged:
+    // the replacer sees it like any other attribute.
+    console.buf.clearRetainingCapacity();
+    t.logger().info(.background, "plain", .{ .@"event.name" = "mine" });
+    try testing.expect(std.mem.indexOf(u8, console.buf.items, "\"event.name\":\"rewritten\"") != null);
 }
 
 test "propagator wraps custom propagator in baggage egress filter without globals" {
@@ -1656,6 +2080,31 @@ test "OTEL_SDK_DISABLED disables exports and runtime metrics while keeping conso
     try testing.expect(std.mem.indexOf(u8, t.effectiveConfig(), "o11y.config.traces=none") != null);
     try testing.expect(std.mem.indexOf(u8, t.effectiveConfig(), "o11y.config.runtime_metrics=false") != null);
     try testing.expectEqual(@as(usize, 0), span_exp.count());
+
+    // No provider is exposed that could still record spans in memory.
+    try testing.expect(t.tracerProvider() == null);
+
+    // An inbound trace still continues: a span started under a remote
+    // parent keeps that parent's identity, so an outbound call carries it.
+    const remote: ids.SpanContext = .{
+        .trace_id = ids.TraceId.parseHex("4bf92f3577b34da6a3ce929d0e0e4736").?,
+        .span_id = ids.SpanId.parseHex("00f067aa0ba902b7").?,
+        .flags = .sampled_flag,
+        .remote = true,
+    };
+    const inbound = Context.background.withSpanContext(remote);
+    var server_span = t.tracer("app").start(inbound, "GET /orders", .{ .kind = .server });
+    defer server_span.end();
+    const handler_ctx = inbound.withSpan(&server_span);
+    var client_span = t.tracer("app").start(handler_ctx, "GET", .{ .kind = .client });
+    defer client_span.end();
+    const outbound = handler_ctx.withSpan(&client_span);
+    try testing.expectEqualSlices(u8, &remote.trace_id.bytes, &outbound.span_context.trace_id.bytes);
+    try testing.expectEqualSlices(u8, &remote.span_id.bytes, &outbound.span_context.span_id.bytes);
+
+    console.buf.clearRetainingCapacity();
+    t.logger().info(handler_ctx, "in the handler", .{});
+    try testing.expect(std.mem.indexOf(u8, console.buf.items, "\"trace_id\":\"4bf92f3577b34da6a3ce929d0e0e4736\"") != null);
 }
 
 test "log PII violation counts once per sink (console + OTLP) and shutdown emits telemetry.dropped on failing exporter" {

@@ -61,6 +61,8 @@ test "o11yhttpz loopback: distributed trace, baggage, route template, Server-Tim
                 o11yhttpz.record(req).set("user.id", id);
             }
             res.status = 200;
+            // HTML, so the default Server-Timing setting adds the header.
+            res.content_type = .HTML;
             res.body = "hello httpz";
         }
 

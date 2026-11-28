@@ -21,8 +21,9 @@
 #     brace at the same indentation.
 # The block rule relies on zig fmt's layout, which make zig-check enforces
 # before running this script. Comments and multiline string lines (\\) are
-# not code and are ignored. A // inside a string literal ends the checked
-# part of its line, which can hide a call later on that line.
+# not code and are ignored. So is the text inside a string or character
+# literal: a // there does not start a comment, and a forbidden call named
+# there is not a call.
 # Code guarded by builtin.is_test outside a test block is not recognised.
 set -euo pipefail
 
@@ -77,8 +78,7 @@ violations="$(awk '
 			next
 		}
 		if (line ~ /^[ \t]*\\\\/) next
-		code = line
-		sub(/\/\/.*/, "", code)
+		code = strip(line)
 		if (code ~ /^[ \t]*$/) next
 		text = line
 		sub(/^[ \t]+/, "", text)
@@ -95,6 +95,37 @@ violations="$(awk '
 		# `const debug = std.debug;`, or aliased themselves.
 		if (code ~ /(^|[^A-Za-z0-9_])debug\.print([^A-Za-z0-9_]|$)/) report("std.debug.print")
 		if (code ~ /(^|[^A-Za-z0-9_])debug\.panic([^A-Za-z0-9_]|$)/) report("std.debug.panic")
+	}
+	# strip(line) returns the code on a line: the text of each string and
+	# character literal is removed, leaving its quotes, and a // comment
+	# outside a literal is cut off. \047 is the single quote.
+	function strip(line,    out, i, n, c, quote) {
+		if (line !~ /["\047]/) {
+			sub(/\/\/.*/, "", line)
+			return line
+		}
+		out = ""
+		quote = ""
+		n = length(line)
+		for (i = 1; i <= n; i++) {
+			c = substr(line, i, 1)
+			if (quote != "") {
+				if (c == "\\") {
+					i++
+				} else if (c == quote) {
+					out = out c
+					quote = ""
+				}
+				continue
+			}
+			if (c == "\"" || c == "\047") {
+				quote = c
+			} else if (c == "/" && substr(line, i + 1, 1) == "/") {
+				break
+			}
+			out = out c
+		}
+		return out
 	}
 	function report(what) {
 		printf "%s:%d: %s outside a test: %s\n", FILENAME, FNR, what, text

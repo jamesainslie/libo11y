@@ -57,8 +57,9 @@ pub const LookupFn = *const fn (key: []const u8) ?spec.Sensitivity;
 pub const ViolationRecorder = struct {
     counter: metric_meter.Counter(i64) = .noop,
 
-    pub fn init(mp: *metric_meter.MeterProvider) ViolationRecorder {
-        const m = mp.meter(.{ .name = scope_name });
+    /// `scope` is the instrumentation scope the counter belongs to.
+    pub fn init(mp: *metric_meter.MeterProvider, scope: []const u8) ViolationRecorder {
+        const m = mp.meter(.{ .name = scope });
         return .{
             .counter = m.counter(i64, spec.metric.schema_violations, .{
                 .unit = "{violation}",
@@ -152,8 +153,8 @@ pub const Policy = struct {
 
     /// Attaches the self-metric violation recorder once the meter provider is
     /// constructed.
-    pub fn attachRecorder(self: *Policy, mp: *metric_meter.MeterProvider) void {
-        self.recorder = ViolationRecorder.init(mp);
+    pub fn attachRecorder(self: *Policy, mp: *metric_meter.MeterProvider, scope: []const u8) void {
+        self.recorder = ViolationRecorder.init(mp, scope);
     }
 
     /// Looks up the sensitivity class of `key`: spec wins over app registries.
@@ -500,7 +501,7 @@ test "Policy drops secrets always, handles PII per mode, and drops PII on metric
         .policy = policy.attributePolicy(),
     });
     defer mp.destroy();
-    policy.attachRecorder(mp);
+    policy.attachRecorder(mp, scope_name);
 
     var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena_state.deinit();

@@ -349,6 +349,42 @@ test "the policy hook runs over span, event and link attributes at end" {
     try testing.expectEqual([3]usize{ 1, 1, 1 }, drop.calls);
 }
 
+test "a tracer that records nothing keeps the parent's span context" {
+    // As OpenTelemetry's no-op tracer does: the span records nothing, but
+    // a context derived from it still carries the trace, so propagation
+    // and log correlation continue.
+    const parent: ids.SpanContext = .{
+        .trace_id = ids.TraceId.parseHex("4bf92f3577b34da6a3ce929d0e0e4736").?,
+        .span_id = ids.SpanId.parseHex("00f067aa0ba902b7").?,
+        .flags = .sampled_flag,
+        .trace_state = .{ .header = "vendor=1" },
+        .remote = true,
+    };
+    const ctx = Context.background.withSpanContext(parent);
+
+    var span = tracer_mod.Tracer.noop.start(ctx, "op", .{});
+    try testing.expect(!span.isRecording());
+    try testing.expectEqual(parent, span.spanContext());
+    try testing.expectEqual(parent, ctx.withSpan(&span).span_context);
+    span.end();
+    try testing.expectEqual(parent, span.spanContext());
+
+    var root = tracer_mod.Tracer.noop.start(ctx, "op", .{ .new_root = true });
+    try testing.expect(!root.spanContext().isValid());
+    var orphan = tracer_mod.Tracer.noop.start(.background, "op", .{});
+    try testing.expect(!orphan.spanContext().isValid());
+
+    // A provider that has shut down behaves the same way.
+    var h: Harness = undefined;
+    try h.init(.{});
+    defer h.deinit();
+    const tracer = h.provider.tracer(.{ .name = "t" });
+    try h.provider.shutdown(deadline.after(testing.io, .fromSeconds(5)));
+    var late = tracer.start(ctx, "op", .{});
+    try testing.expect(!late.isRecording());
+    try testing.expectEqual(parent, late.spanContext());
+}
+
 test "tracers are cached per scope and the provider shuts down once" {
     var h: Harness = undefined;
     try h.init(.{});

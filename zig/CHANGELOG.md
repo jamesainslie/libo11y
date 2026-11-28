@@ -10,6 +10,143 @@ Requires Zig 0.17.1.
 
 ## [Unreleased]
 
+### Added
+
+- `o11y`: the `o11y.identity`, `o11y.pii`, `o11y.endpoint`, and
+  `o11y.appregistry` namespaces are public. They hold the
+  `service.instance.id` derivation, the canonical PII rendering and HMAC
+  token, the endpoint sanitizer, and the application registry loader and
+  validator.
+- `o11y`: `Options.app_registries` accepts a registry the caller already
+  parsed, as `.{ .registry = .{ .path, .value } }`. Setup validates it
+  against the same rules as a file. `o11y.AppRegistry` names the type.
+- `o11y`: `Options.sdk_language`, `Options.sdk_version`,
+  `Options.emit_process_runtime` and `Options.scope_name` let a language
+  binding built on this package, such as the C library, report its own
+  `telemetry.sdk.*` values, leave out `process.runtime.*`, and name the
+  instrumentation scope of the SDK's own telemetry. `o11ytest.Options` has
+  the same fields.
+- `zig build test -Dtest-filter=<text>`, run in `zig/`, runs only the tests
+  whose name contains the text.
+
+### Changed
+
+- `o11y.spec` is generated from spec 1.3.0. `spec.schema_url` is
+  `https://schemas.o11y.ing/libo11y/1.3.0`, so every resource carries that
+  schema URL. The module gains the RUM view summary, detail, and span shape
+  attribute keys and the enums `RumSpanShape`, `RumResourceType`,
+  `RumVitalAttributionInteractionType`, and `RumVitalAttributionLoadState`.
+- `o11yhttp.Server` and `o11yhttpz.Middleware` add `Server-Timing` to HTML
+  responses only, as Go and TypeScript do. `server_timing_html_only` now
+  defaults to true. Set it to false to add the header to every response.
+- A scoped `std.log` call no longer adds a `scope` attribute. The scope is
+  the record's instrumentation scope on the OTLP leg, and the semconv
+  attribute `otel.scope.name` on the console and the extra sinks.
+- `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER` and `OTEL_LOGS_EXPORTER`
+  are read as lists: the first entry that is not blank counts, and a blank
+  value means `otlp`. A value such as `otlp,console` failed setup before.
+  The `error.Exporter` diagnostic names the unsupported exporter.
+- A log record's trace ID, span ID and trace flags come only from the
+  `o11y.Context` it is emitted with. The record type that
+  `Telemetry.loggerProvider()` loggers take had `trace_id`, `span_id` and
+  `trace_flags` fields, and a valid `trace_id` there replaced the active
+  span's identity. The fields are gone, which is a source change for a
+  caller that set them.
+- `Telemetry.tracerProvider()` returns null while `OTEL_SDK_DISABLED` is
+  set. It returned a provider whose tracers still recorded spans in memory.
+- `o11y.shutdownOnSignals` is a compile error for a Windows target. It
+  shut telemetry down at once there, without waiting for anything.
+- Both manifests declare `minimum_zig_version = "0.17.1"`, the version the
+  package is built and tested with. They said 0.17.0.
+
+### Fixed
+
+- `o11y.redact.Struct` no longer prints a union field in the clear. `{f}`
+  formatting passed a union to `{any}`, which printed the payload without
+  applying its field tags. A tagged union now renders as its live variant
+  with the tags applied, on `std.fmt`, `std.json` and the logger alike, and
+  its own `o11y_tags` can name variants. An untagged union, an error union
+  and any other type the walk cannot look inside render as `REDACTED`.
+- `Telemetry.shutdown` and `Telemetry.forceFlush` report a trace or log
+  batch the exporter rejects while they run, and shutdown then emits
+  `o11y.telemetry.dropped` for that signal. The batch processors handed a
+  failed export to the error handler only, so a shutdown whose final batch
+  the collector rejected returned a clean report. The error handler still
+  receives each failure.
+- A second `Telemetry.shutdown` caller stops waiting when its own timeout
+  passes and gets `error.Timeout` for every signal. It waited for the first
+  caller without a bound.
+- A later `BatchLogProcessor` shutdown call returns the first call's
+  result. It returned success whatever the first call found.
+- The OTLP/HTTP and OTLP/gRPC transports no longer run a network attempt
+  inline when the `Io` has no concurrent task left. An inline read could
+  outlive the export deadline. The attempt now counts as a retryable
+  failure, so the send ends by its deadline.
+- Concurrent OTLP/HTTP exports each report their own failure detail to the
+  error handler. An exporter read the transport's shared diagnostic buffer
+  after it released the transport, so another export could overwrite the
+  text first.
+- An `attr_replacer` can no longer write a second top-level `trace_id` or
+  `span_id`. The reserved keys were dropped before the replacer ran but not
+  after it, so a renamed attribute produced a duplicate JSON key on the
+  console.
+- `Telemetry.event` writes exactly one `event.name`. The name went through
+  the `attr_replacer` like any attribute, so a replacer could rewrite it,
+  and one that renamed another attribute to `event.name` added a second.
+  The replacer no longer sees the name of an event, as in Go. A plain
+  record that carries its own `event.name` attribute is unchanged.
+- A group or list under a key the policy hashes is tokenized whole. The
+  log pipeline pruned it at its walk's depth bound first, so a value nested
+  more than 16 levels deep got a token that differed from the one in
+  `conformance/vectors/pii-hash.json` and from the other signals.
+- The text console writes a nested group as one `group.member=value` per
+  leaf at every depth, as Go's `slog.TextHandler` does. A group inside a
+  group was written as a JSON object.
+- A span that records nothing keeps its parent's span context. The no-op
+  tracer, which `Telemetry.tracer` returns while `OTEL_SDK_DISABLED` is set,
+  and a tracer whose provider has shut down returned a span with an invalid
+  context. `ctx.withSpan(&span)` then discarded an inbound trace, so an
+  outgoing request started a new trace and logs lost their trace ID.
+- `o11yhttp.Client` returns a `304 Not Modified` response, and any response
+  to a `HEAD` request, as `std.http.Client` does. It treated them as
+  redirects to follow, so a conditional GET failed with
+  `error.HttpRedirectLocationMissing`.
+- `o11yhttp.Client` removes `traceparent`, `tracestate` and `baggage`
+  headers the caller supplied when `propagate_fn` denies the destination.
+  It skipped injection but left those headers on the first request and on
+  same-origin redirects.
+- `o11yhttp.Client` does not restore stripped headers when a redirect chain
+  returns to the first origin after leaving it. Privileged headers and
+  trace context were attached again on the hop back.
+- `o11yhttp.Client` fails the request with `error.OutOfMemory` when it
+  cannot build the header list for a hop. It fell back to the caller's
+  original headers, which on a cross-origin redirect still held the trace
+  context and privileged headers it was meant to strip.
+- `o11yhttp.Client.fetch` no longer crashes on a `HEAD` request in a
+  release build. It drained the response body through the standard
+  library's shared empty reader, which is read-only memory there, as
+  `std.http.Client.fetch` does in Zig 0.17.1. It now skips the body of a
+  `HEAD` response.
+- `o11yhttp.Client.fetch` ends its span after it has read the response
+  body. A body that failed to arrive left a span with status 200 and no
+  error, and the request duration left out the body.
+- `o11y.shutdownOnSignals` no longer loses a signal that arrives while it
+  registers its handlers. It installed the handlers before it published the
+  pipe they write to, so a signal in between was dropped and the call
+  waited on an empty pipe. It also skips a signal that cannot be caught,
+  such as SIGKILL, where it used to crash. Its pipe is close-on-exec and
+  its write end does not block. When the process has no file descriptor
+  left for the pipe, it polls for the signal. It shut down at once before.
+- An invalid `OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG` or
+  `OTEL_METRICS_EXEMPLAR_FILTER` value is reported to the error handler.
+  The default applied without a word.
+- The effective configuration reports `custom` for a propagator that names
+  no fields, as Go does. It reported an empty value.
+- OTLP trace requests replace invalid UTF-8 in a resource or scope schema
+  URL, as metric and log requests do.
+- An observable instrument whose callbacks cannot be stored because memory
+  ran out is a no-op handle. It was returned without its callbacks.
+
 ## [0.1.0] - 2026-11-26
 
 ### Added

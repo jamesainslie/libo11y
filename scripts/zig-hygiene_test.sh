@@ -136,6 +136,18 @@ expect_pass "passes test-only files" "$(tree test-files \
 expect_pass "passes comments, doc comments and multiline strings" "$(tree text \
 	'lib.zig=//! Never call @panic.\n/// Unlike std.debug.print, this returns an error.\npub fn f() !void { // no catch unreachable here\n    const s =\n        \\\\@panic("not code")\n    ;\n    _ = s;\n}')"
 
+expect_failure "fails a call after a // inside a string literal" 1 "lib.zig:2: std.debug.print outside a test" \
+	"$(tree string-slashes 'lib.zig=pub fn f(url: []const u8) void {\n    if (std.mem.startsWith(u8, url, "http://")) std.debug.print("x", .{});\n}')"
+
+expect_failure "fails a call after a string with an escaped quote" 1 "lib.zig:2: @panic outside a test" \
+	"$(tree string-escape 'lib.zig=pub fn f(s: []const u8) void {\n    if (std.mem.eql(u8, s, "a \\" // b")) @panic("x");\n}')"
+
+expect_failure "fails a call after a quote character literal" 1 "lib.zig:2: @panic outside a test" \
+	"$(tree char-literal "lib.zig=pub fn f(c: u8) void {\n    if (c == '\"' or c == '/') @panic(\"x\");\n}")"
+
+expect_pass "passes forbidden text inside string and character literals" "$(tree string-text \
+	'lib.zig=pub const hint = "never call @panic(msg), std.debug.print or catch unreachable";\npub const slash = "//";')"
+
 expect_pass "skips build output, fetched packages and other files" "$(tree skipped \
 	"lib.zig=$lib" \
 	'.zig-cache/o/x.zig=pub fn f() void { @panic("cache"); }' \

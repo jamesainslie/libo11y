@@ -212,7 +212,7 @@ pub fn startLinked(
     name: []const u8,
     options: tracer_mod.StartOptions,
 ) LinkedSpan {
-    const tr = telemetry.tracer(policy_runtime.scope_name);
+    const tr = telemetry.tracer(telemetry.scope_name);
     return startLinkedWithTracer(gpa, tr, ctx, carrier, name, options);
 }
 

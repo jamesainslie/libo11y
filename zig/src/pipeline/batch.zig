@@ -77,6 +77,11 @@ pub fn Batcher(comptime T: type) type {
         active_flushers: usize = 0,
         stopping: bool = false,
         dropped: std.atomic.Value(u64) = .init(0),
+        /// How many batch exports have failed, and the latest failure. A
+        /// flush or shutdown compares the count before and after, so it
+        /// reports a batch that failed while it ran.
+        failures: u64 = 0,
+        last_failure: ExportError = error.ExportFailed,
 
         worker: Io.Future(void) = undefined,
         worker_done: Io.Event = .unset,
@@ -154,10 +159,15 @@ pub fn Batcher(comptime T: type) type {
         /// `deadline`. Each batch exports under `config.export_timeout`,
         /// so a timed-out flush does not drop batches still queued. A
         /// flush after shutdown is a no-op, as in Go.
+        ///
+        /// A batch export that fails while the flush waits is the flush's
+        /// result, whoever started that export. The error handler still
+        /// receives each failure.
         pub fn forceFlush(self: *Self, deadline: Deadline) ExportError!void {
             self.mutex.lock(self.io) catch return error.Canceled;
             defer self.mutex.unlock(self.io);
             if (self.stopping) return;
+            const failures_before = self.failures;
             self.flush_requested += 1;
             const want = self.flush_requested;
             self.active_flushers += 1;
@@ -174,17 +184,20 @@ pub fn Batcher(comptime T: type) type {
                     error.Canceled => return error.Canceled,
                 };
             }
+            if (self.failures != failures_before) return self.last_failure;
         }
 
         /// Stops accepting items, exports what is queued, and stops the
         /// task. When `deadline` passes first, the task is canceled, the
         /// rest of the queue is released, and the result is
-        /// `error.Timeout`. Later calls wait for the first and return its
-        /// result.
+        /// `error.Timeout`. A batch export that fails while the queue
+        /// drains is the result otherwise. Later calls wait for the first
+        /// and return its result.
         pub fn shutdown(self: *Self, deadline: Deadline) ExportError!void {
             self.mutex.lockUncancelable(self.io);
             const first = !self.stopping;
             self.stopping = true;
+            const failures_before = self.failures;
             self.mutex.unlock(self.io);
             if (!first) {
                 self.shutdown_done.waitTimeout(self.io, deadline_mod.timeout(deadline)) catch |err| switch (err) {
@@ -215,6 +228,7 @@ pub fn Batcher(comptime T: type) type {
             }
             // Wake any flusher; nothing more will be exported.
             self.flush_completed = self.flush_requested;
+            if (result == null and self.failures != failures_before) result = self.last_failure;
             self.mutex.unlock(self.io);
             self.idle.broadcast(self.io);
             self.shutdown_result = result;
@@ -247,18 +261,28 @@ pub fn Batcher(comptime T: type) type {
                 self.len -= n;
                 self.mutex.unlock(io);
 
+                var failure: ?ExportError = null;
                 if (n > 0) {
                     const export_deadline = deadline_mod.after(io, self.config.export_timeout);
                     const outcome = self.sink.exportFn(self.sink.ptr, self.batch[0..n], export_deadline);
                     for (self.batch[0..n]) |item| self.sink.releaseFn(self.sink.ptr, item);
                     if (outcome) |_| {} else |err| switch (err) {
                         error.Canceled => return,
-                        else => self.on_error.handle(self.component, err, "exporting a batch failed"),
+                        else => {
+                            self.on_error.handle(self.component, err, "exporting a batch failed");
+                            failure = err;
+                        },
                     }
                 }
                 next_export = deadline_mod.after(io, self.config.schedule_delay);
 
                 self.mutex.lockUncancelable(io);
+                // Counted before a flusher is woken, so the flush that
+                // waited on this batch sees the failure.
+                if (failure) |err| {
+                    self.failures += 1;
+                    self.last_failure = err;
+                }
                 const empty = self.len == 0;
                 const stop = self.stopping and empty;
                 if (empty and flushing) {

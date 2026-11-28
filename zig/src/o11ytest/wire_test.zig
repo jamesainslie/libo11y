@@ -31,6 +31,33 @@ const WireIds = struct {
 /// exemplar and filtered attributes, flat + nested logs, registered event)
 /// carrying both PII and secret sentinels, then returns the span's trace and
 /// span IDs.
+/// Collects what exporters report to their error handler. The signals shut
+/// down concurrently, so it locks.
+const ExporterFailures = struct {
+    mutex: std.Io.Mutex = .init,
+    buf: [2048]u8 = undefined,
+    len: usize = 0,
+
+    fn handler(f: *ExporterFailures) o11y.ErrorHandler {
+        return .{ .ptr = f, .report = record };
+    }
+
+    fn record(ptr: ?*anyopaque, component: []const u8, err: o11y.ExportError, detail: []const u8) void {
+        const f: *ExporterFailures = @ptrCast(@alignCast(ptr.?));
+        f.mutex.lockUncancelable(testing.io);
+        defer f.mutex.unlock(testing.io);
+        var w: std.Io.Writer = .fixed(f.buf[f.len..]);
+        w.print("  {s}: {t}: {s}\n", .{ component, err, detail }) catch {};
+        f.len += w.end;
+    }
+
+    fn print(f: *ExporterFailures, report: o11y.ShutdownReport) void {
+        std.debug.print("wire: shutdown reported traces={?t} metrics={?t} logs={?t}; the exporters said:\n{s}", .{
+            report.traces, report.metrics, report.logs, f.buf[0..f.len],
+        });
+    }
+};
+
 fn emitWireWorkload(sdk: *o11y.Telemetry) WireIds {
     const link_sc: o11y.SpanContext = .{
         .trace_id = o11y.TraceId.parseHex("11111111111111111111111111111111").?,
@@ -296,11 +323,16 @@ fn runExplicitHttpWireTest(protocol: o11y.otlp.HttpProtocol, compression: o11y.o
     const logs_url = try recv.url(testing.allocator, "/v1/logs");
     defer testing.allocator.free(logs_url);
 
+    // What each exporter says when an export fails, so a failed run shows
+    // the cause and not only that shutdown reported an error.
+    var said: ExporterFailures = .{};
+
     const trace_exp = try o11y.otlp.TraceExporter.create(testing.allocator, io, .{
         .protocol = protocol,
         .endpoint = traces_url,
         .compression = compression,
         .tls = client_tls,
+        .on_error = said.handler(),
     });
     defer trace_exp.destroy();
 
@@ -309,6 +341,7 @@ fn runExplicitHttpWireTest(protocol: o11y.otlp.HttpProtocol, compression: o11y.o
         .endpoint = metrics_url,
         .compression = compression,
         .tls = client_tls,
+        .on_error = said.handler(),
     });
     defer metric_exp.destroy();
 
@@ -322,6 +355,7 @@ fn runExplicitHttpWireTest(protocol: o11y.otlp.HttpProtocol, compression: o11y.o
         .endpoint = logs_url,
         .compression = compression,
         .tls = client_tls,
+        .on_error = said.handler(),
     });
     defer log_exp.destroy();
 
@@ -351,7 +385,9 @@ fn runExplicitHttpWireTest(protocol: o11y.otlp.HttpProtocol, compression: o11y.o
     defer sdk.deinit();
 
     const ids = emitWireWorkload(sdk);
-    try testing.expect(sdk.shutdown(.fromSeconds(10)).ok());
+    const report = sdk.shutdown(.fromSeconds(10));
+    if (!report.ok()) said.print(report);
+    try testing.expect(report.ok());
     try recv.waitForRequests(3, .fromSeconds(5));
     try testing.expectEqual(@as(usize, 0), recv.decodeErrors());
 
@@ -555,6 +591,58 @@ test "wire: OTLP/HTTP protobuf via Env (OTEL_EXPORTER_OTLP_*) with o11y.setup st
     // Startup canary o11y.telemetry.configured also crossed the OTLP wire!
     const canary = inspect.findLogByEvent(recv.logs(), spec.event.telemetry_configured);
     try testing.expect(canary != null);
+}
+
+test "wire: a collector that rejects the final batches shows in the shutdown report" {
+    const io = testing.io;
+    // 400 is not retryable, so every export fails at once.
+    const rejections: [8]o11ytest.HttpReply = @splat(.{ .status = 400, .body = "rejected" });
+    const recv = try o11ytest.HttpReceiver.start(testing.allocator, io, .{ .replies = &rejections });
+    defer recv.deinit();
+
+    const base_url = try recv.baseUrl(testing.allocator);
+    defer testing.allocator.free(base_url);
+
+    const env_pairs = [_][2][]const u8{
+        .{ "OTEL_EXPORTER_OTLP_ENDPOINT", base_url },
+        .{ "OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf" },
+        .{ "OTEL_METRIC_EXPORT_INTERVAL", "3600000" },
+        .{ "OTEL_BSP_SCHEDULE_DELAY", "60000" },
+        .{ "OTEL_BLRP_SCHEDULE_DELAY", "60000" },
+    };
+
+    const Console = struct {
+        buf: std.ArrayList(u8) = .empty,
+        fn write(ptr: *anyopaque, bytes: []const u8) o11y.ConsoleWriter.WriteError!void {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            self.buf.appendSlice(testing.allocator, bytes) catch return error.WriteFailed;
+        }
+    };
+    var console: Console = .{};
+    defer console.buf.deinit(testing.allocator);
+
+    const sdk = try o11y.init(testing.allocator, io, .{
+        .env = .{ .pairs = &env_pairs },
+        .service_name = "rejected-svc",
+        .environment = "test",
+        .console_writer = .{ .custom = .{ .ptr = &console, .writeFn = Console.write } },
+        .runtime_metrics = false,
+        // The rejections are the point of the test, so keep them off stderr.
+        .error_handler = .ignore,
+    });
+    defer sdk.deinit();
+
+    _ = emitWireWorkload(sdk);
+    const report = sdk.shutdown(.fromSeconds(10));
+    try testing.expectEqual(@as(?o11y.ExportError, error.ExportFailed), report.traces);
+    try testing.expectEqual(@as(?o11y.ExportError, error.ExportFailed), report.logs);
+    try testing.expectEqual(@as(?o11y.ExportError, error.ExportFailed), report.metrics);
+
+    // The loss is also said on the sinks that still work.
+    const out = console.buf.items;
+    try testing.expect(std.mem.indexOf(u8, out, "\"event.name\":\"o11y.telemetry.dropped\"") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"o11y.signal\":\"traces\"") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"o11y.signal\":\"logs\"") != null);
 }
 
 test "wire: OTLP/HTTP JSON + gzip + mTLS via Env (OTEL_EXPORTER_OTLP_*)" {

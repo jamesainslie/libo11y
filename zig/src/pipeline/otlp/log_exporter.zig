@@ -112,14 +112,16 @@ pub const LogExporter = struct {
             return error.ExportFailed;
         };
 
-        var response = self.transport.send(body.written(), deadline) catch |err| {
+        var err_buf: [512]u8 = undefined;
+        var err_len: usize = 0;
+        var response = self.transport.sendDetail(body.written(), deadline, &err_buf, &err_len) catch |err| {
             const mapped: processor.ExportError = switch (err) {
                 error.Timeout => error.Timeout,
                 error.Shutdown => error.Shutdown,
                 error.Canceled => error.Canceled,
                 error.Rejected, error.Unreachable, error.OutOfMemory => error.ExportFailed,
             };
-            self.on_error.handle(component, mapped, self.transport.lastError());
+            self.on_error.handle(component, mapped, err_buf[0..err_len]);
             return mapped;
         };
         defer response.deinit(self.gpa);

@@ -146,17 +146,25 @@ pub fn build(b: *std.Build) !void {
         },
     });
 
-    const tests = b.addTest(.{ .root_module = o11y });
+    // `-Dtest-filter=<text>` runs only the tests whose name contains the
+    // text. Give it more than once for several filters.
+    const test_filters = b.option(
+        []const []const u8,
+        "test-filter",
+        "Run only the tests whose name contains this text",
+    ) orelse &.{};
+
+    const tests = b.addTest(.{ .root_module = o11y, .filters = test_filters });
     const test_step = b.step("test", "Run the libo11y tests");
     test_step.dependOn(&b.addRunArtifact(tests).step);
 
-    const wire_tests = b.addTest(.{ .root_module = o11y_wire });
+    const wire_tests = b.addTest(.{ .filters = test_filters, .root_module = o11y_wire });
     test_step.dependOn(&b.addRunArtifact(wire_tests).step);
 
-    const db_tests = b.addTest(.{ .root_module = o11y_db });
+    const db_tests = b.addTest(.{ .filters = test_filters, .root_module = o11y_db });
     test_step.dependOn(&b.addRunArtifact(db_tests).step);
 
-    const db_telemetry_tests = b.addTest(.{ .root_module = b.createModule(.{
+    const db_telemetry_tests = b.addTest(.{ .filters = test_filters, .root_module = b.createModule(.{
         .root_source_file = b.path("src/db/telemetry_test.zig"),
         .target = target,
         .optimize = optimize,
@@ -168,13 +176,13 @@ pub fn build(b: *std.Build) !void {
     }) });
     test_step.dependOn(&b.addRunArtifact(db_telemetry_tests).step);
 
-    const o11ytest_tests = b.addTest(.{ .root_module = o11ytest });
+    const o11ytest_tests = b.addTest(.{ .filters = test_filters, .root_module = o11ytest });
     test_step.dependOn(&b.addRunArtifact(o11ytest_tests).step);
 
-    const o11yhttp_tests = b.addTest(.{ .root_module = o11yhttp });
+    const o11yhttp_tests = b.addTest(.{ .filters = test_filters, .root_module = o11yhttp });
     test_step.dependOn(&b.addRunArtifact(o11yhttp_tests).step);
 
-    const o11yhttp_integration_tests = b.addTest(.{ .root_module = b.createModule(.{
+    const o11yhttp_integration_tests = b.addTest(.{ .filters = test_filters, .root_module = b.createModule(.{
         .root_source_file = b.path("src/o11yhttp/integration_test.zig"),
         .target = target,
         .optimize = optimize,
@@ -209,10 +217,10 @@ pub fn build(b: *std.Build) !void {
                     .{ .name = "httpz", .module = httpz_mod },
                 },
             });
-            const o11yhttpz_tests = b.addTest(.{ .root_module = o11yhttpz });
+            const o11yhttpz_tests = b.addTest(.{ .filters = test_filters, .root_module = o11yhttpz });
             test_step.dependOn(&b.addRunArtifact(o11yhttpz_tests).step);
 
-            const o11yhttpz_integration_tests = b.addTest(.{ .root_module = b.createModule(.{
+            const o11yhttpz_integration_tests = b.addTest(.{ .filters = test_filters, .root_module = b.createModule(.{
                 .root_source_file = b.path("src/o11yhttpz/integration_test.zig"),
                 .target = target,
                 .optimize = optimize,
@@ -249,10 +257,10 @@ pub fn build(b: *std.Build) !void {
                     .{ .name = "pg", .module = pg_mod },
                 },
             });
-            const o11ypg_tests = b.addTest(.{ .root_module = o11ypg });
+            const o11ypg_tests = b.addTest(.{ .filters = test_filters, .root_module = o11ypg });
             test_step.dependOn(&b.addRunArtifact(o11ypg_tests).step);
 
-            const o11ypg_integration_tests = b.addTest(.{ .root_module = b.createModule(.{
+            const o11ypg_integration_tests = b.addTest(.{ .filters = test_filters, .root_module = b.createModule(.{
                 .root_source_file = b.path("src/o11ypg/integration_test.zig"),
                 .target = target,
                 .optimize = optimize,
@@ -292,10 +300,10 @@ pub fn build(b: *std.Build) !void {
                     .{ .name = "sqlite", .module = sqlite_mod },
                 },
             });
-            const o11ysqlite_tests = b.addTest(.{ .root_module = o11ysqlite });
+            const o11ysqlite_tests = b.addTest(.{ .filters = test_filters, .root_module = o11ysqlite });
             test_step.dependOn(&b.addRunArtifact(o11ysqlite_tests).step);
 
-            const o11ysqlite_integration_tests = b.addTest(.{ .root_module = b.createModule(.{
+            const o11ysqlite_integration_tests = b.addTest(.{ .filters = test_filters, .root_module = b.createModule(.{
                 .root_source_file = b.path("src/o11ysqlite/integration_test.zig"),
                 .target = target,
                 .optimize = optimize,
@@ -313,7 +321,7 @@ pub fn build(b: *std.Build) !void {
 
     // Tests that read fixtures under test/, which the published package
     // leaves out. They build only when the test step runs.
-    const fixture_tests = b.addTest(.{ .root_module = b.createModule(.{
+    const fixture_tests = b.addTest(.{ .filters = test_filters, .root_module = b.createModule(.{
         .root_source_file = b.path("test/otlp_fixtures_test.zig"),
         .target = target,
         .optimize = optimize,

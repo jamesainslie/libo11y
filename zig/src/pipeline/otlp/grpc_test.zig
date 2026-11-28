@@ -376,6 +376,23 @@ test "GOAWAY causes clean redial on next call and transparent redial when stream
     }
 }
 
+test "an Io without concurrency fails the call inside its deadline" {
+    var r = try GrpcReceiver.start(testing.allocator, testing.io, .{});
+    defer r.stop();
+    var threaded: Io.Threaded = .init(testing.allocator, .{ .concurrent_limit = .nothing });
+    defer threaded.deinit();
+    const url = try r.url(testing.allocator);
+    defer testing.allocator.free(url);
+
+    var t = try grpc.Transport.create(testing.allocator, threaded.io(), .{ .endpoint = url, .method = test_method, .retry = .{ .enabled = false } });
+    defer t.destroy();
+    var detail: [256]u8 = undefined;
+    var detail_len: usize = 0;
+    try testing.expectError(error.Unreachable, t.sendDetail("x", deadline.after(threaded.io(), .fromSeconds(10)), &detail, &detail_len));
+    try testing.expect(std.mem.indexOf(u8, detail[0..detail_len], "no concurrent task") != null);
+    try testing.expectEqual(0, r.requestCount());
+}
+
 test "hanging server respects deadline and close interrupts active send" {
     {
         var r = try GrpcReceiver.start(testing.allocator, testing.io, .{ .replies = &.{.{ .hang = true }} });

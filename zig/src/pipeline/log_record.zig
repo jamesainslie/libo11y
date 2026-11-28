@@ -132,11 +132,6 @@ pub const Record = struct {
     severity_text: []const u8 = "",
     body: Value = .empty,
     attributes: []const KeyValue = &.{},
-    /// The trace identity. When the trace id is invalid, `Logger.emit`
-    /// takes the trace id, span id and flags from the context instead.
-    trace_id: ids.TraceId = .invalid,
-    span_id: ids.SpanId = .invalid,
-    trace_flags: ids.TraceFlags = .{},
     /// A non-empty event name makes the record an event record.
     event_name: []const u8 = "",
 };
@@ -223,9 +218,9 @@ pub const LogData = struct {
             .body = .empty,
             .attributes = &.{},
             .dropped_attributes_count = 0,
-            .trace_id = record.trace_id,
-            .span_id = record.span_id,
-            .trace_flags = record.trace_flags,
+            .trace_id = .invalid,
+            .span_id = .invalid,
+            .trace_flags = .{},
             .event_name = "",
         };
         data.fill(record, limits) catch {

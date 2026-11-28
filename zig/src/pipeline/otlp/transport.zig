@@ -29,8 +29,9 @@
 //! deadline. When the deadline passes, the caller cancels the attempt
 //! and waits for it to end, so nothing runs after `send` returns. When
 //! the Io has no concurrency left (`error.ConcurrencyUnavailable`), the
-//! attempt runs inline and the deadline only bounds the waits between
-//! attempts.
+//! attempt does not run, because an inline read could outlive the
+//! deadline. It counts as a retryable failure, so the retry loop tries
+//! again until the deadline.
 
 const std = @import("std");
 const tls = @import("tls");
@@ -209,10 +210,36 @@ pub const Transport = struct {
     /// Every wait (dial, TLS handshake, write, read, backoff) ends by min(now + options.timeout, deadline).
     /// Returns the 2xx response. Thread-safe: concurrent callers are serialized.
     pub fn send(t: *Transport, body: []const u8, until: Deadline) SendError!Response {
+        return t.sendDetail(body, until, null, null);
+    }
+
+    /// Sends like `send`, and on failure copies the description of that
+    /// failure into `err_dst` before the next caller's send can start, so
+    /// concurrent callers each get their own. `err_len_out` receives the
+    /// length copied, which is zero on success.
+    pub fn sendDetail(
+        t: *Transport,
+        body: []const u8,
+        until: Deadline,
+        err_dst: ?[]u8,
+        err_len_out: ?*usize,
+    ) SendError!Response {
+        if (err_len_out) |out_len| out_len.* = 0;
         const limit = deadline.earliest(until, deadline.after(t.io, t.timeout));
         try t.acquire(limit);
         defer t.release();
         t.err_len = 0;
+        return t.sendLocked(body, limit) catch |err| {
+            if (err_dst) |dst| {
+                const n = @min(t.err_len, dst.len);
+                @memcpy(dst[0..n], t.err_buf[0..n]);
+                if (err_len_out) |out_len| out_len.* = n;
+            }
+            return err;
+        };
+    }
+
+    fn sendLocked(t: *Transport, body: []const u8, limit: Deadline) SendError!Response {
         if (body.len > max_request_size) {
             t.setError("request body too large: exceeded {d} bytes", .{max_request_size});
             return error.Rejected;
@@ -234,7 +261,11 @@ pub const Transport = struct {
         t.dropConn(true);
     }
 
-    /// A human-readable description of the most recent failure (status code and a bounded excerpt of the body, or the network error), valid until the next send.
+    /// A human-readable description of the most recent failure (status code
+    /// and a bounded excerpt of the body, or the network error), valid until
+    /// the next send. Safe only while no other caller can send: a caller
+    /// that shares the transport uses `sendDetail`, which copies the
+    /// description before the next send starts.
     pub fn lastError(t: *Transport) []const u8 {
         return t.err_buf[0..t.err_len];
     }
@@ -379,7 +410,10 @@ pub const Transport = struct {
         if (!t.register(&attempt.done)) return .shutdown;
         defer t.unregister();
         var future = t.io.concurrent(Attempt.run, .{&attempt}) catch |err| switch (err) {
-            error.ConcurrencyUnavailable => return t.attemptOnce(payload),
+            error.ConcurrencyUnavailable => {
+                t.setError("no concurrent task available to bound the request to {s}", .{t.url});
+                return .{ .failure = true };
+            },
         };
         const waited = attempt.done.waitTimeout(t.io, deadline.timeout(limit));
         if (attempt.finished.load(.acquire)) return future.await(t.io);

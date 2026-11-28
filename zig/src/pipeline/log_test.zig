@@ -110,7 +110,13 @@ test "the trace identity is copied from a context with a live span" {
     try testing.expect(r.trace_flags.sampled);
 }
 
-test "a record's own trace identity wins over the context" {
+test "the trace identity comes only from the context" {
+    // SPEC section 4: TraceId and SpanId are injected from context and
+    // are not caller-settable, so a record has no fields for them.
+    try testing.expect(!@hasField(log_record.Record, "trace_id"));
+    try testing.expect(!@hasField(log_record.Record, "span_id"));
+    try testing.expect(!@hasField(log_record.Record, "trace_flags"));
+
     var h: Harness = undefined;
     try h.init(.{});
     defer h.deinit();
@@ -120,20 +126,16 @@ test "a record's own trace identity wins over the context" {
         .flags = .sampled_flag,
         .remote = true,
     };
-    const own_trace = ids.TraceId.parseHex("0af7651916cd43dd8448eb211c80319c").?;
-    const own_span = ids.SpanId.parseHex("b7ad6b7169203331").?;
-    const ctx = Context.background.withSpanContext(ctx_sc);
-    h.logger().emit(ctx, .{ .trace_id = own_trace, .span_id = own_span });
-    h.logger().emit(ctx, .{});
+    h.logger().emit(Context.background.withSpanContext(ctx_sc), .{});
+    h.logger().emit(.background, .{});
     try testing.expectEqual(@as(usize, 2), h.exporter.records.items.len);
-    const own = h.exporter.records.items[0];
-    try testing.expectEqualSlices(u8, &own_trace.bytes, &own.trace_id.bytes);
-    try testing.expectEqualSlices(u8, &own_span.bytes, &own.span_id.bytes);
-    try testing.expect(!own.trace_flags.sampled);
-    const remote = h.exporter.records.items[1];
+    const remote = h.exporter.records.items[0];
     try testing.expectEqualSlices(u8, &ctx_sc.trace_id.bytes, &remote.trace_id.bytes);
     try testing.expectEqualSlices(u8, &ctx_sc.span_id.bytes, &remote.span_id.bytes);
     try testing.expect(remote.trace_flags.sampled);
+    const outside = h.exporter.records.items[1];
+    try testing.expect(!outside.trace_id.isValid());
+    try testing.expect(!outside.span_id.isValid());
 }
 
 test "the policy hook runs over the record's attributes" {
@@ -317,6 +319,32 @@ test "shutdown flushes every queued record and shuts the exporter down" {
     try testing.expect(exporter.is_shutdown);
     try testing.expect(exporter.flush_calls >= 1);
     try testing.expectEqual(@as(u64, 0), blp.droppedCount());
+}
+
+test "a later batch log processor shutdown returns the first call's failure" {
+    const Rejecting = struct {
+        fn exporter(self: *@This()) log_processor.LogExporter {
+            return .{ .ptr = self, .vtable = &.{ .exportLogs = exportLogs, .forceFlush = noop, .shutdown = noop } };
+        }
+        fn exportLogs(_: *anyopaque, _: []const *const LogData, _: deadline.Deadline) processor.ExportError!void {
+            return error.ExportFailed;
+        }
+        fn noop(_: *anyopaque, _: deadline.Deadline) processor.ExportError!void {}
+    };
+    var rejecting: Rejecting = .{};
+    var config = log_processor.default_batch_config;
+    config.schedule_delay = .fromSeconds(60);
+    const blp = try log_processor.BatchLogProcessor.create(gpa, io, rejecting.exporter(), .{ .config = config });
+    defer blp.destroy();
+    const p = try LoggerProvider.create(gpa, io, .{ .processors = &.{blp.processor()} });
+    defer p.destroy();
+    p.logger(.{ .name = "t" }).emit(.background, .{});
+
+    const proc = blp.processor();
+    try testing.expectError(error.ExportFailed, proc.shutdown(deadline.after(io, .fromSeconds(5))));
+    // As the batch span processor, the tracer provider and the periodic
+    // reader do, a later call reports what the first one found.
+    try testing.expectError(error.ExportFailed, proc.shutdown(deadline.after(io, .fromSeconds(5))));
 }
 
 test "forceFlush exports what is queued without waiting for the delay" {

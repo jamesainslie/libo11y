@@ -235,8 +235,53 @@ test "export failures go to the error handler" {
     const b = try B.create(testing.allocator, io, .{}, .{ .ptr = &f, .exportFn = Failing.exportFn, .releaseFn = Failing.releaseFn }, .{ .ptr = &f, .report = Failing.report }, "test");
     defer b.destroy();
     b.enqueue(1);
-    try b.forceFlush(deadline.after(io, .fromSeconds(5)));
+    try testing.expectError(error.ExportFailed, b.forceFlush(deadline.after(io, .fromSeconds(5))));
     try testing.expectEqual(@as(usize, 1), f.reports.load(.monotonic));
+}
+
+/// A sink whose exports fail until told otherwise.
+const FailingSink = struct {
+    fail: std.atomic.Value(bool) = .init(true),
+    exports: std.atomic.Value(usize) = .init(0),
+
+    fn sink(s: *FailingSink) B.Sink {
+        return .{ .ptr = s, .exportFn = exportFn, .releaseFn = releaseFn };
+    }
+
+    fn exportFn(ptr: *anyopaque, _: []const u32, _: Deadline) processor.ExportError!void {
+        const s: *FailingSink = @ptrCast(@alignCast(ptr));
+        _ = s.exports.fetchAdd(1, .monotonic);
+        if (s.fail.load(.acquire)) return error.ExportFailed;
+    }
+
+    fn releaseFn(_: *anyopaque, _: u32) void {}
+};
+
+test "shutdown reports a batch the exporter rejected while it drained" {
+    var s: FailingSink = .{};
+    const b = try B.create(testing.allocator, io, .{ .schedule_delay = .fromSeconds(60) }, s.sink(), .ignore, "test");
+    defer b.destroy();
+    b.enqueue(1);
+    try testing.expectError(error.ExportFailed, b.shutdown(deadline.after(io, .fromSeconds(5))));
+    try testing.expectEqual(@as(usize, 1), s.exports.load(.monotonic));
+    // Later callers get the first call's result.
+    try testing.expectError(error.ExportFailed, b.shutdown(deadline.after(io, .fromSeconds(5))));
+}
+
+test "forceFlush reports a batch the exporter rejected, and only that flush" {
+    var s: FailingSink = .{};
+    const b = try B.create(testing.allocator, io, .{ .max_export_batch_size = 2, .schedule_delay = .fromSeconds(60) }, s.sink(), .ignore, "test");
+    defer b.destroy();
+    for (0..5) |i| b.enqueue(@intCast(i));
+    try testing.expectError(error.ExportFailed, b.forceFlush(deadline.after(io, .fromSeconds(5))));
+    try testing.expectEqual(@as(usize, 3), s.exports.load(.monotonic));
+
+    // A failure belongs to the flush it happened in. The next flush, and
+    // a shutdown after it, succeed once the exporter recovers.
+    s.fail.store(false, .release);
+    b.enqueue(9);
+    try b.forceFlush(deadline.after(io, .fromSeconds(5)));
+    try b.shutdown(deadline.after(io, .fromSeconds(5)));
 }
 
 test "the batch span processor exports sampled spans and shuts its exporter down" {

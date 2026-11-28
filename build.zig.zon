@@ -11,7 +11,7 @@
     .name = .libo11y,
     .version = "0.1.0",
     .fingerprint = 0xb41b2588dbe9a936, // Changing this has security and trust implications.
-    .minimum_zig_version = "0.17.0",
+    .minimum_zig_version = "0.17.1",
     .dependencies = .{
         .libo11y = .{ .path = "zig" },
     },

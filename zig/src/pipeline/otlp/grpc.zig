@@ -647,7 +647,12 @@ pub const Transport = struct {
         if (!t.register(&attempt.done)) return .shutdown;
         defer t.unregister();
         var future = t.io.concurrent(Attempt.run, .{&attempt}) catch |err| switch (err) {
-            error.ConcurrencyUnavailable => return t.attemptOnce(framed, limit),
+            // An inline read could outlive the deadline, so the attempt
+            // does not run. The retry loop tries again until the deadline.
+            error.ConcurrencyUnavailable => {
+                t.setError("no concurrent task available to bound the call to {s}", .{t.url});
+                return .{ .failure = true };
+            },
         };
         const waited = attempt.done.waitTimeout(t.io, deadline.timeout(limit));
         if (attempt.finished.load(.acquire)) return future.await(t.io);

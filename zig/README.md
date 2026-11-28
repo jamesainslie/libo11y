@@ -1,7 +1,7 @@
 # libo11y Zig
 
 OpenTelemetry observability library for Zig 0.17.1 implementing the libo11y
-design contract ([docs/DESIGN.md](../docs/DESIGN.md)) and specification 1.2.0
+design contract ([docs/DESIGN.md](../docs/DESIGN.md)) and specification 1.3.0
 (semconv v1.41.0).
 
 libo11y Zig owns its telemetry pipeline over vendored `opentelemetry-proto`
@@ -190,7 +190,7 @@ Every signal consults the same sensitivity policy built from `o11y.spec`
 and any configured `app_registries`. Secret attributes are always dropped.
 PII attributes are dropped by default (`.drop`), replaced with a keyed
 HMAC-SHA256 token (`.hash`, requiring a `pii_hash_key` of at least 32 bytes),
-or kept (`.keep`). Policy violations increment the `o11y.schema.violations`
+or kept (`.allow`). Policy violations increment the `o11y.schema.violations`
 self-metric.
 
 - **Resource:** Classified once at SDK construction. Tier-0 identity
@@ -205,8 +205,9 @@ self-metric.
   spans when full and count drops.
 - **Metrics:** Attributes are classified at record time and on observable
   callback results, covering every derived view stream and every exemplar.
-  PII is always dropped on metrics and exemplars even in `.hash` mode,
-  because per-value tokens multiply series cardinality. Exemplars use
+  PII is dropped on metrics and exemplars in `.drop` and in `.hash` mode,
+  because per-value tokens multiply series cardinality. Only `.allow`
+  keeps it. Exemplars use
   trace-based filtering by default (`.trace_based`, `.always_on`,
   `.always_off`) and attach the active span's trace and span IDs from the
   explicit `o11y.Context`. Instruments cap cardinality at 2000 series and
@@ -222,12 +223,18 @@ self-metric.
   classification. Nested maps and lists are walked on dotted keys and fail
   closed past depth 16, on a cycle, or past a 2048-node budget.
   `o11y.forceEmit(ctx)` bypasses level gates for audit records and registered
-  events. Batch log queues drop the oldest record when full.
+  events. Batch log queues drop the oldest record when full. A record's
+  trace and span IDs come only from the `o11y.Context` it is emitted with.
+  A `std.log` scope becomes the record's instrumentation scope on OTLP, and
+  the attribute `otel.scope.name` on the console and extra sinks.
 - **Capture-time redaction:** `o11y.redact.Secret(T)` renders `"REDACTED"`,
   `o11y.redact.Masked(T)` renders a same-length run of `'X'`, and
   `o11y.redact.Struct(T)` applies comptime field tags (`mask`, `confidential`,
   `redact`, `secret`, `omit`; unknown tags are a compile error) consistently
-  across `std.fmt`, `std.json`, and the logger.
+  across `std.fmt`, `std.json`, and the logger. Tags apply through nested
+  structs, tagged unions, optionals, slices and arrays. A value the walk
+  cannot look inside, such as an untagged union or an error union, renders
+  as `"REDACTED"`.
 
 ## Documented gaps and caveats
 
@@ -243,8 +250,27 @@ self-metric.
   suspend and resume across OS threads, never hold a `ThreadScope` across an
   await or suspension point; prefer `sdk.logger()` with explicit `ctx`
   instead.
-- **`OTEL_PROPAGATORS`:** Not read from the environment in `zig/v0.1.0`;
-  configure custom propagators through `Options.propagators`.
+- **`OTEL_PROPAGATORS`:** Not read from the environment; configure custom
+  propagators through `Options.propagators`.
+- **Exporter variables:** `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER`
+  and `OTEL_LOGS_EXPORTER` accept `otlp` and `none`. A value that lists
+  several exporters uses the first, and a blank value means `otlp`. Any
+  other name, `console` and `prometheus` included, fails setup with
+  `error.Exporter`.
+- **Shutdown results:** `Telemetry.shutdown` and `Telemetry.forceFlush`
+  return one `?ExportError` per signal. The error is the latest export
+  failure seen while the call ran, without the collector's message. The
+  error handler (`Options.error_handler`, or stderr by default) receives
+  each failure with its detail.
+- **`o11y.shutdownOnSignals`:** POSIX only, and a compile error for a
+  Windows target. One call may be active per process at a time.
+- **Application registry files:** setup reads at most 4 MiB of a registry
+  file and rejects a larger one with `error.InvalidAppRegistry`. Pass a
+  larger registry as `.bytes` or as a parsed `.registry`.
+- **`Server-Timing` on streamed responses in `o11yhttpz`:** with the
+  default `server_timing_html_only = true`, a handler that streams its
+  response with `res.chunk` has sent its headers before the content type is
+  known, so the response carries no `Server-Timing` header.
 - **No gRPC server/client instrumentation:** OTLP/gRPC export is built in,
   but there is no gRPC server or client middleware module because Zig has no
   mature gRPC framework.
@@ -267,6 +293,13 @@ Run from the repository root:
 make zig-check               # zig fmt --check, Debug + ReleaseSafe tests, hygiene gate
 make zig-integrations-check  # enables -Dhttpz=true -Dpg=true -Dsqlite=true (Debug + ReleaseSafe)
 make zig-release-check       # consumer tarball smoke test against in-process OTLP receiver
+```
+
+To run some of the tests, give a filter in the package directory. It
+matches test names by substring and can be repeated:
+
+```sh
+cd zig && zig build test -Dtest-filter="shutdown"
 ```
 
 Set `O11YPG_TEST_DSN` (for example

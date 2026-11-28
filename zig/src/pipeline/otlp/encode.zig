@@ -159,7 +159,7 @@ pub fn traceRequest(arena: Allocator, spans: []const *const SpanData) Allocator.
             try scopes.append(arena, .empty);
             try request.resource_spans.append(arena, .{
                 .resource = try resource(arena, d.resource()),
-                .schema_url = d.resource().schema_url,
+                .schema_url = try utf8(arena, d.resource().schema_url),
             });
             break :blk resources.items.len - 1;
         };
@@ -169,7 +169,7 @@ pub fn traceRequest(arena: Allocator, spans: []const *const SpanData) Allocator.
             try scope_list.append(arena, d.scope());
             try rs.scope_spans.append(arena, .{
                 .scope = try scope(arena, d.scope()),
-                .schema_url = d.scope().schema_url,
+                .schema_url = try utf8(arena, d.scope().schema_url),
             });
             break :blk scope_list.items.len - 1;
         };

@@ -65,21 +65,21 @@ pub fn build(gpa: Allocator, in: SummaryInputs) Allocator.Error!Summary {
     else if (in.env.isHermetic())
         "none"
     else
-        in.env.getOr("OTEL_TRACES_EXPORTER", "otlp");
+        exporterName(in.env, "OTEL_TRACES_EXPORTER");
 
     var metrics: []const u8 = if (in.metrics_injected)
         "injected"
     else if (in.env.isHermetic())
         "none"
     else
-        in.env.getOr("OTEL_METRICS_EXPORTER", "otlp");
+        exporterName(in.env, "OTEL_METRICS_EXPORTER");
 
     var logs: []const u8 = if (!in.logs_enabled)
         "none"
     else if (in.logs_injected)
         "injected"
     else
-        in.env.getOr("OTEL_LOGS_EXPORTER", "otlp");
+        exporterName(in.env, "OTEL_LOGS_EXPORTER");
 
     if (in.disabled) {
         traces = "none";
@@ -109,7 +109,9 @@ pub fn build(gpa: Allocator, in: SummaryInputs) Allocator.Error!Summary {
         if (i > 0) prop_buf.writer.writeByte(',') catch return error.OutOfMemory;
         prop_buf.writer.writeAll(f) catch return error.OutOfMemory;
     }
-    const propagators_str = prop_buf.written();
+    // As in Go: a propagator that names no fields is reported as custom,
+    // because an empty value would be easy to misread.
+    const propagators_str = if (prop_buf.written().len > 0) prop_buf.written() else "custom";
 
     var attrs: std.ArrayList(log_record.KeyValue) = .empty;
     try attrs.append(arena, log_record.kv("service.name", try arena.dupe(u8, service_name)));
@@ -159,6 +161,20 @@ pub fn build(gpa: Allocator, in: SummaryInputs) Allocator.Error!Summary {
 fn appendConfig(arena: Allocator, list: *std.ArrayList(log_record.KeyValue), key: []const u8, value: []const u8) Allocator.Error!void {
     const full_key = try std.fmt.allocPrint(arena, "{s}.{s}", .{ spec.attr.config, key });
     try list.append(arena, log_record.kv(full_key, try arena.dupe(u8, value)));
+}
+
+/// The exporter an `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER` or
+/// `OTEL_LOGS_EXPORTER` variable selects. The value is a comma-separated
+/// list, and libo11y exports each signal to one place, so the first entry
+/// that is not blank counts, as in TypeScript and Rust. An unset or blank
+/// value means `otlp`.
+pub fn exporterName(env: resource_mod.Env, key: []const u8) []const u8 {
+    var entries = std.mem.splitScalar(u8, env.getOr(key, ""), ',');
+    while (entries.next()) |entry| {
+        const name = std.mem.trim(u8, entry, " \t\r\n");
+        if (name.len > 0) return name;
+    }
+    return "otlp";
 }
 
 pub fn knownSampler(name: []const u8) bool {
