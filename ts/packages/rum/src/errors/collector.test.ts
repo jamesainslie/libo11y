@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fakeElement, fakeRuntime } from "../test-support/fake-runtime.ts";
 import { errorsWith } from "./collector.ts";
+import { recordError } from "./record.ts";
 
 function event(type: string, props: Record<string, unknown>): Event {
   const e = new Event(type);
@@ -93,9 +94,14 @@ test("console capture records and still calls the original", () => {
   const rt = fakeRuntime();
   const calls: unknown[][] = [];
   const console = { error: (...a: unknown[]) => void calls.push(a) };
-  const stop = errorsWith({ console: true }, { window: new EventTarget(), console }).start(rt);
+  const env = rt.fakeEnv();
+  const stop = errorsWith(
+    { console: true },
+    { window: new EventTarget(), console, setTimeout: env.setTimeout },
+  ).start(rt);
   console.error("bad", 2);
   console.error("failed:", new TypeError("nope"));
+  env.advance(0);
   stop();
   console.error("after");
   assert.equal(calls.length, 3);
@@ -158,4 +164,71 @@ test("an aborted request is not a network error", () => {
   rt.bus.publish({ type: "request-end", spanId: "t", errorType: "timeout", at: 4 });
   stop();
   assert.deepEqual(rt.counts, ["errors.network"]);
+});
+
+test("a console.error of an error a boundary records in the same task is recorded once, as boundary", () => {
+  // React 19 logs a caught error through console.error before it calls componentDidCatch.
+  const rt = fakeRuntime();
+  const env = rt.fakeEnv();
+  const console = { error: (..._a: unknown[]) => {} };
+  const stop = errorsWith(
+    { console: true },
+    { window: new EventTarget(), console, setTimeout: env.setTimeout },
+  ).start(rt);
+  const err = new Error("render failed");
+  console.error("%o\n\nThe above error occurred in <Doc>", err);
+  recordError(rt, "boundary", err, { componentStack: "at Doc" });
+  env.advance(0);
+  stop();
+  assert.deepEqual(rt.counts, ["errors.boundary"]);
+  assert.equal(rt.events.length, 1);
+});
+
+test("an error recorded before it is logged is not recorded again from console", () => {
+  const rt = fakeRuntime();
+  const env = rt.fakeEnv();
+  const console = { error: (..._a: unknown[]) => {} };
+  const stop = errorsWith(
+    { console: true },
+    { window: new EventTarget(), console, setTimeout: env.setTimeout },
+  ).start(rt);
+  const err = new Error("handled");
+  recordError(rt, "custom", err);
+  console.error(err);
+  console.error("another", new Error("fresh"));
+  env.advance(0);
+  stop();
+  assert.deepEqual(rt.counts, ["errors.custom", "errors.console"]);
+});
+
+test("a console error still pending when the collector stops is dropped", () => {
+  const rt = fakeRuntime();
+  const env = rt.fakeEnv();
+  const console = { error: (..._a: unknown[]) => {} };
+  const stop = errorsWith(
+    { console: true },
+    { window: new EventTarget(), console, setTimeout: env.setTimeout },
+  ).start(rt);
+  console.error(new Error("late"));
+  stop();
+  env.advance(0);
+  assert.deepEqual(rt.counts, []);
+});
+
+test("a console.error of an error object while an error is being recorded is not recorded", () => {
+  const rt = fakeRuntime();
+  const env = rt.fakeEnv();
+  const console = { error: (..._a: unknown[]) => {} };
+  const stop = errorsWith(
+    { console: true },
+    { window: new EventTarget(), console, setTimeout: env.setTimeout },
+  ).start(rt);
+  rt.bus.subscribe((s) => {
+    if (s.type === "error") console.error("exporter failed", new Error("inside"));
+  });
+  console.error(new Error("outside"));
+  env.advance(0);
+  env.advance(0);
+  stop();
+  assert.deepEqual(rt.counts, ["errors.console"]);
 });

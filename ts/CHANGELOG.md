@@ -59,6 +59,30 @@ adhere to [Semantic Versioning](https://semver.org/).
   service and method.
 - `scripts/size.ts`: a size budget entry can name `external` modules,
   such as `react` for the React adapter, which are left out of its bundle.
+- `@libo11y/rum`: remote configuration, `rum.remoteConfig: remoteConfig()`.
+  Once consent is granted it fetches the gateway's
+  `/v1/config?service=<service.name>` with ETag caching and caches the
+  document in `localStorage`. A document applies to the next session:
+  `sessionSampleRate` within the limits code sets (no change by default),
+  and `collectors` that can switch an installed collector off but never
+  on. `enabled: false` switches RUM off at once. Revoking consent removes
+  the cache.
+- `@libo11y/rum/bootstrap`, the first part of a two-part loader, under
+  1 KiB. `installRumBootstrap({ consent })` holds early errors,
+  rejections, CSP violations and clicks in memory, only when consent is
+  already granted, and `setupRum` replays them into the collectors.
+  `afterLoad` imports the rest after the load event.
+- The RUM overhead benchmark (`bun run bench:browser`) and its
+  `ts-bench` workflow, which reports the task time RUM adds per view and
+  per interaction in Chromium and fails above 8 ms and 4 ms.
+- `@libo11y/rum`: `startView`, `setViewName` and `viewRendered` are
+  remembered while consent is not granted, so a route a router adapter
+  rendered before consent names the view started at the grant and ends its
+  span instead of leaving it to the 10 s cap. A soft view's start
+  breadcrumb carries its final name. With `views({ history: false })`, a
+  `bfcache_restore` view and the view a session change starts end at the
+  next paint. With `errors({ console: true })`, an error object that a
+  boundary records is not recorded again from React 19's `console.error`.
 - `@libo11y/rum`: app metrics export with delta temporality, as the RUM
   gateway requires. `@libo11y/web` on its own still exports cumulative
   metrics.

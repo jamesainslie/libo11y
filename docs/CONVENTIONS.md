@@ -88,6 +88,19 @@ every suite on Bun 1.3.13 and Node 24.
   over its budget. A package or collector that ships browser code adds
   its entry or delta in the same change. A budget increase is a reviewed
   diff of the file, with the measured number in the commit message.
+- **Overhead benchmark.** `bun run bench:browser` (in `ts/`) measures the
+  extra main-thread task time `@libo11y/rum` adds per soft navigation and
+  per click in Chromium, through the DevTools protocol's `TaskDuration`,
+  as the median of five runs with and without RUM. It writes
+  `ts/dist/bench/overhead.json`, and `bun scripts/overhead-report.ts` turns
+  that into a table and fails above `--max-view-ms` and
+  `--max-interaction-ms`. The `ts-bench` workflow runs both on pushes to
+  `main` and on pull requests that touch `ts/`, puts the table in the job
+  summary and uploads the JSON as the `rum-overhead` artifact. The limits
+  (8 ms per view, 4 ms per interaction) guard against regressions and are
+  not a target. It is a benchmark: never run it on a shared machine
+  without the owner's approval. CI runs it; elsewhere it skips itself
+  unless `LIBO11Y_BENCH=1` is set.
 - **Packing.** `ts/scripts/release.ts` sets the lockstep version
   (`version X.Y.Z`) and packs each package (`pack OUTDIR`). The packed
   `package.json` has exact versions in place of `workspace:` ranges, and

@@ -7,6 +7,7 @@ import type { LogAttributes, RecordingGate, Telemetry } from "@libo11y/core";
 import type { RUMErrorSource, RUMFrustrationType, RUMPlatform } from "@libo11y/spec";
 import type { HttpRequestInfo } from "@libo11y/web";
 import type { Context, Span, Tracer } from "@opentelemetry/api";
+import type { BootstrapEntry } from "../bootstrap/buffer.ts";
 import type { SessionManager } from "./session.ts";
 import type { SummaryAccumulator } from "./summary.ts";
 import type { ViewTracker } from "./views.ts";
@@ -39,7 +40,16 @@ export type RumSignal =
       readonly at: number;
     }
   | { readonly type: "mutation"; readonly at: number }
-  | { readonly type: "breadcrumb"; readonly kind: string; readonly label: string; readonly at: number };
+  | {
+      readonly type: "breadcrumb";
+      readonly kind: string;
+      readonly label: string;
+      readonly at: number;
+      /** Lets a later rename relabel it: a view start carries its view ID. */
+      readonly key?: string;
+    }
+  /** An event the bootstrap buffered before RUM loaded, replayed once the collectors started (R3d). */
+  | { readonly type: "bootstrap"; readonly entry: BootstrapEntry };
 
 export interface RumBus {
   publish(signal: RumSignal): void;

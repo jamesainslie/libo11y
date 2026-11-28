@@ -1,6 +1,7 @@
 /** The public options and handle of setupRum. */
 import type { HttpRequestInfo, WebSetupOptions, WebTelemetry } from "@libo11y/web";
 import type { Span } from "@opentelemetry/api";
+import type { RemoteConfig } from "./config/remote.ts";
 import type { CollectorName, RequestStartHook, RumCollector } from "./contracts/runtime.ts";
 
 /** RUM's own options, under rum in setupRum's options. Code sets every default and limit. */
@@ -25,6 +26,11 @@ export interface RumOptions {
    * sendBeacon cannot set headers.
    */
   readonly clientToken?: string;
+  /**
+   * Remote configuration from the RUM gateway, from remoteConfig(). Off unless given. It is
+   * fetched only once consent is granted.
+   */
+  readonly remoteConfig?: RemoteConfig;
 }
 
 /** Options for setupRum: the setup options of `@libo11y/web` and RUM's own. */

@@ -201,7 +201,12 @@ export function viewsWith(opts: ViewsOptions, env: ViewsEnv): RumCollector {
         arm();
       };
 
-      const start = (view: ViewState, cause: SpanContext | undefined, atSetup: boolean): void => {
+      const start = (
+        view: ViewState,
+        cause: SpanContext | undefined,
+        atSetup: boolean,
+        onScreen = false,
+      ): void => {
         const o: OpenView = {
           view,
           ...(cause === undefined ? {} : { cause }),
@@ -215,9 +220,10 @@ export function viewsWith(opts: ViewsOptions, env: ViewsEnv): RumCollector {
         else create(o);
         const capAt = view.startTime + VIEW_SPAN_CAP_MILLIS;
         timer(o, () => finish(o, Math.min(rt.now(), capAt)), Math.max(0, capAt - rt.now()));
-        if (!history) return;
-        if (view.kind === "soft") detectRender(o);
-        else if (view.kind === "bfcache_restore") paintThen(o);
+        // A restored page, or a view a session change started, is on screen already.
+        if (onScreen || view.kind === "bfcache_restore") paintThen(o);
+        else if (!history) return;
+        else if (view.kind === "soft") detectRender(o);
         else if (atSetup) {
           const loadEnd = env.navigationLoadEnd();
           if (loadEnd > 0) finish(o, Math.max(view.startTime, loadEnd));
@@ -228,14 +234,20 @@ export function viewsWith(opts: ViewsOptions, env: ViewsEnv): RumCollector {
       const offViews = rt.views.subscribe((e) => {
         if (stopped) return;
         const o = open.get(e.view.id);
-        if (e.type === "start") start(e.view, e.cause, false);
+        if (e.type === "start") start(e.view, e.cause, false, e.rendered === true);
         else if (o === undefined) return;
         else if (e.type === "rename") {
           o.view = e.view;
           o.span?.updateName(`view ${e.view.name}`);
           o.span?.setAttribute(ATTR_RUM_VIEW_NAME, e.view.name);
-        } else if (e.type === "rendered") paintThen(o);
-        else if (e.type === "end") finish(o, rt.now());
+        } else if (e.type === "rendered") {
+          // A render reported before the view started (before consent) means the view was on
+          // screen when it started; one reported during it ended getting into it.
+          if (e.at !== undefined && e.at >= o.view.startTime && !o.rendered && o.endAt === undefined) {
+            o.rendered = true;
+            finish(o, Math.min(e.at, rt.now()));
+          } else paintThen(o);
+        } else if (e.type === "end") finish(o, rt.now());
       });
       const current = rt.views.current();
       if (current !== undefined) start(current, undefined, true);

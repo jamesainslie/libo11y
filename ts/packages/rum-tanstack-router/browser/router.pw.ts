@@ -68,3 +68,29 @@ test("the initial view is named by its route template once the router resolved",
     .map((l) => l.attributes["o11y.rum.view.name"]);
   expect(names).toEqual(["/"]);
 });
+
+test("consent granted after the router rendered names the view and ends its span, not at the cap", async ({
+  page,
+  request,
+  baseURL,
+}) => {
+  const sink = createSink(request, baseURL ?? "");
+  await startRum(page, "tanstack-router-router", { endpoint: sink.endpoint, consent: "pending" });
+  await page.click('[data-o11y="Open doc"]');
+  await expect(page.locator("h1")).toHaveText("Doc 42");
+  await page.waitForTimeout(300);
+  const renderedAt = await page.evaluate(() => (globalThis as unknown as FixtureWindow).__renderedAt ?? 0);
+  const grantedAt = await page.evaluate(() => {
+    (globalThis as unknown as FixtureWindow).__rum.telemetry.consent.grant();
+    return Date.now();
+  });
+  await page.waitForFunction(() => (globalThis as unknown as FixtureWindow).__rum.telemetry.rum.sessionId());
+  await page.waitForTimeout(300);
+  await forceFlush(page);
+  // Well inside the 10 s view span cap.
+  const got = await sink.waitFor((r) => spans(r).some(named("view /documents/$docId")), 3000);
+  const view = spans(got).find(named("view /documents/$docId"));
+  expect(view?.attributes["o11y.rum.view.kind"]).toBe("initial");
+  expect(view?.end ?? 0).toBeLessThanOrEqual(grantedAt);
+  expect(Math.abs((view?.end ?? 0) - renderedAt)).toBeLessThan(1000);
+});

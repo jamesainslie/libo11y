@@ -19,6 +19,8 @@ import { createRoot } from "react-dom/client";
 
 interface FixtureOptions {
   readonly endpoint: string;
+  /** Default granted. With pending, the router renders before consent, as at a sign-in grant. */
+  readonly consent?: "pending" | "granted";
 }
 
 const LOADER_MILLIS = 150;
@@ -53,7 +55,7 @@ w.__rumStart = async (o: FixtureOptions): Promise<void> => {
     serviceVersion: "1.0.0",
     environment: "test",
     endpoint: o.endpoint,
-    consent: { initial: "granted" },
+    consent: { initial: o.consent ?? "granted" },
     transport: { compression: "none" },
     rum: { collectors: [views({ history: false }), actions(), errors()] },
   });

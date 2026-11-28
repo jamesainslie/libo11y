@@ -21,6 +21,10 @@
     "@libo11y/rum-connect connectRequestNaming": {
       "code": "import { connectRequestNaming } from \"@libo11y/rum-connect\"; (globalThis as Record<string, unknown>).__x = connectRequestNaming;\n",
       "budget": 512
+    },
+    "@libo11y/rum/bootstrap": {
+      "code": "import { afterLoad, installRumBootstrap } from \"@libo11y/rum/bootstrap\"; (globalThis as Record<string, unknown>).__x = [afterLoad, installRumBootstrap];\n",
+      "budget": 1536
     }
   },
   "deltas": {
@@ -38,6 +42,11 @@
       "base": "@libo11y/rum setupRum",
       "code": "import { setupRum, errors } from \"@libo11y/rum\"; (globalThis as Record<string, unknown>).__x = [setupRum, errors()];\n",
       "budget": 1024
+    },
+    "@libo11y/rum remoteConfig()": {
+      "base": "@libo11y/rum setupRum",
+      "code": "import { remoteConfig, setupRum } from \"@libo11y/rum\"; (globalThis as Record<string, unknown>).__x = [setupRum, remoteConfig()];\n",
+      "budget": 1536
     }
   }
 }

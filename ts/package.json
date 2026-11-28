@@ -16,7 +16,8 @@
     "test": "bun run test:bun && bun run test:node",
     "test:bun": "bun test",
     "test:node": "node --test --test-concurrency=8 \"packages/*/src/**/*.test.ts\" \"examples/*/*.test.ts\" \"scripts/**/*.test.ts\"",
-    "test:browser": "playwright test --workers=2"
+    "test:browser": "playwright test --workers=2",
+    "bench:browser": "playwright test -c playwright.bench.config.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.8",

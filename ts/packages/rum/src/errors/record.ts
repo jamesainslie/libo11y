@@ -19,6 +19,12 @@ import { normalizeError } from "./normalize.ts";
 export const MAX_ERROR_EVENTS_PER_VIEW = 100;
 
 const emitted = new WeakMap<RumRuntime, { viewId: string; n: number }>();
+const recorded = new WeakMap<RumRuntime, WeakSet<object>>();
+
+/** Whether recordError already recorded this error object, so a console.error of it is not recorded twice. */
+export function wasRecorded(rt: RumRuntime, error: object): boolean {
+  return recorded.get(rt)?.has(error) === true;
+}
 
 export interface ErrorExtra {
   /** A UI framework's component stack, appended to the stack. */
@@ -34,6 +40,11 @@ export function recordError(
   extra: ErrorExtra = {},
 ): void {
   const at = extra.at ?? rt.now();
+  if (typeof error === "object" && error !== null) {
+    const set = recorded.get(rt) ?? new WeakSet<object>();
+    recorded.set(rt, set);
+    set.add(error);
+  }
   rt.summary.count(`errors.${source}`);
   rt.bus.publish({ type: "error", source, at });
   rt.session.retain("error");

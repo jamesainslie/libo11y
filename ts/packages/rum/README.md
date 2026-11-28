@@ -13,9 +13,10 @@ npm install @libo11y/rum
 ## Status
 
 The package is in development and is not on npm yet. It has the core
-(sessions, consent, sampling, the retention buffer and view summaries) and
-the `views()`, `actions()` and `errors()` collectors. The collectors for
-vitals and resources arrive in later changes.
+(sessions, consent, sampling, the retention buffer and view summaries),
+the `views()`, `actions()` and `errors()` collectors, remote
+configuration and the two-part loader. The collectors for vitals and
+resources arrive in later changes.
 
 ## Quick start
 
@@ -152,6 +153,12 @@ requests that fail without a response. `errors({ console: true })` also
 records `console.error` calls, and still calls the original. Resource
 error messages carry the URL without its query or fragment.
 
+An error object is recorded once. React 19 logs an error that an error
+boundary caught through `console.error` before the boundary's
+`componentDidCatch` runs, so a `console.error` that logs an error object
+waits one task. When `rum.addError` records the same object first, with
+its component stack, the console call records nothing.
+
 Every error counts in the view summary, keeps the session, and is sent as
 an `o11y.rum.error` event, at most 100 events per view. Each event carries
 `o11y.rum.error.breadcrumbs`: the last 20 actions, view starts and
@@ -161,8 +168,8 @@ requests before it, oldest first, one per line, such as `click Sign
 
 ## The `rum` handle
 
-`telemetry.rum` has these methods. Each does nothing while consent is not
-granted.
+`telemetry.rum` has these methods. Each records nothing while consent is not
+granted, or while remote configuration has switched RUM off.
 
 - `startView({ name })` ends the current view and starts a soft view.
 - `setViewName(name)` names the current view, such as with its route
@@ -173,3 +180,88 @@ granted.
 - `addError(error, { source, componentStack })` records an error your app
   caught. Pass `source: "boundary"` and the component stack from a UI
   framework's error boundary.
+
+`startView`, `setViewName` and `viewRendered` are remembered while consent
+is not granted, so a router adapter can report the route before consent.
+When consent is granted, the view RUM starts takes the last name the
+adapter set and, if the route had rendered, counts as rendered. This
+applies only while the URL path is still the one the adapter reported. The
+initial view's span then ends when the route rendered, and a later view's
+span at the next paint.
+
+## Remote configuration
+
+`rum.remoteConfig: remoteConfig()` lets the RUM gateway change a few
+settings without a deploy. It is off unless you pass it, and a bundle
+without it does not carry its code.
+
+```ts
+import { actions, errors, remoteConfig, setupRum, views } from "@libo11y/rum";
+
+await setupRum({
+  // ...
+  endpoint: "/_o11y",
+  rum: {
+    sessionSampleRate: 0.1,
+    collectors: [views(), actions(), errors()],
+    remoteConfig: remoteConfig({ limits: { sessionSampleRate: [0.01, 0.5] } }),
+  },
+});
+```
+
+Once consent is granted, RUM fetches
+`GET <endpoint>/v1/config?service=<service.name>`, such as
+`/_o11y/v1/config`, with `client_token` when `rum.clientToken` is set.
+Pass `remoteConfig({ url })` for another URL. The request uses the
+uninstrumented `fetch`, sends no credentials, and sends `If-None-Match`
+with the cached ETag, so an unchanged document costs a `304`. RUM looks
+again every 5 minutes while the page is visible (`refreshMillis`). A
+`404` means the app has no remote configuration, and a failure keeps what
+RUM has.
+
+The gateway answers `{"version": "<16 hex>", "config": {...}}`. RUM reads
+three keys inside `config` and ignores the rest:
+
+| Key                 | Type               | Effect                                                                                             |
+| ------------------- | ------------------ | -------------------------------------------------------------------------------------------------- |
+| `enabled`           | boolean            | `false` switches RUM off at once: the collectors stop and the view ends. `true` starts them again. |
+| `sessionSampleRate` | number, 0 to 1     | The head-sampling rate of new sessions, kept within `limits.sessionSampleRate`.                    |
+| `collectors`        | object of booleans | `false` switches off a collector you installed. `true` never adds one you did not install.         |
+
+Code sets the limits. Without `limits.sessionSampleRate`, the range is
+`[rate, rate]`, so the rate does not move. A document applies to the next
+session, never to the running one, except for `enabled: false`. The
+newest document and the one before it are cached in `localStorage` under
+`libo11y.rum.config`, so a page that resumes a session keeps the document
+that session started under. A new session takes the newest. Each session
+records the version it started under as `o11y.rum.config.version` on its
+`o11y.rum.session.start` event and its view summaries. Revoking consent
+removes the cache.
+
+## Loading
+
+RUM is large next to the code a page needs to render, so load it in two
+parts. `@libo11y/rum/bootstrap` is under 1 KiB minified and gzip-compressed
+and imports nothing else. Put it in your entry chunk and import the rest
+after the page loaded:
+
+```ts
+import { afterLoad, installRumBootstrap } from "@libo11y/rum/bootstrap";
+
+installRumBootstrap({ consent: knownConsent });
+afterLoad(() => import("./rum.ts"));
+```
+
+`./rum.ts` calls `setupRum` as usual. `afterLoad` runs its callback once
+the page's `load` event has fired, in an idle callback where the browser
+has one.
+
+`installRumBootstrap` takes the consent state you will pass to
+`setupRum`. With `"pending"`, the default, it records nothing at all. With
+`"granted"`, it holds early uncaught errors, unhandled rejections, CSP
+violations and clicks in memory, never in storage, up to 100 of them
+(`maxEntries`), and stops listening after 30 seconds. When `setupRum`
+starts with consent granted, the collectors you installed record these with
+their original times: `errors()` the errors, `actions()` the clicks. A
+page whose `setupRum` starts with consent pending discards them, even if
+consent is granted later.

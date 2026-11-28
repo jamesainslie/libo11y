@@ -1,0 +1,63 @@
+# The RUM overhead benchmark: the extra main-thread task time @libo11y/rum adds
+# per soft navigation and per click, in Chromium. It is a benchmark, so it runs
+# here and never on a shared machine. The limits are a first guard against
+# regressions, not a target. A separate workflow, so it runs only when ts/
+# changes.
+name: ts-bench
+
+on:
+  push:
+    branches: [main]
+    paths: ["ts/**", ".github/workflows/ts-bench.yml"]
+  pull_request:
+    paths: ["ts/**", ".github/workflows/ts-bench.yml"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ts-bench-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  ts-bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.13"
+      - uses: actions/cache@v6
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('ts/bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24.x"
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('ts/bun.lock') }}
+      - run: make ts-install
+      - name: Install Playwright's Chromium
+        working-directory: ts
+        run: bun x --no-install playwright install --with-deps chromium
+      - name: Run the overhead benchmark
+        working-directory: ts
+        run: bun run bench:browser
+      - name: Report the overhead
+        working-directory: ts
+        run: >-
+          bun scripts/overhead-report.ts dist/bench/overhead.json
+          --summary "$GITHUB_STEP_SUMMARY"
+          --max-view-ms 8 --max-interaction-ms 4
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: rum-overhead
+          path: ts/dist/bench/overhead.json
+          if-no-files-found: ignore

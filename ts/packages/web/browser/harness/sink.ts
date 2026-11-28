@@ -29,6 +29,10 @@ export interface TestSink {
   script(responses: readonly ScriptedResponse[]): Promise<void>;
   setOffline(offline: boolean): Promise<void>;
   received(): Promise<readonly SinkRequest[]>;
+  /** Sets the remote configuration document GET <endpoint>/v1/config serves. */
+  setConfig(doc: { readonly version: string; readonly config: unknown }): Promise<void>;
+  /** How many config requests the sink answered. */
+  configRequests(): Promise<number>;
   /** Polls received() until predicate holds or timeoutMillis passes (default 10000), then returns it. */
   waitFor(
     predicate: (requests: readonly SinkRequest[]) => boolean,
@@ -56,6 +60,13 @@ export function createSink(request: APIRequestContext, baseURL: string): TestSin
       await request.post(new URL("offline", base).href, { data: { offline } });
     },
     received,
+    async setConfig(doc) {
+      await request.post(new URL("config", base).href, { data: doc });
+    },
+    async configRequests() {
+      const res = await request.get(new URL("received", base).href);
+      return ((await res.json()) as { configRequests: number }).configRequests;
+    },
     async waitFor(predicate, timeoutMillis = 10_000) {
       const deadline = Date.now() + timeoutMillis;
       for (;;) {
