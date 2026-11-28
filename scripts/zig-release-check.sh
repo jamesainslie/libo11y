@@ -122,7 +122,7 @@ cat >"$consumer/build.zig.zon" <<'EOF'
     .name = .consumer,
     .version = "0.0.0",
     .fingerprint = 0x705b3727de3b6939,
-    .minimum_zig_version = "0.17.0",
+    .minimum_zig_version = "0.17.1",
     .dependencies = .{},
     .paths = .{
         "build.zig",

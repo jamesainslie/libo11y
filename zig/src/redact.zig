@@ -28,8 +28,9 @@ pub const Protection = enum(u8) {
 
     /// Maps a tag string or enum literal to a protection level at comptime.
     /// Recognizes `mask`, `redact`, `omit`, and the spec synonyms
-    /// `confidential` (mask) and `secret` (redact). Any other tag is a
-    /// compile error.
+    /// `confidential` (mask) and `secret` (redact). An empty tag and
+    /// `passthrough` mean no protection, which is what an untagged field
+    /// has. Any other tag is a compile error.
     pub fn fromComptimeTag(comptime tag: anytype) Protection {
         const T = @TypeOf(tag);
         if (T == Protection) return tag;
