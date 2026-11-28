@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
-import { stripCssUrls } from "./css.ts";
+import { stripCssUrls, stripCssValue } from "./css.ts";
 import { maskText } from "./mask.ts";
 import { resolvePolicy } from "./policy.ts";
 import { type RrwebEvent, type ScrubContext, scrubEvent } from "./scrub.ts";
@@ -33,14 +33,20 @@ test("mask-text vectors", () => {
   for (const c of cases) assert.equal(maskText(c.in), c.out, JSON.stringify(c.in));
 });
 
-test("url, srcset, css and content vectors", () => {
+test("url, srcset, css, css-value and content vectors", () => {
   const v = read<{
     allow: string[];
-    cases: { kind: "url" | "srcset" | "css" | "content"; in: string; out: string }[];
+    cases: { kind: "url" | "srcset" | "css" | "css-value" | "content"; in: string; out: string }[];
   }>("urls.json");
   const allow = new Set(v.allow);
-  const strip = { url: stripUrl, srcset: stripSrcset, css: stripCssUrls, content: stripContent };
-  for (const kind of ["url", "srcset", "css", "content"] as const)
+  const strip = {
+    url: stripUrl,
+    srcset: stripSrcset,
+    css: stripCssUrls,
+    "css-value": stripCssValue,
+    content: stripContent,
+  };
+  for (const kind of ["url", "srcset", "css", "css-value", "content"] as const)
     assert.ok(
       v.cases.some((c) => c.kind === kind),
       kind,

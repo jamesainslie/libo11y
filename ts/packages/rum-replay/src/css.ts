@@ -160,14 +160,28 @@ function readBareRun(css: string, i: number): { readonly value: string; readonly
 
 /** css with every URL stripped by stripUrl and comments removed. See the file comment. */
 export function stripCssUrls(css: string, allow: ReadonlySet<string>): string {
+  return strip(css, allow, false);
+}
+
+/**
+ * One declaration value with no property name before it, as in an rrweb style attribute change
+ * or a CSSOM setProperty, stripped as stripCssUrls strips the value after "property:". A bare
+ * URL at its start is a URL.
+ */
+export function stripCssValue(value: string, allow: ReadonlySet<string>): string {
+  return strip(value, allow, true);
+}
+
+/** stripCssUrls, starting inside a declaration value when value is true. */
+function strip(css: string, allow: ReadonlySet<string>, value: boolean): string {
   let out = "";
   let i = 0;
   /** Where the current statement starts in out: after the start, "{", "}" or ";". */
   let statement = 0;
   /** Inside a declaration value. */
-  let inValue = false;
+  let inValue = value;
   /** At the start of the value or after whitespace, ",", "(" or a comment in it. */
-  let boundary = false;
+  let boundary = value;
   while (i < css.length) {
     const c = css[i] ?? "";
     if (c === "/" && css[i + 1] === "*") {

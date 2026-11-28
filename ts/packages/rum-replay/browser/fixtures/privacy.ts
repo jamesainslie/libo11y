@@ -13,6 +13,7 @@ import { type RrwebEvent, scrubEvent } from "../../src/scrub.ts";
 
 const HTML = `
 <style>.bg{background:url(/s.png?token=LeakCss)}</style>
+<style data-o11y-mask id="masked-style">.m{color:red}</style>
 <div class="public" id="pub">
   <h1>Public headline</h1>
   <span data-o11y-mask id="masked-in-public">LeakMaskedInPublic</span>
@@ -158,6 +159,12 @@ record({
     document
       .getElementById("plain")
       ?.style.setProperty("background-image", "url(/b.png?token=LeakSetProperty)");
+    // A custom property set from script arrives as a style diff value with no property name.
+    document.getElementById("plain")?.style.setProperty("--avatar", "/api/avatar?sig=LeakBareProp");
+    // CSS-in-JS writes rules through the CSSOM; a masked style element's rules must not survive.
+    const masked = (document.getElementById("masked-style") as HTMLStyleElement | null)?.sheet;
+    masked?.insertRule('.who::after{content:"LeakMaskedRule"}', 0);
+    (masked?.cssRules[0] as CSSStyleRule | undefined)?.style.setProperty("--who", '"LeakMaskedDecl"');
     if (g) g.fillText("LeakCanvasText", 0, 10);
   },
   custom(): void {

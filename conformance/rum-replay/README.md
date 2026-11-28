@@ -27,7 +27,7 @@ which also masks to one `*`.
 
 ## `urls.json`
 
-`{ "allow": [...], "cases": [ { "kind": "url" | "srcset" | "css" | "content", "in": "...", "out": "..." } ] }`.
+`{ "allow": [...], "cases": [ { "kind": "url" | "srcset" | "css" | "css-value" | "content", "in": "...", "out": "..." } ] }`.
 `allow` is the query parameter allow-list for every case.
 - `url` cases strip one URL, as `stripUrl` does. The rules are textual, not
   a URL parser's: a port must not use WHATWG or `net/url` normalization.
@@ -37,6 +37,10 @@ which also masks to one `*`.
 - `css` cases strip the URLs in a piece of CSS, as `stripCssUrls` does. That
   includes bare URLs in a declaration value, such as a custom property
   (`--bg: https://cdn.example/a.png?token=1`).
+- `css-value` cases strip the URLs in one declaration value, with no
+  property name before it, as `stripCssValue` does: a value in an rrweb
+  style attribute change or a CSSOM `setProperty`. The value is read as if
+  it followed `property:`, so a bare URL at its start is stripped.
 - `content` cases strip a kept `content` attribute, as `stripContent` does.
   A value that starts with a URL scheme, `/` or `\` is a URL (`og:url`,
   `og:image`, `twitter:image`) and is stripped like any URL. A refresh value
@@ -83,6 +87,11 @@ The scrubber's context answers five questions about a node ID:
 The vectors answer them from the four fields above: `textAllowed` and
 `stylesheetAllowed` both from `text_allowed_ids`. Anything not listed is not
 allowed, has no known parent tag and is not editable.
+
+CSSOM rule and declaration edits aimed at an element ID (incremental
+sources 8 and 13 with an `id`) are kept only when `stylesheetAllowed` holds
+for that ID, as its inlined stylesheet is. An edit to a constructed
+stylesheet, named by `styleId` alone, is kept with its URLs stripped.
 
 The client's DOM context answers `textAllowed` false for a style or link
 element itself, so a text attribute on one, or a text change aimed at its own

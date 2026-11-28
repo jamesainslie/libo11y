@@ -1,0 +1,88 @@
+{
+  "description": "CSSOM rule and declaration edits aimed at a style element whose stylesheet is not allowed (under a mask or block selector, or unknown) are dropped, as its inlined stylesheet is. Edits to a constructed stylesheet, named by styleId alone, are kept with URLs stripped.",
+  "query_allow_list": [
+    "page"
+  ],
+  "text_allowed_ids": [],
+  "editable_ids": [],
+  "blocked_ids": [],
+  "parent_tags": {},
+  "secrets": [
+    "JaneMaskedRule",
+    "JaneMaskedDecl",
+    "JaneMaskedReplace",
+    "SECRET"
+  ],
+  "allowed_texts": [],
+  "events": [
+    {
+      "type": 3,
+      "timestamp": 1,
+      "data": {
+        "source": 8,
+        "id": 3,
+        "adds": [
+          {
+            "rule": ".who::after{content:\"JaneMaskedRule\"}",
+            "index": 0
+          }
+        ]
+      }
+    },
+    {
+      "type": 3,
+      "timestamp": 2,
+      "data": {
+        "source": 13,
+        "id": 3,
+        "index": [
+          0
+        ],
+        "set": {
+          "property": "--name",
+          "value": "\"JaneMaskedDecl\"",
+          "priority": ""
+        }
+      }
+    },
+    {
+      "type": 3,
+      "timestamp": 3,
+      "data": {
+        "source": 8,
+        "id": 4,
+        "replaceSync": ".x::after{content:\"JaneMaskedReplace\"}"
+      }
+    },
+    {
+      "type": 3,
+      "timestamp": 4,
+      "data": {
+        "source": 8,
+        "styleId": 2,
+        "adds": [
+          {
+            "rule": "b{background:url(/y.png?token=SECRET&page=1)}",
+            "index": 0
+          }
+        ]
+      }
+    }
+  ],
+  "expected": [
+    {
+      "type": 3,
+      "timestamp": 4,
+      "data": {
+        "source": 8,
+        "styleId": 2,
+        "adds": [
+          {
+            "rule": "b{background:url(\"/y.png?page=1\")}",
+            "index": 0
+          }
+        ]
+      }
+    }
+  ]
+}

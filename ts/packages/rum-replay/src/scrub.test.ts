@@ -427,7 +427,17 @@ test("CSSOM edits keep their rules with URLs stripped", () => {
     removes: [{ index: [1, 2] }],
     replaceSync: "@import '/t.css?token=SECRET';",
   };
-  assert.deepEqual(scrubEvent({ type: 3, timestamp: 1, data: rule }, policy, none), {
+  const styleOk: ScrubContext = { ...none, stylesheetAllowed: (id) => id === 3 };
+  assert.equal(
+    scrubEvent({ type: 3, timestamp: 1, data: rule }, policy, none),
+    undefined,
+    "an edit to a stylesheet that is not allowed is dropped",
+  );
+  assert.equal(
+    scrubEvent({ type: 3, timestamp: 1, data: { source: 13, id: 3, index: [0] } }, policy, none),
+    undefined,
+  );
+  assert.deepEqual(scrubEvent({ type: 3, timestamp: 1, data: rule }, policy, styleOk), {
     type: 3,
     timestamp: 1,
     data: {

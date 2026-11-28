@@ -1,0 +1,105 @@
+{
+  "description": "A declaration value without its property name, in a style attribute change or a CSSOM setProperty, has its bare URLs stripped as in a declaration (css-value), so a custom property set from script keeps no query.",
+  "query_allow_list": [
+    "page"
+  ],
+  "text_allowed_ids": [],
+  "editable_ids": [],
+  "blocked_ids": [],
+  "parent_tags": {},
+  "secrets": [
+    "sig-avatar",
+    "sig-bg",
+    "sig-set",
+    "sig-url"
+  ],
+  "allowed_texts": [],
+  "events": [
+    {
+      "type": 3,
+      "timestamp": 1,
+      "data": {
+        "source": 0,
+        "texts": [],
+        "attributes": [
+          {
+            "id": 5,
+            "attributes": {
+              "style": {
+                "--avatar": "/api/avatar?sig=sig-avatar",
+                "--bg": [
+                  "https://cdn.example/a.png?sig=sig-bg&page=2",
+                  "important"
+                ],
+                "background": "url(/b.png?sig=sig-url) no-repeat",
+                "color": false
+              }
+            }
+          }
+        ],
+        "removes": [],
+        "adds": []
+      }
+    },
+    {
+      "type": 3,
+      "timestamp": 2,
+      "data": {
+        "source": 13,
+        "styleId": 2,
+        "index": [
+          0
+        ],
+        "set": {
+          "property": "--u",
+          "value": "//cdn.example/x?sig=sig-set",
+          "priority": ""
+        }
+      }
+    }
+  ],
+  "expected": [
+    {
+      "type": 3,
+      "timestamp": 1,
+      "data": {
+        "source": 0,
+        "texts": [],
+        "attributes": [
+          {
+            "id": 5,
+            "attributes": {
+              "style": {
+                "--avatar": "\"/api/avatar\"",
+                "--bg": [
+                  "\"https://cdn.example/a.png?page=2\"",
+                  "important"
+                ],
+                "background": "url(\"/b.png\") no-repeat",
+                "color": false
+              }
+            }
+          }
+        ],
+        "removes": [],
+        "adds": []
+      }
+    },
+    {
+      "type": 3,
+      "timestamp": 2,
+      "data": {
+        "source": 13,
+        "styleId": 2,
+        "index": [
+          0
+        ],
+        "set": {
+          "property": "--u",
+          "value": "\"//cdn.example/x\"",
+          "priority": ""
+        }
+      }
+    }
+  ]
+}

@@ -89,6 +89,9 @@ const SECRETS = [
   "LeakDecl",
   "LeakAdopted",
   "LeakSetProperty",
+  "LeakBareProp",
+  "LeakMaskedRule",
+  "LeakMaskedDecl",
   "LeakCanvasText",
 ];
 

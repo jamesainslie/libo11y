@@ -42,7 +42,7 @@
  *
  * The scrubber never mutates its input. It returns new objects.
  */
-import { stripCssUrls } from "./css.ts";
+import { stripCssUrls, stripCssValue } from "./css.ts";
 import { maskText } from "./mask.ts";
 import {
   CSS_ATTRIBUTES,
@@ -127,10 +127,10 @@ function textValue(value: string, rule: TextRule, policy: ReplayPolicy): string 
 function styleDiff(diff: Json, policy: ReplayPolicy): Mutable {
   const out: Mutable = {};
   for (const [prop, v] of Object.entries(diff)) {
-    if (typeof v === "string") out[prop] = stripCssUrls(v, policy.queryAllowList);
+    if (typeof v === "string") out[prop] = stripCssValue(v, policy.queryAllowList);
     else if (v === false) out[prop] = false;
     else if (Array.isArray(v) && typeof v[0] === "string") {
-      out[prop] = [stripCssUrls(v[0], policy.queryAllowList), typeof v[1] === "string" ? v[1] : ""];
+      out[prop] = [stripCssValue(v[0], policy.queryAllowList), typeof v[1] === "string" ? v[1] : ""];
     }
   }
   return out;
@@ -386,6 +386,7 @@ function incremental(data: Json, policy: ReplayPolicy, ctx: ScrubContext): Mutab
         ...booleans(data, ["muted", "loop"]),
       };
     case 8: {
+      if (isNum(data.id) && !ctx.stylesheetAllowed(data.id)) return undefined;
       const out: Mutable = { source, ...numbers(data, ["id", "styleId"]) };
       if (Array.isArray(data.adds)) out.adds = defined(data.adds.map((r) => rule(r, allow)));
       if (Array.isArray(data.removes)) {
@@ -402,13 +403,14 @@ function incremental(data: Json, policy: ReplayPolicy, ctx: ScrubContext): Mutab
       return out;
     }
     case 13: {
+      if (isNum(data.id) && !ctx.stylesheetAllowed(data.id)) return undefined;
       const out: Mutable = { source, ...numbers(data, ["id", "styleId"]) };
       out.index = list(data.index).filter(isNum);
       if (isObj(data.set) && typeof data.set.property === "string") {
         const v = data.set.value;
         out.set = {
           property: data.set.property,
-          value: typeof v === "string" ? stripCssUrls(v, allow) : null,
+          value: typeof v === "string" ? stripCssValue(v, allow) : null,
           ...(data.set.priority === "important" || data.set.priority === ""
             ? { priority: data.set.priority }
             : {}),
