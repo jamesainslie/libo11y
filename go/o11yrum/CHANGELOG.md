@@ -31,8 +31,9 @@ adheres to [Semantic Versioning](https://semver.org/).
   that file every request answers 401. Erasure deletes every object of
   the session, is idempotent and reports what it removed. The
   `o11yrum-gateway` command serves the API on its own listener,
-  `replay.read_listen`, never on the public `/_o11y/` path, and refuses a
-  `read_listen` that overlaps `listen`.
+  `replay.read_listen`, never on the public `/_o11y/` path. The
+  configuration is refused when `read_listen` overlaps `listen` or has no
+  `read_token_file`.
 - Replay retention: `replay.retention` (default 720h). The read API never
   serves a segment stored longer ago, and a sweeper deletes older replay
   objects every `replay.sweep_interval` (default 1h, `0s` disables).

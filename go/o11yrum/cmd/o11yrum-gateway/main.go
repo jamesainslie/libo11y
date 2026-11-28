@@ -18,13 +18,15 @@
 // With an object_store configured, the gateway accepts source map uploads
 // at /_o11y/v1/sourcemaps and symbolicates error stacks, and stores the
 // session replay segments of apps that enable replay at
-// /_o11y/v1/replay. With replay.read_listen set, it also serves the
-// replay read API (list, read and erase a session's recording) on that
-// address, behind the bearer tokens in replay.read_token_file. That
-// listener is cluster-internal only: never route the ingress to it. An s3
-// store
-// authenticates with the AWS SDK's default credential chain, so on EKS
-// Pod Identity or IRSA supplies credentials and no static key is needed.
+// /_o11y/v1/replay. Every replay.sweep_interval it deletes the stored
+// replay segments older than replay.retention. With replay.read_listen
+// set, it also serves the replay read API (list, read and erase a
+// session's recording) on that address, behind the bearer tokens in
+// replay.read_token_file. That
+// listener is cluster-internal only: never route the ingress to it. On
+// shutdown both listeners drain together. An s3 store authenticates with
+// the AWS SDK's default credential chain, so on EKS Pod Identity or IRSA
+// supplies credentials and no static key is needed.
 package main
 
 import (

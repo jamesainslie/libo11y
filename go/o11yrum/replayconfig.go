@@ -43,8 +43,8 @@ type ReplayConfig struct {
 	// API is cluster-internal only: it must never be exposed through the
 	// public /_o11y/ path or the ingest address, so it cannot be the
 	// listen address, and the ingress in front of the gateway must not
-	// route to it. It needs ReadTokenFile. The library ignores it; see
-	// Handler.ReplayReadHandler.
+	// route to it. It needs ReadTokenFile. The library checks it against
+	// Listen but does not serve it; see Handler.ReplayReadHandler.
 	ReadListen string `yaml:"read_listen"`
 	// ReadTokenFile holds the bearer tokens the read API accepts, one per
 	// line. Blank lines and lines starting with # are ignored, and each

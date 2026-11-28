@@ -342,15 +342,19 @@ session's recording. It is cluster-internal only:
 - The `o11yrum-gateway` command serves it on its own listener,
   `replay.read_listen`, and never under the public `/_o11y/` path or on
   the `listen` address. A configuration whose `read_listen` is `listen`,
-  or the same port on an address `listen` also binds, is refused.
+  or the same port on an address `listen` also binds, is refused. So is
+  a `read_listen` without `read_token_file`.
 - Do not route an ingress, a public load balancer or a CDN to it. Give it
   its own container port and, if anything outside the pod needs it, its
   own ClusterIP Service, with a NetworkPolicy that admits only the player
-  backend.
+  backend. A Service reaches it only when `read_listen` binds the pod's
+  address, such as `:9090`. A loopback address such as `127.0.0.1:9090`
+  admits callers in the same pod only.
 - Every request needs `Authorization: Bearer <token>` with a token from
   `replay.read_token_file`: one per line, blank lines and `#` comments
-  ignored, each at least 16 characters. Without the file every request
-  answers 401. Several lines let a token rotate without downtime: add the
+  ignored, each at least 16 characters. A library user who serves
+  `Handler.ReplayReadHandler` without the file gets 401 for every
+  request. Several lines let a token rotate without downtime: add the
   new one, restart, move the caller over, remove the old one, restart.
   The gateway reads the file at start.
 
@@ -362,8 +366,8 @@ replay:
 
 | Route | Answer | Refusals |
 |---|---|---|
-| `GET /v1/replay/{service}/sessions/{session}` | 200 `{"service","session","segments":[...]}`: each unexpired segment's metadata object, sorted by segment | 401, 400 bad session, 404 unknown or non-recording service or no unexpired segment, 503 |
-| `GET /v1/replay/{service}/sessions/{session}/segments/{segment}` | 200 the stored segment, gzipped JSON, with `Content-Encoding: gzip` | 401, 400 bad session or segment, 404 unknown, missing or expired, 503 |
+| `GET /v1/replay/{service}/sessions/{session}` | 200 `{"service","session","segments":[...]}`: each unexpired segment's metadata object, sorted by segment | 401, 400 bad session, 404 unknown or non-recording service or no unexpired segment, 503 with `Retry-After: 5` |
+| `GET /v1/replay/{service}/sessions/{session}/segments/{segment}` | 200 the stored segment, gzipped JSON, with `Content-Encoding: gzip` | 401, 400 bad session or segment, 404 unknown, missing or expired, 503 with `Retry-After: 5` |
 | `DELETE /v1/replay/{service}/sessions/{session}` | 200 `{"service","session","deleted":<objects>,"segments":[...]}` | 401, 400 bad session, 404 unknown service, 503 with `Retry-After: 5` and what was deleted so far |
 
 Every answer carries `Cache-Control: private, no-store` and no CORS
@@ -421,7 +425,9 @@ an `exec` probe or hook cannot work. Probe over HTTP.
 
 Mount the configuration from a ConfigMap under the key `config.yaml`, and
 each upload token from a Secret at the path its `upload_token_file`
-names. `OTEL_EXPORTER_OTLP_ENDPOINT` names the collector for the
+names. Mount the replay read tokens from a Secret at
+`replay.read_token_file` in the same way.
+`OTEL_EXPORTER_OTLP_ENDPOINT` names the collector for the
 gateway's own telemetry, and for the batches too unless the configuration
 sets `sinks.otlp.endpoint`. On EKS, give the
 service account an S3 role through Pod Identity or IRSA when the object
