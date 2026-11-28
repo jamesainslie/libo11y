@@ -31,6 +31,7 @@ import io.opentelemetry.api.metrics.ObservableLongGauge;
 import io.opentelemetry.api.metrics.ObservableLongMeasurement;
 import io.opentelemetry.api.metrics.ObservableLongUpDownCounter;
 import io.opentelemetry.context.Context;
+import io.opentelemetry.context.ContextKey;
 import io.opentelemetry.sdk.common.CompletableResultCode;
 import io.opentelemetry.sdk.logs.LogRecordProcessor;
 import io.opentelemetry.sdk.logs.ReadWriteLogRecord;
@@ -234,7 +235,18 @@ public final class PolicyBridges {
 
     // ---------------- Log redaction ----------------
 
+    /**
+     * Enforces the sensitivity policy on every record the SDK's logger provider emits, whichever
+     * bridge produced it. libo11y registers one instance in front of all of its log processors, so
+     * each record is classified, and each violation counted, exactly once. The SDK's record cannot
+     * remove an attribute, so the delegate receives a view whose reads return the classified
+     * attributes; a record with nothing classified is passed through untouched. Records from
+     * libo11y's own {@code StructuredLogger} are already classified (see {@link #markClassified})
+     * and pass through, so their tokens match the console's. The record body is not classified.
+     */
     public static final class PolicyLogRecordProcessor implements LogRecordProcessor {
+        private static final ContextKey<Boolean> CLASSIFIED_KEY = ContextKey.named("libo11y.log.classified");
+
         private final SensitivityPolicy policy;
         private final LogRecordProcessor delegate;
 
@@ -243,35 +255,25 @@ public final class PolicyBridges {
             this.delegate = delegate;
         }
 
-        @Override
-        public void onEmit(Context context, ReadWriteLogRecord logRecord) {
-            Attributes raw = logRecord.toLogRecordData().getAttributes();
-            if (!raw.isEmpty()) {
-                Attributes clean = policy.classifyAttributes(raw, Spec.Signal.LOGS, true);
-                // Replace by clearing removed keys and updating changed keys
-                raw.forEach((key, val) -> {
-                    Object kept = clean.get(key);
-                    if (kept == null && clean.get(AttributeKey.stringKey(key.getKey())) != null) {
-                        // Hash mode converted non-string PII to string token
-                        logRecord.setAttribute(key, null);
-                        logRecord.setAttribute(
-                                AttributeKey.stringKey(key.getKey()),
-                                clean.get(AttributeKey.stringKey(key.getKey())));
-                    } else if (kept == null) {
-                        logRecord.setAttribute(key, null);
-                    } else if (!kept.equals(val)) {
-                        setTyped(logRecord, key, kept);
-                    }
-                });
-            }
-            if (delegate != null) {
-                delegate.onEmit(context, logRecord);
-            }
+        /**
+         * Returns {@code context} marked as carrying a record that libo11y's structured logger has
+         * already classified. Internal to libo11y: a record emitted with this mark bypasses the policy.
+         */
+        public static Context markClassified(Context context) {
+            return context.with(CLASSIFIED_KEY, Boolean.TRUE);
         }
 
-        @SuppressWarnings("unchecked")
-        private static <T> void setTyped(ReadWriteLogRecord rec, AttributeKey<T> key, Object value) {
-            rec.setAttribute(key, (T) value);
+        @Override
+        public void onEmit(Context context, ReadWriteLogRecord logRecord) {
+            if (delegate == null) {
+                return;
+            }
+            if (context != null && Boolean.TRUE.equals(context.get(CLASSIFIED_KEY))) {
+                delegate.onEmit(context, logRecord);
+                return;
+            }
+            Attributes clean = LogAttributeClassifier.classify(logRecord.getAttributes(), policy);
+            delegate.onEmit(context, clean == null ? logRecord : new ClassifiedLogRecord(logRecord, policy, clean));
         }
 
         @Override

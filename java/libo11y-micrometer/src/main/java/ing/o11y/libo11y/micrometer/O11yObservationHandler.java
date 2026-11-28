@@ -6,6 +6,7 @@ import ing.o11y.libo11y.spec.generated.Spec;
 import io.micrometer.common.KeyValue;
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationHandler;
+import io.opentelemetry.context.Context;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -55,7 +56,7 @@ public final class O11yObservationHandler implements ObservationHandler<Observat
             attrs.put(kv.getKey(), kv.getValue());
         }
 
-        O11yRecord record = O11yRecord.current();
+        O11yRecord record = O11yRecord.fromContext(Context.current());
         if (record != null) {
             // The record's owner decides the outcome and duration of the wide event.
             attrs.remove(Spec.Attributes.OUTCOME);

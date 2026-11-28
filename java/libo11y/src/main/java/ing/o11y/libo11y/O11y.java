@@ -12,7 +12,6 @@ import io.opentelemetry.api.GlobalOpenTelemetry;
 import io.opentelemetry.api.baggage.propagation.W3CBaggagePropagator;
 import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.api.common.Attributes;
-import io.opentelemetry.api.logs.Severity;
 import io.opentelemetry.api.metrics.LongCounter;
 import io.opentelemetry.api.metrics.MeterProvider;
 import io.opentelemetry.api.trace.propagation.W3CTraceContextPropagator;
@@ -91,13 +90,10 @@ public final class O11y {
             });
             // Run startup canary BEFORE installing globals so a rejecting sink fails setup cleanly.
             try {
-                telemetry.logger().emit(
+                telemetry.logger().emitStartupCanary(
                         Context.current(),
-                        Severity.INFO,
                         Spec.Events.TELEMETRY_CONFIGURED,
-                        Spec.Events.TELEMETRY_CONFIGURED,
-                        telemetry.effectiveConfig(),
-                        true);
+                        telemetry.effectiveConfig());
             } catch (O11yException ex) {
                 if (ex.code() == O11yException.ErrorCode.CANARY_REJECTED) {
                     throw ex;
@@ -280,22 +276,20 @@ public final class O11y {
         String logExporterLabel = env.logs().exporter();
         String logEndpointSanitized = "";
         if (!env.sdkDisabled()) {
+            // One policy processor in front of every log processor, so a record is classified once.
+            List<LogRecordProcessor> logProcessors = new ArrayList<>();
             if (options.logRecordExporter() != null) {
                 logExporterLabel = "custom";
-                loggerBuilder.addLogRecordProcessor(
-                        new PolicyBridges.PolicyLogRecordProcessor(
-                                policy,
-                                BatchLogRecordProcessor.builder(options.logRecordExporter()).build()));
+                logProcessors.add(BatchLogRecordProcessor.builder(options.logRecordExporter()).build());
             } else if ("otlp".equals(env.logs().exporter())) {
                 logEndpointSanitized = EndpointSanitizer.sanitize(env.logs().endpoint());
                 LogRecordExporter otlpLog = buildOtlpLogExporter(env.logs());
-                loggerBuilder.addLogRecordProcessor(
-                        new PolicyBridges.PolicyLogRecordProcessor(
-                                policy,
-                                BatchLogRecordProcessor.builder(otlpLog).build()));
+                logProcessors.add(BatchLogRecordProcessor.builder(otlpLog).build());
             }
-            for (LogRecordProcessor lp : options.logRecordProcessors()) {
-                loggerBuilder.addLogRecordProcessor(new PolicyBridges.PolicyLogRecordProcessor(policy, lp));
+            logProcessors.addAll(options.logRecordProcessors());
+            if (!logProcessors.isEmpty()) {
+                loggerBuilder.addLogRecordProcessor(new PolicyBridges.PolicyLogRecordProcessor(
+                        policy, LogRecordProcessor.composite(logProcessors)));
             }
         }
         SdkLoggerProvider sdkLoggerProvider = loggerBuilder.build();

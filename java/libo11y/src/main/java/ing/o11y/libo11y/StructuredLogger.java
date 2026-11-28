@@ -1,5 +1,6 @@
 package ing.o11y.libo11y;
 
+import ing.o11y.libo11y.internal.PolicyBridges;
 import ing.o11y.libo11y.internal.SensitivityPolicy;
 import ing.o11y.libo11y.spec.generated.Spec;
 import io.opentelemetry.api.common.AttributeKey;
@@ -18,15 +19,28 @@ import java.time.Instant;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiFunction;
 import java.util.function.Consumer;
+import java.util.logging.Level;
 
 /**
  * Structured logger emitting correlated JSON console records, OTLP log records,
  * and optional extra sinks through a single {@link SensitivityPolicy}.
  */
 public final class StructuredLogger {
+    /** Top-level keys only the correlation layer writes, on every leg (spec section 4, "Record fields"). */
+    private static final Set<String> RESERVED_KEYS = Set.of("trace_id", "span_id");
+
+    /** Top-level console keys the console line writes itself; a caller attribute never shadows them. */
+    private static final Set<String> CONSOLE_FIELDS = Set.of("time", "level", "msg", "trace_id", "span_id", "trace_flags");
+
+    private static final java.util.logging.Logger INTERNAL =
+            java.util.logging.Logger.getLogger(StructuredLogger.class.getName());
+
     public record LogEntry(
             Instant timestamp,
             Severity severity,
@@ -45,6 +59,7 @@ public final class StructuredLogger {
     private final BiFunction<String, Object, Object> attrReplacer;
     private final List<Consumer<LogEntry>> extraSinks;
     private final Map<String, Object> boundAttrs;
+    private final AtomicBoolean sinkFailureReported;
 
     StructuredLogger(
             Logger otelLogger,
@@ -55,6 +70,21 @@ public final class StructuredLogger {
             BiFunction<String, Object, Object> attrReplacer,
             List<Consumer<LogEntry>> extraSinks,
             Map<String, Object> boundAttrs) {
+        this(otelLogger, policy, minLevel, consoleEnabled, consoleOutput, attrReplacer, extraSinks, boundAttrs,
+                new AtomicBoolean());
+    }
+
+    private StructuredLogger(
+            Logger otelLogger,
+            SensitivityPolicy policy,
+            Severity minLevel,
+            boolean consoleEnabled,
+            OutputStream consoleOutput,
+            BiFunction<String, Object, Object> attrReplacer,
+            List<Consumer<LogEntry>> extraSinks,
+            Map<String, Object> boundAttrs,
+            AtomicBoolean sinkFailureReported) {
+        this.sinkFailureReported = sinkFailureReported;
         this.otelLogger = otelLogger;
         this.policy = policy;
         this.minLevel = minLevel == null ? Severity.INFO : minLevel;
@@ -71,14 +101,16 @@ public final class StructuredLogger {
             merged.putAll(attrs);
         }
         return new StructuredLogger(
-                otelLogger, policy, minLevel, consoleEnabled, consoleOutput, attrReplacer, extraSinks, merged);
+                otelLogger, policy, minLevel, consoleEnabled, consoleOutput, attrReplacer, extraSinks, merged,
+                sinkFailureReported);
     }
 
     public StructuredLogger with(String key, Object value) {
         Map<String, Object> merged = new LinkedHashMap<>(boundAttrs);
         merged.put(key, value);
         return new StructuredLogger(
-                otelLogger, policy, minLevel, consoleEnabled, consoleOutput, attrReplacer, extraSinks, merged);
+                otelLogger, policy, minLevel, consoleEnabled, consoleOutput, attrReplacer, extraSinks, merged,
+                sinkFailureReported);
     }
 
     public void debug(String message) {
@@ -113,14 +145,29 @@ public final class StructuredLogger {
         log(Severity.ERROR, message, attrs);
     }
 
+    /**
+     * Emits an event: a record named {@code eventName}, carrying it as {@code event.name}, and
+     * force-emitted, so it is exempt from the level gate (spec section 4, "Events").
+     */
     public void event(String eventName, Map<String, Object> attrs) {
-        emit(Context.current(), Severity.INFO, eventName, eventName, attrs, false);
+        emit(Context.current(), Severity.INFO, eventName, eventName, attrs, true);
     }
 
+    /** Emits an ordinary record, subject to the level gate unless the context carries {@link ForceEmit}. */
     public void log(Severity severity, String message, Map<String, Object> attrs) {
         emit(Context.current(), severity, message, null, attrs, false);
     }
 
+    /** Reports whether this logger writes the console JSON leg. */
+    public boolean consoleEnabled() {
+        return consoleEnabled && consoleOutput != null;
+    }
+
+    /**
+     * Emits one record on every leg. {@code bypassLevelGate} force-emits it, as for an event; a
+     * record is also force-emitted when {@code context} carries {@link ForceEmit}. A failing extra
+     * sink or console write never reaches the caller.
+     */
     public void emit(
             Context context,
             Severity severity,
@@ -128,6 +175,25 @@ public final class StructuredLogger {
             String eventName,
             Map<String, Object> attrs,
             boolean bypassLevelGate) {
+        emitRecord(context, severity, message, eventName, attrs, bypassLevelGate, false);
+    }
+
+    /**
+     * Emits the startup canary: force-emitted, and a console or extra sink failure is thrown, so
+     * {@link O11y#setup} can fail with {@code CANARY_REJECTED}.
+     */
+    void emitStartupCanary(Context context, String eventName, Map<String, Object> attrs) {
+        emitRecord(context, Severity.INFO, eventName, eventName, attrs, true, true);
+    }
+
+    private void emitRecord(
+            Context context,
+            Severity severity,
+            String message,
+            String eventName,
+            Map<String, Object> attrs,
+            boolean bypassLevelGate,
+            boolean failOnSinkError) {
         Context ctx = context == null ? Context.current() : context;
         boolean forced = bypassLevelGate || ForceEmit.isForced(ctx);
         if (!forced && severity.getSeverityNumber() < minLevel.getSeverityNumber()) {
@@ -149,7 +215,8 @@ public final class StructuredLogger {
             if (attrReplacer != null) {
                 val = attrReplacer.apply(e.getKey(), val);
             }
-            if (val != null) {
+            // After the replacer, so only the correlation layer writes trace_id and span_id.
+            if (val != null && !RESERVED_KEYS.contains(e.getKey())) {
                 scrubbed.put(e.getKey(), val);
             }
         }
@@ -181,17 +248,25 @@ public final class StructuredLogger {
                     consoleOutput.write(line);
                     consoleOutput.flush();
                 } catch (IOException ex) {
-                    if (bypassLevelGate) {
+                    if (failOnSinkError) {
                         throw new O11yException(O11yException.ErrorCode.CANARY_REJECTED,
                                 "console sink rejected startup canary: " + ex.getMessage(), ex);
                     }
+                    reportSinkFailure("console", ex);
                 }
             }
         }
 
-        // 2. Extra sinks
+        // 2. Extra sinks, each isolated from the caller and from the others
         for (Consumer<LogEntry> sink : extraSinks) {
-            sink.accept(entry);
+            try {
+                sink.accept(entry);
+            } catch (RuntimeException ex) {
+                if (failOnSinkError) {
+                    throw ex;
+                }
+                reportSinkFailure("extra", ex);
+            }
         }
 
         // 3. OTLP log leg
@@ -201,7 +276,8 @@ public final class StructuredLogger {
                     .setSeverity(severity)
                     .setSeverityText(severity.name())
                     .setBody(entry.message())
-                    .setContext(ctx);
+                    // Marked as classified so the policy processor does not tokenize a token again.
+                    .setContext(PolicyBridges.PolicyLogRecordProcessor.markClassified(ctx));
             if (eventName != null && !eventName.isEmpty()) {
                 builder.setEventName(eventName);
             }
@@ -210,6 +286,15 @@ public final class StructuredLogger {
             builder.setAllAttributes(ab.build());
             builder.emit();
         }
+    }
+
+    /**
+     * Reports a failing sink through java.util.logging, the channel the OpenTelemetry SDK uses for
+     * its own errors: at WARNING the first time for this logger family, at FINE after that.
+     */
+    private void reportSinkFailure(String sink, Exception ex) {
+        Level level = sinkFailureReported.compareAndSet(false, true) ? Level.WARNING : Level.FINE;
+        INTERNAL.log(level, ex, () -> "libo11y " + sink + " log sink failed; the record was dropped on that sink");
     }
 
     private static void flattenForOtel(String prefix, Map<String, Object> map, AttributesBuilder ab) {
@@ -234,14 +319,35 @@ public final class StructuredLogger {
             } else if (v instanceof Float f) {
                 ab.put(AttributeKey.doubleKey(key), f.doubleValue());
             } else if (v instanceof List<?> list) {
-                List<String> strs = list.stream().map(String::valueOf).toList();
-                ab.put(AttributeKey.stringArrayKey(key), strs);
+                putList(ab, key, list);
             } else {
                 ab.put(AttributeKey.stringKey(key), String.valueOf(v));
             }
         }
     }
 
+    /** Puts a homogeneous list of integers, floats or booleans as a typed array, and any other list as strings. */
+    private static void putList(AttributesBuilder ab, String key, List<?> list) {
+        if (!list.isEmpty() && list.stream().allMatch(StructuredLogger::isIntegral)) {
+            ab.put(AttributeKey.longArrayKey(key), list.stream().map(o -> ((Number) o).longValue()).toList());
+        } else if (!list.isEmpty() && list.stream().allMatch(o -> o instanceof Double || o instanceof Float)) {
+            ab.put(AttributeKey.doubleArrayKey(key), list.stream().map(o -> ((Number) o).doubleValue()).toList());
+        } else if (!list.isEmpty() && list.stream().allMatch(o -> o instanceof Boolean)) {
+            ab.put(AttributeKey.booleanArrayKey(key), list.stream().map(o -> (Boolean) o).toList());
+        } else {
+            ab.put(AttributeKey.stringArrayKey(key), list.stream().map(String::valueOf).toList());
+        }
+    }
+
+    private static boolean isIntegral(Object o) {
+        return o instanceof Long || o instanceof Integer || o instanceof Short || o instanceof Byte;
+    }
+
+    /**
+     * Formats one console JSON line. The line's own fields come first; a caller attribute named
+     * like one of them ({@code time}, {@code level}, {@code msg}, {@code trace_id}, {@code span_id},
+     * {@code trace_flags}) is left off the line, so it can never shadow the real value.
+     */
     public static String formatJson(LogEntry entry) {
         StringBuilder sb = new StringBuilder(256);
         sb.append('{');
@@ -254,6 +360,9 @@ public final class StructuredLogger {
             appendField(sb, "trace_flags", entry.traceFlags(), true);
         }
         for (Map.Entry<String, Object> e : entry.attributes().entrySet()) {
+            if (CONSOLE_FIELDS.contains(e.getKey())) {
+                continue;
+            }
             sb.append(',');
             appendJsonString(sb, e.getKey());
             sb.append(':');
@@ -334,7 +443,7 @@ public final class StructuredLogger {
                 case '\t' -> sb.append("\\t");
                 default -> {
                     if (c < 0x20) {
-                        sb.append(String.format("\\u%04x", (int) c));
+                        sb.append(String.format(Locale.ROOT, "\\u%04x", (int) c));
                     } else {
                         sb.append(c);
                     }
