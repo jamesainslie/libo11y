@@ -22,8 +22,26 @@ adheres to [Semantic Versioning](https://semver.org/).
   of an object store, implemented by `FileStore` and the S3 store. Replay
   needs both.
 - Self-telemetry for replay: `o11yrum.replay.segments`,
-  `o11yrum.replay.bytes`, `o11yrum.replay.events.dropped` and
-  `o11yrum.replay.store.duration`.
+  `o11yrum.replay.bytes`, `o11yrum.replay.events.dropped`,
+  `o11yrum.replay.store.duration`, `o11yrum.replay.reads` and
+  `o11yrum.replay.swept`.
+- The replay read API, `Handler.ReplayReadHandler`: list a session's
+  segment metadata, read one gzipped segment, and erase a session. Every
+  request needs a bearer token from `replay.read_token_file`, and without
+  that file every request answers 401. Erasure deletes every object of
+  the session, is idempotent and reports what it removed. The
+  `o11yrum-gateway` command serves the API on its own listener,
+  `replay.read_listen`, never on the public `/_o11y/` path, and refuses a
+  `read_listen` that overlaps `listen`.
+- Replay retention: `replay.retention` (default 720h). The read API never
+  serves a segment stored longer ago, and a sweeper deletes older replay
+  objects every `replay.sweep_interval` (default 1h, `0s` disables).
+
+### Changed
+
+- `FileStore.Delete` removes the directories a deletion leaves empty, up
+  to the store's root, so an erased session leaves no directory named
+  after it. `FileStore.Put` recreates them.
 
 ## [0.1.0] - 2026-11-27
 
