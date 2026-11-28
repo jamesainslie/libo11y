@@ -17,6 +17,7 @@ import {
   type RUMPlatform,
 } from "@libo11y/spec";
 import { type Context, SpanKind } from "@opentelemetry/api";
+import { hrTimeToMilliseconds } from "@opentelemetry/core";
 import type { ReadableSpan, Span, SpanProcessor } from "@opentelemetry/sdk-trace";
 import { ATTR_SESSION_ID, ATTR_USER_ID } from "./attrs.ts";
 import type { RumBus } from "./contracts/runtime.ts";
@@ -40,6 +41,11 @@ export interface RumSpanProcessorOptions {
   readonly bus: RumBus;
   /** performance.now(). */
   readonly now: () => number;
+  /**
+   * performance.timeOrigin, to read a span's end time on the now() clock. Without it the bus
+   * reports now() alone.
+   */
+  readonly timeOrigin?: number;
 }
 
 function fromWeb(span: ReadableSpan, name: string): boolean {
@@ -109,7 +115,11 @@ export function rumSpanProcessor(opts: RumSpanProcessorOptions): SpanProcessor {
       if (!announced.delete(spanId)) return;
       const status = span.attributes["http.response.status_code"];
       const errorType = span.attributes["error.type"];
-      const at = opts.now();
+      // The later of now and the span's own end, so an action that settles at this time never
+      // ends before the request it caused (WebKit's span end can trail now() by a millisecond).
+      const origin = opts.timeOrigin;
+      const spanEnd = origin === undefined ? Number.NaN : hrTimeToMilliseconds(span.endTime) - origin;
+      const at = Number.isFinite(spanEnd) ? Math.max(opts.now(), spanEnd) : opts.now();
       opts.bus.publish({
         type: "request-end",
         spanId,

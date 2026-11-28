@@ -79,6 +79,8 @@ export interface RumDeps {
   readonly now: () => number;
   /** performance.now(). */
   readonly perfNow: () => number;
+  /** performance.timeOrigin, the origin of perfNow. Unset where perfNow is a fake clock. */
+  readonly timeOrigin?: number;
   readonly location: () => string;
   readonly prerendered: () => boolean;
   readonly connection: () => string | undefined;
@@ -102,6 +104,7 @@ export function defaultRumDeps(): RumDeps {
     sessionStore: () => localStorageSessionStore(),
     now: Date.now,
     perfNow: () => performance.now(),
+    timeOrigin: performance.timeOrigin,
     location: () => g.location?.href ?? "about:blank",
     prerendered: () => {
       if (g.document?.prerendering === true) return true;
@@ -275,6 +278,7 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
     userId: () => userId,
     bus,
     now: deps.perfNow,
+    ...(deps.timeOrigin === undefined ? {} : { timeOrigin: deps.timeOrigin }),
   });
   const onStart: RequestStartHook = (span, request) => {
     for (const h of hooks) {
