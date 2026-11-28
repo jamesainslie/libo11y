@@ -8,7 +8,7 @@ GO_TEST_P ?= 4
 # gate runs on each module separately.
 GO_MODULES := go go/o11ygin go/o11yconnect go/o11ysql go/o11yrum ops
 
-.PHONY: spec-check spec-generate spec-drift ops-generate ops-check ops-integration-up ops-integration-down ops-integration ops-promtool-test ops-release-check ops-release-check-test test lint vet tidy-check vuln release-check zig-release-check python-release-check rust-release-check rust-release-check-test c-release-check dotnet-release-check o11yrum-release-check print-o11yrum-release-version o11yrum-image schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-rn-bundle-test ts-npm-plan-test ts-install ts-check ts-size ts-browser-test ts-rn-check rum-e2e rust-check rust-msrv zig-check zig-integrations-check zig-hygiene-test python-check python-hygiene-test c-check c-sanitize ruby-check ruby-hygiene-test ruby-release-check ruby-gem-plan-test dotnet-check java-check java-hygiene-test java-release-check java-central-publish-test ci
+.PHONY: spec-check spec-generate spec-drift ops-generate ops-check ops-integration-up ops-integration-down ops-integration ops-promtool-test ops-release-check ops-release-check-test test lint vet tidy-check vuln release-check zig-release-check python-release-check rust-release-check rust-release-check-test c-release-check dotnet-release-check o11yrum-release-check print-o11yrum-release-version o11yrum-image schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-rn-bundle-test ts-npm-plan-test ts-install ts-check ts-size ts-browser-test ts-rn-check rum-e2e rust-check rust-msrv zig-check zig-integrations-check zig-hygiene-test python-check python-hygiene-test c-check c-sanitize ruby-check ruby-release-check ruby-gem-plan-test dotnet-check java-check java-hygiene-test java-release-check java-central-publish-test ci
 
 # Validate the spec registry against the libo11y policy suite (naming,
 # ownership, sensitivity, cardinality, events, units).
@@ -512,7 +512,9 @@ ruby-check: ruby-hygiene-test
 	cd ruby && bundle exec rubocop --format simple
 	scripts/ruby-hygiene.sh ruby/lib
 
-# Test ruby-hygiene.sh against fixture trees.
+# Test ruby-hygiene.sh against fixture trees. Declared phony here, not on the
+# shared line at the top, which every implementation edits.
+.PHONY: ruby-hygiene-test
 ruby-hygiene-test:
 	scripts/ruby-hygiene_test.sh
 
