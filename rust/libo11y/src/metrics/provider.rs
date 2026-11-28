@@ -160,11 +160,7 @@ impl Libo11yMeterProvider {
 impl MeterProvider for Libo11yMeterProvider {
     fn meter_with_scope(&self, scope: InstrumentationScope) -> Meter {
         let inner_meter = self.inner.sdk.meter_with_scope(scope.clone());
-        let scope_key = ScopeKey {
-            name: scope.name().to_owned(),
-            version: scope.version().unwrap_or_default().to_owned(),
-            schema_url: scope.schema_url().unwrap_or_default().to_owned(),
-        };
+        let scope_key = ScopeKey::from_scope(&scope);
         let provider = Libo11yInstrumentProvider {
             inner_meter,
             scope_key,
