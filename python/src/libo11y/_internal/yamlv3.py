@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import math
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Final
 
@@ -32,6 +33,7 @@ from yaml.events import (
 )
 from yaml.loader import SafeLoader
 from yaml.scanner import ScannerError
+from yaml.tokens import Token
 
 
 class YamlSyntaxError(Exception):
@@ -79,8 +81,13 @@ def check_characters(text: str) -> None:
         raise YamlSyntaxError(f"control characters are not allowed: U+{cp:04X}")
 
 
+# yaml.v3's scanner limits both the flow level and the block indent stack to
+# this depth (scannerc.go max_flow_level and max_indents).
+MAX_DEPTH: Final[int] = 10_000
+
+
 class _YamlV3Loader(SafeLoader):
-    """Pure-Python PyYAML loader with yaml.v3's double-quoted escape table."""
+    """Pure-Python PyYAML loader with yaml.v3's escape table and depth limits."""
 
     ESCAPE_REPLACEMENTS = {  # pyright: ignore[reportGeneralTypeIssues]
         k: v for k, v in SafeLoader.ESCAPE_REPLACEMENTS.items() if k != "/"
@@ -102,6 +109,21 @@ class _YamlV3Loader(SafeLoader):
                             self.get_mark(),
                         )
         return chunks
+
+    def add_indent(self, column: int) -> bool:
+        # yaml.v3's roll_indent fails once the indent stack exceeds max_indents.
+        # types-PyYAML leaves the base method's parameter untyped.
+        added = super().add_indent(column)  # pyright: ignore[reportUnknownMemberType]
+        if added and len(self.indents) > MAX_DEPTH:
+            raise ScannerError(None, None, f"exceeded max depth of {MAX_DEPTH}", self.get_mark())
+        return added
+
+    def fetch_flow_collection_start(self, TokenClass: type[Token]) -> None:  # noqa: N803
+        # yaml.v3's increase_flow_level fails past max_flow_level. types-PyYAML
+        # leaves the base method's parameter untyped.
+        if self.flow_level >= MAX_DEPTH:
+            raise ScannerError(None, None, f"exceeded max depth of {MAX_DEPTH}", self.get_mark())
+        super().fetch_flow_collection_start(TokenClass)  # pyright: ignore[reportUnknownMemberType]
 
 
 def _empty_nodes() -> list[YamlNode]:
@@ -402,103 +424,108 @@ def resolve_scalar(tag: str | None, value: str, quoted_or_block: bool) -> Scalar
     )
 
 
-def _compose_documents(text: str) -> list[Document]:
-    """Parse text via _YamlV3Loader's event stream into lazy alias-preserving Documents."""
+def _next_event(events: Iterator[Event]) -> Event:
+    """Return the next parser event, mapping PyYAML errors to YamlSyntaxError."""
     try:
-        events: list[Event] = list(yaml.parse(text, Loader=_YamlV3Loader))
-    except (YAMLError, RecursionError) as exc:
+        return next(events)
+    except StopIteration as exc:
+        raise YamlSyntaxError("unexpected end of the event stream") from exc
+    except YAMLError as exc:
         raise YamlSyntaxError(str(exc)) from exc
 
-    pos = 0
-    total = len(events)
-    if pos < total and isinstance(events[pos], StreamStartEvent):
-        pos += 1
 
-    docs: list[Document] = []
-    max_depth = 10_000
+@dataclass(slots=True)
+class _Open:
+    """A collection being composed, and for a mapping the key awaiting its value."""
 
-    while pos < total:
-        ev = events[pos]
-        if isinstance(ev, StreamEndEvent):
-            break
+    node: SequenceNode | MappingNode
+    key: YamlNode | None = None
+
+
+def _compose_root(events: Iterator[Event], aliases: dict[int, YamlNode]) -> YamlNode:
+    """Compose one document's root node from its events without recursion.
+
+    yaml.v3 nests up to 10000 levels, past Python's recursion limit, so open
+    collections are kept on an explicit stack.
+    """
+    anchors: dict[str, YamlNode] = {}
+    stack: list[_Open] = []
+    while True:
+        ev = _next_event(events)
+        node: YamlNode
+        if isinstance(ev, (SequenceEndEvent, MappingEndEvent)):
+            if not stack:
+                raise YamlSyntaxError(f"unexpected event {ev!r}")
+            node = stack.pop().node
+        elif isinstance(ev, AliasEvent):
+            if ev.anchor is None:
+                raise YamlSyntaxError("alias without anchor name")
+            target = anchors.get(ev.anchor)
+            if target is None:
+                raise YamlSyntaxError(f"unknown anchor '{ev.anchor}' referenced")
+            node = AliasNode(anchor=ev.anchor)
+            aliases[id(node)] = target
+        elif isinstance(ev, ScalarEvent):
+            node = ScalarNode(tag=ev.tag, value=ev.value, style=ev.style, anchor=ev.anchor)
+            if ev.anchor is not None:
+                anchors[ev.anchor] = node
+        elif isinstance(ev, (SequenceStartEvent, MappingStartEvent)):
+            coll: SequenceNode | MappingNode = (
+                SequenceNode(tag=ev.tag, anchor=ev.anchor)
+                if isinstance(ev, SequenceStartEvent)
+                else MappingNode(tag=ev.tag, anchor=ev.anchor)
+            )
+            if ev.anchor is not None:
+                anchors[ev.anchor] = coll
+            stack.append(_Open(coll))
+            continue
+        else:
+            raise YamlSyntaxError(f"unexpected event {ev!r}")
+
+        if not stack:
+            return node
+        parent = stack[-1]
+        if isinstance(parent.node, SequenceNode):
+            parent.node.items.append(node)
+        elif parent.key is None:
+            parent.key = node
+        else:
+            parent.node.pairs.append((parent.key, node))
+            parent.key = None
+
+
+def iter_documents(text: str) -> Iterator[Document]:
+    """Validate characters, then compose YAML documents one at a time.
+
+    Each document is composed only when the caller asks for it, so a caller
+    can decode and judge the first document before the parser reads a
+    second one, as yaml.v3's Decoder does. A syntax error surfaces when the
+    document holding it is requested.
+    """
+    check_characters(text)
+    events: Iterator[Event] = yaml.parse(text, Loader=_YamlV3Loader)
+    ev = _next_event(events)
+    if isinstance(ev, StreamStartEvent):
+        ev = _next_event(events)
+    while not isinstance(ev, StreamEndEvent):
         if not isinstance(ev, DocumentStartEvent):
             raise YamlSyntaxError(f"unexpected event {ev!r}")
         version = ev.version
         if version is not None and version != (1, 1):
             raise YamlSyntaxError("found incompatible YAML document")
         explicit_start = bool(ev.explicit)
-        pos += 1
-
-        anchors: dict[str, YamlNode] = {}
         aliases: dict[int, YamlNode] = {}
-
-        def compose_node(
-            depth: int,
-            doc_anchors: dict[str, YamlNode] = anchors,
-            doc_aliases: dict[int, YamlNode] = aliases,
-        ) -> YamlNode:
-            nonlocal pos
-            if depth > max_depth:
-                raise YamlSyntaxError("the document nests too deeply")
-            cur = events[pos]
-            pos += 1
-            if isinstance(cur, AliasEvent):
-                if cur.anchor is None:
-                    raise YamlSyntaxError("alias without anchor name")
-                target = doc_anchors.get(cur.anchor)
-                if target is None:
-                    raise YamlSyntaxError(f"unknown anchor '{cur.anchor}' referenced")
-                node = AliasNode(anchor=cur.anchor)
-                doc_aliases[id(node)] = target
-                return node
-            if isinstance(cur, ScalarEvent):
-                node = ScalarNode(
-                    tag=cur.tag,
-                    value=cur.value,
-                    style=cur.style,
-                    anchor=cur.anchor,
-                )
-                if cur.anchor is not None:
-                    doc_anchors[cur.anchor] = node
-                return node
-            if isinstance(cur, SequenceStartEvent):
-                seq = SequenceNode(tag=cur.tag, anchor=cur.anchor)
-                if cur.anchor is not None:
-                    doc_anchors[cur.anchor] = seq
-                while pos < total and not isinstance(events[pos], SequenceEndEvent):
-                    seq.items.append(compose_node(depth + 1))
-                pos += 1  # consume SequenceEndEvent
-                return seq
-            if isinstance(cur, MappingStartEvent):
-                mp = MappingNode(tag=cur.tag, anchor=cur.anchor)
-                if cur.anchor is not None:
-                    doc_anchors[cur.anchor] = mp
-                while pos < total and not isinstance(events[pos], MappingEndEvent):
-                    k = compose_node(depth + 1)
-                    v = compose_node(depth + 1)
-                    mp.pairs.append((k, v))
-                pos += 1  # consume MappingEndEvent
-                return mp
-            raise YamlSyntaxError(f"unexpected event {cur!r}")
-
-        root = compose_node(0)
-        if pos < total and isinstance(events[pos], DocumentEndEvent):
-            pos += 1
-        docs.append(
-            Document(
-                root=root,
-                explicit_start=explicit_start,
-                version=version,
-                aliases=aliases,
-            )
+        root = _compose_root(events, aliases)
+        ev = _next_event(events)
+        if not isinstance(ev, DocumentEndEvent):
+            raise YamlSyntaxError(f"unexpected event {ev!r}")
+        yield Document(
+            root=root,
+            explicit_start=explicit_start,
+            version=version,
+            aliases=aliases,
         )
-    return docs
-
-
-def parse_documents(text: str) -> list[Document]:
-    """Validate characters and compose all YAML documents lazily."""
-    check_characters(text)
-    return _compose_documents(text)
+        ev = _next_event(events)
 
 
 # yaml.v3 alias expansion budget (decode.go allowedAliasRatio).

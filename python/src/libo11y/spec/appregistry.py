@@ -20,7 +20,7 @@ from libo11y._internal.yamlv3 import (
     allowed_alias_ratio,
     decode_input,
     is_merge_key,
-    parse_documents,
+    iter_documents,
     resolve_scalar,
 )
 from libo11y.spec._generated.tables import (
@@ -399,19 +399,25 @@ class _Decoder:
 
 
 def parse_app_registry(text: str) -> AppRegistry:
-    """Decode an application registry YAML document strictly."""
+    """Decode an application registry YAML document strictly.
+
+    The first document is decoded and judged before the parser reads any
+    further, as Go's yaml.v3 Decoder does: a syntax error in the first
+    document wins over everything, and a decode problem in the first
+    document wins over a second document, well-formed or not.
+    """
     try:
-        docs = parse_documents(text)
-        if not docs:
+        docs = iter_documents(text)
+        first = next(docs, None)
+        if first is None:
             raise AppRegistryParseError("empty")
-        first = docs[0]
         decoder = _Decoder(first.aliases)
         decoder.count()  # yaml.v3 counts the document node, then its content.
         reg = decoder.decode_registry(first.root)
         problem = decoder.problem()
         if problem is not None:
             raise AppRegistryParseError(problem)
-        if len(docs) > 1:
+        if next(docs, None) is not None:
             raise AppRegistryParseError("second-document")
         return reg
     except YamlSyntaxError as exc:

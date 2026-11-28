@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
+import functools
+import inspect
 import re
-from collections.abc import Callable, Generator, Sequence
+from collections.abc import Callable, Coroutine, Generator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, cast, overload
 from urllib.parse import parse_qsl, urlencode
 
 from opentelemetry import baggage, context, propagate, trace
@@ -140,6 +143,26 @@ def _encode_carrier(traceparent: str, tracestate: str, bag: str) -> str:
     return urlencode(items)
 
 
+def _encode_carrier_checked(traceparent: str, tracestate: str, bag: str) -> str:
+    encoded = _encode_carrier(traceparent, tracestate, bag)
+    encoded_len = len(encoded.encode("utf-8"))
+    if encoded_len > MAX_CARRIER_TEXT:
+        raise InvalidCarrier(
+            f"o11y: invalid carrier: {encoded_len} bytes exceeds the {MAX_CARRIER_TEXT} byte limit"
+        )
+    return encoded
+
+
+def _extract_span_context(traceparent: str, tracestate: str) -> SpanContext:
+    if not traceparent:
+        return trace.INVALID_SPAN_CONTEXT
+    carrier: dict[str, str] = {_CARRIER_TRACEPARENT: traceparent}
+    if tracestate:
+        carrier[_CARRIER_TRACESTATE] = tracestate
+    extracted = _TRACE_PROPAGATOR.extract(carrier, context=Context())
+    return trace.get_current_span(extracted).get_span_context()
+
+
 def _new_carrier(sc: SpanContext, bag: str) -> Carrier:
     """Construct a Carrier in canonical W3C form bounded to MAX_CARRIER_TEXT."""
     tc: dict[str, str] = {}
@@ -165,23 +188,20 @@ class Carrier:
     tracestate: str = ""
     baggage: str = ""
 
+    def __post_init__(self) -> None:
+        _encode_carrier_checked(self.traceparent, self.tracestate, self.baggage)
+
     def is_zero(self) -> bool:
         """Return True when this carrier holds no captured trace context."""
         return self.traceparent == ""
 
     def span_context(self) -> SpanContext:
         """Return the captured remote SpanContext, or INVALID_SPAN_CONTEXT if zero."""
-        if self.is_zero():
-            return trace.INVALID_SPAN_CONTEXT
-        carrier: dict[str, str] = {_CARRIER_TRACEPARENT: self.traceparent}
-        if self.tracestate:
-            carrier[_CARRIER_TRACESTATE] = self.tracestate
-        extracted = _TRACE_PROPAGATOR.extract(carrier, context=Context())
-        return trace.get_current_span(extracted).get_span_context()
+        return _extract_span_context(self.traceparent, self.tracestate)
 
     def to_text(self) -> str:
         """Serialize this carrier to compact URL-encoded text (<= 32 KiB)."""
-        return _encode_carrier(self.traceparent, self.tracestate, self.baggage)
+        return _encode_carrier_checked(self.traceparent, self.tracestate, self.baggage)
 
     def __str__(self) -> str:
         return self.to_text()
@@ -228,7 +248,7 @@ class Carrier:
 
         tp = values.get(_CARRIER_TRACEPARENT, "")
         ts = values.get(_CARRIER_TRACESTATE, "")
-        sc = cls(traceparent=tp, tracestate=ts).span_context()
+        sc = _extract_span_context(tp, ts)
         if not sc.is_valid:
             raise InvalidCarrier("o11y: invalid carrier: no valid traceparent")
         return _new_carrier(sc, _valid_baggage(values.get(_CARRIER_BAGGAGE, "")))
@@ -305,16 +325,47 @@ def start_linked(
         context.detach(token)
 
 
-def copy_context[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
+@overload
+def copy_context[**P, R](
+    fn: Callable[P, Coroutine[Any, Any, R]],
+) -> Callable[P, Coroutine[Any, Any, R]]: ...
+
+
+@overload
+def copy_context[**P, R](fn: Callable[P, R]) -> Callable[P, R]: ...
+
+
+def copy_context(fn: Callable[..., Any]) -> Callable[..., Any]:
     """Wrap fn so it executes inside a copy of the caller's contextvars.Context.
 
-    Safe to submit to a ThreadPoolExecutor, queue worker, or invoke repeatedly
-    across concurrent threads because each invocation runs inside its own copy
-    of the captured snapshot.
+    Supports both synchronous callables and coroutine functions (``async def``).
+    For a coroutine function, the entire body executes inside its own copy of
+    the captured snapshot across every ``await``, so it is safe to await
+    directly or schedule with ``asyncio.create_task``. Synchronous callables
+    are safe to submit to a ``ThreadPoolExecutor``, queue worker, or invoke
+    repeatedly across concurrent threads because each invocation runs inside
+    its own copy of the captured snapshot.
     """
     snapshot = contextvars.copy_context()
 
-    def _wrapped(*args: P.args, **kwargs: P.kwargs) -> R:
+    if inspect.iscoroutinefunction(fn):
+        async_fn = cast(Callable[..., Coroutine[Any, Any, Any]], fn)
+
+        @functools.wraps(fn)
+        async def _async_wrapped(*args: Any, **kwargs: Any) -> Any:
+            call_ctx = snapshot.copy()
+            coro = call_ctx.run(async_fn, *args, **kwargs)
+            try:
+                task = asyncio.create_task(coro, context=call_ctx)
+            except Exception:
+                coro.close()
+                raise
+            return await task
+
+        return _async_wrapped
+
+    @functools.wraps(fn)
+    def _wrapped(*args: Any, **kwargs: Any) -> Any:
         return snapshot.copy().run(fn, *args, **kwargs)
 
     return _wrapped
