@@ -5,6 +5,11 @@
  * of the source bundled for the browser. An entry may name external modules, such as react for an
  * adapter whose framework the app bundles anyway; they are left out of its bundle.
  *
+ * An entry or delta may set chunks, which bundles it with code splitting, as an app's bundler
+ * would, and measures one part: "initial" is the entry chunk and every chunk it imports
+ * statically, what the page downloads up front, and "lazy" is every other chunk, what a dynamic
+ * import() fetches later. A delta's base is always measured without splitting.
+ *
  *   bun scripts/size.ts [--check] [--summary FILE] [--json FILE]
  *
  * prints a markdown table, appends it to --summary (CI passes $GITHUB_STEP_SUMMARY), writes the rows
@@ -20,11 +25,35 @@ import { join, resolve } from "node:path";
 export interface BudgetFile {
   readonly unit: string;
   readonly entries: Readonly<
-    Record<string, { readonly code: string; readonly budget: number; readonly external?: readonly string[] }>
+    Record<
+      string,
+      {
+        readonly code: string;
+        readonly budget: number;
+        readonly external?: readonly string[];
+        readonly chunks?: Chunks;
+      }
+    >
   >;
   readonly deltas: Readonly<
-    Record<string, { readonly base: string; readonly code: string; readonly budget: number }>
+    Record<
+      string,
+      { readonly base: string; readonly code: string; readonly budget: number; readonly chunks?: Chunks }
+    >
   >;
+}
+
+/** Which part of a code-split bundle to measure. */
+export type Chunks = "initial" | "lazy";
+
+/** One output file of a code-split build, with its compressed size. */
+export interface BundleChunk {
+  /** The output path, such as ./chunk-abc.js. */
+  readonly path: string;
+  /** "entry-point" or "chunk". */
+  readonly kind: string;
+  readonly code: string;
+  readonly size: number;
 }
 
 /** One measured row. */
@@ -68,6 +97,8 @@ export function formatTable(rows: readonly BudgetRow[]): string {
 }
 
 interface BunBuildOutput {
+  readonly path: string;
+  readonly kind: string;
   arrayBuffer(): Promise<ArrayBuffer>;
 }
 interface BunLike {
@@ -99,14 +130,53 @@ function workspaceResolver(): unknown {
   };
 }
 
+/** A static import of a sibling chunk: import"./x.js" or import{...}from"./x.js", never import("./x.js"). */
+const STATIC_IMPORT = /\bimport\s*(?:[^"'();]*?\bfrom\s*)?["']\.\/([^"']+)["']/g;
+
+/**
+ * The compressed bytes of a code-split build: initial is the entry chunk and every chunk it reaches
+ * through static imports; lazy is every other chunk, reached only through a dynamic import().
+ */
+export function splitSizes(chunks: readonly BundleChunk[]): {
+  readonly initial: number;
+  readonly lazy: number;
+} {
+  const entries = chunks.filter((c) => c.kind === "entry-point");
+  const entry = entries[0];
+  if (entry === undefined || entries.length !== 1)
+    throw new Error("size: a split build needs exactly one entry");
+  const byName = new Map(chunks.map((c) => [c.path.replace(/^\.\//, ""), c]));
+  const initial = new Set<BundleChunk>();
+  const visit = (c: BundleChunk): void => {
+    if (initial.has(c)) return;
+    initial.add(c);
+    for (const m of c.code.matchAll(STATIC_IMPORT)) {
+      const next = byName.get(m[1] ?? "");
+      if (next !== undefined) visit(next);
+    }
+  };
+  visit(entry);
+  let a = 0;
+  let b = 0;
+  for (const c of chunks) {
+    if (initial.has(c)) a += c.size;
+    else b += c.size;
+  }
+  return { initial: a, lazy: b };
+}
+
 /** The Bun.build options for one measured source file. */
-export function buildOptions(file: string, external: readonly string[] | undefined): Record<string, unknown> {
+export function buildOptions(
+  file: string,
+  external: readonly string[] | undefined,
+  splitting = false,
+): Record<string, unknown> {
   return {
     entrypoints: [file],
     target: "browser",
     format: "esm",
     minify: true,
-    splitting: false,
+    splitting,
     plugins: [workspaceResolver()],
     ...(external === undefined ? {} : { external: [...external] }),
   };
@@ -118,16 +188,28 @@ async function measure(
   name: string,
   code: string,
   external?: readonly string[],
+  chunks?: Chunks,
 ): Promise<number> {
   const file = join(dir, `${name.replace(/[^a-z0-9]+/gi, "-")}.ts`);
   writeFileSync(file, code);
-  const result = await bun.build(buildOptions(file, external));
+  const result = await bun.build(buildOptions(file, external, chunks !== undefined));
   const output = result.outputs[0];
   if (!result.success || output === undefined) {
     for (const log of result.logs) console.error(log);
     throw new Error(`size: bundling ${name} failed`);
   }
-  return bun.gzipSync(new Uint8Array(await output.arrayBuffer())).byteLength;
+  if (chunks === undefined) return bun.gzipSync(new Uint8Array(await output.arrayBuffer())).byteLength;
+  const files: BundleChunk[] = [];
+  for (const o of result.outputs) {
+    const bytes = new Uint8Array(await o.arrayBuffer());
+    files.push({
+      path: o.path,
+      kind: o.kind,
+      code: new TextDecoder().decode(bytes),
+      size: bun.gzipSync(bytes).byteLength,
+    });
+  }
+  return splitSizes(files)[chunks];
 }
 
 function flag(args: readonly string[], name: string): string | undefined {
@@ -144,8 +226,9 @@ async function main(args: readonly string[]): Promise<number> {
   mkdirSync(dir, { recursive: true });
   const absolute: Record<string, number> = {};
   for (const [name, e] of Object.entries(file.entries))
-    absolute[name] = await measure(bun, dir, name, e.code, e.external);
-  for (const [name, d] of Object.entries(file.deltas)) absolute[name] = await measure(bun, dir, name, d.code);
+    absolute[name] = await measure(bun, dir, name, e.code, e.external, e.chunks);
+  for (const [name, d] of Object.entries(file.deltas))
+    absolute[name] = await measure(bun, dir, name, d.code, undefined, d.chunks);
   const rows = compareBudgets(file, absolute);
   const table = formatTable(rows);
   process.stdout.write(table);
