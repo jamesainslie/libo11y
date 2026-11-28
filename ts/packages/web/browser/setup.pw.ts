@@ -60,6 +60,8 @@ export function logRecords(requests: readonly SinkRequest[]): Json[] {
 
 /** The resource attributes of one request, by key. */
 export function resourceAttributes(req: SinkRequest): Map<string, Json> {
+  // A replay upload carries no OTLP resource.
+  if (req.signal === "replay") return new Map();
   const key = { traces: "resourceSpans", metrics: "resourceMetrics", logs: "resourceLogs" }[req.signal];
   const first = ((req.body as Json)[key] as Json[] | undefined)?.[0];
   const attrs = ((first?.resource as Json | undefined)?.attributes ?? []) as { key: string; value: Json }[];

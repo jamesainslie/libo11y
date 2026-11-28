@@ -6,11 +6,13 @@ import type { APIRequestContext } from "@playwright/test";
 
 /** One recorded OTLP request. */
 export interface SinkRequest {
-  readonly signal: "traces" | "metrics" | "logs";
+  readonly signal: "traces" | "metrics" | "logs" | "replay";
   readonly contentType: string;
   readonly encoding: string | null;
   readonly bytes: number;
   readonly origin: string | null;
+  /** The request's query parameters, such as a replay upload's service, session and segment. */
+  readonly query: Readonly<Record<string, string>>;
   readonly body: unknown;
 }
 
