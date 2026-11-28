@@ -399,8 +399,11 @@ only, because each layer emits its own summary.
 the active span, and classified like any record. It accepts any name; the
 names registered in the specification carry a contract. Delivery is best
 effort (`Event` has no error return; under `Setup`, a rejecting sink is
-caught once, by the startup canary, which `New` does not run). The library sets `event.name` itself and removes any
-caller-supplied one, and duplicate attribute keys keep the last value.
+caught once, by the startup canary, which `New` does not run). The library
+sets `event.name` itself, after it has flattened inline groups and run the
+attribute replacer. A caller-supplied `event.name` at the top level is
+removed, and the replacer neither sees the name nor can rename another
+attribute to it. Duplicate attribute keys keep the last value.
 
 ```go
 sdk.Event(ctx, spec.EventRequestSummary,
@@ -576,7 +579,12 @@ classification on every signal:
 - Classification is by key. On logs a grouped attribute is judged on its
   dotted key (`slog.Group("host", slog.String("ip", v))` is `host.ip`), and
   Go maps, slices of maps, and pointers logged as one value are walked on
-  every sink and bridge so their members are judged the same way. The walk
+  every sink and bridge so their members are judged the same way. A group
+  whose own dotted key is classified is one value under that key, as a map
+  is: `slog.Group("http.request.header.authorization", ...)` and
+  `logger.WithGroup("http.request.header.authorization")` are dropped with
+  everything inside them, and under `PIIHash` a group under a `pii` key
+  becomes one token, the same token a bridge produces for it. The walk
   fails closed: it stops at the first reference back into the current path
   (a cycle), past 16 levels, or after 2048 nodes, and drops what remains
   instead of forwarding it unexamined.
@@ -712,7 +720,10 @@ o11y.WithAttrReplacer(func(groups []string, a slog.Attr) slog.Attr {
 
 The replacer is a log-only catch-all applied uniformly to every slog sink
 (console, the OTLP slog leg, and extra handlers). Records from other
-bridges on `SDK.LoggerProvider` do not pass through it.
+bridges on `SDK.LoggerProvider` do not pass through it. It never sees the
+correlation attributes or the `event.name` of an `SDK.Event`, and an
+attribute it renames to `trace_id` or `span_id` at the top level is
+dropped, as a caller-supplied one is.
 
 ## Testing your telemetry
 

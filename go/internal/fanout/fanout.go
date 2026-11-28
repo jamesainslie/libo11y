@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 
 	"go.opentelemetry.io/otel/trace"
 )
@@ -74,19 +75,57 @@ func (c correlated) WithGroup(name string) slog.Handler {
 // group names enclosing the attribute. Returning a zero Attr drops it.
 type ReplaceFunc func(groups []string, attr slog.Attr) slog.Attr
 
-type forceKey struct{}
+// mark is what WithForce and WithReserved put on a context. One value holds
+// both, so the handler reads the context once per record.
+type mark struct {
+	forced      bool
+	reserved    slog.Attr
+	hasReserved bool
+}
+
+type markKey struct{}
+
+func markOf(ctx context.Context) mark {
+	m, _ := ctx.Value(markKey{}).(mark)
+	return m
+}
 
 // WithForce marks ctx so records emitted with it bypass every level gate:
 // the Handler reports Enabled for any level and dispatches to all sinks
 // regardless of their own gates. Used for records that must always emit,
 // such as audit events and the startup canary.
 func WithForce(ctx context.Context) context.Context {
-	return context.WithValue(ctx, forceKey{}, true)
+	m := markOf(ctx)
+	m.forced = true
+	return context.WithValue(ctx, markKey{}, m)
 }
 
-func isForced(ctx context.Context) bool {
-	forced, ok := ctx.Value(forceKey{}).(bool)
-	return ok && forced
+func isForced(ctx context.Context) bool { return markOf(ctx).forced }
+
+// WithReserved marks ctx so the record handled with it carries attr at the
+// top level, ahead of every other attribute, and no other top-level
+// attribute with the same key: not one the record supplies directly or
+// through an inline group, not one bound to the handler, not a group opened
+// under that name, and not one the replacer renames to that key. The
+// replacer never sees attr. The SDK uses it for the event.name of an event,
+// which only the SDK may set.
+//
+// The mark stays on the context the sinks receive, as the force mark does,
+// so a sink that logs through a Handler with that context marks its own
+// record too.
+func WithReserved(ctx context.Context, attr slog.Attr) context.Context {
+	m := markOf(ctx)
+	m.reserved, m.hasReserved = attr, true
+	return context.WithValue(ctx, markKey{}, m)
+}
+
+// withoutKey returns attrs without its attributes named key. It returns
+// attrs itself when there are none, and never modifies it.
+func withoutKey(attrs []slog.Attr, key string) []slog.Attr {
+	if !slices.ContainsFunc(attrs, func(a slog.Attr) bool { return a.Key == key }) {
+		return attrs
+	}
+	return slices.DeleteFunc(slices.Clone(attrs), func(a slog.Attr) bool { return a.Key == key })
 }
 
 // Config assembles a Handler.
@@ -174,17 +213,24 @@ func (h *Handler) Handle(ctx context.Context, record slog.Record) error {
 	})
 	recordAttrs = h.processAttrs(recordAttrs)
 
-	out := make([]slog.Attr, 0, len(h.prefix)+len(recordAttrs))
-	out = append(out, h.prefix...)
-	out = append(out, h.foldFrames(recordAttrs)...)
+	// The folded attributes are top-level whether or not a group is open,
+	// so one pass over them covers a group opened under the reserved key.
+	m := markOf(ctx)
+	prefix, body := h.prefix, h.foldFrames(recordAttrs)
+	out := make([]slog.Attr, 0, 1+len(prefix)+len(body))
+	if m.hasReserved {
+		prefix, body = withoutKey(prefix, m.reserved.Key), withoutKey(body, m.reserved.Key)
+		out = append(out, m.reserved)
+	}
+	out = append(out, prefix...)
+	out = append(out, body...)
 
 	flat := slog.NewRecord(record.Time, record.Level, record.Message, record.PC)
 	flat.AddAttrs(out...)
 
-	forced := isForced(ctx)
 	var errs []error
 	for _, leg := range h.legs {
-		if !forced && !leg.Enabled(ctx, record.Level) {
+		if !m.forced && !leg.Enabled(ctx, record.Level) {
 			continue
 		}
 		if err := leg.Handle(ctx, flat.Clone()); err != nil {
@@ -294,6 +340,11 @@ func (h *Handler) processAttrsAt(path []string, attrs []slog.Attr) []slog.Attr {
 			a = h.replace(append([]string(nil), path...), a)
 			a.Value = a.Value.Resolve()
 			if a.Equal(slog.Attr{}) || a.Key == "" {
+				continue
+			}
+			// The replacer can rename an attribute to a reserved key, so
+			// the guard above runs again on what it returns.
+			if len(path) == 0 && (a.Key == TraceIDKey || a.Key == SpanIDKey) {
 				continue
 			}
 		}
