@@ -4,29 +4,31 @@
 //! OTLP, and extra [`LogSink`]s.
 
 use std::fmt;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::SystemTime;
 
 use opentelemetry::logs::{AnyValue, LogRecord as _, Logger as _};
 use opentelemetry::trace::{SpanId, TraceContextExt as _, TraceId};
 use opentelemetry::{Array, Context, Key, Value};
 use opentelemetry_sdk::logs::SdkLogger;
+use tracing::dispatcher::WeakDispatch;
 use tracing::field::{Field, Visit};
-use tracing::{Event, Level, Subscriber};
+use tracing::{Dispatch, Event, Level, Subscriber};
 use tracing_subscriber::layer::{Context as LayerContext, Layer};
+use tracing_subscriber::registry::LookupSpan;
 
 use libo11y_spec::{EVENT_NAME_KEY, Signal};
 
 use crate::BoxError;
 use crate::console::{ConsoleSink, level_str, severity_number};
-use crate::forceemit::is_force_emit;
+use crate::forceemit::{force_emit_context, is_force_emit};
 use crate::logredact::{PipelineClassifiedGuard, classify_log_attrs};
 use crate::policy::Policy;
 use crate::violations::ViolationRecorder;
 
 /// Top-level attribute keys reserved for trace correlation, stripped from
-/// user-supplied fields before the attribute replacer runs.
+/// user-supplied fields before and after the attribute replacer runs.
 const TRACE_ID_KEY: &str = "trace_id";
 const SPAN_ID_KEY: &str = "span_id";
 
@@ -101,13 +103,16 @@ const fn decode_level(code: u8) -> Level {
 
 /// Rewrites or drops a leaf log attribute before sensitivity classification.
 ///
-/// The first argument is the enclosing group path (empty for top-level
-/// attributes), followed by the attribute key and value. Return
+/// The first argument is the enclosing group path, kept for API parity with
+/// Go's `AttrReplacer`. Because `tracing` events have flat fields rather than
+/// nested `slog` groups, the slice is always empty (`&[]`) in Rust. Return
 /// `Some((key, value))` to keep or rewrite the attribute (an empty key drops
 /// it), or `None` to drop it.
 ///
 /// Built-in fields (`time`, `level`, `msg`) and correlation fields
-/// (`trace_id`, `span_id`) never reach the replacer.
+/// (`trace_id`, `span_id`) never reach the replacer, and any attribute the
+/// replacer renames to `trace_id`, `span_id`, or (for [`Sdk::event`](crate::Sdk::event))
+/// `event.name` is dropped.
 pub type AttrReplacer =
     Arc<dyn Fn(&[&str], Key, AnyValue) -> Option<(Key, AnyValue)> + Send + Sync>;
 
@@ -269,10 +274,51 @@ impl LogPipeline {
         }
     }
 
+    /// Filters out reserved keys before and after the user replacer, matching
+    /// Go's `fanout.Handler` so a replacer cannot recreate `trace_id`,
+    /// `span_id`, or a reserved `event.name`.
+    fn prepare_attrs(
+        &self,
+        attrs: Vec<(Key, AnyValue)>,
+        reserved_event_name: Option<&str>,
+    ) -> Vec<(Key, AnyValue)> {
+        let is_reserved = |k: &str| {
+            k.is_empty()
+                || k == TRACE_ID_KEY
+                || k == SPAN_ID_KEY
+                || (reserved_event_name.is_some() && k == EVENT_NAME_KEY)
+        };
+        let mut processed =
+            Vec::with_capacity(attrs.len() + usize::from(reserved_event_name.is_some()));
+        if let Some(event_name) = reserved_event_name {
+            processed.push((
+                Key::from_static_str(EVENT_NAME_KEY),
+                AnyValue::from(event_name.to_owned()),
+            ));
+        }
+        for (key, value) in attrs {
+            if is_reserved(key.as_str()) {
+                continue;
+            }
+            if let Some(replacer) = &self.replacer {
+                if let Some((new_key, new_value)) = replacer(&[], key, value)
+                    && !is_reserved(new_key.as_str())
+                {
+                    processed.push((new_key, new_value));
+                }
+            } else {
+                processed.push((key, value));
+            }
+        }
+        processed
+    }
+
     /// Dispatches one record through the full pipeline: level gate (bypassed
     /// when `force_override` or `is_force_emit(cx)`), top-level
-    /// `trace_id`/`span_id` drop, user replacer once, then independent per-leg
-    /// classification and delivery to console, OTLP, and extra sinks.
+    /// `trace_id`/`span_id` drop (and `event.name` when `reserved_event_name`
+    /// is set), user replacer once (re-dropping reserved keys afterward), then
+    /// independent per-leg classification and delivery to console, OTLP, and
+    /// extra sinks.
     #[allow(
         clippy::too_many_arguments,
         reason = "internal dispatch carrying the record's extracted fields"
@@ -286,6 +332,7 @@ impl LogPipeline {
         target: &'static str,
         source: Option<SourceLocation>,
         attrs: Vec<(Key, AnyValue)>,
+        reserved_event_name: Option<&str>,
         force_override: bool,
     ) -> Result<(), BoxError> {
         let forced = force_override || is_force_emit(cx);
@@ -293,24 +340,7 @@ impl LogPipeline {
             return Ok(());
         }
 
-        // Drop user-supplied top-level trace_id/span_id and empty keys BEFORE
-        // the user replacer, matching Go's fanout.Handler.
-        let mut processed = Vec::with_capacity(attrs.len());
-        for (key, value) in attrs {
-            let k = key.as_str();
-            if k.is_empty() || k == TRACE_ID_KEY || k == SPAN_ID_KEY {
-                continue;
-            }
-            if let Some(replacer) = &self.replacer {
-                if let Some((new_key, new_value)) = replacer(&[], key, value)
-                    && !new_key.as_str().is_empty()
-                {
-                    processed.push((new_key, new_value));
-                }
-            } else {
-                processed.push((key, value));
-            }
-        }
+        let processed = self.prepare_attrs(attrs, reserved_event_name);
 
         let span_ctx = cx.span().span_context().clone();
         let (trace_id, span_id, trace_flags) = if span_ctx.is_valid() {
@@ -558,25 +588,39 @@ impl Visit for FieldExtractor {
 /// effect immediately without cache invalidation races.
 pub(crate) struct LogLayer {
     pipeline: Arc<dyn Fn() -> Arc<LogPipeline> + Send + Sync>,
+    dispatch: OnceLock<WeakDispatch>,
 }
 
 impl LogLayer {
     pub(crate) fn new(current: impl Fn() -> Arc<LogPipeline> + Send + Sync + 'static) -> Self {
         Self {
             pipeline: Arc::new(current),
+            dispatch: OnceLock::new(),
         }
     }
 }
 
-impl<S: Subscriber> Layer<S> for LogLayer {
+impl<S> Layer<S> for LogLayer
+where
+    S: Subscriber + for<'span> LookupSpan<'span>,
+{
+    fn on_register_dispatch(&self, subscriber: &Dispatch) {
+        let _ = self.dispatch.set(subscriber.downgrade());
+    }
+
     fn on_event(&self, event: &Event<'_>, _ctx: LayerContext<'_, S>) {
+        let (suppressed, current_forced) =
+            Context::map_current(|cx| (cx.is_telemetry_suppressed(), is_force_emit(cx)));
+        if suppressed {
+            return;
+        }
         let pipeline = (self.pipeline)();
         let metadata = event.metadata();
         let level = *metadata.level();
-        let cx = Context::current();
-        if !is_force_emit(&cx) && !pipeline.level.accepts(level) {
+        if !current_forced && !pipeline.level.accepts(level) {
             return;
         }
+        let cx = event_context::<S>(event, self.dispatch.get());
         let mut extractor = FieldExtractor::default();
         event.record(&mut extractor);
         let source = if metadata.file().is_some() || metadata.line().is_some() {
@@ -595,8 +639,60 @@ impl<S: Subscriber> Layer<S> for LogLayer {
             metadata.target(),
             source,
             extractor.attrs,
+            None,
             false,
         );
+    }
+}
+
+/// Resolves the OpenTelemetry correlation [`Context`] for a `tracing` event.
+///
+/// Contextual events use [`Context::current`]. Explicit root events
+/// (`parent: None`) have no span context. Events with an explicit parent span
+/// (`parent: &span`) walk that span's ancestor chain and adopt the nearest
+/// OpenTelemetry span context via [`tracing_opentelemetry::get_otel_context`],
+/// rather than the unrelated span entered on the current thread. Any
+/// `force_emit` marker on the current thread context is preserved.
+fn event_context<S>(event: &Event<'_>, weak_dispatch: Option<&WeakDispatch>) -> Context
+where
+    S: Subscriber + for<'span> LookupSpan<'span>,
+{
+    let current = Context::current();
+    if event.is_contextual() {
+        return current;
+    }
+    let forced = is_force_emit(&current);
+    let base = if event.is_root() {
+        Context::new()
+    } else if let Some(parent_id) = event.parent() {
+        let mut found = None;
+        // Look up the explicit parent on the unfiltered subscriber `S` via the
+        // registered dispatch (avoiding nested `dispatcher::get_default`, which
+        // returns `Dispatch::none()` inside scoped dispatchers): `LogLayer`
+        // sits behind an event-only per-layer filter so it never enables
+        // disabled spans, which would make `LayerContext::span_scope` empty.
+        if let Some(dispatch) = weak_dispatch.and_then(WeakDispatch::upgrade)
+            && let Some(subscriber) = dispatch.downcast_ref::<S>()
+            && let Some(parent) = subscriber.span(parent_id)
+        {
+            for span in parent.scope() {
+                if let Some(otel_cx) =
+                    tracing_opentelemetry::get_otel_context(&span.id(), &dispatch)
+                    && otel_cx.span().span_context().is_valid()
+                {
+                    found = Some(otel_cx);
+                    break;
+                }
+            }
+        }
+        found.unwrap_or_default()
+    } else {
+        current
+    };
+    if forced && !is_force_emit(&base) {
+        force_emit_context(&base)
+    } else {
+        base
     }
 }
 

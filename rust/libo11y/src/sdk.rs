@@ -191,7 +191,7 @@ impl Sdk {
     where
         S: Subscriber + for<'span> LookupSpan<'span> + Send + Sync,
     {
-        layers::<S>(&Arc::new(PartsCell::new(Arc::clone(&self.0.parts))))
+        layers::<S>(Arc::new(PartsCell::new(Arc::clone(&self.0.parts))))
     }
 
     /// A subscriber of libo11y's layers alone, for
