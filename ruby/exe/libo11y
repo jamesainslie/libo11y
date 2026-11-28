@@ -3,12 +3,16 @@
 
 require "libo11y/spec"
 
-def usage
-  warn "usage: libo11y registry check FILE..."
+USAGE = "usage: libo11y registry check FILE..."
+
+if ARGV.length == 1 && %w[-h --help help].include?(ARGV[0])
+  puts USAGE
+  exit 0
+end
+if ARGV.length < 3 || ARGV[0] != "registry" || ARGV[1] != "check"
+  warn USAGE
   exit 2
 end
-
-usage if ARGV.length < 3 || ARGV[0] != "registry" || ARGV[1] != "check"
 
 files = ARGV[2..]
 exit_code = 0

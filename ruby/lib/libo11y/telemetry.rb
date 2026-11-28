@@ -196,11 +196,7 @@ module Libo11y
 
     class << self
       def build(options_or_nil = nil, is_global:, **)
-        opts = if options_or_nil.is_a?(Options)
-                 options_or_nil
-               else
-                 Options.new(**)
-               end
+        opts = Options.merge(options_or_nil, **)
 
         # Claimed before anything is built, so a second caller fails at once
         # and builds nothing.

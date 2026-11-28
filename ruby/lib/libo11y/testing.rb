@@ -237,7 +237,13 @@ module Libo11y
     # production bundle carries no web server. Add `gem "webrick"` to the
     # Gemfile group that runs the tests.
     class OtlpHttpReceiver
-      attr_reader :port, :endpoint, :trace_requests, :metric_requests, :log_requests, :received_headers
+      attr_reader :port, :endpoint
+
+      # What has arrived so far, as copies taken under the lock the server
+      # thread writes under.
+      %i[trace_requests metric_requests log_requests received_headers].each do |name|
+        define_method(name) { @mutex.synchronize { instance_variable_get(:"@#{name}").dup } }
+      end
 
       def self.load_webrick
         require "webrick"

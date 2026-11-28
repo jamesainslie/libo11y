@@ -11,15 +11,20 @@ module Libo11y
   FORCE_EMIT_FIBER_KEY = :libo11y_force_emit
   REENTRY_FIBER_KEY = :libo11y_logging_reentry
 
+  # Runs the block with every log record in it passing the logger's level,
+  # for records that must always be written, such as audit records. Returns
+  # the block's value.
+  #
+  # @raise [ArgumentError] without a block
   def self.force_emit
-    prev = Thread.current[FORCE_EMIT_FIBER_KEY]
-    Thread.current[FORCE_EMIT_FIBER_KEY] = true
-    return true unless block_given?
+    raise ArgumentError, "libo11y: force_emit needs a block" unless block_given?
 
+    previous = Thread.current[FORCE_EMIT_FIBER_KEY]
+    Thread.current[FORCE_EMIT_FIBER_KEY] = true
     begin
       yield
     ensure
-      Thread.current[FORCE_EMIT_FIBER_KEY] = prev
+      Thread.current[FORCE_EMIT_FIBER_KEY] = previous
     end
   end
 

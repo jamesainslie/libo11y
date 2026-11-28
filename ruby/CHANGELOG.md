@@ -20,6 +20,9 @@ This release fixes most of what the first review of 0.1.0 found. It changes an o
 - `Proc.child_env` takes an empty base environment by default and maps `TRACEPARENT` and `TRACESTATE` to `nil` when the active span does not set them, so `Process.spawn` removes a stale value from the child.
 - Explicit options and `resource_attributes` beat `OTEL_SERVICE_NAME` and `OTEL_RESOURCE_ATTRIBUTES`. In 0.1.0 the environment beat `service.name` and `deployment.environment.name` given in `resource_attributes`.
 - An injected span processor owns the export path, as an injected exporter does, so no exporter is built from the environment beside it.
+- `Libo11y.force_emit` and `Libo11y.start_record` need a block and raise `ArgumentError` without one. In 0.1.0 a call without a block left its scope open for the rest of the thread.
+- `Libo11y.setup` and `Libo11y.init` lay keywords over an `Options` object given with them, and raise `ArgumentError` for a keyword that is not an option. In 0.1.0 keywords beside an `Options` object were dropped without a word.
+- In the `app_registries` option a `String` of one line is a path and a `Pathname` is always one. A path that does not exist raises `InvalidAppRegistry` with the missing file's name, where 0.1.0 reported a YAML type error.
 - `Libo11y::InvalidEnvironment` names the value and the allowed set, and `Libo11y::CanaryRejected` says "rejected by log pipeline", as Go's errors do.
 - `Rack::Middleware` adds the `Server-Timing` entry to HTML responses only, as the Go middleware does, and raises `ArgumentError` for `canonical_line: true` without `telemetry:`, where it used to emit nothing.
 
@@ -47,6 +50,29 @@ This release fixes most of what the first review of 0.1.0 found. It changes an o
 - The HTTP and DB duration histograms use their latency boundaries. The SDK ignores the boundaries an instrument advises, so libo11y registers a view for each, and `histogram_buckets` replaces one by name.
 - The `views` option is applied. It takes Hashes of `MeterProvider#add_view` arguments with a `:name`. In 0.1.0 it did nothing.
 - With `env: Libo11y::HERMETIC` or an explicit `env`, the span and log record limits, the batch processors' worker switch and the exporters' certificate verification no longer come from the process environment.
+- Two registries that declare one namespace are refused also when they are given as compiled registries.
+- The registry parser checks the escapes of a double-quoted scalar that follows an apostrophe in a plain or block scalar. It used to treat the apostrophe as an open quote, so `"a \/ b"` was accepted there and `"it the log record and the exemplar were on different traces. It requires one trace with a span, a log record and an exemplar, and takes a metric name to look at one metric's exemplars.
+- `Recorder#assert_conforms!` passed after the code under test emitted a secret, because the secret had been redacted. It now fails on any counted redaction of a secret, as Go's `AssertConforms` does, looks at metric data points too, and lists every problem it finds.
+
+## [0.1.0] - 2026-11-28
+
+### Added
+
+- Core Ruby SDK (`Libo11y.setup`, `Libo11y.init`, `Options`, typed `Libo11y::Error` hierarchy, idempotent bounded concurrent shutdown, `shutdown_on_signals`).
+- Generated spec constants, tables, and `GoPrint` ranges (`Libo11y::Spec`, spec 1.3.0) and strict `yaml.v3`-compatible application attribute registry validator passing all 46 shared conformance cases, plus `exe/libo11y registry check`.
+- Single `SensitivityPolicy` across resource, spans, metrics (PII always dropped), and structured logs, matching all shared PII hash, instance ID, and endpoint sanitization conformance vectors. An injected span processor sees the redacted span through `attributes`, `events`, `links` and `to_span_data`. Observable instruments classify the attributes given to `add_attributes` and `observe`. A log record is classified once, so one PII value has one token on the console, on OTLP and on spans, and one violation is counted per record. The walk over nested log values drops what its depth bound, its budget of 2048 nodes or a cycle kept it from examining.
+- Capture-time redaction (`Libo11y::Redact::Secret`, `Masked`, `Fields`), where the strictest protection wins through nesting and a subclass keeps its parent's field rules, wide events (`Record`), `force_emit`, detached propagation (`Libo11y::Detached`), child-process propagation (`Libo11y::Proc`), and zero-dependency Ruby/process runtime metrics.
+- Integrations: `Libo11y::Rack::Middleware`, `Libo11y::HttpClient`, and `Libo11y::DB::Client`. The DB client removes literals and comments with the same dialect-aware lexer as `go/o11ysql` (PostgreSQL dollar quoting, escape strings and nested comments, MySQL backslash escapes, double-quoted strings, `#` and versioned comments, SQLite parameters), records `db.query.text` only for `postgresql`, `sqlite`, `mysql` and `mariadb`, capped at 4096 bytes, names the span after the operation and table, and never records a driver's error message.
+- Hermetic test harness (`Libo11y::Testing::Recorder` and `OtlpHttpReceiver`). `OtlpHttpReceiver` serves through WEBrick, which the gem does not depend on. A consumer adds `gem "webrick"` to its test group.
+
+[Unreleased]: https://github.com/jamesainslie/libo11y/compare/ruby/v0.2.0...HEAD
+[0.2.0]: https://github.com/jamesainslie/libo11y/compare/ruby/v0.1.0...ruby/v0.2.0
+[0.1.0]: https://github.com/jamesainslie/libo11y/releases/tag/ruby/v0.1.0
+s"` was refused.
+- `exe/libo11y` prints its usage on standard output and exits 0 for `-h`, `--help` and `help`, as the Go command does.
+- Resident memory is computed with the system's page size, not a fixed 4 KiB.
+- `OtlpHttpReceiver` returns copies of what it has received, taken under its lock.
+- The gem declares its dependency on `logger`, which stops being a default gem in Ruby 3.5.
 - `Recorder#assert_triangle!` passed when the log record and the exemplar were on different traces. It requires one trace with a span, a log record and an exemplar, and takes a metric name to look at one metric's exemplars.
 - `Recorder#assert_conforms!` passed after the code under test emitted a secret, because the secret had been redacted. It now fails on any counted redaction of a secret, as Go's `AssertConforms` does, looks at metric data points too, and lists every problem it finds.
 

@@ -2,6 +2,7 @@ PATH
   remote: .
   specs:
     libo11y (0.2.0)
+      logger (~> 1.6)
       opentelemetry-api (~> 1.11)
       opentelemetry-common (~> 0.25)
       opentelemetry-exporter-otlp (~> 0.37)

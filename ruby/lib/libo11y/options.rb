@@ -67,7 +67,21 @@ module Libo11y
     :shutdown_timeout,
     keyword_init: true
   ) do
+    # An Options object with the keywords laid over it. The object given is
+    # not changed.
+    #
+    # @raise [ArgumentError] for a keyword that is not an option
+    def self.merge(options, **kwargs)
+      return new(**kwargs) if options.nil?
+      raise ArgumentError, "libo11y: options must be a Libo11y::Options, got #{options.class}" unless options.is_a?(Options)
+
+      new(**options.to_h, **kwargs)
+    end
+
     def initialize(**kwargs)
+      unknown = kwargs.keys - self.class.members
+      raise ArgumentError, "libo11y: unknown option#{"s" if unknown.length > 1} #{unknown.join(", ")}" unless unknown.empty?
+
       defaults = {
         extra_environments: [],
         strict_identity: true,

@@ -1,9 +1,15 @@
 # frozen_string_literal: true
 
+require "etc"
+
 module Libo11y
   module Internal
     # Zero-dependency Ruby runtime and semantic-convention process metrics.
     module RuntimeMetrics
+      # The size of a memory page, which /proc/self/statm counts in. It is
+      # 4 KiB on most hosts and 16 or 64 KiB on some arm64 kernels.
+      PAGE_SIZE = Etc.sysconf(Etc::SC_PAGESIZE) || 4096
+
       module_function
 
       def register(meter_provider)
@@ -77,7 +83,7 @@ module Libo11y
         parts = File.read("/proc/self/statm").split
         return 0 if parts.length < 2
 
-        parts[1].to_i * 4096
+        parts[1].to_i * PAGE_SIZE
       rescue StandardError
         0
       end
