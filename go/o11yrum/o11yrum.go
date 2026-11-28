@@ -29,6 +29,8 @@ type Handler struct {
 	// store and symbols are nil without an object store.
 	store   ObjectStore
 	symbols *symbolicator
+	// replaySlots holds one token per replay segment being handled.
+	replaySlots chan struct{}
 
 	// derive is nil without WithMetricProducer.
 	derive           *deriver
@@ -48,6 +50,9 @@ type app struct {
 	// uploadToken is the SHA-256 of the app's upload token, nil when the
 	// app accepts no uploads.
 	uploadToken *[32]byte
+	// replayNS is the key segment of the app's recordings, "" when the app
+	// records none.
+	replayNS string
 }
 
 // NewHandler builds a gateway handler. WithConfig is required. Without
@@ -102,6 +107,12 @@ func NewHandler(opts ...Option) (*Handler, error) {
 	if h.store, err = objectStore(cfg, s.store); err != nil {
 		return nil, err
 	}
+	if cfg.replayEnabled() {
+		if err := checkReplayStore(h.store); err != nil {
+			return nil, err
+		}
+	}
+	h.replaySlots = make(chan struct{}, cfg.Replay.MaxConcurrent)
 	if h.store != nil {
 		h.symbols = newSymbolicator(h.store, cfg.Symbolication, symbolicatorDeps{
 			maxValueLen: cfg.Limits.MaxValueLength,
@@ -124,6 +135,9 @@ func NewHandler(opts ...Option) (*Handler, error) {
 			if a.uploadToken, err = loadUploadToken(cfg.resolvePath(ac.Sourcemaps.UploadTokenFile)); err != nil {
 				return nil, fmt.Errorf("o11yrum: app %s: %w", ac.ServiceName, err)
 			}
+		}
+		if ac.Replay.Enabled {
+			a.replayNS = ac.replayNamespace()
 		}
 		h.apps[ac.ServiceName] = a
 	}
@@ -184,6 +198,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.serveUpload(w, r)
+	case pathPrefix + "replay":
+		if h.store == nil {
+			http.NotFound(w, r)
+			return
+		}
+		h.serveReplay(w, r)
 	default:
 		http.NotFound(w, r)
 	}

@@ -51,6 +51,8 @@ type Config struct {
 	Sourcemaps SourcemapsConfig `yaml:"sourcemaps"`
 	// Symbolication configures how error stacks are symbolicated.
 	Symbolication SymbolicationConfig `yaml:"symbolication"`
+	// Replay configures the session replay endpoint.
+	Replay ReplayConfig `yaml:"replay"`
 
 	dir string // directory of the file LoadConfig read, for relative paths
 }
@@ -161,6 +163,8 @@ type AppConfig struct {
 	AppMetricLabels []string `yaml:"app_metric_labels"`
 	// Sourcemaps configures the app's source map uploads and lookups.
 	Sourcemaps AppSourcemaps `yaml:"sourcemaps"`
+	// Replay configures the app's session replay.
+	Replay AppReplay `yaml:"replay"`
 }
 
 // AppSourcemaps configures one app's source maps.
@@ -315,6 +319,7 @@ func (c *Config) applyDefaults() {
 	setDefault(&c.Aggregation.MaxMetricsPerApp, 200)
 	setDefault(&c.Sourcemaps.MaxUploadBytes, 32<<20)
 	c.Symbolication.applyDefaults()
+	c.Replay.applyDefaults()
 	for i := range c.Apps {
 		if c.Apps[i].PII == "" {
 			c.Apps[i].PII = piiDrop
@@ -385,6 +390,9 @@ func (c *Config) validate() error {
 	if err := c.Symbolication.validate(); err != nil {
 		return err
 	}
+	if err := c.Replay.validate(); err != nil {
+		return err
+	}
 	seen := make(map[string]bool, len(c.Apps))
 	for i, a := range c.Apps {
 		if a.ServiceName == "" {
@@ -409,6 +417,9 @@ func (c *Config) validate() error {
 			return fmt.Errorf("app %s: app_metric_labels: %w", a.ServiceName, err)
 		}
 		if err := validateAppSourcemaps(a); err != nil {
+			return fmt.Errorf("app %s: %w", a.ServiceName, err)
+		}
+		if err := validateAppReplay(a); err != nil {
 			return fmt.Errorf("app %s: %w", a.ServiceName, err)
 		}
 	}

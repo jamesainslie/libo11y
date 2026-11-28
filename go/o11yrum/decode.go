@@ -81,21 +81,37 @@ func decodeBody(sig Signal, contentType, encoding string, body io.Reader, maxBod
 // body as sent may hold at most maxBody bytes, and at most maxInflated
 // once inflated, so a gzip bomb stops at maxInflated bytes.
 func readCapped(body io.Reader, encoding string, maxBody, maxInflated int64) ([]byte, error) {
+	raw, inflate, err := readRaw(body, encoding, maxBody)
+	if err != nil {
+		return nil, err
+	}
+	return inflateCapped(raw, inflate, maxInflated)
+}
+
+// readRaw reads a request body as sent, at most maxBody bytes, and
+// reports whether its encoding is gzip.
+func readRaw(body io.Reader, encoding string, maxBody int64) ([]byte, bool, error) {
 	var inflate bool
 	switch strings.ToLower(strings.TrimSpace(encoding)) {
 	case "", "identity":
 	case "gzip", "x-gzip":
 		inflate = true
 	default:
-		return nil, errEncoding
+		return nil, false, errEncoding
 	}
 	raw, err := io.ReadAll(io.LimitReader(body, maxBody+1))
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", errDecode, err)
+		return nil, false, fmt.Errorf("%w: %w", errDecode, err)
 	}
 	if int64(len(raw)) > maxBody {
-		return nil, errTooLarge
+		return nil, false, errTooLarge
 	}
+	return raw, inflate, nil
+}
+
+// inflateCapped gunzips raw when inflate is set, refusing more than
+// maxInflated bytes either way.
+func inflateCapped(raw []byte, inflate bool, maxInflated int64) ([]byte, error) {
 	if inflate {
 		return gunzip(raw, maxInflated)
 	}

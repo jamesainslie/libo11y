@@ -60,8 +60,10 @@ func WithConfigProvider(p ConfigProvider) Option {
 }
 
 // WithObjectStore sets where uploaded source maps are kept and read from
-// for symbolication. It overrides the configuration's object_store. An
-// S3 store must come this way: build it with the s3store package.
+// for symbolication, and where replay segments are kept. It overrides the
+// configuration's object_store. An S3 store must come this way: build it
+// with the s3store package. Replay needs a store that also implements
+// ObjectLister and ObjectDeleter.
 func WithObjectStore(store ObjectStore) Option {
 	return func(s *settings) { s.store = store }
 }

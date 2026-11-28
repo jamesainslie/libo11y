@@ -23,6 +23,9 @@ const (
 	telReason  = "o11yrum.reason"
 	telSink    = "o11yrum.sink"
 	telResult  = "o11yrum.result"
+	// telOperation names an object store operation: put, get, list or
+	// delete.
+	telOperation = "o11yrum.operation"
 )
 
 // Batch outcomes and the reason recorded for a batch that was not refused.
@@ -51,6 +54,11 @@ type telemetry struct {
 	sinkDuration metric.Float64Histogram
 	uploads      metric.Int64Counter
 	frames       metric.Int64Counter
+
+	replaySegments metric.Int64Counter
+	replayBytesIn  metric.Int64Counter
+	replayDrops    metric.Int64Counter
+	replayStoreDur metric.Float64Histogram
 }
 
 // newTelemetry creates the instruments on mp, or on a noop provider when
@@ -100,7 +108,52 @@ func newTelemetry(mp metric.MeterProvider, log *slog.Logger) *telemetry {
 		metric.WithDescription("Stack frames symbolication handled, by app and result: hit, unmapped, miss, error or skipped.")); !check("o11yrum.symbolication.frames", err) {
 		t.frames, _ = fallback.Int64Counter("o11yrum.symbolication.frames")
 	}
+	if t.replaySegments, err = m.Int64Counter("o11yrum.replay.segments", metric.WithUnit("{segment}"),
+		metric.WithDescription("Session replay segments the gateway handled, by app, outcome and reason.")); !check("o11yrum.replay.segments", err) {
+		t.replaySegments, _ = fallback.Int64Counter("o11yrum.replay.segments")
+	}
+	if t.replayBytesIn, err = m.Int64Counter("o11yrum.replay.bytes", metric.WithUnit("By"),
+		metric.WithDescription("Bytes of scrubbed, gzipped replay segments stored, by app.")); !check("o11yrum.replay.bytes", err) {
+		t.replayBytesIn, _ = fallback.Int64Counter("o11yrum.replay.bytes")
+	}
+	if t.replayDrops, err = m.Int64Counter("o11yrum.replay.events.dropped", metric.WithUnit("{event}"),
+		metric.WithDescription("Replay events scrubbing dropped from accepted segments, by app and reason.")); !check("o11yrum.replay.events.dropped", err) {
+		t.replayDrops, _ = fallback.Int64Counter("o11yrum.replay.events.dropped")
+	}
+	if t.replayStoreDur, err = m.Float64Histogram("o11yrum.replay.store.duration", metric.WithUnit("s"),
+		metric.WithExplicitBucketBoundaries(durationBuckets...),
+		metric.WithDescription("Time one object store operation on replay objects took, by operation and outcome.")); !check("o11yrum.replay.store.duration", err) {
+		t.replayStoreDur, _ = fallback.Float64Histogram("o11yrum.replay.store.duration")
+	}
 	return t
+}
+
+// replaySegment counts one replay upload.
+func (t *telemetry) replaySegment(ctx context.Context, app, outcome, reason string) {
+	t.replaySegments.Add(ctx, 1, metric.WithAttributes(
+		attribute.String(telApp, app), attribute.String(telOutcome, outcome), attribute.String(telReason, reason)))
+}
+
+// replayBytes counts the stored size of one accepted segment.
+func (t *telemetry) replayBytes(ctx context.Context, app string, n int64) {
+	t.replayBytesIn.Add(ctx, n, metric.WithAttributes(attribute.String(telApp, app)))
+}
+
+// replayDropped counts the events scrubbing dropped from one accepted
+// segment.
+func (t *telemetry) replayDropped(ctx context.Context, app string, s scrubStats) {
+	for reason, n := range s {
+		if n > 0 {
+			t.replayDrops.Add(ctx, n, metric.WithAttributes(
+				attribute.String(telApp, app), attribute.String(telReason, reason)))
+		}
+	}
+}
+
+// replayStore records one object store operation on replay objects.
+func (t *telemetry) replayStore(ctx context.Context, op, outcome string, d time.Duration) {
+	t.replayStoreDur.Record(ctx, d.Seconds(), metric.WithAttributes(
+		attribute.String(telOperation, op), attribute.String(telOutcome, outcome)))
 }
 
 // upload counts one source map upload.
