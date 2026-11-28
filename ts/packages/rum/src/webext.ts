@@ -45,7 +45,7 @@ export type {
   StorageChangeListener,
   StorageChanges,
 } from "./webext/chrome.ts";
-export { allowRumSessionInContentScripts } from "./webext/session-store.ts";
+export { allowRumSessionInContentScripts } from "./webext/session-access.ts";
 export {
   CONTENT_VIEW_NAME,
   type RumExtensionOptions,

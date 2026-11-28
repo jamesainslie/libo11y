@@ -17,6 +17,7 @@
           "@libo11y/spec": ["./node_modules/@libo11y/spec/dist/index.d.ts"],
           "@libo11y/web": ["./node_modules/@libo11y/web/dist/index.d.ts"],
           "@libo11y/web/internal": ["./node_modules/@libo11y/web/dist/internal/index.d.ts"],
+          "@libo11y/web/portable": ["./node_modules/@libo11y/web/dist/portable.d.ts"],
           "@libo11y/webext": ["./node_modules/@libo11y/webext/dist/index.d.ts"],
           "@libo11y/webext/internal": ["./node_modules/@libo11y/webext/dist/internal.d.ts"]
         },

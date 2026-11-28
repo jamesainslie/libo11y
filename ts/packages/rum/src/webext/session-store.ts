@@ -15,15 +15,7 @@ import { randomUuid } from "../ids.ts";
 import { parseSessionState, SESSION_STORAGE_KEY } from "../session/local-store.ts";
 import type { ChromeSessionStorageLike, StorageChangeListener } from "./chrome.ts";
 
-/**
- * Lets content scripts read and write chrome.storage.session, so they share the extension's RUM
- * session. Call it in the service worker on every wake. It opens the whole session area to content
- * scripts, so keep nothing there that the pages a content script runs on must not reach. Resolves
- * where the browser has no setAccessLevel.
- */
-export async function allowRumSessionInContentScripts(chrome: ChromeSessionStorageLike): Promise<void> {
-  await chrome.storage?.session?.setAccessLevel?.({ accessLevel: "TRUSTED_AND_UNTRUSTED_CONTEXTS" });
-}
+export { allowRumSessionInContentScripts } from "./session-access.ts";
 
 /** The extension SessionStore. Storage is reached on first use, which the session manager makes only after consent. */
 export function chromeSessionStore(chrome: ChromeSessionStorageLike): SessionStore {

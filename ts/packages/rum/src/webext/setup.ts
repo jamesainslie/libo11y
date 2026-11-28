@@ -21,7 +21,7 @@
  * - a retention buffer in memory, because its IndexedDB is the host page's.
  */
 import { O11yError } from "@libo11y/core";
-import { createExporterSet, createMemoryQueue } from "@libo11y/web/internal";
+import { browserEnv, createExporterSet, createMemoryQueue } from "@libo11y/web/internal";
 import type {
   ContentScriptSetupOptions,
   ContentScriptTelemetry,
@@ -37,7 +37,7 @@ import {
   type WorkerDeps,
 } from "@libo11y/webext/internal";
 import { diag } from "@opentelemetry/api";
-import type { RumBind } from "../bind.ts";
+import type { WebRumBind } from "../bind.ts";
 import type { CollectorName } from "../contracts/runtime.ts";
 import type { Rum, RumOptions } from "../options.ts";
 import { defaultRumDeps, type RumDeps, setupRumWith } from "../setup.ts";
@@ -96,7 +96,7 @@ export function defaultRumExtensionDeps(): RumExtensionDeps {
 }
 
 /** The binding of extension contexts: @libo11y/webext's setupContentScriptWith with RUM's wrappers. */
-export function contentBinding(content: ContentDeps, install: boolean): RumBind {
+export function contentBinding(content: ContentDeps, install: boolean): WebRumBind {
   return (options, w) =>
     setupContentScriptWith(
       options,
@@ -104,7 +104,7 @@ export function contentBinding(content: ContentDeps, install: boolean): RumBind 
         ...content,
         createConsentController: (o) => w.consentController(content.createConsentController(o)),
         webPlatform: (po) => {
-          w.platform(po);
+          w.platform(po, browserEnv(options, po.endpoints));
           const platform = content.webPlatform(po);
           return {
             ...platform,

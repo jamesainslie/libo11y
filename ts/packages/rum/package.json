@@ -9,6 +9,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./bootstrap": "./src/bootstrap.ts",
+    "./core": "./src/core.ts",
     "./webext": "./src/webext.ts",
     "./internal": "./src/internal.ts"
   },
