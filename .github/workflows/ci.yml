@@ -158,8 +158,9 @@ jobs:
         working-directory: ts
         run: bun scripts/size.ts --check --summary "$GITHUB_STEP_SUMMARY"
 
-  # The RUM gateway end-to-end journey: a built o11yrum-gateway in front of
-  # the TypeScript OTLP sink, under Node and Bun.
+  # The RUM gateway end-to-end journeys: a built o11yrum-gateway in front of
+  # the TypeScript OTLP sink, under Node and Bun, and session replay recorded
+  # in Chromium, read back through the read API and erased.
   rum-e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -183,6 +184,16 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "24.x"
+      # The replay journey runs in Chromium; the cache and install mirror
+      # the ts-browser job's.
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('ts/bun.lock') }}
+      - run: make ts-install
+      - name: Install Playwright's Chromium
+        working-directory: ts
+        run: bun x --no-install playwright install --with-deps chromium
       - run: make rum-e2e
 
   # The o11yrum-gateway image for the runner's platform: it builds, reports

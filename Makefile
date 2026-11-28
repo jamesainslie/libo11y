@@ -106,14 +106,18 @@ ts-rn-check: ts-install
 ts-browser-test: ts-install
 	cd ts && bun run test:browser
 
-# The RUM gateway end-to-end journey: builds o11yrum-gateway and runs the
+# The RUM gateway end-to-end journeys: builds o11yrum-gateway and runs the
 # journey in ts/packages/sourcemaps/src/e2e under Node and Bun against the
-# in-process OTLP sink from @libo11y/test.
+# in-process OTLP sink from @libo11y/test, then the session replay journey
+# (ts/packages/rum-replay/browser/gateway-journey.pw.ts) in Playwright's
+# Chromium: record in a browser, store through the gateway, read back with
+# a token, replay with @rrweb/replay, erase. Needs Playwright's Chromium.
 rum-e2e: ts-install
 	@set -e; tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; \
 	(cd go/o11yrum && go build -o "$$tmp/o11yrum-gateway" ./cmd/o11yrum-gateway); \
 	cd ts && O11YRUM_GATEWAY_BIN="$$tmp/o11yrum-gateway" node --test packages/sourcemaps/src/e2e/*.test.ts \
-		&& O11YRUM_GATEWAY_BIN="$$tmp/o11yrum-gateway" bun test --timeout 60000 packages/sourcemaps/src/e2e
+		&& O11YRUM_GATEWAY_BIN="$$tmp/o11yrum-gateway" bun test --timeout 60000 packages/sourcemaps/src/e2e \
+		&& O11YRUM_GATEWAY_BIN="$$tmp/o11yrum-gateway" bun run test:browser --project=rum-chromium packages/rum-replay/browser/gateway-journey.pw.ts
 
 # Rust workspace (rust/): formatting, clippy with warnings as errors, the
 # tests, and the docs with warnings as errors (needs cargo with rustfmt and
