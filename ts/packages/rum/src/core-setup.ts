@@ -22,7 +22,7 @@
  * revoke before the revoke hooks finish starts RUM again. The revoke hook then empties the
  * retention buffer. A page that never had consent touches no RUM storage on revoke.
  */
-import { O11yError, type SignalReport, type Telemetry } from "@libo11y/core";
+import { type LogAttributes, O11yError, type SignalReport, type Telemetry } from "@libo11y/core";
 import {
   ATTR_RUM_CONFIG_VERSION,
   ATTR_RUM_CONNECTION_EFFECTIVE,
@@ -417,6 +417,13 @@ export async function setupRumCore<O extends RumPlatformOptions, T extends Telem
   const forward = options.spanProcessor === undefined || appExporter !== undefined;
   /** The OTLP endpoints, once web resolved them. */
   let ownUrls: readonly string[] = [];
+  /** Endpoints collectors count as RUM's own traffic (ignoreUrl), as origin plus path, such as the replay endpoint. */
+  const collectorUrls = new Map<symbol, string>();
+  /** Attributes collectors add to named events (addEventAttributes). */
+  const decorators = new Set<{
+    readonly names: ReadonlySet<string>;
+    readonly attrs: () => LogAttributes | undefined;
+  }>();
   const ignoreUrls = options.instrumentations?.ignoreUrls ?? [];
   let spanTarget: SpanExporter | undefined =
     appExporter === undefined ? undefined : retainingSpanExporter(appExporter, routing);
@@ -537,10 +544,20 @@ export async function setupRumCore<O extends RumPlatformOptions, T extends Telem
       if (!gate.recording()) return;
       const s = session.current();
       const v = views.current();
+      let decorated: LogAttributes = {};
+      for (const d of decorators) {
+        if (!d.names.has(name)) continue;
+        try {
+          decorated = { ...decorated, ...d.attrs() };
+        } catch (err) {
+          diag.warn("o11y: rum: an event attributes hook threw", err);
+        }
+      }
       const merged = {
         ...(s === undefined ? {} : { [ATTR_SESSION_ID]: s.id }),
         ...(v === undefined ? {} : { [ATTR_RUM_VIEW_ID]: v.id }),
         ...(userId === undefined ? {} : { [ATTR_USER_ID]: userId }),
+        ...decorated,
         ...attrs,
       };
       if (body === undefined) {
@@ -577,7 +594,29 @@ export async function setupRumCore<O extends RumPlatformOptions, T extends Telem
       } catch {
         return false;
       }
-      return ownUrls.some((own) => u.href.startsWith(own)) || isIgnored(u, ignoreUrls);
+      return (
+        ownUrls.some((own) => u.href.startsWith(own)) ||
+        [...collectorUrls.values()].some((own) => `${u.origin}${u.pathname}` === own) ||
+        isIgnored(u, ignoreUrls)
+      );
+    },
+    remoteDocument: () => (remote === undefined ? undefined : remote.find(session.current()?.configVersion)),
+    addEventAttributes(names, attrs) {
+      const d = { names: new Set(names), attrs };
+      decorators.add(d);
+      return () => decorators.delete(d);
+    },
+    ignoreUrl(url) {
+      const key = Symbol(url);
+      let path = url;
+      try {
+        const u = new URL(url, deps.location());
+        path = `${u.origin}${u.pathname}`;
+      } catch {
+        // kept as given
+      }
+      collectorUrls.set(key, path);
+      return () => collectorUrls.delete(key);
     },
   };
 

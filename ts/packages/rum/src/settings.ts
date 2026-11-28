@@ -4,10 +4,9 @@ import type { CollectorName, RumCollector, RumSettings } from "./contracts/runti
 import type { RumOptions } from "./options.ts";
 import { defaultViewName } from "./views/naming.ts";
 
-/** The settings, the collectors to start and the client token. */
+/** The settings and the collectors to start. */
 export interface ResolvedRum extends RumSettings {
   readonly collectors: readonly RumCollector[];
-  readonly clientToken?: string;
 }
 
 function positive(name: string, v: number | undefined, dflt: number): number {

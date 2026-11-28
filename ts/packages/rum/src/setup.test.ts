@@ -1670,3 +1670,89 @@ test("an unkept session's start is buffered at once, so a reload before the elec
   assert.ok(bodies.includes("o11y.rum.session.start"), "the start waits in the retention buffer");
   assert.deepEqual(sentEvents(h.transport), []);
 });
+
+test("a collector reads the remote document its session started under", async () => {
+  const h = harness({ fetch: configFetch().f });
+  h.storage.setItem(
+    CONFIG_STORAGE_KEY,
+    JSON.stringify({ etag: '"c3"', body: { version: "c3", config: { replay: { mask: [".x"] } } } }),
+  );
+  let seen: RumRuntime | undefined;
+  open = await setupRumWith(
+    {
+      ...OPTS,
+      consent: { initial: "granted" },
+      rum: {
+        collectors: [
+          {
+            name: "replay",
+            start: (rt) => {
+              seen = rt;
+              return () => {};
+            },
+          },
+        ],
+        remoteConfig: remoteConfig(),
+      },
+    },
+    h.deps,
+  );
+  assert.ok(seen);
+  assert.equal(seen.remoteDocument()?.version, "c3");
+  assert.deepEqual(seen.remoteDocument()?.replay, { mask: [".x"] });
+});
+
+test("without remote configuration a collector reads no document", async () => {
+  const h = harness();
+  open = await setupRumWith({ ...OPTS, consent: { initial: "granted" } }, h.deps);
+  assert.equal(runtimeOf(open)?.remoteDocument(), undefined);
+});
+
+test("addEventAttributes decorates only the named events, the caller's attributes win, and it can be removed", async () => {
+  const h = harness();
+  open = await setupRumWith({ ...OPTS, consent: { initial: "granted" } }, h.deps);
+  const rt = runtimeOf(open);
+  assert.ok(rt);
+  let segment: number | undefined = 3;
+  const off = rt.addEventAttributes(["o11y.rum.error"], () =>
+    segment === undefined ? undefined : { "o11y.rum.replay.segment": segment, "o11y.rum.error.type": "hook" },
+  );
+  rt.emit("o11y.rum.error", { "o11y.rum.error.type": "TypeError" });
+  rt.emit("o11y.rum.frustration", { "o11y.rum.frustration.type": "dead" });
+  segment = undefined;
+  rt.emit("o11y.rum.error", { "o11y.rum.error.type": "RangeError" });
+  segment = 4;
+  off();
+  rt.emit("o11y.rum.error", { "o11y.rum.error.type": "SyntaxError" });
+  rt.session.retain("error");
+  await open.forceFlush();
+  await until(
+    () => logRecords(h.transport).some((r) => r["o11y.rum.error.type"] === "SyntaxError"),
+    "the errors",
+  );
+  const records = logRecords(h.transport).filter((r) =>
+    ["o11y.rum.error", "o11y.rum.frustration"].includes(String(r["event.name"])),
+  );
+  assert.deepEqual(
+    records.map((r) => [r["event.name"], r["o11y.rum.error.type"], r["o11y.rum.replay.segment"]]),
+    [
+      ["o11y.rum.error", "TypeError", 3],
+      ["o11y.rum.frustration", undefined, undefined],
+      ["o11y.rum.error", "RangeError", undefined],
+      ["o11y.rum.error", "SyntaxError", undefined],
+    ],
+  );
+});
+
+test("ignoreUrl adds a URL to RUM's own traffic until it is removed", async () => {
+  const h = harness();
+  open = await setupRumWith({ ...OPTS, consent: { initial: "granted" } }, h.deps);
+  const rt = runtimeOf(open);
+  assert.ok(rt);
+  assert.equal(rt.ignored("https://app.test/_o11y/v1/replay?segment=0"), false);
+  const off = rt.ignoreUrl("https://app.test/_o11y/v1/replay");
+  assert.equal(rt.ignored("https://app.test/_o11y/v1/replay?segment=0"), true);
+  assert.equal(rt.ignored("https://app.test/_o11y/v1/replayed"), false);
+  off();
+  assert.equal(rt.ignored("https://app.test/_o11y/v1/replay?segment=0"), false);
+});

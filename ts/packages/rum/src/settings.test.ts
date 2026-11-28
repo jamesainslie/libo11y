@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { O11yError } from "@libo11y/core";
+import type { RumSettings } from "./contracts/runtime.ts";
 import type { RumOptions } from "./options.ts";
 import { resolveSettings } from "./settings.ts";
 
@@ -62,4 +63,9 @@ test("options are taken as given", () => {
   assert.deepEqual([...s.queryAllowList], ["page"]);
   assert.equal(s.clientToken, "pub-123");
   assert.equal(s.viewName, viewName);
+});
+
+test("the client token is part of the settings every collector reads", () => {
+  const s: RumSettings = resolveSettings({ clientToken: "t1" });
+  assert.equal(s.clientToken, "t1");
 });
