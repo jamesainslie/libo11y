@@ -119,3 +119,21 @@ export function stripSrcset(raw: string, allow: ReadonlySet<string>): string {
   }
   return out.join(", ");
 }
+
+/** Schemes that make a text value a URL: the ones a page links or loads with, and those stripUrl empties. */
+export const URL_SCHEMES: RegExp = /^(?:https?|data|blob|javascript|file|ftp|wss?|mailto|tel):/i;
+/** A meta refresh value: a delay, then ";" or ",", then a URL. */
+const REFRESH = /^(\d+(?:\.\d*)?)\s*[;,]/;
+
+/**
+ * A kept content attribute (meta og:url, og:image, twitter:image, a refresh): a value that, read as
+ * stripUrl reads it, starts with a scheme of URL_SCHEMES, "/" or "\\" is stripped by stripUrl. A
+ * refresh value (digits, then ";" or ",") keeps only its delay. Any other value is text and kept.
+ */
+export function stripContent(raw: string, allow: ReadonlySet<string>): string {
+  const t = clean(raw);
+  const refresh = REFRESH.exec(t);
+  if (refresh !== null) return refresh[1] ?? "";
+  if (URL_SCHEMES.test(t) || t.startsWith("/") || t.startsWith("\\")) return stripUrl(raw, allow);
+  return raw;
+}

@@ -21,7 +21,16 @@
   },
   "dependencies": {
     "@libo11y/core": "workspace:*",
+    "@libo11y/spec": "workspace:*",
+    "@libo11y/web": "workspace:*",
     "@rrweb/record": "2.2.2",
     "@rrweb/types": "2.2.2"
+  },
+  "peerDependencies": {
+    "@libo11y/rum": "workspace:*"
+  },
+  "devDependencies": {
+    "@libo11y/rum": "workspace:*",
+    "@rrweb/replay": "2.2.2"
   }
 }

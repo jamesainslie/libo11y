@@ -1,5 +1,5 @@
 /**
- * Contract, frozen by R3a, extended by R3b, R3c and R5a. What every collector receives. Collectors are created by factories such
+ * Contract, frozen by R3a, extended by R3b, R3c, R5a and R6b. What every collector receives. Collectors are created by factories such
  * as views() and run only while consent is granted: start is called on grant, the returned stop
  * on revoke and shutdown.
  */
@@ -8,11 +8,19 @@ import type { RUMErrorSource, RUMFrustrationType, RUMPlatform } from "@libo11y/s
 import type { HttpRequestInfo } from "@libo11y/web";
 import type { Attributes, Context, Span, Tracer } from "@opentelemetry/api";
 import type { BootstrapEntry } from "../bootstrap/buffer.ts";
+import type { RemoteConfigDocument } from "../config/clamp.ts";
 import type { SessionManager } from "./session.ts";
 import type { SummaryAccumulator } from "./summary.ts";
 import type { ViewTracker } from "./views.ts";
 
-export type CollectorName = "views" | "actions" | "errors" | "vitals" | "resources" | "long_animation_frames";
+export type CollectorName =
+  | "views"
+  | "actions"
+  | "errors"
+  | "vitals"
+  | "resources"
+  | "long_animation_frames"
+  | "replay";
 
 /** Internal signals between collectors. at is performance.now(). */
 export type RumSignal =
@@ -71,6 +79,8 @@ export interface RumSettings {
   readonly enabled: ReadonlySet<CollectorName>;
   readonly configVersion?: string;
   readonly viewName: (url: URL) => string;
+  /** The app's public client token, sent as client_token on every gateway request (R6b). */
+  readonly clientToken?: string;
 }
 
 /**
@@ -131,6 +141,22 @@ export interface RumRuntime {
    * removes it.
    */
   onHide(hook: () => void): () => void;
+  /**
+   * The remote configuration document the current session started under, if any (R6b): the one
+   * settings() applies, for a collector that reads keys of its own, such as replay.
+   */
+  remoteDocument(): RemoteConfigDocument | undefined;
+  /**
+   * Adds attributes to every event of the given names that emit sends (R6b). attrs runs at each
+   * emit; undefined adds nothing, and the caller's attributes win on a conflict. Returns a
+   * function that removes it.
+   */
+  addEventAttributes(names: readonly string[], attrs: () => LogAttributes | undefined): () => void;
+  /**
+   * Counts url as RUM's own traffic, whatever its query and fragment, so ignored is true for it,
+   * as for the OTLP endpoints (R6b). Returns a function that removes it.
+   */
+  ignoreUrl(url: string): () => void;
 }
 
 export interface RumCollector {

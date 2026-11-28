@@ -14,18 +14,35 @@ adhere to [Semantic Versioning](https://semver.org/).
 ### Added
 
 - `@libo11y/rum-replay`, privacy-first session replay for `@libo11y/rum`.
-  In development; it is not on npm yet, and it is not yet a working
-  collector. This version holds the privacy core. Every rrweb event
-  passes through libo11y's own scrubber, an allow-list of event types,
-  sources, node fields and attributes, before anything is buffered. Text
-  is masked by default: every character except ASCII whitespace becomes
-  `*`. Text under the code's `privacy.unmask` selectors is kept unless a
-  mask or block covers it, and markup alone never unmasks. Input values,
-  input events, editable content, canvas, fonts, console logs, custom and
-  plugin events are never recorded. URLs in attributes, `srcset` and CSS
-  keep their path and the allowed query parameters only, and every scheme
-  but `http` and `https` becomes empty. Remote configuration can only
-  tighten replay. rrweb's recorder, `@rrweb/record`, is pinned at 2.2.2.
+  In development; it is not on npm yet. Installing the `replay()`
+  collector is the opt-in, and it records only while consent is granted.
+  Every rrweb event passes through libo11y's own scrubber, an allow-list
+  of event types, sources, node fields and attributes, before anything is
+  buffered. Text is masked by default: every character except ASCII
+  whitespace becomes `*`. Text under the code's `privacy.unmask`
+  selectors is kept unless a mask or block covers it, and markup alone
+  never unmasks. Input values, input events, editable content, canvas,
+  fonts, console logs, custom and plugin events are never recorded. URLs
+  in attributes, `srcset`, a `content` attribute and CSS, bare URLs in
+  custom properties included, keep their path and the allowed query
+  parameters only, and every scheme but `http` and `https` becomes empty.
+  Remote configuration can only tighten replay. Head-sampled sessions
+  record at `sampleRate` (default 1); with `onRetain`, other sessions
+  record a lead-up in memory that uploads only if the session is kept.
+  Self-contained, gzipped segments upload to the gateway's
+  `POST /_o11y/v1/replay`, numbered per session across tabs, and
+  `o11y.rum.error` and `o11y.rum.frustration` events carry
+  `o11y.rum.replay.segment`. `replay()` adds about 10 KB gzipped to a
+  page. rrweb's recorder, `@rrweb/record` pinned at 2.2.2, about 24 KB
+  gzipped, is imported only when a session records, as a chunk of its
+  own.
+- `@libo11y/rum`: the collector runtime gains what replay needs.
+  `RumRuntime` has `remoteDocument()`, the remote configuration document
+  the session started under, `addEventAttributes()`, which adds
+  attributes to named events, and `ignoreUrl()`, which counts an endpoint
+  as RUM's own traffic. `RumSettings` has `clientToken`, `CollectorName`
+  has `"replay"`, and `RemoteConfigDocument` keeps a `replay` object for
+  the collector to clamp.
 - `conformance/rum-replay/`, the replay scrubbing vectors that the
   collector and the RUM gateway both run.
 - `@libo11y/react-native`, the platform for React Native apps on Hermes.

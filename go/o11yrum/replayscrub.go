@@ -44,9 +44,9 @@ type scrubContext interface {
 	// id may be kept.
 	textAllowed(id float64) bool
 	// stylesheetAllowed reports whether the inlined stylesheet (_cssText)
-	// of node id may be kept. The collector asks textAllowed for both; the
-	// gateway's strict mode keeps stylesheets and no other text, so it
-	// needs them apart.
+	// of node id, and CSSOM edits aimed at it, may be kept. The collector
+	// asks textAllowed for both; the gateway's strict mode keeps
+	// stylesheets and no other text, so it needs them apart.
 	stylesheetAllowed(id float64) bool
 	// attrsAllowed reports whether the masked attributes of node id may
 	// be kept. The collector asks textAllowed; the gateway's strict mode
@@ -221,7 +221,7 @@ func styleDiff(diff obj, allow map[string]bool) obj {
 		}
 		switch x := v.(type) {
 		case string:
-			out[prop] = stripCSSURLs(x, allow)
+			out[prop] = stripCSSValue(x, allow)
 		case bool:
 			if !x {
 				out[prop] = false
@@ -233,7 +233,7 @@ func styleDiff(diff obj, allow map[string]bool) obj {
 					if len(x) > 1 {
 						priority, _ = x[1].(string)
 					}
-					out[prop] = []any{stripCSSURLs(s, allow), priority}
+					out[prop] = []any{stripCSSValue(s, allow), priority}
 				}
 			}
 		}
@@ -265,12 +265,15 @@ func attributes(attrs obj, textAllowed, cssAllowed, editable, removals bool, all
 		s, isString := value.(string)
 		switch {
 		case maskedAttributes[key]:
-			if isString {
-				if textAllowed {
-					out[name] = s
-				} else {
-					out[name] = maskText(s)
-				}
+			switch {
+			case !isString:
+				// A text attribute that is not a string is dropped.
+			case !textAllowed:
+				out[name] = maskText(s)
+			case key == "content":
+				out[name] = stripContent(s, allow)
+			default:
+				out[name] = s
 			}
 		case urlAttributes[key]:
 			if isString {
@@ -616,6 +619,15 @@ func positions(data obj) []any {
 	return out
 }
 
+// cssomAllowed reports whether a CSSOM rule or declaration edit (source 8
+// or 13) may be kept: one aimed at an element ID needs that element's
+// stylesheet allowed, as its inlined stylesheet does. An edit to a
+// constructed stylesheet, named by styleId alone, is kept.
+func cssomAllowed(data obj, ctx scrubContext) bool {
+	id, ok := toNum(data["id"])
+	return !ok || ctx.stylesheetAllowed(id)
+}
+
 // incremental reduces an incremental snapshot's data to the fields of its
 // source, false to drop it.
 func incremental(data obj, allow map[string]bool, ctx scrubContext) (obj, bool) {
@@ -638,6 +650,9 @@ func incremental(data obj, allow map[string]bool, ctx scrubContext) (obj, bool) 
 	case 7:
 		return merge(src, numbers(data, "type", "id", "currentTime", "volume", "playbackRate"), booleans(data, "muted", "loop")), true
 	case 8:
+		if !cssomAllowed(data, ctx) {
+			return nil, false
+		}
 		out := merge(src, numbers(data, "id", "styleId"))
 		if adds, ok := data["adds"].([]any); ok {
 			kept := []any{}
@@ -667,13 +682,16 @@ func incremental(data obj, allow map[string]bool, ctx scrubContext) (obj, bool) 
 		}
 		return out, true
 	case 13:
+		if !cssomAllowed(data, ctx) {
+			return nil, false
+		}
 		out := merge(src, numbers(data, "id", "styleId"))
 		out["index"] = numList(data["index"])
 		if set, ok := isObj(data["set"]); ok {
 			if prop, ok := set["property"].(string); ok {
 				s := obj{"property": prop, "value": nil}
 				if v, ok := set["value"].(string); ok {
-					s["value"] = stripCSSURLs(v, allow)
+					s["value"] = stripCSSValue(v, allow)
 				}
 				if p, ok := set["priority"].(string); ok && (p == "important" || p == "") {
 					s["priority"] = p
@@ -809,6 +827,9 @@ const (
 	dropFont    = "font"    // a font load
 	dropLog     = "log"     // a console log
 	dropSource  = "source"  // any other incremental source not stored
+	// dropStylesheet is a CSSOM edit (source 8 or 13) aimed at an element
+	// whose stylesheet is not allowed.
+	dropStylesheet = "stylesheet"
 )
 
 // scrubStats counts dropped events by reason.
@@ -840,6 +861,8 @@ func dropReason(e any) string {
 		return dropFont
 	case 11:
 		return dropLog
+	case 8, 13:
+		return dropStylesheet
 	}
 	return dropSource
 }

@@ -47,10 +47,12 @@ the adapters for React (`@libo11y/rum-react`), TanStack Router
 the source map uploader `@libo11y/sourcemaps`. These five packages are not
 on npm yet. Until their first npm publish, they install from the tarballs
 attached to the `ts/v0.3.0` GitHub Release. Session replay
-(`@libo11y/rum-replay`), whose privacy core masks all text by default and
-never records input values, is in development in `ts/packages/rum-replay`
-and has not shipped. It first ships in the next TypeScript release. Every
-other named cell is planned.
+(`@libo11y/rum-replay`) is a collector for the browser RUM cell: installed
+with `replay()`, it records kept sessions with rrweb behind libo11y's own
+scrubber, masks all text by default and never records input values. It is
+in development in `ts/packages/rum-replay` and has not shipped. It first
+ships in the next TypeScript release, with the gateway's replay storage in
+the next `go/o11yrum` release. Every other named cell is planned.
 
 ## Data model
 
@@ -264,6 +266,15 @@ parameters, because `sendBeacon` cannot set headers:
 App metrics from the Meter API export with delta temporality. The gateway
 accepts only delta sums and delta explicit-bucket histograms.
 
+A session replay segment goes to
+`POST /_o11y/v1/replay?service=&session=&segment=&sent_at=&client_token=`
+as one gzipped JSON envelope: the scrubbed rrweb events, starting with a
+full snapshot, the views current during it and the request spans started
+in it. `segment` is the segment's index in the session, the value of
+`o11y.rum.replay.segment`, and every tab of the session counts it
+together. A client uploads segments only for kept sessions and only while
+consent is granted.
+
 When several tabs of a session find it expired at the same moment, each
 ends it and starts a session of its own, and then all of them adopt the
 newest one. Only the tab whose new session won sends
@@ -307,6 +318,7 @@ The gateway does not read the document. Clients own the keys inside
 | `enabled` | boolean | `false` is a kill switch: the client stops recording at once, and `true` starts it again |
 | `sessionSampleRate` | number, 0 to 1 | the head-sampling rate of new sessions, kept within the range the app's code allows (by default no change) |
 | `collectors` | object of booleans | `false` switches off a collector the app installed; `true` never adds one |
+| `replay` | object | session replay settings, which can only make replay stricter: `enabled: false`, a lower `sampleRate` within the code's limits, `onRetain: false`, added `mask` and `block` selectors, and `unmask` intersected with the code's list |
 
 A document applies to the next session, never to the running one, except
 for `enabled: false`. Each session records the version it started under
@@ -396,6 +408,15 @@ names, addresses and other personal data. The sensitivity policy therefore
 drops it in the default PII mode, `drop`. RUM never records form values. No RUM
 attribute carries one, and `o11y.rum.action.name` never holds text the
 user typed.
+
+Session replay masks all text by default. Only text under the selectors
+the app's code lists in `privacy.unmask` is recorded, and never text under
+a form control, editable content or a mask selector. Input values, input
+events, canvas, fonts and console logs are never recorded, attributes
+follow an allow-list, and URLs keep their path and the query allow-list
+only. Markup alone never unmasks, and remote configuration can never
+unmask. The gateway scrubs every segment again with the same rules and, by
+default, masks all text whatever the client sent.
 
 `session.id` is classified `internal`. So are the view ID, the action name,
 the error fingerprint and the element selector. The sensitivity policy

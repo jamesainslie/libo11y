@@ -129,8 +129,17 @@
       "version": "0.3.0",
       "dependencies": {
         "@libo11y/core": "workspace:*",
+        "@libo11y/spec": "workspace:*",
+        "@libo11y/web": "workspace:*",
         "@rrweb/record": "2.2.2",
         "@rrweb/types": "2.2.2",
+      },
+      "devDependencies": {
+        "@libo11y/rum": "workspace:*",
+        "@rrweb/replay": "2.2.2",
+      },
+      "peerDependencies": {
+        "@libo11y/rum": "workspace:*",
       },
     },
     "packages/rum-tanstack-router": {
@@ -415,6 +424,8 @@
     "@react-native/virtualized-lists": ["@react-native/virtualized-lists@0.88.1", "", { "dependencies": { "invariant": "^2.2.4", "nullthrows": "^1.1.1" }, "peerDependencies": { "@types/react": "^19.2.0", "react": "*", "react-native": "0.88.1" }, "optionalPeers": ["@types/react"] }, "sha512-Zt+OGvJE6VgmzgemZL8TSA0VomNWpHMNcG0OvLkkBQEGrzY8OdDHRfjJh7S+f+UFJF77kicRC6o6mt3A7ER9lQ=="],
 
     "@rrweb/record": ["@rrweb/record@2.2.2", "", { "dependencies": { "@rrweb/types": "^2.2.2", "@rrweb/utils": "^2.2.2", "rrweb": "^2.2.2" } }, "sha512-/UkJQaMIDBKqoqIovVY0iIPyn9O2VLHhby+AoNI7PVmWdZBk6BEqYIAwangcXPpuTjGMIeFQIvPDPGDyet6a1Q=="],
+
+    "@rrweb/replay": ["@rrweb/replay@2.2.2", "", { "dependencies": { "@rrweb/types": "^2.2.2", "rrweb": "^2.2.2" } }, "sha512-PumY+65QmOUje7H5TBBhpgMhucmgC9aYpkwfYoy4rhTWQzE93IuvXPivU/YGr0/QNHs+MynffrakMwcXsRcZLQ=="],
 
     "@rrweb/types": ["@rrweb/types@2.2.2", "", {}, "sha512-b9BNYEBcQF9dGQ5JJOoqBEFM7HlLmOdKgCfS2qkQj3gevF1wyuJIGPDGpaAYpl0H24fFOHGw6IdbYH6qrZNk1w=="],
 

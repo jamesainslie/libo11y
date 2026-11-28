@@ -70,7 +70,7 @@ export interface ChromeSessionStorageLike {
 }
 
 // @public (undocumented)
-export type CollectorName = "views" | "actions" | "errors" | "vitals" | "resources" | "long_animation_frames";
+export type CollectorName = "views" | "actions" | "errors" | "vitals" | "resources" | "long_animation_frames" | "replay";
 
 // @public
 export const CONTENT_VIEW_NAME = "content-script";
@@ -104,6 +104,7 @@ export interface RemoteConfigConnection extends RemoteConfigClient {
 export interface RemoteConfigDocument {
     readonly collectors?: Readonly<Partial<Record<CollectorName, boolean>>>;
     readonly enabled?: boolean;
+    readonly replay?: Readonly<Record<string, unknown>>;
     readonly sessionSampleRate?: number;
     readonly version: string;
 }
@@ -209,6 +210,7 @@ export interface RumOptions {
 // @public (undocumented)
 export interface RumRuntime {
     activeAction(): Span | undefined;
+    addEventAttributes(names: readonly string[], attrs: () => LogAttributes | undefined): () => void;
     breadcrumbs(): readonly string[];
     // (undocumented)
     readonly bus: RumBus;
@@ -216,11 +218,13 @@ export interface RumRuntime {
     // (undocumented)
     readonly gate: RecordingGate;
     ignored(url: string): boolean;
+    ignoreUrl(url: string): () => void;
     now(): number;
     onHide(hook: () => void): () => void;
     onRequestStart(hook: RequestStartHook): () => void;
     // (undocumented)
     readonly platform: RUMPlatform;
+    remoteDocument(): RemoteConfigDocument | undefined;
     readonly scope?: RumScope;
     // (undocumented)
     readonly session: SessionManager;
@@ -249,6 +253,7 @@ export interface RumScope {
 
 // @public
 export interface RumSettings {
+    readonly clientToken?: string;
     // (undocumented)
     readonly configVersion?: string;
     readonly enabled: ReadonlySet<CollectorName>;

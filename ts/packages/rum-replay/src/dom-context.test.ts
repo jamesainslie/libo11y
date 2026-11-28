@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { domScrubContext } from "./dom-context.ts";
 import { resolvePolicy } from "./policy.ts";
+import { scrubEvent } from "./scrub.ts";
 
 interface FakeRoot {
   readonly nodeType: 9 | 11;
@@ -153,8 +154,62 @@ test("style text is allowed unless it is under a mask; script and others are not
   const ctx = ctxFor([], nodes);
   assert.equal(ctx.textAllowed(text(style)), true);
   assert.equal(ctx.textAllowed(text(maskedStyle)), false);
-  assert.equal(ctx.textAllowed(1), true);
   assert.equal(ctx.textAllowed(text(new FakeElement("SCRIPT", [], doc))), false);
+  // Text appended to a link element is not style text.
+  assert.equal(ctx.textAllowed(text(link)), false);
+});
+
+test("a style or link element keeps its stylesheet, never its own text or text attributes", () => {
+  const { nodes, text } = tree();
+  const style = new FakeElement("STYLE", [], doc);
+  const link = new FakeElement("LINK", [], doc);
+  const maskedLink = new FakeElement("LINK", [], doc);
+  new FakeElement("DIV", ["[data-o11y-mask]"], doc).add(maskedLink);
+  const pub = new FakeElement("DIV", [".public"], doc);
+  const unmaskedStyle = new FakeElement("STYLE", [], doc);
+  pub.add(unmaskedStyle);
+  nodes.set(1, style);
+  nodes.set(2, link);
+  nodes.set(3, maskedLink);
+  nodes.set(4, unmaskedStyle);
+  const ctx = ctxFor([".public"], nodes);
+  for (const id of [1, 2, 4]) {
+    assert.equal(ctx.stylesheetAllowed(id), true, `stylesheet of ${id}`);
+    // A title on the element or a text mutation aimed at its own ID is masked.
+    assert.equal(ctx.textAllowed(id), false, `text of ${id}`);
+  }
+  assert.equal(ctx.stylesheetAllowed(3), false);
+  assert.equal(ctx.stylesheetAllowed(text(style)), false);
+  assert.equal(ctx.stylesheetAllowed(text(pub)), false);
+  assert.equal(ctx.stylesheetAllowed(999), false);
+});
+
+test("scrubbed through the DOM context, a style element's title and text aimed at it are masked", () => {
+  const nodes = new Map<number, unknown>();
+  const head = new FakeElement("HEAD", [".public"], doc);
+  const style = new FakeElement("STYLE", [], doc);
+  head.add(style);
+  nodes.set(5, style);
+  const policy = resolvePolicy({ unmask: [".public"] }, new Set());
+  const ctx = domScrubContext(policy, (id) => (nodes.get(id) as Node | undefined) ?? null);
+  const out = scrubEvent(
+    {
+      type: 3,
+      timestamp: 1,
+      data: {
+        source: 0,
+        texts: [{ id: 5, value: "Jane Doe" }],
+        attributes: [{ id: 5, attributes: { title: "Jane Doe", _cssText: "a{color:red}" } }],
+        removes: [],
+        adds: [],
+      },
+    },
+    policy,
+    ctx,
+  );
+  const json = JSON.stringify(out);
+  assert.doesNotMatch(json, /Jane/);
+  assert.match(json, /a\{color:red\}/);
 });
 
 test("editable content: textarea, contenteditable, isContentEditable and designMode", () => {
