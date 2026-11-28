@@ -539,6 +539,13 @@ class CoreAndWireTest {
             assertFalse(receiver.requestsForPath("/v1/logs").isEmpty(), "expected OTLP /v1/logs");
             assertTrue(receiver.requestsForPath("/v1/traces").get(0).body().length > 0);
             assertEquals(List.of("test-token"), receiver.requestsForPath("/v1/traces").get(0).headers().get("X-api-key"));
+
+            // The payloads decode to the telemetry emitted above.
+            assertEquals(List.of(), receiver.decodeFailures());
+            assertEquals(sp.getSpanContext().getTraceId(),
+                    OtlpHttpReceiver.hex(receiver.span("wire.op").orElseThrow().getTraceId()));
+            assertTrue(receiver.logRecords().stream().anyMatch(lr -> "wire log".equals(lr.getBody().getStringValue())));
+            assertEquals(1, receiver.metricPoints("wire.count").size());
         }
     }
 
