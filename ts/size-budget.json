@@ -9,6 +9,14 @@
       "code": "import { setupRum } from \"@libo11y/rum\"; (globalThis as Record<string, unknown>).__x = setupRum;\n",
       "budget": 87296
     },
+    "@libo11y/rum/webext setupRumExtension": {
+      "code": "import { setupRumExtension } from \"@libo11y/rum/webext\"; (globalThis as Record<string, unknown>).__x = setupRumExtension;\n",
+      "budget": 95744
+    },
+    "@libo11y/rum/webext setupRumWorker": {
+      "code": "import { setupRumWorker } from \"@libo11y/rum/webext\"; (globalThis as Record<string, unknown>).__x = setupRumWorker;\n",
+      "budget": 81152
+    },
     "@libo11y/rum-react RumErrorBoundary": {
       "code": "import { RumErrorBoundary } from \"@libo11y/rum-react\"; (globalThis as Record<string, unknown>).__x = RumErrorBoundary;\n",
       "external": ["react"],
