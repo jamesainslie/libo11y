@@ -331,20 +331,20 @@ func TestCorrelationTriangle(t *testing.T) {
 // TestQueryTextFollowsTheSystemDialect pins which lexer each db.system.name
 // gets, and that a system with no lexer known to be correct for it records
 // no db.query.text but keeps its span name. The query lexes differently
-// under each dialect: PostgreSQL keeps "name" as an identifier and ends the
-// string at the second quote, SQLite removes "name" like a string, and MySQL
-// reads "name" as a string and \' as an escaped quote, so the string runs
-// to the end of the text.
+// under each dialect without any server-mode ambiguity: PostgreSQL keeps
+// "name" as an identifier and # as an operator, SQLite removes "name" like
+// a string and keeps # as an operator, and MySQL removes "name" as a string
+// and removes # to end of line as a comment.
 func TestQueryTextFollowsTheSystemDialect(t *testing.T) {
-	const query = `SELECT id FROM users WHERE "name" = 'x\' AND id = 1`
+	const query = `SELECT id FROM users WHERE "name" = 'x' # tail`
 	for _, tc := range []struct {
 		system string
 		want   string // the db.query.text, empty when it must be absent
 	}{
-		{system: "postgresql", want: `SELECT id FROM users WHERE "name" = ? AND id = ?`},
-		{system: "sqlite", want: `SELECT id FROM users WHERE ? = ? AND id = ?`},
-		{system: "mysql", want: `SELECT id FROM users WHERE ? = ?`},
-		{system: "mariadb", want: `SELECT id FROM users WHERE ? = ?`},
+		{system: "postgresql", want: `SELECT id FROM users WHERE "name" = ? # tail`},
+		{system: "sqlite", want: `SELECT id FROM users WHERE ? = ? # tail`},
+		{system: "mysql", want: `SELECT id FROM users WHERE ? = ?  `},
+		{system: "mariadb", want: `SELECT id FROM users WHERE ? = ?  `},
 		{system: ""},
 		{system: "other_sql"},
 		{system: "microsoft.sql_server"},
@@ -632,4 +632,117 @@ func TestDriverIsInstrumented(t *testing.T) {
 
 	spanNamed(t, rec.Spans(), "UPDATE carts")
 	spanNamed(t, rec.Spans(), "DELETE carts")
+}
+
+// TestAmbiguousQueryTextIsOmitted pins that o11ysql fails closed by omitting
+// db.query.text whenever a statement contains a construct whose literal or
+// comment boundaries depend on server settings or version the client cannot
+// see (PostgreSQL standard_conforming_strings=off, MySQL NO_BACKSLASH_ESCAPES
+// or ANSI_QUOTES, and MySQL/MariaDB versioned comments).
+func TestAmbiguousQueryTextIsOmitted(t *testing.T) {
+	cases := []struct {
+		name     string
+		system   string
+		query    string
+		wantSpan string
+		wantText string // empty means db.query.text must be absent
+	}{
+		{
+			name:     "pg backslash quote in plain string",
+			system:   "postgresql",
+			query:    `SELECT id FROM users WHERE x = 'it\'s secret' AND y = 'tail'`,
+			wantSpan: "SELECT users",
+		},
+		{
+			name:     "pg trailing backslash in plain string",
+			system:   "postgresql",
+			query:    `SELECT id FROM users WHERE x = 'C:\' AND y = 'secret'`,
+			wantSpan: "SELECT users",
+		},
+		{
+			name:     "pg explicit escape string is unambiguous",
+			system:   "postgresql",
+			query:    `SELECT id FROM users WHERE x = E'it\'s secret'`,
+			wantSpan: "SELECT users",
+			wantText: `SELECT id FROM users WHERE x = ?`,
+		},
+		{
+			name:     "mysql backslash single quote",
+			system:   "mysql",
+			query:    `SELECT id FROM users WHERE x = 'C:\', 'secret'`,
+			wantSpan: "SELECT users",
+		},
+		{
+			name:     "mysql backslash double quote",
+			system:   "mysql",
+			query:    `SELECT id FROM users WHERE x = "a\"secret"`,
+			wantSpan: "SELECT users",
+		},
+		{
+			name:     "mysql versioned comment",
+			system:   "mysql",
+			query:    `SELECT /*!50000 secret_comment */ id FROM users`,
+			wantSpan: "SELECT",
+		},
+		{
+			name:     "mariadb versioned comment",
+			system:   "mariadb",
+			query:    `SELECT /*M!100100 'a*/secret' */ id FROM users`,
+			wantSpan: "SELECT",
+		},
+		{
+			name:     "sqlite backslash is never an escape",
+			system:   "sqlite",
+			query:    `SELECT id FROM users WHERE x = 'C:\' AND y = 'secret'`,
+			wantSpan: "SELECT users",
+			wantText: `SELECT id FROM users WHERE x = ? AND y = ?`,
+		},
+		{
+			name:     "sqlite bracket table name",
+			system:   "sqlite",
+			query:    `SELECT id FROM [users] WHERE id = 1`,
+			wantSpan: "SELECT users",
+			wantText: `SELECT id FROM [users] WHERE id = ?`,
+		},
+		{
+			name:     "aliased comma table list omits collection",
+			system:   "postgresql",
+			query:    `SELECT a.id FROM users a, orders b WHERE a.id = 1`,
+			wantSpan: "SELECT",
+			wantText: `SELECT a.id FROM users a, orders b WHERE a.id = ?`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := o11ytest.Start(t)
+			db := sql.OpenDB(o11ysql.Wrap(fakeConnector{}, o11ysql.WithSDK(rec.SDK), o11ysql.WithSystem(tc.system)))
+			t.Cleanup(func() {
+				if err := db.Close(); err != nil {
+					t.Errorf("Close: %v", err)
+				}
+			})
+			ctx, parent := inSpan(rec)
+			rows, err := db.QueryContext(ctx, tc.query)
+			if err != nil {
+				t.Fatalf("QueryContext: %v", err)
+			}
+			if err := rows.Close(); err != nil {
+				t.Fatalf("rows.Close: %v", err)
+			}
+			parent.End()
+
+			span := spanNamed(t, rec.Spans(), tc.wantSpan)
+			attrs := attribute.NewSet(span.Attributes()...)
+			got, ok := attrs.Value("db.query.text")
+			if tc.wantText == "" {
+				if ok {
+					t.Errorf("db.query.text = %q, want omitted", got.AsString())
+				}
+				return
+			}
+			if !ok || got.AsString() != tc.wantText {
+				t.Errorf("db.query.text = %q (present %v), want %q", got.AsString(), ok, tc.wantText)
+			}
+		})
+	}
 }

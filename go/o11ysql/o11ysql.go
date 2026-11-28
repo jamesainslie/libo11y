@@ -38,6 +38,11 @@
 // postgresql, sqlite, mysql and mariadb. For any other system, including
 // the default other_sql, no rules are known to be correct, so the span
 // carries db.operation.name and db.collection.name but no db.query.text.
+// Within a known system, db.query.text is also omitted when a statement
+// contains a construct whose literal or comment boundaries depend on
+// server settings or version the client cannot see (such as an odd
+// backslash run before a quote in plain PostgreSQL or MySQL strings, or a
+// MySQL/MariaDB versioned comment).
 // [Open] infers the system from well-known driver names, so a database
 // opened with the postgres or pgx driver records db.query.text, while one
 // opened with the sqlserver driver does not.
@@ -176,9 +181,11 @@ func providers(cfg *config) (trace.TracerProvider, metric.MeterProvider) {
 // [Open], which does both. db.query.text is recorded for postgresql,
 // sqlite, mysql and mariadb, so name the database with [WithSystem].
 //
-// c must not be nil: a nil connector is a programming error, and the
-// first connection opened through the result panics. Wrap has no error
-// to report it with.
+// c must not be nil: a nil connector is a programming error, and Wrap
+// panics immediately. Wrap has no error to report it with.
 func Wrap(c driver.Connector, opts ...Option) driver.Connector {
+	if c == nil {
+		panic("o11ysql: Wrap called with a nil connector")
+	}
 	return newConnector(c, newInstrumenter(newConfig("", opts)))
 }

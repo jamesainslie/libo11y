@@ -27,6 +27,18 @@ adhere to [Semantic Versioning](https://semver.org/).
   could rewrite the name. The replacer no longer sees the `event.name` of
   an event. A plain slog record that carries its own `event.name`
   attribute is unchanged.
+- `o11ysql`: fail closed by omitting `db.query.text` when a statement
+  contains a construct whose literal or comment boundaries depend on
+  server settings or version the client cannot see (an odd backslash run
+  before a quote in plain PostgreSQL `'...'` or MySQL `'...'`/`"..."`
+  strings, or a MySQL/MariaDB versioned comment `/*! ... */` /
+  `/*M! ... */`).
+- `o11ysql`: collection inference now recognizes an optional table alias
+  (and column alias list) before a table-list comma, so queries such as
+  `FROM users a, orders b` omit `db.collection.name`, and recognizes
+  SQLite `[bracket]` table identifiers.
+- `o11ysql`: `Wrap(nil)` panics immediately with an explicit message and
+  its doc comment now says so.
 
 ## [0.4.0] - 2026-11-27
 
