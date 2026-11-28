@@ -77,6 +77,8 @@ pub const SetupError = telemetry_mod.SetupError;
 pub const Protocol = telemetry_mod.Protocol;
 pub const ShutdownReport = telemetry_mod.ShutdownReport;
 pub const AppRegistrySource = telemetry_mod.AppRegistrySource;
+/// A parsed application registry, as `AppRegistrySource.registry` takes it.
+pub const AppRegistry = appregistry.Registry;
 pub const HistogramBuckets = telemetry_mod.HistogramBuckets;
 pub const Diagnostic = resource_mod.Diagnostic;
 pub const Env = resource_mod.Env;

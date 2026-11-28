@@ -557,6 +557,58 @@ test "wire: OTLP/HTTP protobuf via Env (OTEL_EXPORTER_OTLP_*) with o11y.setup st
     try testing.expect(canary != null);
 }
 
+test "wire: a collector that rejects the final batches shows in the shutdown report" {
+    const io = testing.io;
+    // 400 is not retryable, so every export fails at once.
+    const rejections: [8]o11ytest.HttpReply = @splat(.{ .status = 400, .body = "rejected" });
+    const recv = try o11ytest.HttpReceiver.start(testing.allocator, io, .{ .replies = &rejections });
+    defer recv.deinit();
+
+    const base_url = try recv.baseUrl(testing.allocator);
+    defer testing.allocator.free(base_url);
+
+    const env_pairs = [_][2][]const u8{
+        .{ "OTEL_EXPORTER_OTLP_ENDPOINT", base_url },
+        .{ "OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf" },
+        .{ "OTEL_METRIC_EXPORT_INTERVAL", "3600000" },
+        .{ "OTEL_BSP_SCHEDULE_DELAY", "60000" },
+        .{ "OTEL_BLRP_SCHEDULE_DELAY", "60000" },
+    };
+
+    const Console = struct {
+        buf: std.ArrayList(u8) = .empty,
+        fn write(ptr: *anyopaque, bytes: []const u8) o11y.ConsoleWriter.WriteError!void {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            self.buf.appendSlice(testing.allocator, bytes) catch return error.WriteFailed;
+        }
+    };
+    var console: Console = .{};
+    defer console.buf.deinit(testing.allocator);
+
+    const sdk = try o11y.init(testing.allocator, io, .{
+        .env = .{ .pairs = &env_pairs },
+        .service_name = "rejected-svc",
+        .environment = "test",
+        .console_writer = .{ .custom = .{ .ptr = &console, .writeFn = Console.write } },
+        .runtime_metrics = false,
+        // The rejections are the point of the test, so keep them off stderr.
+        .error_handler = .ignore,
+    });
+    defer sdk.deinit();
+
+    _ = emitWireWorkload(sdk);
+    const report = sdk.shutdown(.fromSeconds(10));
+    try testing.expectEqual(@as(?o11y.ExportError, error.ExportFailed), report.traces);
+    try testing.expectEqual(@as(?o11y.ExportError, error.ExportFailed), report.logs);
+    try testing.expectEqual(@as(?o11y.ExportError, error.ExportFailed), report.metrics);
+
+    // The loss is also said on the sinks that still work.
+    const out = console.buf.items;
+    try testing.expect(std.mem.indexOf(u8, out, "\"event.name\":\"o11y.telemetry.dropped\"") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"o11y.signal\":\"traces\"") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"o11y.signal\":\"logs\"") != null);
+}
+
 test "wire: OTLP/HTTP JSON + gzip + mTLS via Env (OTEL_EXPORTER_OTLP_*)" {
     const io = testing.io;
     var tmp = testing.tmpDir(.{});

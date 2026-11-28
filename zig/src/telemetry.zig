@@ -78,6 +78,14 @@ pub const AppRegistrySource = union(enum) {
         path: []const u8,
         content: []const u8,
     },
+    /// A registry the caller already parsed, for example with
+    /// `o11y.appregistry.parse`, or built in code. Setup validates it
+    /// against the same rules as a file. `path` names it in diagnostics.
+    /// The value is only read during setup.
+    registry: struct {
+        path: []const u8,
+        value: appregistry.Registry,
+    },
 };
 
 /// Convenience entry for overriding explicit histogram bucket boundaries by
@@ -1090,11 +1098,13 @@ fn loadAppRegistries(
         const path: []const u8 = switch (src) {
             .file => |f| f.path,
             .bytes => |b| b.path,
+            .registry => |r| r.path,
         };
         var owned_bytes: ?[]u8 = null;
         defer if (owned_bytes) |b| gpa.free(b);
 
-        const raw: []const u8 = switch (src) {
+        const raw: ?[]const u8 = switch (src) {
+            .registry => null,
             .bytes => |b| b.content,
             .file => |f| blk: {
                 const content = f.dir.readFileAlloc(io, f.path, gpa, .limited(4 * 1024 * 1024)) catch |err| {
@@ -1106,7 +1116,10 @@ fn loadAppRegistries(
             },
         };
 
-        var result = try appregistry.check(gpa, raw, .{});
+        var result = if (raw) |bytes|
+            try appregistry.check(gpa, bytes, .{})
+        else
+            try checkParsed(gpa, src.registry.value);
         defer result.deinit();
 
         switch (result.outcome) {
@@ -1159,6 +1172,16 @@ fn loadAppRegistries(
         }
     }
     return classes;
+}
+
+/// Validates a registry the caller already parsed, as `appregistry.check`
+/// validates one it parsed itself.
+fn checkParsed(gpa: Allocator, registry: appregistry.Registry) Allocator.Error!appregistry.Result {
+    var result: appregistry.Result = .{ .arena = .init(gpa), .outcome = undefined };
+    errdefer result.arena.deinit();
+    const violations = try appregistry.validate(result.arena.allocator(), registry, .{});
+    result.outcome = if (violations.len == 0) .{ .valid = registry } else .{ .invalid = violations };
+    return result;
 }
 
 fn dedupeEventAttrs(arena: Allocator, attrs: []const log_record.KeyValue) Allocator.Error![]log_record.KeyValue {
@@ -1805,6 +1828,46 @@ test "scope_name names the instrumentation scope of the SDK's own telemetry" {
         }
     }
     try testing.expect(found);
+}
+
+test "app_registries accepts a registry the caller already parsed, and validates it" {
+    var console: TestConsole = .{ .gpa = testing.allocator };
+    defer console.deinit();
+
+    const registry: appregistry.Registry = .{
+        .schema = appregistry.schema_v1,
+        .namespace = "lor",
+        .attributes = &.{
+            .{ .name = "lor.client.email", .type = "string", .sensitivity = "pii", .cardinality = "unbounded", .values = &.{}, .brief = "" },
+            .{ .name = "lor.project.id", .type = "string", .sensitivity = "internal", .cardinality = "unbounded", .values = &.{}, .brief = "" },
+        },
+    };
+    const t = try init(testing.allocator, testing.io, .{
+        .service_name = "svc",
+        .environment = "test",
+        .console_writer = console.writer(),
+        .runtime_metrics = false,
+        .app_registries = &.{.{ .registry = .{ .path = "built-in", .value = registry } }},
+    });
+    defer t.deinit();
+    t.logger().info(.background, "hello", .{ .@"lor.client.email" = "a@example.com", .@"lor.project.id" = "p-1" });
+    try testing.expect(std.mem.indexOf(u8, console.buf.items, "a@example.com") == null);
+    try testing.expect(std.mem.indexOf(u8, console.buf.items, "\"lor.project.id\":\"p-1\"") != null);
+
+    // A parsed value goes through the same rules as a file.
+    var reserved = registry;
+    reserved.namespace = "otel";
+    var diag: resource_mod.Diagnostic = .{};
+    try testing.expectError(error.InvalidAppRegistry, init(testing.allocator, testing.io, .{
+        .service_name = "svc",
+        .environment = "test",
+        .console_enabled = false,
+        .runtime_metrics = false,
+        .app_registries = &.{.{ .registry = .{ .path = "built-in", .value = reserved } }},
+        .diagnostic = &diag,
+    }));
+    try testing.expect(std.mem.indexOf(u8, diag.message(), "built-in") != null);
+    try testing.expect(std.mem.indexOf(u8, diag.message(), "libo11y_app_namespace_reserved") != null);
 }
 
 test "propagator wraps custom propagator in baggage egress filter without globals" {
