@@ -31,6 +31,33 @@ const WireIds = struct {
 /// exemplar and filtered attributes, flat + nested logs, registered event)
 /// carrying both PII and secret sentinels, then returns the span's trace and
 /// span IDs.
+/// Collects what exporters report to their error handler. The signals shut
+/// down concurrently, so it locks.
+const ExporterFailures = struct {
+    mutex: std.Io.Mutex = .init,
+    buf: [2048]u8 = undefined,
+    len: usize = 0,
+
+    fn handler(f: *ExporterFailures) o11y.ErrorHandler {
+        return .{ .ptr = f, .report = record };
+    }
+
+    fn record(ptr: ?*anyopaque, component: []const u8, err: o11y.ExportError, detail: []const u8) void {
+        const f: *ExporterFailures = @ptrCast(@alignCast(ptr.?));
+        f.mutex.lockUncancelable(testing.io);
+        defer f.mutex.unlock(testing.io);
+        var w: std.Io.Writer = .fixed(f.buf[f.len..]);
+        w.print("  {s}: {t}: {s}\n", .{ component, err, detail }) catch {};
+        f.len += w.end;
+    }
+
+    fn print(f: *ExporterFailures, report: o11y.ShutdownReport) void {
+        std.debug.print("wire: shutdown reported traces={?t} metrics={?t} logs={?t}; the exporters said:\n{s}", .{
+            report.traces, report.metrics, report.logs, f.buf[0..f.len],
+        });
+    }
+};
+
 fn emitWireWorkload(sdk: *o11y.Telemetry) WireIds {
     const link_sc: o11y.SpanContext = .{
         .trace_id = o11y.TraceId.parseHex("11111111111111111111111111111111").?,
@@ -296,11 +323,16 @@ fn runExplicitHttpWireTest(protocol: o11y.otlp.HttpProtocol, compression: o11y.o
     const logs_url = try recv.url(testing.allocator, "/v1/logs");
     defer testing.allocator.free(logs_url);
 
+    // What each exporter says when an export fails, so a failed run shows
+    // the cause and not only that shutdown reported an error.
+    var said: ExporterFailures = .{};
+
     const trace_exp = try o11y.otlp.TraceExporter.create(testing.allocator, io, .{
         .protocol = protocol,
         .endpoint = traces_url,
         .compression = compression,
         .tls = client_tls,
+        .on_error = said.handler(),
     });
     defer trace_exp.destroy();
 
@@ -309,6 +341,7 @@ fn runExplicitHttpWireTest(protocol: o11y.otlp.HttpProtocol, compression: o11y.o
         .endpoint = metrics_url,
         .compression = compression,
         .tls = client_tls,
+        .on_error = said.handler(),
     });
     defer metric_exp.destroy();
 
@@ -322,6 +355,7 @@ fn runExplicitHttpWireTest(protocol: o11y.otlp.HttpProtocol, compression: o11y.o
         .endpoint = logs_url,
         .compression = compression,
         .tls = client_tls,
+        .on_error = said.handler(),
     });
     defer log_exp.destroy();
 
@@ -351,7 +385,9 @@ fn runExplicitHttpWireTest(protocol: o11y.otlp.HttpProtocol, compression: o11y.o
     defer sdk.deinit();
 
     const ids = emitWireWorkload(sdk);
-    try testing.expect(sdk.shutdown(.fromSeconds(10)).ok());
+    const report = sdk.shutdown(.fromSeconds(10));
+    if (!report.ok()) said.print(report);
+    try testing.expect(report.ok());
     try recv.waitForRequests(3, .fromSeconds(5));
     try testing.expectEqual(@as(usize, 0), recv.decodeErrors());
 
