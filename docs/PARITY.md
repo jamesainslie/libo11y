@@ -223,9 +223,6 @@ Ruby implementation. `ruby/v0.1.0` has them too, and the ones that
 - **Metrics.** The `views` option is not applied, and the bucket
   boundaries of the HTTP and DB duration histograms are the SDK defaults,
   because the SDK ignores advisory boundaries.
-- **HTTP.** The Rack middleware adds `Server-Timing` to responses that are
-  not HTML and puts an unknown request method on metrics as given.
-  `HttpClient` raises on a method `Net::HTTP` has no class for.
 - **Test harness.** `assert_triangle!` passes when the log and the
   exemplar are on different traces, and `assert_conforms!` does not look
   at metric attributes.

@@ -11,7 +11,7 @@ RSpec.describe "Libo11y integrations" do
         Libo11y::Rack.set_route("/orders/:id")
         Libo11y.current_record&.set("order.id", "ord-99")
         rec.telemetry.logger.info("handling order")
-        [200, { "content-type" => "text/plain" }, ["ok"]]
+        [200, { "content-type" => "text/html" }, ["ok"]]
       end
 
       mw = described_class.new(

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `Rack::Middleware` adds the `Server-Timing` entry to HTML responses only, as the Go middleware does, and raises `ArgumentError` for `canonical_line: true` without `telemetry:`, where it used to emit nothing.
+
+### Fixed
+
+- The Rack middleware and `HttpClient` record a request method outside the standard set as `_OTHER`, with the method as given in `http.request.method_original`, so a caller cannot grow the metric's series. `HttpClient` sends such a method, where it used to raise.
+- A raised error is recorded on the span once, and the span status carries no error message. A 5xx response sets `error.type` on the span, the metric and the canonical line.
+- The Rack middleware keeps an existing `Server-Timing` value in the form the application set it, a list included, and does not add a second header under another case.
+- A request the middleware ignores no longer clears the route an enclosing middleware set. Ignore patterns match a leading dot, as Go's `path.Match` does.
+- `HttpClient` replaces a propagation header the caller passed in another case.
+- Threads that share a middleware or a client create its histogram once.
+
 ## [0.2.0] - 2026-11-28
 
 This release fixes most of what the first review of 0.1.0 found. It changes an option name, a return type and the text form of a carrier, so read the "Changed" list before upgrading.
