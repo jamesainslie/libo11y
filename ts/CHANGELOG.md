@@ -29,6 +29,9 @@ adhere to [Semantic Versioning](https://semver.org/).
   `Math.random`. These IDs are not secrets. The transport's fallback
   timeout, used where `AbortSignal.timeout` is missing, no longer needs
   `DOMException`.
+- `@libo11y/rum`: `RumRuntime` gains `timeOrigin`, the epoch milliseconds
+  `now()` counts from, and `addAction` places its span with it instead of
+  reading `performance.timeOrigin`, which a runtime may lack.
 
 ## [0.3.0] - 2026-11-27
 

@@ -30,3 +30,13 @@ test("an unnamed instant action is labelled by its type", () => {
   recordInstantAction(rt, "click", undefined, 7);
   assert.deepEqual(rt.signals.at(-1), { type: "breadcrumb", kind: "click", label: "click", at: 7 });
 });
+
+test("an instant action is placed on the runtime's clock, not the global performance.timeOrigin", async () => {
+  const rt = fakeRuntime();
+  rt.timeOrigin = 1_800_000_000_000;
+  recordInstantAction(rt, "custom", "Save", 250);
+  await rt.flushSpans();
+  const [span] = rt.exporter.getFinishedSpans();
+  // 1_800_000_000_250 ms is [1_800_000_000 s, 250_000_000 ns].
+  assert.deepEqual(span?.startTime, [1_800_000_000, 250_000_000]);
+});

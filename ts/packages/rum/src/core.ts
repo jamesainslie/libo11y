@@ -61,7 +61,7 @@ export type {
 export type { SummaryAccumulator, SummaryCountKey, SummaryView, VitalName } from "./contracts/summary.ts";
 export type { ViewEvent, ViewStartOptions, ViewState, ViewTracker } from "./contracts/views.ts";
 export {
-  type CacheStorage,
+  type ConfigCacheStorage,
   type RumCoreDeps,
   runtimeOf,
   SESSION_END_ELECTION_MILLIS,

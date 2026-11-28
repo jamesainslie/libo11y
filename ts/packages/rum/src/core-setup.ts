@@ -99,7 +99,11 @@ export interface RumCoreDeps<O extends RumPlatformOptions, T extends Telemetry> 
   readonly now: () => number;
   /** performance.now(). */
   readonly perfNow: () => number;
-  /** performance.timeOrigin, the origin of perfNow. Unset where perfNow is a fake clock. */
+  /**
+   * The epoch milliseconds perfNow counts from. A platform whose runtime may lack
+   * performance.timeOrigin, as React Native, passes its own. Unset where perfNow is a fake clock:
+   * RumRuntime.timeOrigin is then performance.timeOrigin, and request ends are read on perfNow alone.
+   */
   readonly timeOrigin?: number;
   /** The page URL, or the app's fixed URL where there is no page. */
   readonly location: () => string;
@@ -113,7 +117,7 @@ export interface RumCoreDeps<O extends RumPlatformOptions, T extends Telemetry> 
    * Where remote configuration is cached. Default none. Called only once consent is granted. It
    * may resolve later, as a cache in chrome.storage.local does once it has read the stored value.
    */
-  readonly storage?: () => CacheStorage | undefined | Promise<CacheStorage | undefined>;
+  readonly storage?: () => ConfigCacheStorage | undefined | Promise<ConfigCacheStorage | undefined>;
   /** The context's limits on the collectors, for a content script. With fixedView, the one view starts when RUM does and is on screen at once. */
   readonly scope?: RumScope;
   /**
@@ -124,7 +128,7 @@ export interface RumCoreDeps<O extends RumPlatformOptions, T extends Telemetry> 
 }
 
 /** The synchronous storage remote configuration caches in. */
-export type CacheStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
+export type ConfigCacheStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
 const runtimes = new WeakMap<object, RumRuntime>();
 
@@ -528,6 +532,7 @@ export async function setupRumCore<O extends RumPlatformOptions, T extends Telem
     bus,
     settings: () => settings,
     now: deps.perfNow,
+    timeOrigin: deps.timeOrigin ?? performance.timeOrigin,
     emit(name, attrs = {}, ctx, body) {
       if (!gate.recording()) return;
       const s = session.current();
@@ -676,7 +681,7 @@ export async function setupRumCore<O extends RumPlatformOptions, T extends Telem
       diag.warn("o11y: rum: remote configuration has no URL or no fetch; it is off");
       return undefined;
     }
-    const connect = (storage: CacheStorage | undefined): RemoteConfigConnection =>
+    const connect = (storage: ConfigCacheStorage | undefined): RemoteConfigConnection =>
       rc.open({
         url,
         fetch: f,
