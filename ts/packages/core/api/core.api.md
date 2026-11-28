@@ -407,6 +407,9 @@ export interface RuntimeMetrics {
 export function setupWith(options: TelemetryOptions, platform: Platform): Promise<Telemetry>;
 
 // @public
+export function sha1(data: Uint8Array): Uint8Array;
+
+// @public
 export type Signal = "traces" | "metrics" | "logs";
 
 // @public

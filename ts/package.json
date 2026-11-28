@@ -9,7 +9,7 @@
   ],
   "scripts": {
     "lint": "biome check .",
-    "typecheck": "tsc -p tsconfig.json && tsc -p packages/web/tsconfig.json && tsc -p packages/webext/tsconfig.json && tsc -p packages/rum/tsconfig.json && tsc -p packages/sourcemaps/tsconfig.json && tsc -p packages/rum-react/tsconfig.json && tsc -p packages/rum-tanstack-router/tsconfig.json && tsc -p packages/rum-connect/tsconfig.json && tsc -p packages/rum-replay/tsconfig.json && tsc -p tsconfig.browser.json",
+    "typecheck": "tsc -p tsconfig.json && tsc -p packages/web/tsconfig.json && tsc -p packages/webext/tsconfig.json && tsc -p packages/rum/tsconfig.json && tsc -p packages/sourcemaps/tsconfig.json && tsc -p packages/rum-react/tsconfig.json && tsc -p packages/rum-tanstack-router/tsconfig.json && tsc -p packages/rum-connect/tsconfig.json && tsc -p packages/rum-replay/tsconfig.json && tsc -p packages/react-native/tsconfig.json && tsc -p tsconfig.browser.json",
     "build": "bun run --filter './packages/*' build",
     "api": "bun run --filter './packages/*' api",
     "api:check": "bun run --filter './packages/*' api:check",

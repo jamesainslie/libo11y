@@ -3,7 +3,10 @@
  * SHA-1, and some runtimes core targets have no WebCrypto. Not for anything security-sensitive.
  */
 
-/** Returns the SHA-1 digest of data. */
+/**
+ * Returns the SHA-1 digest of data, for a Platform on a runtime without WebCrypto, such as React
+ * Native on Hermes. Not for anything security-sensitive.
+ */
 export function sha1(data: Uint8Array): Uint8Array {
   const bitLength = data.length * 8;
   // Message, 0x80, zero padding to 56 mod 64, then the 64-bit big-endian bit length.
