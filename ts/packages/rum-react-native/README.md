@@ -83,8 +83,8 @@ effect of the root component. It ends the first screen's span and the
   `connectRequestNaming` names Connect calls.
 
 The resource carries `o11y.rum.platform` `react_native`, and so do RUM's
-own spans, summaries and session events. App metrics export with delta temporality, which the RUM
-gateway requires. Requests from an app carry no `Origin`, so the gateway's
+own spans, summaries and `o11y.rum.session.start`. App metrics export
+with delta temporality, which the RUM gateway requires. Requests from an app carry no `Origin`, so the gateway's
 entry for the app sets `allow_missing_origin` and a `client_token`.
 
 Context does not carry across `await` on Hermes, which has no
