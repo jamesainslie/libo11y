@@ -224,6 +224,30 @@ static void test_out_params_zeroed_nested_bounds_and_violations_signal(void) {
     ASSERT_STR_CONTAINS(canon, "truncated");
     o11y_string_free(canon);
 
+    /* Non-zero-length NULL slices and unknown value kinds reject cleanly with zeroed outputs. */
+    o11y_log_value_t null_str_len = { .kind = O11Y_LOG_VAL_STRING, .value.str_val = { .data = NULL, .len = 1, .has_len = true } };
+    canon = (char *)(uintptr_t)0x1;
+    memset(token, 'Z', sizeof(token));
+    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_pii_hash_value(&null_str_len, full_key, sizeof(full_key), &canon, token));
+    ASSERT_NULL(canon);
+    ASSERT_EQ_INT('\0', token[0]);
+
+    o11y_log_value_t null_bytes_len = o11y_log_val_bytes(NULL, 1);
+    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_pii_hash_value(&null_bytes_len, full_key, sizeof(full_key), &canon, token));
+    ASSERT_NULL(canon);
+
+    o11y_log_value_t null_arr_len = o11y_log_val_array(NULL, 1);
+    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_pii_hash_value(&null_arr_len, full_key, sizeof(full_key), &canon, token));
+    ASSERT_NULL(canon);
+
+    o11y_log_value_t null_map_len = o11y_log_val_map(NULL, 1);
+    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_pii_hash_value(&null_map_len, full_key, sizeof(full_key), &canon, token));
+    ASSERT_NULL(canon);
+
+    o11y_log_value_t bad_kind = { .kind = (o11y_log_value_kind_t)99 };
+    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_pii_hash_value(&bad_kind, full_key, sizeof(full_key), &canon, token));
+    ASSERT_NULL(canon);
+
     /* Nested map classification + file-backed app registry + test_violations strict signal */
     char reg_dir[] = "/tmp/libo11y-c-test-reg-XXXXXX";
     ASSERT_NOT_NULL(mkdtemp(reg_dir));

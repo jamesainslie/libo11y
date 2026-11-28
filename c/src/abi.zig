@@ -49,6 +49,7 @@ const convertAttrs = abi.convertAttrs;
 const WalkState = abi.WalkState;
 const composite_walk_budget = abi.composite_walk_budget;
 const convertLogValueBounded = abi.convertLogValueBounded;
+const convertLogValueStrict = abi.convertLogValueStrict;
 const convertLogAttrs = abi.convertLogAttrs;
 const ConsoleWriterTrampoline = abi.ConsoleWriterTrampoline;
 const AttrReplacerTrampoline = abi.AttrReplacerTrampoline;
@@ -87,12 +88,12 @@ export fn o11y_attr_replacement_set_value(dst: ?*AttrReplacementHandle, value: ?
         return .invalid_argument;
     };
     var walk: WalkState = .{ .remaining = composite_walk_budget };
-    const converted = (convertLogValueBounded(h.arena, vp.*, 0, &walk) catch {
+    const converted = convertLogValueStrict(h.arena, vp.*, 0, &walk) catch |err| {
         h.val_failed = true;
-        return .out_of_memory;
-    }) orelse {
-        h.val_failed = true;
-        return .invalid_argument;
+        return switch (err) {
+            error.OutOfMemory => .out_of_memory,
+            error.InvalidArgument => .invalid_argument,
+        };
     };
     h.value = converted;
     h.has_value = true;
@@ -113,6 +114,15 @@ export fn o11y__runtime_acquire_net_signals() void {
 
 export fn o11y__runtime_release_net_signals() void {
     rt.releaseNetSignals();
+}
+
+export fn o11y__detach_observables(provider: ?*const anyopaque) ?*anyopaque {
+    return detachObservableCallbacks(provider);
+}
+
+export fn o11y__free_observables(list: ?*anyopaque) void {
+    const head: ?*ObsTrampoline = if (list) |p| @ptrCast(@alignCast(p)) else null;
+    freeObservableCallbacks(head);
 }
 
 // =========================================================================
@@ -461,8 +471,6 @@ export fn o11y_shutdown(sdk: ?*SdkHandle, timeout_ms: u64, out_report: ?*c.Shutd
     const h = sdk orelse return .ok;
     const timeout: ?Io.Duration = if (timeout_ms == 0) null else .fromMilliseconds(@intCast(@min(timeout_ms, std.math.maxInt(i64))));
     const report = h.telemetry.shutdown(timeout);
-    const callbacks = detachObservableCallbacks(h.telemetry.meterProvider());
-    freeObservableCallbacks(callbacks);
     return fillReport(report, out_report);
 }
 
@@ -535,6 +543,7 @@ export fn o11y_shutdown_on_signals(sdk: ?*SdkHandle, opts_ptr: ?*const c.SignalO
             if (number < 1 or number > max_signal_number) return .invalid_argument;
             if (number == kill_num or number == stop_num) return .invalid_argument;
             const sig: std.posix.SIG = @fromBackingInt(@intCast(number));
+            if (rt.isRuntimeReservedSignal(sig)) return .invalid_argument;
             var old_act: std.c.Sigaction = undefined;
             if (std.c.sigaction(sig, null, &old_act) != 0) return .invalid_argument;
             dst.* = sig;
@@ -1071,10 +1080,6 @@ fn registerObservable(
 
     const tr = gpa.create(ObsTrampoline) catch return .out_of_memory;
     tr.* = .{ .provider = provider, .func = cb, .userdata = userdata };
-    obs_lock.lock();
-    tr.next = obs_head;
-    obs_head = tr;
-    obs_lock.unlock();
 
     const inst_name = rt.cStrOrEmpty(name);
     const description = rt.cStrOrEmpty(o.description);
@@ -1097,19 +1102,13 @@ fn registerObservable(
         }).inst != null,
     };
     if (!registered) {
-        obs_lock.lock();
-        var link: *?*ObsTrampoline = &obs_head;
-        while (link.*) |node| {
-            if (node == tr) {
-                link.* = node.next;
-                break;
-            }
-            link = &node.next;
-        }
-        obs_lock.unlock();
         gpa.destroy(tr);
         return if (provider.is_shutdown.load(.acquire)) .shutdown else .out_of_memory;
     }
+    obs_lock.lock();
+    tr.next = obs_head;
+    obs_head = tr;
+    obs_lock.unlock();
     return .ok;
 }
 
@@ -1525,13 +1524,14 @@ fn piiKeyLessThan(keys: []const []const u8, a: usize, b: usize) bool {
     };
 }
 
-fn logValueToPiiValue(arena: Allocator, v: c.LogValue, depth: usize, walk: *WalkState) Allocator.Error!o11y.pii.Value {
+fn logValueToPiiValue(arena: Allocator, v: c.LogValue, depth: usize, walk: *WalkState) (Allocator.Error || error{InvalidArgument})!o11y.pii.Value {
     if (depth > o11y.pii.max_depth or walk.remaining == 0) return .{ .string = o11y.pii.truncated };
     walk.remaining -= 1;
     return switch (v.kind) {
         .empty => .{ .string = "" },
         .string => blk: {
             const sv = v.value.str_val;
+            if (sv.has_len and sv.len > 0 and sv.data == null) return error.InvalidArgument;
             const slice: []const u8 = if (sv.data) |d|
                 (if (sv.has_len) d[0..sv.len] else std.mem.span(@as([*:0]const u8, @ptrCast(d))))
             else
@@ -1543,11 +1543,13 @@ fn logValueToPiiValue(arena: Allocator, v: c.LogValue, depth: usize, walk: *Walk
         .double => .{ .float = v.value.double_val },
         .bytes => blk: {
             const bv = v.value.bytes_val;
-            break :blk .{ .bytes = if (bv.len > 0 and bv.data != null) bv.data.?[0..bv.len] else &.{} };
+            if (bv.len > 0 and bv.data == null) return error.InvalidArgument;
+            break :blk .{ .bytes = if (bv.len > 0) bv.data.?[0..bv.len] else &.{} };
         },
         .array => blk: {
             const av = v.value.array_val;
-            if (av.len == 0 or av.items == null) break :blk .{ .array = &.{} };
+            if (av.len > 0 and av.items == null) return error.InvalidArgument;
+            if (av.len == 0) break :blk .{ .array = &.{} };
             if (!walk.enter(@intFromPtr(av.items.?))) break :blk .{ .string = o11y.pii.truncated };
             defer walk.leave();
             const out = try arena.alloc(o11y.pii.Value, av.len);
@@ -1561,7 +1563,8 @@ fn logValueToPiiValue(arena: Allocator, v: c.LogValue, depth: usize, walk: *Walk
         },
         .map => blk: {
             const mv = v.value.map_val;
-            if (mv.len == 0 or mv.items == null) break :blk .{ .map = &.{} };
+            if (mv.len > 0 and mv.items == null) return error.InvalidArgument;
+            if (mv.len == 0) break :blk .{ .map = &.{} };
             if (!walk.enter(@intFromPtr(mv.items.?))) break :blk .{ .string = o11y.pii.truncated };
             defer walk.leave();
             const items = mv.items.?[0..mv.len];
@@ -1585,7 +1588,7 @@ fn logValueToPiiValue(arena: Allocator, v: c.LogValue, depth: usize, walk: *Walk
             }
             break :blk .{ .map = out };
         },
-        _ => .{ .string = "" },
+        _ => return error.InvalidArgument,
     };
 }
 
@@ -1604,7 +1607,10 @@ export fn o11y_pii_hash_value(
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
     defer arena_state.deinit();
     var walk: WalkState = .{ .remaining = o11y.pii.walk_budget };
-    const pv = logValueToPiiValue(arena_state.allocator(), vp.*, 0, &walk) catch return .out_of_memory;
+    const pv = logValueToPiiValue(arena_state.allocator(), vp.*, 0, &walk) catch |err| return switch (err) {
+        error.OutOfMemory => .out_of_memory,
+        error.InvalidArgument => .invalid_argument,
+    };
     const canon = o11y.pii.canonical(gpa, pv) catch return .out_of_memory;
     defer gpa.free(canon);
 

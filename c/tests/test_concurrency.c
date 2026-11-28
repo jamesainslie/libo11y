@@ -225,7 +225,134 @@ static void test_concurrent_emitters_and_recorder_reads(void) {
     o11y_test_destroy(rec);
 }
 
+static void obs_race_cb(void *userdata, o11y_observation_i64_t *obs) {
+    atomic_int *calls = (atomic_int *)userdata;
+    int v = atomic_fetch_add(calls, 1) + 1;
+    o11y_observation_i64_observe(obs, v, NULL, 0);
+}
+
+typedef struct obs_race_arg {
+    o11y_meter_t *meter;
+    atomic_int *go;
+    atomic_int *stop;
+    atomic_int *calls;
+    atomic_int *bad_err;
+} obs_race_arg_t;
+
+static void *obs_register_worker(void *raw) {
+    obs_race_arg_t *arg = (obs_race_arg_t *)raw;
+    while (atomic_load_explicit(arg->go, memory_order_acquire) == 0) {
+    }
+    for (int i = 0; i < 64 && atomic_load_explicit(arg->stop, memory_order_relaxed) == 0; i++) {
+        o11y_err_t e1 = o11y_meter_observable_gauge_i64(arg->meter, "race.gauge", NULL, obs_race_cb, arg->calls);
+        if (e1 != O11Y_OK && e1 != O11Y_ERR_SHUTDOWN && e1 != O11Y_ERR_OUT_OF_MEMORY) {
+            atomic_fetch_add(arg->bad_err, 1);
+        }
+        o11y_err_t e2 = o11y_meter_observable_counter_i64(arg->meter, "race.counter", NULL, obs_race_cb, arg->calls);
+        if (e2 != O11Y_OK && e2 != O11Y_ERR_SHUTDOWN && e2 != O11Y_ERR_OUT_OF_MEMORY) {
+            atomic_fetch_add(arg->bad_err, 1);
+        }
+        o11y_err_t e3 = o11y_meter_observable_updown_i64(arg->meter, "race.updown", NULL, obs_race_cb, arg->calls);
+        if (e3 != O11Y_OK && e3 != O11Y_ERR_SHUTDOWN && e3 != O11Y_ERR_OUT_OF_MEMORY) {
+            atomic_fetch_add(arg->bad_err, 1);
+        }
+    }
+    return NULL;
+}
+
+static void test_concurrent_observable_register_and_shutdown(void) {
+    for (int iter = 0; iter < 20; iter++) {
+        o11y_options_t opts = o11y_options_default();
+        opts.env_mode = O11Y_ENV_HERMETIC;
+        opts.service_name = "obs-race";
+        opts.environment = O11Y_ENVIRONMENT_TEST;
+        opts.console_enabled = false;
+        opts.runtime_metrics = false;
+
+        o11y_sdk_t *sdk = NULL;
+        ASSERT_EQ_ERR(O11Y_OK, o11y_init(&opts, &sdk, NULL));
+        o11y_meter_t *meter = o11y_meter(sdk, "obs-race");
+
+        atomic_int go = 0;
+        atomic_int stop = 0;
+        atomic_int calls = 0;
+        atomic_int bad_err = 0;
+        obs_race_arg_t args[3];
+        pthread_t th[3];
+        for (int t = 0; t < 3; t++) {
+            args[t] = (obs_race_arg_t){
+                .meter = meter,
+                .go = &go,
+                .stop = &stop,
+                .calls = &calls,
+                .bad_err = &bad_err,
+            };
+            ASSERT_EQ_INT(0, pthread_create(&th[t], NULL, obs_register_worker, &args[t]));
+        }
+
+        atomic_store_explicit(&go, 1, memory_order_release);
+        (void)o11y_force_flush(sdk, 1, NULL);
+        o11y_err_t s_err = o11y_shutdown(sdk, (iter % 2 == 0) ? 500 : 1, NULL);
+        ASSERT_TRUE(s_err == O11Y_OK || s_err == O11Y_ERR_TIMEOUT);
+        atomic_store_explicit(&stop, 1, memory_order_relaxed);
+
+        for (int t = 0; t < 3; t++) {
+            ASSERT_EQ_INT(0, pthread_join(th[t], NULL));
+        }
+        ASSERT_EQ_INT(0, atomic_load(&bad_err));
+
+        /* Post-shutdown force_flush / repeat shutdown + destroy must stay safe. */
+        (void)o11y_force_flush(sdk, 100, NULL);
+        o11y_destroy(sdk);
+    }
+
+    for (int iter = 0; iter < 5; iter++) {
+        o11y_test_recorder_t *rec = NULL;
+        ASSERT_EQ_ERR(O11Y_OK, o11y_test_start(NULL, &rec, NULL));
+        o11y_sdk_t *sdk = o11y_test_sdk(rec);
+        o11y_meter_t *meter = o11y_meter(sdk, "obs-rec-race");
+
+        atomic_int go = 0;
+        atomic_int stop = 0;
+        atomic_int calls = 0;
+        atomic_int bad_err = 0;
+        obs_race_arg_t args[2];
+        pthread_t th[2];
+        for (int t = 0; t < 2; t++) {
+            args[t] = (obs_race_arg_t){
+                .meter = meter,
+                .go = &go,
+                .stop = &stop,
+                .calls = &calls,
+                .bad_err = &bad_err,
+            };
+            ASSERT_EQ_INT(0, pthread_create(&th[t], NULL, obs_register_worker, &args[t]));
+        }
+
+        atomic_store_explicit(&go, 1, memory_order_release);
+        ASSERT_EQ_ERR(O11Y_OK, o11y_shutdown(sdk, 500, NULL));
+        atomic_store_explicit(&stop, 1, memory_order_relaxed);
+        for (int t = 0; t < 2; t++) {
+            ASSERT_EQ_INT(0, pthread_join(th[t], NULL));
+        }
+        ASSERT_EQ_INT(0, atomic_load(&bad_err));
+        o11y_test_destroy(rec);
+    }
+
+    /* Direct o11y_test_destroy without prior explicit o11y_shutdown runs final
+     * observable collection cleanly and frees trampolines without leaks. */
+    o11y_test_recorder_t *direct_rec = NULL;
+    ASSERT_EQ_ERR(O11Y_OK, o11y_test_start(NULL, &direct_rec, NULL));
+    atomic_int direct_calls = 0;
+    o11y_meter_t *dm = o11y_meter(o11y_test_sdk(direct_rec), "obs-direct");
+    ASSERT_EQ_ERR(O11Y_OK, o11y_meter_observable_gauge_i64(dm, "direct.gauge", NULL, obs_race_cb, &direct_calls));
+    ASSERT_TRUE(o11y_test_has_metric(direct_rec, "direct.gauge"));
+    ASSERT_TRUE(atomic_load(&direct_calls) >= 1);
+    o11y_test_destroy(direct_rec);
+}
+
 int main(void) {
     RUN_TEST(test_concurrent_emitters_and_recorder_reads);
+    RUN_TEST(test_concurrent_observable_register_and_shutdown);
     TEST_SUMMARY("test_concurrency");
 }

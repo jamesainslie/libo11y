@@ -407,6 +407,22 @@ static void test_cross_library_signal_refcount_both_orders(void) {
     o11y_span_t *sp = o11y_tracer_start(o11y_tracer(sdk, "sigio"), NULL, "hang-op", NULL);
     o11y_span_end(sp);
 
+#if defined(SIGIO) && defined(SIGUSR1)
+    /* Reject runtime-reserved SIGIO even when paired with an allowed signal. */
+    int reserved_sigs[] = { SIGUSR1, SIGIO };
+    o11y_signal_options_t sig_opts = {
+        .signals = reserved_sigs,
+        .signals_len = 2,
+        .timeout_ms = 50,
+    };
+    o11y_shutdown_report_t sig_rep = { .logs = O11Y_ERR_IO };
+    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_shutdown_on_signals(sdk, &sig_opts, &sig_rep));
+    ASSERT_TRUE(o11y_shutdown_report_ok(sig_rep));
+    struct sigaction sigio_after_refusal = {0};
+    ASSERT_EQ_INT(0, sigaction(SIGIO, NULL, &sigio_after_refusal));
+    ASSERT_TRUE(sigio_after_refusal.sa_handler != SIG_DFL);
+#endif
+
     /* Destroy receiver while SDK stays live: SIGIO must stay guarded. */
     o11y_test_http_receiver_destroy(rx);
 #ifdef SIGIO

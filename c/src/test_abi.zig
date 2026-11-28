@@ -25,7 +25,8 @@ extern "c" fn o11y_version() [*:0]const u8;
 extern "c" fn o11y__abi_fingerprint() u64;
 extern "c" fn o11y__runtime_acquire_net_signals() void;
 extern "c" fn o11y__runtime_release_net_signals() void;
-extern "c" fn o11y_shutdown(sdk: ?*abi.SdkHandle, timeout_ms: u64, out_report: ?*c.ShutdownReport) c.Err;
+extern "c" fn o11y__detach_observables(provider: ?*const anyopaque) ?*anyopaque;
+extern "c" fn o11y__free_observables(list: ?*anyopaque) void;
 
 // =========================================================================
 // Internal Handle Wrappers
@@ -210,10 +211,11 @@ fn startRecorder(opts: c.TestOptions, diag_out: ?*c.Diagnostic) (o11y.SetupError
 
 export fn o11y_test_destroy(rec: ?*RecorderHandle) void {
     const h = rec orelse return;
-    // Shut down through libo11y so registered observable callbacks in libo11y are
-    // detached and freed cleanly before the recorder destroys the meter provider.
-    _ = o11y_shutdown(&h.sdk_view, 0, null);
+    // Detach callbacks before deinit() (so concurrent address reuse cannot
+    // collide) and free them after deinit() (after final flush completes).
+    const callbacks = o11y__detach_observables(h.sdk_view.telemetry.meterProvider());
     h.rec.deinit();
+    o11y__free_observables(callbacks);
     h.sdk_view.arena.deinit();
     h.str_arena.deinit();
     h.opt_arena.deinit();

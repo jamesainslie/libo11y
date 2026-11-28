@@ -25,6 +25,8 @@ pub fn abiFingerprint() u64 {
             @tagName(builtin.mode),
             @tagName(builtin.cpu.arch),
             @tagName(builtin.os.tag),
+            @tagName(builtin.abi),
+            builtin.zig_version_string,
         };
         for (tags) |t| {
             h.update(t);
@@ -44,8 +46,13 @@ pub fn abiFingerprint() u64 {
             @offsetOf(CtxHandle, "ctx"),
             @sizeOf(AttrReplacementHandle),
             @alignOf(AttrReplacementHandle),
+            @offsetOf(AttrReplacementHandle, "arena"),
             @offsetOf(AttrReplacementHandle, "key"),
+            @offsetOf(AttrReplacementHandle, "has_key"),
+            @offsetOf(AttrReplacementHandle, "key_failed"),
             @offsetOf(AttrReplacementHandle, "value"),
+            @offsetOf(AttrReplacementHandle, "has_value"),
+            @offsetOf(AttrReplacementHandle, "val_failed"),
             @sizeOf(o11y.Telemetry),
             @alignOf(o11y.Telemetry),
             @offsetOf(o11y.Telemetry, "policy"),
@@ -437,6 +444,73 @@ pub fn convertLogValueBounded(arena: Allocator, v: c.LogValue, depth: usize, wal
             break :blk .{ .map = kept.items };
         },
         _ => null,
+    };
+}
+
+/// Strictly validates and deep-copies one C log value for fallible setters
+/// (`o11y_attr_replacement_set_value`), failing with `error.InvalidArgument`
+/// rather than truncating on cycles, over-depth (`depth >= max_depth`), node
+/// budget exhaustion, unknown value kinds, or non-zero-length NULL slices.
+pub fn convertLogValueStrict(
+    arena: Allocator,
+    v: c.LogValue,
+    depth: usize,
+    walk: *WalkState,
+) (Allocator.Error || error{InvalidArgument})!o11y.LogValue {
+    if (walk.remaining == 0) return error.InvalidArgument;
+    walk.remaining -= 1;
+    return switch (v.kind) {
+        .empty => .empty,
+        .string => blk: {
+            const sv = v.value.str_val;
+            if (sv.has_len and sv.len > 0 and sv.data == null) return error.InvalidArgument;
+            const slice: []const u8 = if (sv.data) |d|
+                (if (sv.has_len) d[0..sv.len] else std.mem.span(@as([*:0]const u8, @ptrCast(d))))
+            else
+                "";
+            break :blk .{ .string = try arena.dupe(u8, slice) };
+        },
+        .bool => .{ .bool = v.value.bool_val },
+        .int => .{ .int = v.value.int_val },
+        .double => .{ .double = v.value.double_val },
+        .bytes => blk: {
+            const bv = v.value.bytes_val;
+            if (bv.len > 0 and bv.data == null) return error.InvalidArgument;
+            if (bv.len == 0) break :blk .{ .bytes = &.{} };
+            break :blk .{ .bytes = try arena.dupe(u8, bv.data.?[0..bv.len]) };
+        },
+        .array => blk: {
+            if (depth >= o11y.pii.max_depth) return error.InvalidArgument;
+            const av = v.value.array_val;
+            if (av.len > 0 and av.items == null) return error.InvalidArgument;
+            if (av.len == 0) break :blk .{ .array = &.{} };
+            if (av.len > walk.remaining) return error.InvalidArgument;
+            if (!walk.enter(@intFromPtr(av.items.?))) return error.InvalidArgument;
+            defer walk.leave();
+            const out = try arena.alloc(o11y.LogValue, av.len);
+            for (av.items.?[0..av.len], out) |item, *dst| {
+                dst.* = try convertLogValueStrict(arena, item, depth + 1, walk);
+            }
+            break :blk .{ .array = out };
+        },
+        .map => blk: {
+            if (depth >= o11y.pii.max_depth) return error.InvalidArgument;
+            const mv = v.value.map_val;
+            if (mv.len > 0 and mv.items == null) return error.InvalidArgument;
+            if (mv.len == 0) break :blk .{ .map = &.{} };
+            if (mv.len > walk.remaining) return error.InvalidArgument;
+            if (!walk.enter(@intFromPtr(mv.items.?))) return error.InvalidArgument;
+            defer walk.leave();
+            const out = try arena.alloc(o11y.LogAttribute, mv.len);
+            for (mv.items.?[0..mv.len], out) |src, *dst| {
+                dst.* = .{
+                    .key = try arena.dupe(u8, rt.cStrOrEmpty(src.key)),
+                    .value = try convertLogValueStrict(arena, src.value, depth + 1, walk),
+                };
+            }
+            break :blk .{ .map = out };
+        },
+        _ => return error.InvalidArgument,
     };
 }
 

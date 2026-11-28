@@ -3,6 +3,10 @@
 
 static bool g_sticky_key_setter_ok = false;
 static bool g_sticky_val_setter_ok = false;
+static bool g_strict_over_budget_rejected = false;
+static bool g_strict_null_slice_rejected = false;
+static bool g_strict_bad_kind_rejected = false;
+static bool g_strict_empty_arr_ok = false;
 
 static bool replacer_rename_and_drop(
     void *userdata,
@@ -73,6 +77,33 @@ static bool replacer_rename_and_drop(
         o11y_log_value_t iv = o11y_log_val_int(7);
         o11y_err_t e2 = o11y_attr_replacement_set_value(out_replacement, &iv);
         g_sticky_val_setter_ok = (e1 == O11Y_ERR_INVALID_ARGUMENT && e2 == O11Y_OK);
+        return true;
+    }
+    if (strcmp(key, "over_budget_replacement") == 0) {
+        o11y_log_value_t *big = (o11y_log_value_t *)calloc(2050, sizeof(o11y_log_value_t));
+        if (big != NULL) {
+            for (size_t i = 0; i < 2050; i++) big[i] = o11y_log_val_int((int64_t)i);
+            o11y_log_value_t av = o11y_log_val_array(big, 2050);
+            o11y_err_t rc = o11y_attr_replacement_set_value(out_replacement, &av);
+            g_strict_over_budget_rejected = (rc == O11Y_ERR_INVALID_ARGUMENT);
+            free(big);
+        }
+        return true;
+    }
+    if (strcmp(key, "null_slice_replacement") == 0) {
+        o11y_log_value_t bad_str = { .kind = O11Y_LOG_VAL_STRING, .value.str_val = { .data = NULL, .len = 1, .has_len = true } };
+        o11y_log_value_t av = o11y_log_val_array(&bad_str, 1);
+        g_strict_null_slice_rejected = (o11y_attr_replacement_set_value(out_replacement, &av) == O11Y_ERR_INVALID_ARGUMENT);
+        return true;
+    }
+    if (strcmp(key, "bad_kind_replacement") == 0) {
+        o11y_log_value_t bad_kind = { .kind = (o11y_log_value_kind_t)99 };
+        g_strict_bad_kind_rejected = (o11y_attr_replacement_set_value(out_replacement, &bad_kind) == O11Y_ERR_INVALID_ARGUMENT);
+        return true;
+    }
+    if (strcmp(key, "empty_array_replacement") == 0) {
+        o11y_log_value_t empty_arr = o11y_log_val_array(NULL, 0);
+        g_strict_empty_arr_ok = (o11y_attr_replacement_set_value(out_replacement, &empty_arr) == O11Y_OK);
         return true;
     }
     return true;
@@ -177,6 +208,10 @@ static void test_logging_correlation_force_emit_and_console(void) {
 static void test_attr_replacer_runs_before_sensitivity(void) {
     g_sticky_key_setter_ok = false;
     g_sticky_val_setter_ok = false;
+    g_strict_over_budget_rejected = false;
+    g_strict_null_slice_rejected = false;
+    g_strict_bad_kind_rejected = false;
+    g_strict_empty_arr_ok = false;
     o11y_test_options_t topts = o11y_test_options_default();
     topts.attr_replacer_fn = replacer_rename_and_drop;
     o11y_test_recorder_t *rec = NULL;
@@ -191,13 +226,21 @@ static void test_attr_replacer_runs_before_sensitivity(void) {
         o11y_log_kv_str("bad_replacement", "should-drop"),
         o11y_log_kv_str("sticky_fail", "should-drop"),
         o11y_log_kv_str("sticky_val_fail", "should-drop"),
+        o11y_log_kv_str("over_budget_replacement", "should-drop"),
+        o11y_log_kv_str("null_slice_replacement", "should-drop"),
+        o11y_log_kv_str("bad_kind_replacement", "should-drop"),
+        o11y_log_kv_str("empty_array_replacement", "replaced-with-empty"),
     };
-    o11y_log_info(o11y_test_sdk(rec), NULL, "replaced", attrs, 8);
+    o11y_log_info(o11y_test_sdk(rec), NULL, "replaced", attrs, 12);
 
     const o11y_test_log_t *lr = o11y_test_find_log(rec, "replaced");
     ASSERT_NOT_NULL(lr);
     ASSERT_TRUE(g_sticky_key_setter_ok);
     ASSERT_TRUE(g_sticky_val_setter_ok);
+    ASSERT_TRUE(g_strict_over_budget_rejected);
+    ASSERT_TRUE(g_strict_null_slice_rejected);
+    ASSERT_TRUE(g_strict_bad_kind_rejected);
+    ASSERT_TRUE(g_strict_empty_arr_ok);
     ASSERT_FALSE(o11y_test_log_has_attr(lr, "drop_me"));
     ASSERT_FALSE(o11y_test_log_has_attr(lr, "alias_secret"));
     ASSERT_FALSE(o11y_test_log_has_attr(lr, "http.request.header.authorization"));
@@ -205,6 +248,10 @@ static void test_attr_replacer_runs_before_sensitivity(void) {
     ASSERT_FALSE(o11y_test_log_has_attr(lr, "sticky_fail"));
     ASSERT_FALSE(o11y_test_log_has_attr(lr, "recovered_key"));
     ASSERT_FALSE(o11y_test_log_has_attr(lr, "sticky_val_fail"));
+    ASSERT_FALSE(o11y_test_log_has_attr(lr, "over_budget_replacement"));
+    ASSERT_FALSE(o11y_test_log_has_attr(lr, "null_slice_replacement"));
+    ASSERT_FALSE(o11y_test_log_has_attr(lr, "bad_kind_replacement"));
+    ASSERT_TRUE(o11y_test_log_has_attr(lr, "empty_array_replacement"));
     ASSERT_EQ_STR("rewritten", o11y_test_log_attr_str(lr, "rewrite_val"));
     int64_t replaced_int = 0;
     ASSERT_TRUE(o11y_test_log_attr_int(lr, "rewrite_int", &replaced_int));

@@ -583,8 +583,10 @@ o11y_err_t o11y_attr_replacement_set_key(o11y_attr_replacement_t *dst, const cha
 /**
  * Sets the replacement attribute value inside o11y_attr_replacer_fn, deep-copying
  * strings, bytes, arrays, and maps immediately into pipeline storage before
- * returning. Returns O11Y_OK, O11Y_ERR_INVALID_ARGUMENT on NULL, cyclic,
- * over-depth (depth >= 16), over-budget, or emptied composite inputs, or
+ * returning. Validates the entire value strictly without partial truncation.
+ * Returns O11Y_OK, O11Y_ERR_INVALID_ARGUMENT on NULL inputs, unknown value
+ * kinds, non-zero-length NULL slices, cyclic composites, over-depth
+ * composites (depth >= 16), or over-budget values (> 2048 nodes), or
  * O11Y_ERR_OUT_OF_MEMORY.
  */
 o11y_err_t o11y_attr_replacement_set_value(o11y_attr_replacement_t *dst, const o11y_log_value_t *value);
@@ -853,7 +855,8 @@ typedef struct o11y_signal_options {
  * invokes before_shutdown, and shuts down sdk under one shared deadline.
  * Zeroes out_report on entry. Returns O11Y_ERR_INVALID_ARGUMENT, without
  * waiting, for a NULL sdk, more than 16 signals, non-catchable signals
- * (SIGKILL, SIGSTOP), or OS-invalid signal numbers.
+ * (SIGKILL, SIGSTOP), runtime-reserved signals (SIGIO, plus SIGPIPE on
+ * non-Linux POSIX targets), or OS-invalid signal numbers.
  */
 o11y_err_t o11y_shutdown_on_signals(
     o11y_sdk_t *sdk,
@@ -1229,7 +1232,9 @@ o11y_err_t o11y_sanitize_endpoint(const char *raw, size_t raw_len, char **out);
 
 /**
  * Computes Go-exact PII canonical rendering and hmac-sha256:<32hex> token.
- * Zeroes out_canonical and out_token on entry before checking inputs.
+ * Zeroes out_canonical and out_token on entry before checking inputs. Returns
+ * O11Y_ERR_INVALID_ARGUMENT on NULL value, unknown o11y_log_value_kind_t, or
+ * non-zero-length NULL slices inside visited value nodes.
  * Note that out_canonical is a NUL-terminated C string; if a length-delimited
  * string value contains embedded NUL bytes, all bytes are hashed into out_token
  * while C string callers reading *out_canonical stop at the first NUL byte.

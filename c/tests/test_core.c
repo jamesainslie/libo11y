@@ -497,6 +497,29 @@ static void test_shutdown_on_signals(void) {
     bad.signals = bad_sigs_invalid;
     ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_shutdown_on_signals(sdk, &bad, NULL));
 
+#ifdef SIGIO
+    int bad_sigs_io[] = { SIGIO };
+    bad.signals = bad_sigs_io;
+    report.logs = O11Y_ERR_IO;
+    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_shutdown_on_signals(sdk, &bad, &report));
+    ASSERT_TRUE(o11y_shutdown_report_ok(report));
+
+    int bad_sigs_pair[] = { SIGUSR1, SIGIO };
+    bad.signals = bad_sigs_pair;
+    bad.signals_len = 2;
+    report.metrics = O11Y_ERR_IO;
+    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_shutdown_on_signals(sdk, &bad, &report));
+    ASSERT_TRUE(o11y_shutdown_report_ok(report));
+    bad.signals_len = 1;
+#endif
+#if defined(SIGPIPE) && !defined(__linux__)
+    int bad_sigs_pipe[] = { SIGPIPE };
+    bad.signals = bad_sigs_pipe;
+    report.traces = O11Y_ERR_IO;
+    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_shutdown_on_signals(sdk, &bad, &report));
+    ASSERT_TRUE(o11y_shutdown_report_ok(report));
+#endif
+
     report.logs = O11Y_ERR_IO;
     ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_shutdown_on_signals(NULL, NULL, &report));
     ASSERT_TRUE(o11y_shutdown_report_ok(report));
