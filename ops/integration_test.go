@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
@@ -20,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/common/model"
 	"gopkg.in/yaml.v3"
 
 	"github.com/jamesainslie/libo11y/ops/internal/fixture"
@@ -45,6 +47,18 @@ const (
 const (
 	browserSession = "ops-it-browser-session"
 	browserViewID  = "v2 a&b/c"
+)
+
+// The windows Grafana gives a panel query. dsQuery sends intervalMs 15000,
+// so Grafana steps range queries every 15s and floors the range's end to
+// a step: the last point it evaluates can be up to one step before now.
+// The provisioned datasource sets no scrape interval, so Grafana assumes
+// 15s and resolves $__rate_interval to max(step + 15s, 4 * 15s), one
+// minute.
+const (
+	grafanaStep         = 15 * time.Second
+	grafanaRateInterval = time.Minute
+	grafanaRange        = time.Hour
 )
 
 // client bounds every call to a backend, so one hung request fails the
@@ -119,12 +133,12 @@ func TestIntegration(t *testing.T) {
 	// firewall that blocks the Docker bridge makes the first wait time out.
 	now := time.Now()
 	send(t, gw.Addr, fixture.TrafficFor(now.Add(-2*time.Minute), newSessionID(t)))
-	first := waitForValue(t, `sum(o11y_rum_views_total{service_name="shop-web"})`, 0)
+	first := waitForValue(t, `sum(o11y_rum_views_total{service_name="shop-web"})`, 0, 0)
 	send(t, gw.Addr, fixture.TrafficFor(now.Add(-time.Minute), newSessionID(t)))
 	send(t, gw.Addr, fixture.TrafficFor(now.Add(-15*time.Second), fixture.SessionID))
 	send(t, gw.Addr, []fixture.Request{fixture.ViewSummary(now.Add(-10*time.Second), browserSession, browserViewID)})
 	// Two more sessions with as many views as the first, and one more view.
-	waitForValue(t, `sum(o11y_rum_views_total{service_name="shop-web"})`, 3*first)
+	waitForValue(t, `sum(o11y_rum_views_total{service_name="shop-web"})`, 3*first, 0)
 
 	waitFor(t, "the session's events in Loki", 90*time.Second, func() (bool, string) {
 		n, detail := lokiLines(t, fmt.Sprintf(`{service_name="shop-web"} | session_id=%q`, fixture.SessionID), now)
@@ -194,16 +208,19 @@ func TestIntegration(t *testing.T) {
 	for name, uid := range datasourceUIDs {
 		vars[name] = uid
 	}
+	for _, d := range dashboards {
+		for _, v := range d.Templating.List {
+			if _, set := vars[v.Name]; !set && v.AllValue != "" {
+				vars[v.Name] = v.AllValue
+			}
+		}
+	}
+	waitForRangeSamples(t, dashboards, vars)
 	for _, name := range grafanaBuiltins {
 		vars[name] = "$" + name
 	}
 	t.Run("every panel query answers through grafana", func(t *testing.T) {
 		for _, d := range dashboards {
-			for _, v := range d.Templating.List {
-				if _, set := vars[v.Name]; !set && v.AllValue != "" {
-					vars[v.Name] = v.AllValue
-				}
-			}
 			want := mustHaveData[d.UID]
 			seen := map[string]bool{}
 			for _, p := range d.Panels {
@@ -321,12 +338,67 @@ func waitFor(t *testing.T, what string, timeout time.Duration, check func() (don
 	}
 }
 
-// waitForValue waits until the Prometheus instant query returns a value
-// above floor, and returns it.
-func waitForValue(t *testing.T, query string, floor float64) float64 {
+// waitForRangeSamples waits until every range selector in the Prometheus
+// queries of the panels mustHaveData lists has at least two samples per
+// series in the window Grafana gives it, evaluated one Grafana step
+// before now. rate() and increase() answer only from two samples, and
+// the gateway's series are as young as the fixture traffic, so without
+// this wait the last point Grafana evaluates, floored to a step, can see
+// only the first scrape. The gateway is scraped continuously, so a window
+// that ends later holds at least as many samples, and the points Grafana
+// evaluates afterwards have the two samples too. vars are the dashboard
+// variables; the built-ins become the windows Grafana resolves.
+func waitForRangeSamples(t *testing.T, dashboards []dashboard, vars map[string]string) {
+	t.Helper()
+	pv := maps.Clone(vars)
+	for name, d := range map[string]time.Duration{"__rate_interval": grafanaRateInterval, "__interval": grafanaStep, "__range": grafanaRange} {
+		pv[name] = model.Duration(d).String()
+		pv[name+"_ms"] = strconv.FormatInt(d.Milliseconds(), 10)
+	}
+	pv["__range_s"] = strconv.FormatInt(int64(grafanaRange.Seconds()), 10)
+	var queries []string
+	for _, d := range dashboards {
+		want := mustHaveData[d.UID]
+		for _, p := range d.Panels {
+			if !slices.Contains(want, p.Title) {
+				continue
+			}
+			for _, target := range p.Targets {
+				expr, _ := target["expr"].(string)
+				if ds := targetDatasource(p, target); ds == nil || ds.Type != "prometheus" || expr == "" {
+					continue
+				}
+				expanded, err := lint.Expand(expr, pv)
+				if err != nil {
+					t.Fatalf("%s: %q: %v", d.UID, p.Title, err)
+				}
+				qs, err := sampleCountQueries(expanded)
+				if err != nil {
+					t.Fatalf("%s: %q: %v", d.UID, p.Title, err)
+				}
+				for _, q := range qs {
+					if !slices.Contains(queries, q) {
+						queries = append(queries, q)
+					}
+				}
+			}
+		}
+	}
+	for _, q := range queries {
+		waitForValue(t, q, 1, grafanaStep)
+	}
+}
+
+// waitForValue waits until the Prometheus instant query, evaluated lag
+// before now, returns a value above floor, and returns it.
+func waitForValue(t *testing.T, query string, floor float64, lag time.Duration) float64 {
 	t.Helper()
 	var got float64
-	waitFor(t, fmt.Sprintf("%s above %g in Prometheus", query, floor), 90*time.Second, func() (bool, string) {
+	what := fmt.Sprintf("%s above %g in Prometheus", query, floor)
+	if lag > 0 {
+		what += fmt.Sprintf(" %s before now", lag)
+	}
+	waitFor(t, what, 90*time.Second, func() (bool, string) {
 		var r struct {
 			Data struct {
 				Result []struct {
@@ -334,7 +406,9 @@ func waitForValue(t *testing.T, query string, floor float64) float64 {
 				} `json:"result"`
 			} `json:"data"`
 		}
-		detail, err := getJSON(prometheusURL+"/api/v1/query?"+url.Values{"query": {query}}.Encode(), &r)
+		at := time.Now().Add(-lag)
+		q := url.Values{"query": {query}, "time": {strconv.FormatFloat(float64(at.UnixMilli())/1000, 'f', 3, 64)}}
+		detail, err := getJSON(prometheusURL+"/api/v1/query?"+q.Encode(), &r)
 		if err != nil {
 			return false, err.Error()
 		}
@@ -550,12 +624,7 @@ func dsQuery(t *testing.T, p panel, target map[string]any, vars map[string]strin
 	for k, v := range target {
 		q[k] = v
 	}
-	ds := p.Datasource
-	if raw, ok := target["datasource"].(map[string]any); ok {
-		typ, _ := raw["type"].(string)
-		uid, _ := raw["uid"].(string)
-		ds = &datasource{Type: typ, UID: uid}
-	}
+	ds := targetDatasource(p, target)
 	if ds == nil {
 		return queryResult{}, fmt.Errorf("target %v has no datasource", target["refId"])
 	}
@@ -573,7 +642,7 @@ func dsQuery(t *testing.T, p panel, target map[string]any, vars map[string]strin
 			return queryResult{}, err
 		}
 	}
-	q["intervalMs"] = 15000
+	q["intervalMs"] = grafanaStep.Milliseconds()
 	q["maxDataPoints"] = 500
 	body, err := json.Marshal(map[string]any{"queries": []any{q}, "from": "now-1h", "to": "now"})
 	if err != nil {
@@ -603,6 +672,17 @@ func dsQuery(t *testing.T, p panel, target map[string]any, vars map[string]strin
 		return res, fmt.Errorf("HTTP %d for %s %q: %s", status, ds.Type, query, resp)
 	}
 	return res, nil
+}
+
+// targetDatasource is the datasource a target queries: its own, or else
+// the panel's. It is nil when neither sets one.
+func targetDatasource(p panel, target map[string]any) *datasource {
+	if raw, ok := target["datasource"].(map[string]any); ok {
+		typ, _ := raw["type"].(string)
+		uid, _ := raw["uid"].(string)
+		return &datasource{Type: typ, UID: uid}
+	}
+	return p.Datasource
 }
 
 func get(u string) (int, []byte, error) {
