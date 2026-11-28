@@ -38,6 +38,17 @@ adhere to [Semantic Versioning](https://semver.org/).
   failures, and optionally `console.error`, each with breadcrumbs. The
   `rum` handle gains `startView`, `setViewName`, `viewRendered`,
   `addAction` and `addError`.
+- `@libo11y/rum`: the `vitals()`, `resources()` and `longAnimationFrames()`
+  collectors. `vitals()` records LCP, INP, CLS, FCP and TTFB with the
+  `web-vitals` 5.3.0 attribution build on the view that loaded the page.
+  Each vital goes into the view summary once, and kept sessions send each
+  value as a semconv `browser.web_vital` event with attribution. No rating
+  is sent. `resources()` records a `resource <type>` span for each
+  resource the page loads, linked to the server span named by a
+  `Server-Timing` `traceparent`, with the other `Server-Timing` entries as
+  span events. `longAnimationFrames()` counts long animation frames per
+  view on engines that report them.
+- `@libo11y/web/internal` exports `remoteParentFromTraceparent`.
 - `@libo11y/rum`: app metrics export with delta temporality, as the RUM
   gateway requires. `@libo11y/web` on its own still exports cumulative
   metrics.
@@ -47,6 +58,17 @@ adhere to [Semantic Versioning](https://semver.org/).
   `bun scripts/size.ts --check` (`make ts-size`) in CI.
 - `conformance/rum-summary/`, the view summary vectors the TypeScript
   suite checks.
+
+### Fixed
+
+- `@libo11y/rum`: a view summary emitted on a navigation away was lost when
+  other records were already waiting to be sent. Chromium fires `pagehide`
+  before `visibilitychange`, and the web flush on hide had already started
+  without the summary. RUM now emits its summaries before that flush.
+- `@libo11y/rum`: when two tabs rotated an expired session at the same
+  moment, the tab whose new session lost still sent
+  `o11y.rum.session.start` for it. Only the winning session's start is
+  sent now.
 
 ## [0.2.1] - 2026-11-27
 
