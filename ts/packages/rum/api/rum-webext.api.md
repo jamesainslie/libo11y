@@ -219,6 +219,7 @@ export interface RumRuntime {
     readonly gate: RecordingGate;
     ignored(url: string): boolean;
     ignoreUrl(url: string): () => void;
+    readonly mapStack?: (stack: string) => string;
     now(): number;
     onHide(hook: () => void): () => void;
     onRequestStart(hook: RequestStartHook): () => void;

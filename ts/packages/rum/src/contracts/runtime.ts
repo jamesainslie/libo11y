@@ -1,5 +1,5 @@
 /**
- * Contract, frozen by R3a, extended by R3b, R3c, R5a and R6b. What every collector receives. Collectors are created by factories such
+ * Contract, frozen by R3a, extended by R3b, R3c, R5a, R5e and R6b. What every collector receives. Collectors are created by factories such
  * as views() and run only while consent is granted: start is called on grant, the returned stop
  * on revoke and shutdown.
  */
@@ -102,6 +102,12 @@ export interface RumRuntime {
   readonly platform: RUMPlatform;
   /** The context's limits on what collectors record. Absent on the web. */
   readonly scope?: RumScope;
+  /**
+   * Rewrites a stack before an error records it (R5e), such as React Native's Hermes frames into the
+   * fixed bundle URL the gateway finds the source map under. Absent on the web, which sends stacks
+   * as they are.
+   */
+  readonly mapStack?: (stack: string) => string;
   readonly telemetry: Telemetry;
   readonly tracer: Tracer;
   readonly gate: RecordingGate;

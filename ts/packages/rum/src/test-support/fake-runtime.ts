@@ -225,6 +225,7 @@ function fakeEnv(clock: ManualTimers): FakeEnv {
 
 export interface FakeRuntime extends RumRuntime {
   scope?: RumScope;
+  mapStack?: (stack: string) => string;
   timeOrigin: number;
   readonly counts: SummaryCountKey[];
   /** The n of each count, in step with counts. */

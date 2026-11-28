@@ -142,6 +142,8 @@ export interface RumCoreDeps<O extends RumPlatformOptions, T extends Telemetry> 
    * Native's app_load) see the first grant's session start and load view, even at setup.
    */
   readonly onRuntime?: (runtime: RumRuntime) => void;
+  /** Rewrites every error's stack before it is recorded (RumRuntime.mapStack). Default none. */
+  readonly mapStack?: (stack: string) => string;
 }
 
 /** The synchronous storage remote configuration caches in. */
@@ -552,6 +554,7 @@ export async function setupRumCore<O extends RumPlatformOptions, T extends Telem
   const runtime: RumRuntime = {
     platform,
     ...(deps.scope === undefined ? {} : { scope: deps.scope }),
+    ...(deps.mapStack === undefined ? {} : { mapStack: deps.mapStack }),
     telemetry: t,
     tracer: t.tracerProvider.getTracer("@libo11y/rum", VERSION),
     gate,
