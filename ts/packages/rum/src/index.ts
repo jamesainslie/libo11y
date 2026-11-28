@@ -13,6 +13,7 @@ export type {
 export type { SummaryAccumulator, SummaryCountKey, SummaryView, VitalName } from "./contracts/summary.ts";
 export type { ViewEvent, ViewStartOptions, ViewState, ViewTracker } from "./contracts/views.ts";
 export { type ErrorsOptions, errors } from "./errors/collector.ts";
+export { longAnimationFrames } from "./loaf.ts";
 export type {
   AddErrorOptions,
   HttpRequestInfo,
@@ -21,6 +22,7 @@ export type {
   RumSetupOptions,
   RumTelemetry,
 } from "./options.ts";
+export { type ResourcesOptions, resources } from "./resources/collector.ts";
 export { setupRum } from "./setup.ts";
 export { VERSION } from "./version.ts";
 export { type ViewsOptions, views } from "./views/collector.ts";
