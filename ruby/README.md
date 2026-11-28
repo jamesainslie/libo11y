@@ -49,7 +49,7 @@ bundle exec libo11y registry check o11y-registry.yaml
 |---|---|
 | `Libo11y::Rack::Middleware` | Rack 3 middleware (Rails, Sinatra, Hanami); route templates (`set_route`, Sinatra/Rails keys), `http.server.request.duration` with exemplars, `public_endpoint`, `ignore_paths`, `filter`, `server_timing`, `canonical_line` |
 | `Libo11y::HttpClient` | Instrumented `Net::HTTP` client (no global monkey-patching); W3C injection, URL credential stripping, `propagate_fn`, `peer_service`, `http.client.request.duration` with exemplars |
-| `Libo11y::DB::Client` | Parent-gated DB client spans, SQL literal sanitization (`postgresql`, `sqlite`, `mysql`, `mariadb`), `db.client.operation.duration` with exemplars |
+| `Libo11y::DB::Client` | Parent-gated DB client spans named after the operation and table, `db.client.operation.duration` with exemplars, and sanitized `db.query.text` for `postgresql`, `sqlite`, `mysql` and `mariadb` only, capped at 4096 bytes (`query_text: false` turns it off). A failed call sets `error.type` to the SQLSTATE or the error class and never records the driver's message |
 | `Libo11y::Detached` | 32 KiB text `Carrier`, egress-filtered baggage, `capture`, `restore_baggage`, `start_linked` |
 | `Libo11y::Proc` | `TRACEPARENT`/`TRACESTATE` env carriers (never baggage) and framed map `inject_frame`/`extract_frame` |
 | `Libo11y::Redact` | `Secret`, `Masked`, and `Fields` mixin (`mask`, `redact`, `omit`, `confidential`, `secret`) |

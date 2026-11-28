@@ -32,12 +32,8 @@ pub const Err = enum(c_int) {
     invalid_carrier = 12,
     timeout = 13,
     shutdown = 14,
-    not_found = 15,
-    conformance_failed = 16,
-    correlation_failed = 17,
-    triangle_failed = 18,
-    violations = 19,
-    io = 20,
+    io = 15,
+    unsupported_propagator = 16,
     _,
 };
 
@@ -261,11 +257,7 @@ pub const AttrReplacerFn = *const fn (
     groups_len: usize,
     key: [*:0]const u8,
     value: *const LogValue,
-    out_key_buf: [*]u8,
-    out_key_cap: usize,
-    out_str_val_buf: [*]u8,
-    out_str_val_cap: usize,
-    out_replace_str_val: *bool,
+    out_replacement: ?*anyopaque,
 ) callconv(.c) bool;
 
 pub const LogSink = extern struct {
@@ -306,6 +298,7 @@ pub const Propagator = extern struct {
 };
 
 pub const Options = extern struct {
+    struct_size: usize = @sizeOf(Options),
     env_mode: EnvMode = .process,
     env_pairs: ?[*]const EnvPair = null,
     env_pairs_len: usize = 0,
@@ -433,13 +426,14 @@ pub const ObserveF64Fn = *const fn (userdata: ?*anyopaque, obs: ?*anyopaque) cal
 
 pub const Carrier = extern struct {
     userdata: ?*anyopaque,
-    get: ?*const fn (userdata: ?*anyopaque, key: [*:0]const u8) callconv(.c) ?[*:0]const u8,
-    set: ?*const fn (userdata: ?*anyopaque, key: [*:0]const u8, value: [*:0]const u8) callconv(.c) void,
+    get: ?*const fn (userdata: ?*anyopaque, key: ?[*:0]const u8) callconv(.c) ?[*:0]const u8,
+    set: ?*const fn (userdata: ?*anyopaque, key: ?[*:0]const u8, value: ?[*:0]const u8) callconv(.c) void,
 };
 
 // Test harness types (matching c/include/o11y/test.h)
 
 pub const TestOptions = extern struct {
+    struct_size: usize = @sizeOf(TestOptions),
     service_name: ?[*:0]const u8 = "test-service",
     service_version: ?[*:0]const u8 = null,
     service_namespace: ?[*:0]const u8 = null,

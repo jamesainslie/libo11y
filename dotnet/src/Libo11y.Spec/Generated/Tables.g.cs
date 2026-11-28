@@ -5,40 +5,77 @@
 using System;
 using System.Collections.Frozen;
 using System.Collections.Generic;
+using System.Collections.Immutable;
 
 namespace Libo11y.Spec;
 
+/// <summary>The sensitivity class of an attribute (SPEC section 5).</summary>
 public enum Sensitivity
 {
+    /// <summary>Safe to emit anywhere.</summary>
     Public,
+
+    /// <summary>Internal to the organization, but not personal data.</summary>
     Internal,
+
+    /// <summary>Personal data: dropped, hashed or kept according to the PII mode.</summary>
     Pii,
+
+    /// <summary>A secret: always dropped.</summary>
     Secret,
 }
 
+/// <summary>The cardinality budget of an attribute.</summary>
 public enum Cardinality
 {
+    /// <summary>A closed set of values.</summary>
     Enum,
+
+    /// <summary>An open set of values with a known bound.</summary>
     Bounded,
+
+    /// <summary>An open set of values with no bound, which must not label a metric.</summary>
     Unbounded,
 }
 
+/// <summary>The requirement level of an attribute in a group.</summary>
 public enum Requirement
 {
+    /// <summary>The attribute must be present.</summary>
     Required,
+
+    /// <summary>The attribute must be present when its condition holds.</summary>
     ConditionallyRequired,
+
+    /// <summary>The attribute should be present.</summary>
     Recommended,
+
+    /// <summary>The attribute is present only when an application opts in.</summary>
     OptIn,
 }
 
+/// <summary>The kind of instrument a metric is recorded with.</summary>
 public enum InstrumentKind
 {
+    /// <summary>A monotonic counter.</summary>
     Counter,
+
+    /// <summary>A histogram.</summary>
     Histogram,
+
+    /// <summary>A gauge.</summary>
     Gauge,
+
+    /// <summary>A counter that can go up and down.</summary>
     UpDownCounter,
 }
 
+/// <summary>One resource attribute the specification defines.</summary>
+/// <param name="Key">The attribute key.</param>
+/// <param name="Tier">The resource tier the attribute belongs to, such as <c>tier0</c>.</param>
+/// <param name="Requirement">The attribute's requirement level in its tier.</param>
+/// <param name="Source">Where the value comes from, from the registry's <c>o11y.source</c> annotation.</param>
+/// <param name="Role">Whether the attribute identifies the entity or describes it, from the <c>o11y.role</c> annotation.</param>
 public sealed record ResourceAttr(
     string Key,
     string Tier,
@@ -46,18 +83,28 @@ public sealed record ResourceAttr(
     string Source,
     string Role);
 
+/// <summary>One registered event and the attributes it must carry.</summary>
+/// <param name="Name">The event name.</param>
+/// <param name="Required">The attribute keys the event must carry.</param>
+/// <param name="RequiredTemplates">The template attributes the event must carry, each satisfied by any <c>TEMPLATE.KEY</c> attribute.</param>
 public sealed record EventInfo(
     string Name,
-    IReadOnlyList<string> Required,
-    IReadOnlyList<string> RequiredTemplates);
+    ImmutableArray<string> Required,
+    ImmutableArray<string> RequiredTemplates);
 
+/// <summary>One registered metric.</summary>
+/// <param name="Name">The metric name.</param>
+/// <param name="Instrument">The instrument the metric is recorded with.</param>
+/// <param name="Unit">The metric's UCUM unit.</param>
 public sealed record MetricInfo(
     string Name,
     InstrumentKind Instrument,
     string Unit);
 
+/// <summary>The lookup tables the specification registry defines. Every table is immutable.</summary>
 public static class SpecTables
 {
+    /// <summary>Every resource attribute the specification defines, keyed by attribute key, in tier order.</summary>
     public static readonly FrozenDictionary<string, ResourceAttr> Resource = new Dictionary<string, ResourceAttr>
     {
         ["service.name"] = new ResourceAttr("service.name", "tier0", Requirement.Required, "option-or-env", "identifying"),
@@ -104,10 +151,13 @@ public static class SpecTables
         ["o11y.label"] = new ResourceAttr("o11y.label", "tier3", Requirement.OptIn, "option", "descriptive"),
     }.ToFrozenDictionary();
 
-    public static readonly IReadOnlyList<string> RequiredTier0 = new string[] { "service.name", "service.version", "deployment.environment.name", "telemetry.sdk.name", "telemetry.sdk.language", "telemetry.sdk.version" };
+    /// <summary>The resource attributes tier 0 requires, in registry order.</summary>
+    public static readonly ImmutableArray<string> RequiredTier0 = ImmutableArray.Create("service.name", "service.version", "deployment.environment.name", "telemetry.sdk.name", "telemetry.sdk.language", "telemetry.sdk.version");
 
+    /// <summary>The base values of <c>deployment.environment.name</c>.</summary>
     public static readonly FrozenSet<string> EnvironmentValues = FrozenSet.ToFrozenSet(new string[] { "production", "staging", "development", "test" });
 
+    /// <summary>The sensitivity class of every classified attribute key.</summary>
     public static readonly FrozenDictionary<string, Sensitivity> SensitivityOf = new Dictionary<string, Sensitivity>
     {
         ["cloud.account.id"] = Sensitivity.Internal,
@@ -243,6 +293,7 @@ public static class SpecTables
         ["vcs.ref.head.revision"] = Sensitivity.Public,
     }.ToFrozenDictionary();
 
+    /// <summary>The cardinality budget of every attribute key that has one.</summary>
     public static readonly FrozenDictionary<string, Cardinality> CardinalityOf = new Dictionary<string, Cardinality>
     {
         ["device.id"] = Cardinality.Unbounded,
@@ -335,6 +386,7 @@ public static class SpecTables
         ["url.path"] = Cardinality.Unbounded,
     }.ToFrozenDictionary();
 
+    /// <summary>Keys emitted before the specification existed, mapped to the keys that replace them.</summary>
     public static readonly FrozenDictionary<string, string> LegacyKeys = new Dictionary<string, string>
     {
         ["vcs.modified"] = "o11y.build.modified",
@@ -342,20 +394,23 @@ public static class SpecTables
         ["vcs.time"] = "o11y.build.time",
     }.ToFrozenDictionary();
 
-    public static readonly IReadOnlyList<string> MetricResourceLabels = new string[] { "service.name", "service.namespace", "service.instance.id", "deployment.environment.name", "service.version" };
+    /// <summary>The resource attributes copied onto every metric data point as labels, in registry order.</summary>
+    public static readonly ImmutableArray<string> MetricResourceLabels = ImmutableArray.Create("service.name", "service.namespace", "service.instance.id", "deployment.environment.name", "service.version");
 
+    /// <summary>Every registered event, keyed by event name.</summary>
     public static readonly FrozenDictionary<string, EventInfo> Events = new Dictionary<string, EventInfo>
     {
-        ["o11y.telemetry.configured"] = new EventInfo("o11y.telemetry.configured", Array.Empty<string>(), new string[] { "o11y.config" }),
-        ["o11y.request.summary"] = new EventInfo("o11y.request.summary", new string[] { "http.request.method", "http.response.status_code", "o11y.outcome", "o11y.duration" }, Array.Empty<string>()),
-        ["o11y.telemetry.dropped"] = new EventInfo("o11y.telemetry.dropped", new string[] { "o11y.signal", "error.type" }, Array.Empty<string>()),
-        ["o11y.rum.error"] = new EventInfo("o11y.rum.error", new string[] { "o11y.rum.error.source", "exception.type", "session.id", "o11y.rum.view.id" }, Array.Empty<string>()),
-        ["o11y.rum.frustration"] = new EventInfo("o11y.rum.frustration", new string[] { "o11y.rum.frustration.type", "session.id", "o11y.rum.view.id" }, Array.Empty<string>()),
-        ["o11y.rum.session.start"] = new EventInfo("o11y.rum.session.start", new string[] { "session.id", "o11y.rum.platform" }, Array.Empty<string>()),
-        ["o11y.rum.session.end"] = new EventInfo("o11y.rum.session.end", new string[] { "session.id", "o11y.rum.session.retained" }, Array.Empty<string>()),
-        ["o11y.rum.view.summary"] = new EventInfo("o11y.rum.view.summary", new string[] { "o11y.rum.platform", "o11y.rum.view.id", "o11y.rum.view.name", "o11y.rum.view.kind", "session.id", "o11y.rum.summary.seq", "o11y.rum.summary.time_on_view" }, Array.Empty<string>()),
+        ["o11y.telemetry.configured"] = new EventInfo("o11y.telemetry.configured", ImmutableArray<string>.Empty, ImmutableArray.Create("o11y.config")),
+        ["o11y.request.summary"] = new EventInfo("o11y.request.summary", ImmutableArray.Create("http.request.method", "http.response.status_code", "o11y.outcome", "o11y.duration"), ImmutableArray<string>.Empty),
+        ["o11y.telemetry.dropped"] = new EventInfo("o11y.telemetry.dropped", ImmutableArray.Create("o11y.signal", "error.type"), ImmutableArray<string>.Empty),
+        ["o11y.rum.error"] = new EventInfo("o11y.rum.error", ImmutableArray.Create("o11y.rum.error.source", "exception.type", "session.id", "o11y.rum.view.id"), ImmutableArray<string>.Empty),
+        ["o11y.rum.frustration"] = new EventInfo("o11y.rum.frustration", ImmutableArray.Create("o11y.rum.frustration.type", "session.id", "o11y.rum.view.id"), ImmutableArray<string>.Empty),
+        ["o11y.rum.session.start"] = new EventInfo("o11y.rum.session.start", ImmutableArray.Create("session.id", "o11y.rum.platform"), ImmutableArray<string>.Empty),
+        ["o11y.rum.session.end"] = new EventInfo("o11y.rum.session.end", ImmutableArray.Create("session.id", "o11y.rum.session.retained"), ImmutableArray<string>.Empty),
+        ["o11y.rum.view.summary"] = new EventInfo("o11y.rum.view.summary", ImmutableArray.Create("o11y.rum.platform", "o11y.rum.view.id", "o11y.rum.view.name", "o11y.rum.view.kind", "session.id", "o11y.rum.summary.seq", "o11y.rum.summary.time_on_view"), ImmutableArray<string>.Empty),
     }.ToFrozenDictionary();
 
+    /// <summary>Every registered metric, keyed by metric name.</summary>
     public static readonly FrozenDictionary<string, MetricInfo> Metrics = new Dictionary<string, MetricInfo>
     {
         ["o11y.schema.violations"] = new MetricInfo("o11y.schema.violations", InstrumentKind.Counter, "{violation}"),
@@ -370,21 +425,25 @@ public static class SpecTables
         ["o11y.rum.frustrations"] = new MetricInfo("o11y.rum.frustrations", InstrumentKind.Counter, "{signal}"),
     }.ToFrozenDictionary();
 
-    public static readonly FrozenDictionary<string, IReadOnlyList<string>> SpanRequired = new Dictionary<string, IReadOnlyList<string>>
+    /// <summary>The attributes each kind of span must carry, keyed by the <c>o11y.span.kind</c> annotation.</summary>
+    public static readonly FrozenDictionary<string, ImmutableArray<string>> SpanRequired = new Dictionary<string, ImmutableArray<string>>
     {
-        ["server"] = new string[] { "http.request.method", "url.path", "url.scheme" },
-        ["client"] = new string[] { "http.request.method", "server.address", "server.port", "url.full" },
+        ["server"] = ImmutableArray.Create("http.request.method", "url.path", "url.scheme"),
+        ["client"] = ImmutableArray.Create("http.request.method", "server.address", "server.port", "url.full"),
     }.ToFrozenDictionary();
 
-    public static readonly FrozenDictionary<string, IReadOnlyList<string>> RumSpanRequired = new Dictionary<string, IReadOnlyList<string>>
+    /// <summary>The attributes each kind of RUM span must carry, keyed by the <c>o11y.rum.span</c> annotation.</summary>
+    public static readonly FrozenDictionary<string, ImmutableArray<string>> RumSpanRequired = new Dictionary<string, ImmutableArray<string>>
     {
-        ["view"] = new string[] { "o11y.rum.span.shape", "o11y.rum.platform", "o11y.rum.view.name", "o11y.rum.view.id", "o11y.rum.view.kind", "session.id" },
-        ["action"] = new string[] { "o11y.rum.span.shape", "o11y.rum.action.type", "o11y.rum.view.id", "session.id" },
-        ["app_load"] = new string[] { "o11y.rum.span.shape", "o11y.rum.platform", "o11y.rum.view.id", "session.id" },
+        ["view"] = ImmutableArray.Create("o11y.rum.span.shape", "o11y.rum.platform", "o11y.rum.view.name", "o11y.rum.view.id", "o11y.rum.view.kind", "session.id"),
+        ["action"] = ImmutableArray.Create("o11y.rum.span.shape", "o11y.rum.action.type", "o11y.rum.view.id", "session.id"),
+        ["app_load"] = ImmutableArray.Create("o11y.rum.span.shape", "o11y.rum.platform", "o11y.rum.view.id", "session.id"),
     }.ToFrozenDictionary();
 
+    /// <summary>The only application registry schema this library reads.</summary>
     public const string AppRegistrySchema = "libo11y.app-registry/v1";
 
+    /// <summary>The namespaces an application registry may not claim: libo11y's, OpenTelemetry's, and semconv's.</summary>
     public static readonly FrozenSet<string> AppReservedNamespaces = FrozenSet.ToFrozenSet(new string[]
     {
         "android",

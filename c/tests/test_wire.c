@@ -266,10 +266,82 @@ static void test_otlp_grpc_h2c_and_mtls(void) {
     rmdir(tmp_dir);
 }
 
+struct error_handler_state {
+    int calls;
+    char last_msg[256];
+};
+
+static void on_export_error(void *userdata, const char *message) {
+    struct error_handler_state *st = (struct error_handler_state *)userdata;
+    st->calls++;
+    if (message != NULL) {
+        snprintf(st->last_msg, sizeof(st->last_msg), "%s", message);
+    }
+}
+
+static void test_receiver_validation_and_error_handler(void) {
+    /* Partial TLS rejected by both HTTP and gRPC receivers */
+    o11y_test_http_receiver_t *hrx = NULL;
+    o11y_test_http_receiver_options_t bad_http_tls = {
+        .tls = { .enabled = true, .cert_pem = o11y_test_cert_server_pem(), .key_pem = NULL },
+    };
+    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_test_http_receiver_start(&bad_http_tls, &hrx));
+    ASSERT_NULL(hrx);
+
+    o11y_test_http_receiver_options_t bad_http_replies = { .replies = NULL, .replies_len = 1 };
+    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_test_http_receiver_start(&bad_http_replies, &hrx));
+    ASSERT_NULL(hrx);
+
+    o11y_test_grpc_receiver_t *grx = NULL;
+    o11y_test_grpc_receiver_options_t bad_grpc_tls = {
+        .tls = { .enabled = true, .cert_pem = NULL, .key_pem = o11y_test_cert_server_key_pem() },
+    };
+    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_test_grpc_receiver_start(&bad_grpc_tls, &grx));
+    ASSERT_NULL(grx);
+
+    /* Error handler invoked on rejected HTTP export */
+    o11y_test_http_reply_t fail_reply[] = {
+        { .status = 400 },
+    };
+    o11y_test_http_receiver_options_t fail_opts = { .replies = fail_reply, .replies_len = 1 };
+    ASSERT_EQ_ERR(O11Y_OK, o11y_test_http_receiver_start(&fail_opts, &hrx));
+
+    struct error_handler_state eh = {0};
+    o11y_env_pair_t env_pairs[] = {
+        { "OTEL_EXPORTER_OTLP_ENDPOINT", o11y_test_http_receiver_url(hrx) },
+        { "OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf" },
+        { "OTEL_METRICS_EXPORTER", "none" },
+        { "OTEL_LOGS_EXPORTER", "none" },
+    };
+    o11y_options_t opts = o11y_options_default();
+    opts.env_mode = O11Y_ENV_PAIRS;
+    opts.env_pairs = env_pairs;
+    opts.env_pairs_len = 4;
+    opts.service_name = "c-eh-test";
+    opts.environment = O11Y_ENVIRONMENT_TEST;
+    opts.console_enabled = false;
+    opts.runtime_metrics = false;
+    opts.error_handler_fn = on_export_error;
+    opts.error_handler_userdata = &eh;
+
+    o11y_sdk_t *sdk = NULL;
+    ASSERT_EQ_ERR(O11Y_OK, o11y_init(&opts, &sdk, NULL));
+    o11y_span_t *sp = o11y_tracer_start(o11y_tracer(sdk, "eh"), NULL, "op", NULL);
+    o11y_span_end(sp);
+    o11y_shutdown_report_t report = {0};
+    (void)o11y_shutdown(sdk, 3000, &report);
+    o11y_destroy(sdk);
+
+    ASSERT_TRUE(eh.calls >= 1);
+    ASSERT_TRUE(eh.last_msg[0] != '\0');
+    o11y_test_http_receiver_destroy(hrx);
+}
+
 int main(void) {
     RUN_TEST(test_otlp_http_protobuf_and_gzip);
     RUN_TEST(test_otlp_http_json_and_retry);
     RUN_TEST(test_otlp_http_mtls);
     RUN_TEST(test_otlp_grpc_h2c_and_mtls);
+    RUN_TEST(test_receiver_validation_and_error_handler);
     TEST_SUMMARY("test_wire");
 }
