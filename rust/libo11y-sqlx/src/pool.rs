@@ -408,6 +408,7 @@ struct InstrumentedStream<'e, T> {
     inner: BoxStream<'e, Result<T, Error>>,
     in_flight: Option<InFlight>,
     first_error: Option<ErrorInfo>,
+    panicked_in_poll: bool,
 }
 
 impl<T> Stream for InstrumentedStream<'_, T> {
@@ -415,7 +416,10 @@ impl<T> Stream for InstrumentedStream<'_, T> {
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
-        match this.inner.as_mut().poll_next(cx) {
+        this.panicked_in_poll = true;
+        let poll = this.inner.as_mut().poll_next(cx);
+        this.panicked_in_poll = false;
+        match poll {
             Poll::Pending => Poll::Pending,
             Poll::Ready(Some(Ok(item))) => Poll::Ready(Some(Ok(item))),
             Poll::Ready(Some(Err(err))) => {
@@ -436,8 +440,18 @@ impl<T> Stream for InstrumentedStream<'_, T> {
 
 impl<T> Drop for InstrumentedStream<'_, T> {
     fn drop(&mut self) {
+        // A row stream dropped before its end is recorded as finished: with
+        // the first error it yielded, or as a success, unless the inner stream
+        // itself panicked while being polled. Dropping a stream early is
+        // ordinary use, such as taking only the first rows, and Go `o11ysql`
+        // does not treat an early `rows.Close()` as an error. So this does not
+        // let `InFlight` record a cancellation.
         if let Some(in_flight) = self.in_flight.take() {
-            in_flight.finish(self.first_error.as_ref());
+            if self.panicked_in_poll {
+                in_flight.finish_panic();
+            } else {
+                in_flight.finish(self.first_error.as_ref());
+            }
         }
     }
 }
@@ -486,6 +500,7 @@ where
             inner: make_stream(),
             in_flight: Some(in_flight),
             first_error: None,
+            panicked_in_poll: false,
         }
     };
     futures_util::stream::once(fut).flatten().boxed()
@@ -736,5 +751,158 @@ where
         't: 'e,
     {
         (&mut *self.tx).prepare_with(sql, parameters)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    use futures_util::FutureExt as _;
+    use libo11y::opentelemetry_proto::tonic::common::v1::any_value::Value as ProtoVal;
+    use libo11y::opentelemetry_proto::tonic::metrics::v1::{HistogramDataPoint, metric::Data};
+    use libo11y_test::Recorder;
+    use opentelemetry::trace::{FutureExt as _, Status, TraceContextExt as _, Tracer as _};
+    use opentelemetry_sdk::trace::SpanData;
+
+    use super::*;
+
+    fn instrumenter(rec: &Recorder) -> Arc<Instrumenter> {
+        Instrumenter::new(rec.sdk(), DbConfig::new("sqlite"))
+    }
+
+    fn parent_cx(rec: &Recorder) -> Context {
+        Context::new().with_span(rec.sdk().tracer("test").start("handler"))
+    }
+
+    fn statement_spans(rec: &Recorder) -> Vec<SpanData> {
+        rec.spans()
+            .into_iter()
+            .filter(|s| s.name != "handler")
+            .collect()
+    }
+
+    fn span_error_type(span: &SpanData) -> Option<String> {
+        span.attributes
+            .iter()
+            .find(|kv| kv.key.as_str() == "error.type")
+            .map(|kv| kv.value.to_string())
+    }
+
+    fn duration_points(rec: &Recorder) -> Vec<HistogramDataPoint> {
+        let mut out = Vec::new();
+        for req in rec.metrics() {
+            for rm in req.resource_metrics {
+                for sm in rm.scope_metrics {
+                    for m in sm.metrics {
+                        if m.name == "db.client.operation.duration"
+                            && let Some(Data::Histogram(h)) = m.data
+                        {
+                            out.extend(h.data_points);
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    fn point_error_type(dp: &HistogramDataPoint) -> Option<String> {
+        dp.attributes.iter().find_map(|kv| {
+            if kv.key != "error.type" {
+                return None;
+            }
+            match kv.value.as_ref()?.value.as_ref()? {
+                ProtoVal::StringValue(s) => Some(s.clone()),
+                _ => None,
+            }
+        })
+    }
+
+    /// Asserts exactly one statement span and one duration measurement, both
+    /// carrying `want_error_type`, with an error status when one is expected.
+    fn assert_recorded_once(rec: &Recorder, want_error_type: Option<&str>) {
+        let spans = statement_spans(rec);
+        assert_eq!(spans.len(), 1, "want one statement span, got {spans:?}");
+        let span = &spans[0];
+        assert_eq!(span.name, "SELECT users");
+        assert_eq!(span_error_type(span).as_deref(), want_error_type);
+        let want_status = if want_error_type.is_some() {
+            Status::error("")
+        } else {
+            Status::Unset
+        };
+        assert_eq!(span.status, want_status);
+
+        let points = duration_points(rec);
+        let count: u64 = points.iter().map(|dp| dp.count).sum();
+        assert_eq!(count, 1, "want one duration measurement, got {points:?}");
+        assert_eq!(point_error_type(&points[0]).as_deref(), want_error_type);
+    }
+
+    fn panics_in_driver() -> Result<(), Error> {
+        panic!("driver panicked")
+    }
+
+    #[tokio::test]
+    async fn dropped_future_records_span_and_duration_as_canceled() {
+        let rec = Recorder::start("sqlx-cancel");
+        let ins = instrumenter(&rec);
+        let info = ins.describe("SELECT id FROM users");
+        let mut fut = instrument_future::<(), _>(
+            Arc::clone(&ins),
+            info,
+            std::future::pending::<Result<(), Error>>,
+        );
+        {
+            let _guard = parent_cx(&rec).attach();
+            assert!(fut.as_mut().now_or_never().is_none());
+        }
+        drop(fut);
+
+        assert_recorded_once(&rec, Some("canceled"));
+    }
+
+    #[tokio::test]
+    async fn panicking_future_records_span_and_duration_as_panic() {
+        let rec = Recorder::start("sqlx-panic");
+        let ins = instrumenter(&rec);
+        let info = ins.describe("SELECT id FROM users");
+        let mut fut =
+            instrument_future::<(), _>(Arc::clone(&ins), info, || async { panics_in_driver() });
+        let caught = {
+            let _guard = parent_cx(&rec).attach();
+            catch_unwind(AssertUnwindSafe(|| fut.as_mut().now_or_never()))
+        };
+        assert!(caught.is_err(), "the driver panic must propagate");
+        drop(fut);
+
+        assert_recorded_once(&rec, Some("panic"));
+    }
+
+    #[tokio::test]
+    async fn completed_future_records_once() {
+        let rec = Recorder::start("sqlx-complete");
+        let ins = instrumenter(&rec);
+        let info = ins.describe("SELECT id FROM users");
+        let fut = instrument_future(Arc::clone(&ins), info, || async { Ok::<_, Error>(7) });
+        let got = fut.with_context(parent_cx(&rec)).await;
+        assert_eq!(got.expect("ok"), 7);
+
+        assert_recorded_once(&rec, None);
+    }
+
+    #[tokio::test]
+    async fn failed_future_records_once_with_sqlx_error_type() {
+        let rec = Recorder::start("sqlx-failed");
+        let ins = instrumenter(&rec);
+        let info = ins.describe("SELECT id FROM users");
+        let fut = instrument_future::<(), _>(Arc::clone(&ins), info, || async {
+            Err(Error::RowNotFound)
+        });
+        let got = fut.with_context(parent_cx(&rec)).await;
+        assert!(matches!(got, Err(Error::RowNotFound)));
+
+        assert_recorded_once(&rec, Some("sqlx::Error::RowNotFound"));
     }
 }

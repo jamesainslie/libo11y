@@ -3,11 +3,11 @@
 //! `libo11y registry check FILE...` validates application attribute registries
 //! against the libo11y policy rules, for use in a consumer's CI.
 //!
+//! Each file is checked on its own, as in the Go and TypeScript tools.
+//!
 //! Exit status: `0` when every file is valid, `1` when a file breaks a policy
-//! rule or repeats a namespace declared by an earlier file, `2` on a usage,
-//! read, or parse error (the highest status wins).
+//! rule, `2` on a usage, read, or parse error (the highest status wins).
 
-use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write};
 
@@ -18,6 +18,7 @@ pub const USAGE: &str = "usage: libo11y registry check FILE...";
 
 /// Runs the CLI against `args`, writing output to `stdout` and errors to
 /// `stderr`, and returns the process exit status (`0`, `1`, or `2`).
+#[must_use]
 pub fn run<I, S, Out, Err>(args: I, stdout: &mut Out, stderr: &mut Err) -> i32
 where
     I: IntoIterator<Item = S>,
@@ -35,22 +36,14 @@ where
         return 2;
     }
 
-    let mut status = 0;
-    let mut seen_namespaces: HashMap<String, String> = HashMap::new();
-    for path in &args[2..] {
-        let file_status = check_file(path, &mut seen_namespaces, stdout, stderr);
-        status = status.max(file_status);
-    }
-    status
+    args[2..]
+        .iter()
+        .map(|path| check_file(path, stdout, stderr))
+        .fold(0, i32::max)
 }
 
 /// Validates one registry file and returns its exit status (`0`, `1`, or `2`).
-fn check_file<Out: Write, Err: Write>(
-    path: &str,
-    seen_namespaces: &mut HashMap<String, String>,
-    stdout: &mut Out,
-    stderr: &mut Err,
-) -> i32 {
+fn check_file<Out: Write, Err: Write>(path: &str, stdout: &mut Out, stderr: &mut Err) -> i32 {
     let raw = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(err) => {
@@ -74,16 +67,6 @@ fn check_file<Out: Write, Err: Write>(
         }
         return 1;
     }
-
-    if let Some(first) = seen_namespaces.get(&reg.namespace) {
-        let _ = writeln!(
-            stdout,
-            "{path}: libo11y_app_namespace_duplicate: {first} and {path} both declare namespace \"{}\"",
-            reg.namespace
-        );
-        return 1;
-    }
-    seen_namespaces.insert(reg.namespace.clone(), path.to_owned());
 
     let count = reg.attributes.len();
     let noun = if count == 1 {
@@ -191,7 +174,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_namespace_across_two_files_returns_one() {
+    fn two_files_in_one_namespace_are_checked_independently() {
         let dir = TempDir::new();
         let first = dir.write(
             "a.yaml",
@@ -203,14 +186,12 @@ mod tests {
         );
 
         let (code, stdout, stderr) = run_str(&["registry", "check", &first, &second]);
-        assert_eq!(code, 1);
-        assert!(
-            stdout.contains("ok (1 attribute in namespace billing)"),
-            "{stdout}"
-        );
-        assert!(
-            stdout.contains("both declare namespace \"billing\""),
-            "{stdout}"
+        assert_eq!(code, 0, "{stdout}");
+        assert_eq!(
+            stdout,
+            format!(
+                "{first}: ok (1 attribute in namespace billing)\n{second}: ok (1 attribute in namespace billing)\n"
+            )
         );
         assert!(stderr.is_empty(), "{stderr}");
     }
