@@ -211,3 +211,120 @@ test("an export that fails while a flush runs is the flush's to report, not a ba
     await t.shutdown();
   }
 });
+
+/**
+ * Sets the clock the drop reports' rate limits read, for one telemetry built inside fn. The
+ * clock stands still until the test moves it.
+ */
+async function withClock(fn: (clock: { now: number }) => Promise<void>): Promise<void> {
+  const { seams } = await import("./internal/seams.ts");
+  const clock = { now: 1_000_000 };
+  seams.now = () => clock.now;
+  try {
+    await fn(clock);
+  } finally {
+    seams.now = undefined;
+  }
+}
+
+/** Ends one span and waits until the batch timer has exported it. */
+async function failOnce(t: Telemetry, r: ReturnType<typeof refusing>): Promise<void> {
+  const before = r.state.exports;
+  t.tracerProvider.getTracer("t").startSpan("s").end();
+  await r.exported(before + 1);
+  await turn();
+}
+
+test("while the collector stays down, the console sink says a signal was dropped 5 times, then once every 30 s", async () => {
+  await withClock(async (clock) => {
+    const spans = refusing();
+    const logs = refusing();
+    const platform = testPlatform(FAST);
+    const t = await createTelemetryWith(
+      {
+        ...OPTIONS,
+        spanExporter: spans.exporter as SpanExporter,
+        logExporter: logs.exporter as LogRecordExporter,
+      },
+      platform,
+    );
+    const traces = () => droppedOnConsole(platform).filter(([signal]) => signal === "traces").length;
+    try {
+      for (let i = 0; i < 8; i++) await failOnce(t, spans);
+      assert.equal(spans.state.exports, 8);
+      assert.equal(traces(), 5, "five reports, then the rest are held back");
+
+      // Each signal has its own limit, so the traces failures leave the logs reports alone.
+      t.logger.info("l");
+      await logs.exported(1);
+      await turn();
+      assert.deepEqual(
+        droppedOnConsole(platform).filter(([signal]) => signal === "logs"),
+        [["logs", "CollectorError"]],
+      );
+
+      clock.now += 29_000;
+      await failOnce(t, spans);
+      assert.equal(traces(), 5, "less than 30 s on, still held back");
+      clock.now += 1_000;
+      await failOnce(t, spans);
+      await failOnce(t, spans);
+      assert.equal(traces(), 6, "30 s on, one more report and no more");
+      clock.now += 60_000;
+      for (let i = 0; i < 3; i++) await failOnce(t, spans);
+      assert.equal(traces(), 8, "60 s on, two more reports");
+    } finally {
+      await t.shutdown();
+    }
+  });
+});
+
+test("with the console sink off, shutdown's dropped event is written to the diagnostic stream", async () => {
+  const r = refusing();
+  const platform = testPlatform({});
+  const t = await createTelemetryWith(
+    { ...OPTIONS, console: false, spanExporter: r.exporter as SpanExporter },
+    platform,
+  );
+  t.tracerProvider.getTracer("t").startSpan("s").end();
+  const report = await t.shutdown();
+  assert.deepEqual(
+    report.errors.map((e) => e.signal),
+    ["traces"],
+  );
+  assert.deepEqual(platform.lines, []);
+  const [line, ...rest] = droppedOnDiagnostics(platform);
+  assert.equal(rest.length, 0);
+  assert.match(line ?? "", /o11y\.signal=traces/);
+  assert.match(line ?? "", /error\.type=Error/);
+  assert.doesNotMatch(line ?? "", /secret-host/);
+});
+
+test("shutdown's dropped event reaches the diagnostic stream even after background failures used up its limit", async () => {
+  await withClock(async (clock) => {
+    const r = refusing();
+    const platform = testPlatform(FAST);
+    const t = await createTelemetryWith(
+      { ...OPTIONS, console: false, spanExporter: r.exporter as SpanExporter },
+      platform,
+    );
+    for (let i = 0; i < 7; i++) await failOnce(t, r);
+    assert.equal(droppedOnDiagnostics(platform).length, 5);
+    // The next line the limit lets through says how many it held back.
+    clock.now += 30_000;
+    await failOnce(t, r);
+    await failOnce(t, r);
+    assert.equal(droppedOnDiagnostics(platform).length, 6);
+    assert.match(droppedOnDiagnostics(platform)[5] ?? "", /suppressed=2/);
+    // Ended and shut down in one turn, so the shutdown, not the batch timer, exports this span.
+    t.tracerProvider.getTracer("t").startSpan("s").end();
+    const report = await t.shutdown();
+    assert.deepEqual(
+      report.errors.map((e) => e.signal),
+      ["traces"],
+    );
+    const lines = droppedOnDiagnostics(platform);
+    assert.equal(lines.length, 7);
+    assert.match(lines[6] ?? "", /o11y\.signal=traces/);
+  });
+});

@@ -105,12 +105,19 @@ adhere to [Semantic Versioning](https://semver.org/).
   `createTelemetry` nothing was written at all. Each such failure now
   emits `o11y.telemetry.dropped` with `o11y.signal` and `error.type`, the
   event a failed shutdown emits, on both paths. It goes to the console
-  sink, or to the diagnostic stream, rate limited, when the console sink
-  is off, as it is by default in the browser and on React Native. It is
-  never sent over OTLP, so a failing log export cannot feed itself. A
-  later `forceFlush` or `shutdown` does not report the same failure
-  again. A report still lists only the failures that land during its own
-  call.
+  sink, or to the diagnostic stream when the console sink is off, as it
+  is by default in the browser and on React Native. While a collector
+  stays down every export interval fails again, so each signal says so
+  5 times, then once every 30 seconds. A diagnostic line says how many
+  were held back. It is never sent over OTLP, so a failing log export
+  cannot feed itself. A later `forceFlush` or `shutdown` does not report
+  the same failure again. A report still lists only the failures that
+  land during its own call.
+- `@libo11y/core`: with the console sink off, `shutdown` now writes its
+  `o11y.telemetry.dropped` events to the diagnostic stream. They went to
+  the console sink only, so in the browser and on React Native a failed
+  shutdown said nothing outside its report. Shutdown's events are never
+  rate limited.
 - `@libo11y/web`, `@libo11y/webext`, `@libo11y/react-native` and
   `@libo11y/rum`: a flush nobody awaits now says when it lost telemetry.
   The flush on hide, the React Native flush when the app goes to the

@@ -176,30 +176,45 @@ function rateLimitedErrorHandler(platform: Platform): (err: unknown) => void {
 }
 
 // rateLimitedDiagnostics writes warn lines to the diagnostic stream through a token bucket of its
-// own: 5, refilled one per 30 s. A line written after some were held back says how many.
+// own. A line written after some were held back says how many.
 function rateLimitedDiagnostics(platform: Platform): (msg: string, attributes: LogAttributes) => void {
+  const take = tokenBucket(Date.now);
+  return (msg, attrs) => {
+    const held = take();
+    if (held !== undefined) writeDiagnostic(platform, msg, held > 0 ? { ...attrs, suppressed: held } : attrs);
+  };
+}
+
+// tokenBucket is the limit every rate-limited report here shares, Go's: 5, refilled one per 30 s.
+// A call returns undefined while the bucket is empty, and otherwise how many calls it held back
+// since the last one that passed.
+function tokenBucket(now: () => number): () => number | undefined {
   const burst = 5;
   const refillMillis = 30_000;
   let tokens = burst;
-  let last = Date.now();
+  let last = now();
   let suppressed = 0;
-  return (msg, attrs) => {
-    const now = Date.now();
-    tokens = Math.min(burst, tokens + (now - last) / refillMillis);
-    last = now;
+  return () => {
+    const at = now();
+    tokens = Math.min(burst, tokens + (at - last) / refillMillis);
+    last = at;
     if (tokens < 1) {
       suppressed++;
-      return;
+      return undefined;
     }
     tokens--;
-    const attributes: LogAttributes = suppressed > 0 ? { ...attrs, suppressed } : attrs;
+    const held = suppressed;
     suppressed = 0;
-    try {
-      platform.writeDiagnosticLine(formatTextLine({ time: new Date(now), level: "warn", msg, attributes }));
-    } catch {
-      // The diagnostic stream is the last resort; nothing is left to report to.
-    }
+    return held;
   };
+}
+
+function writeDiagnostic(platform: Platform, msg: string, attributes: LogAttributes): void {
+  try {
+    platform.writeDiagnosticLine(formatTextLine({ time: new Date(), level: "warn", msg, attributes }));
+  } catch {
+    // The diagnostic stream is the last resort; nothing is left to report to.
+  }
 }
 
 // droppedAttributes are o11y.telemetry.dropped's: the signal and the class of what failed, never
@@ -246,6 +261,8 @@ interface Parts {
   readonly instrumentationErrorHandler: (err: unknown) => void;
   /** The watch over each signal's exporter. */
   readonly watches: Readonly<Record<Signal, ExportWatch>>;
+  /** Says a signal was dropped: to the console sink, or to the diagnostic stream when it is off. */
+  readonly sayDropped: (signal: Signal, errorType: string) => void;
 }
 
 /** One signal's part in a flush or a shutdown. */
@@ -433,16 +450,11 @@ class TelemetryHandle implements Telemetry {
             : wrap(`o11y: shutdown ${step.signal}`, outcome),
       });
     });
-    // The OTLP leg is down, so the loss reaches the console sink only.
+    // The OTLP leg is down, so the loss reaches the console sink, or the diagnostic stream when the
+    // console sink is off. Never rate limited: it is the last word on each signal.
     for (const { signal, error } of errors) {
       try {
-        emitEvent(
-          this.parts.pipeline,
-          EVENT_TELEMETRY_DROPPED,
-          droppedAttributes(signal, error instanceof Error ? error.constructor.name : typeof error),
-          ROOT_CONTEXT,
-          { consoleOnly: true },
-        );
+        this.parts.sayDropped(signal, error instanceof Error ? error.constructor.name : typeof error);
       } catch {
         // Delivery is best effort.
       }
@@ -651,12 +663,26 @@ async function build(options: TelemetryOptions, platform: Platform): Promise<Par
       ...(platform.gate === undefined ? {} : { gate: platform.gate }),
     });
     const logger = new CoreLogger(pipeline);
-    const writeDiagnostic = config.console === "off" ? rateLimitedDiagnostics(platform) : undefined;
+    const sayDropped = (signal: Signal, errorType: string, held = 0): void => {
+      const attrs = droppedAttributes(signal, errorType);
+      if (config.console !== "off")
+        emitEvent(pipeline, EVENT_TELEMETRY_DROPPED, attrs, ROOT_CONTEXT, { consoleOnly: true });
+      else {
+        const line = eventAttributes(EVENT_TELEMETRY_DROPPED, attrs);
+        writeDiagnostic(platform, EVENT_TELEMETRY_DROPPED, held > 0 ? { ...line, suppressed: held } : line);
+      }
+    };
+    // While a collector stays down, every export interval fails again. Each signal says so 5
+    // times, then once every 30 s. A diagnostic line says how many it held back.
+    const now = seams.now ?? Date.now;
+    const limits: Record<Signal, () => number | undefined> = {
+      traces: tokenBucket(now),
+      metrics: tokenBucket(now),
+      logs: tokenBucket(now),
+    };
     dropped = (signal, error) => {
-      const attrs = droppedAttributes(signal, errorClass(error));
-      if (writeDiagnostic !== undefined)
-        writeDiagnostic(EVENT_TELEMETRY_DROPPED, eventAttributes(EVENT_TELEMETRY_DROPPED, attrs));
-      else emitEvent(pipeline, EVENT_TELEMETRY_DROPPED, attrs, ROOT_CONTEXT, { consoleOnly: true });
+      const held = limits[signal]();
+      if (held !== undefined) sayDropped(signal, errorClass(error), held);
     };
     if (options.captureConsole === true && platform.console !== undefined) {
       restoreConsole = captureConsole(platform.console, logger);
@@ -686,6 +712,7 @@ async function build(options: TelemetryOptions, platform: Platform): Promise<Par
       errorHandler,
       instrumentationErrorHandler,
       watches,
+      sayDropped,
     };
   } catch (err) {
     restoreConsole?.();

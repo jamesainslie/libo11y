@@ -172,16 +172,19 @@ status from the collector, a refused connection, a timeout. Upstream's
 batch log processor and periodic metric reader report a failed export to
 the error handler only, so core watches each exporter itself. `shutdown`
 also writes one `o11y.telemetry.dropped` event to the console for each
-signal in the report.
+signal in the report, or to the diagnostic stream when the console sink is
+off. Those events are never rate limited.
 
 An export that fails outside any `forceFlush` or `shutdown`, such as one
 the batch timer or the periodic reader started, is not in any report. Core
 says it with the same `o11y.telemetry.dropped` event, naming the signal
 and the class of the error, under `setup` and `createTelemetry` alike. The
 event goes to the console sink. When the console sink is off, it goes to
-the diagnostic stream instead, rate limited like the other diagnostic
-lines. It is never exported over OTLP. A later flush or shutdown does not
-report that failure again.
+the diagnostic stream instead. While a collector stays down every export
+interval fails again, so each signal says so 5 times, then once every 30
+seconds. A diagnostic line says how many were held back. The event is
+never exported over OTLP. A later flush or shutdown does not report that
+failure again.
 
 Core watches the exporter of every signal it builds a processor for: the
 platform's exporters, and an injected `spanExporter` or `logExporter`. An
