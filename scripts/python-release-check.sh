@@ -11,9 +11,10 @@
 # Without --from-pypi:
 #   Verifies python/pyproject.toml carries VERSION and python/CHANGELOG.md has
 #   release notes for VERSION, builds sdist and wheel with `uv build`, verifies
-#   neither ships conformance/ or tests/ and that py.typed is present, installs
-#   the wheel into a throwaway venv, and runs a consumer smoke test against an
-#   in-process OTLPHTTPReceiver.
+#   neither ships conformance/ or tests/ and that LICENSE and py.typed are
+#   present, installs the wheel into a throwaway venv, and runs a consumer smoke
+#   test against an in-process OTLPHTTPReceiver and `python -m libo11y registry
+#   check`.
 #
 # With --from-pypi (used by the release workflow's pypi-smoke job):
 #   Installs `libo11y==VERSION` directly from PyPI into a throwaway venv and
@@ -99,6 +100,12 @@ with zipfile.ZipFile(wheel_path) as zf:
     names = zf.namelist()
     if "libo11y/py.typed" not in names:
         raise SystemExit("wheel missing libo11y/py.typed")
+    if not any(n.endswith(".dist-info/licenses/LICENSE") for n in names):
+        raise SystemExit("wheel missing .dist-info/licenses/LICENSE")
+    if "_libo11y_pytest.py" not in names:
+        raise SystemExit("wheel missing _libo11y_pytest.py")
+    if "libo11y/__main__.py" not in names:
+        raise SystemExit("wheel missing libo11y/__main__.py")
     for name in names:
         if name.startswith(("tests/", "conformance/")) or "/conformance/" in name:
             raise SystemExit(f"wheel unexpectedly contains {name}")
@@ -107,12 +114,14 @@ with tarfile.open(sdist_path, "r:gz") as tf:
     names = tf.getnames()
     if not any(n.endswith("/src/libo11y/py.typed") for n in names):
         raise SystemExit("sdist missing src/libo11y/py.typed")
+    if not any(n.endswith("/LICENSE") for n in names):
+        raise SystemExit("sdist missing LICENSE")
     for name in names:
         parts = name.split("/")
         if "conformance" in parts or "tests" in parts:
             raise SystemExit(f"sdist unexpectedly contains {name}")
 PY
-	echo "python-release-check: wheel and sdist include py.typed and exclude conformance/ and tests/"
+	echo "python-release-check: wheel and sdist include LICENSE and py.typed and exclude conformance/ and tests/"
 
 	uv pip install --quiet --python "$venv_py" "$wheel"
 fi
@@ -180,5 +189,28 @@ with OTLPHTTPReceiver() as rx:
     if lr.trace_id != sc.trace_id.to_bytes(16, "big") or lr.span_id != sc.span_id.to_bytes(8, "big"):
         raise SystemExit("log record trace/span correlation mismatch")
 PY
+
+	cat >"$tmp/registry.yaml" <<'EOF'
+schema: libo11y.app-registry/v1
+namespace: smoke
+attributes:
+  smoke.order.id: {type: string, sensitivity: internal, cardinality: unbounded}
+EOF
+	"$venv_py" -m libo11y registry check "$tmp/registry.yaml" >"$tmp/registry.out" || {
+		cat "$tmp/registry.out" >&2
+		fail "installed python -m libo11y registry check failed"
+	}
+	grep -qF "ok (1 attribute in namespace smoke)" "$tmp/registry.out" || fail "python -m libo11y registry check printed: $(cat "$tmp/registry.out")"
+
+	cat >"$tmp/invalid.yaml" <<'EOF'
+schema: libo11y.app-registry/v1
+namespace: http
+attributes:
+  http.thing: {type: string, sensitivity: public, cardinality: bounded}
+EOF
+	rc=0
+	"$venv_py" -m libo11y registry check "$tmp/invalid.yaml" >"$tmp/invalid.out" || rc=$?
+	[[ "$rc" -eq 1 ]] || fail "expected exit 1 on reserved namespace, got $rc"
+	grep -qF "libo11y_app_namespace_reserved" "$tmp/invalid.out" || fail "missing rule id in: $(cat "$tmp/invalid.out")"
 )
-echo "python-release-check: OK, libo11y v$plain installs and exports span, metric, and correlated log"
+echo "python-release-check: OK, libo11y v$plain installs, exports span, metric, and correlated log, and runs its CLI"

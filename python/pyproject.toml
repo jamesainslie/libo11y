@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "Opinionated, elegant observability for Python built purely on OpenTelemetry."
 readme = "README.md"
 license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 authors = [{ name = "James Ainslie" }]
 keywords = ["opentelemetry", "observability", "telemetry", "otlp", "logging", "tracing", "metrics"]
@@ -15,7 +16,8 @@ classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: Apache Software License",
-    "Operating System :: OS Independent",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -35,7 +37,7 @@ Repository = "https://github.com/jamesainslie/libo11y"
 Documentation = "https://o11y.ing/docs/"
 
 [project.entry-points.pytest11]
-libo11y = "libo11y.testing._pytest_plugin"
+libo11y = "_libo11y_pytest"
 
 [project.optional-dependencies]
 test = [
@@ -79,10 +81,14 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/libo11y"]
+# The pytest plugin sits outside the package so loading it imports nothing from libo11y.
+force-include = { "src/_libo11y_pytest.py" = "_libo11y_pytest.py" }
 
 [tool.hatch.build.targets.sdist]
 include = [
     "src/libo11y",
+    "src/_libo11y_pytest.py",
+    "LICENSE",
     "README.md",
     "CHANGELOG.md",
     "pyproject.toml",

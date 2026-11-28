@@ -398,7 +398,7 @@ zig-hygiene-test:
 	scripts/zig-hygiene_test.sh
 
 # Worker count for pytest-xdist, capped at a quarter of the machine's cores.
-PYTHON_WORKERS ?= $(shell nproc 2>/dev/null | awk '{w=int($$1/4); if (w<1) w=1; print w}' || sysctl -n hw.ncpu 2>/dev/null | awk '{w=int($$1/4); if (w<1) w=1; print w}' || echo 2)
+PYTHON_WORKERS ?= $(shell c=$$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null); c=$${c:-8}; w=$$((c / 4)); [ "$$w" -ge 1 ] 2>/dev/null && echo "$$w" || echo 1)
 PYTHON_LD_PATH := $(if $(wildcard /run/current-system/sw/share/nix-ld/lib),LD_LIBRARY_PATH=/run/current-system/sw/share/nix-ld/lib$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH},)
 
 # The Python package (needs uv): sync locked dependencies, format check,
