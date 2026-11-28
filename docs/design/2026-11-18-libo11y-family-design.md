@@ -28,7 +28,7 @@ The LOR adoption program is specified separately, in the lor-client-portal repos
 - **D8. An application attribute registry.** A consumer can declare its own namespaced attributes with sensitivity, type and cardinality. Both languages load the registry at setup and classify those keys exactly like spec keys.
 - **D9. The gateway is part of RUM.** Browser telemetry needs a receiving service for validation, limits, enrichment, symbolication and remote configuration. libo11y ships it as a Go module, `go/o11yrum`, and as a container image.
 - **D10. Replay is included and fully configurable.** Session replay is a separate package, installed only by apps that want it. Its default masks all text and all inputs.
-- **D11. A Grafana app plugin.** Grafana cannot play rrweb recordings or show a RUM session as one timeline. The ops pack therefore includes a Grafana app plugin with a session explorer and a replay player.
+- **D11. A session explorer dashboard first, an app plugin later.** `ops/v0.1.0` ships the session explorer as a Grafana dashboard. It takes a `session.id` and an optional `o11y.rum.view.id` and shows that session's views, events, traces and spans from Loki and Tempo, with no plugin to sign or install. Grafana cannot play rrweb recordings or list sessions from a dashboard, so a Grafana app plugin with a session list and a replay player follows in a later `ops` release, after replay (L7) lands.
 - **D12. Products and platforms are separate axes.** Core and RUM are products. Each product has one implementation per platform, and every implementation follows the one spec. Core's TypeScript implementation is `@libo11y/core`, which is platform-neutral, plus a platform layer per runtime (`server`, `web`, `webext`, `react-native`). RUM sits on top of a platform layer. Mobile is a set of new platforms under both products, not a third product.
 - **D13. Mobile on three stacks.** The owner needs Expo/React Native, native iOS (Swift) and native Android (Kotlin). React Native reuses `@libo11y/core` and the platform-neutral half of RUM in TypeScript, with a thin native module that delegates to the Swift and Kotlin libraries for crashes, app start, frames and ANRs. Swift and Kotlin get full implementations of core and RUM on opentelemetry-swift and opentelemetry-android, and the spec gains Swift and Kotlin codegen targets. Every RUM platform shares the data model, the gateway and the Grafana session explorer.
 - **D14. Platform-neutral RUM conventions.** Session, view, action, error, resource, frustration and retention conventions are generic, and their enums cover mobile from the start (screens, taps, swipes, crashes, ANRs). Platform-only conventions live in their own groups, such as the browser family, so a new platform adds groups and never renames existing ones.
@@ -218,15 +218,15 @@ Every collector and every feature can be switched on or off and tuned in code. R
 
 ## Ops pack (step L8, release `ops/v0.1.0`)
 
-- Grafana dashboards for core services (RED by route and RPC, dependencies by `peer.service`, runtime) and for RUM (vitals by route and device, the error inbox, frustration, sessions).
-- PrometheusRule alert templates: error ratio, latency SLO burn rates, exporter drops, gateway rejections, and vitals regressions.
-- The Grafana app plugin `libo11y-rum-app`. Its session explorer lists sessions, shows a session as one timeline (views, actions, requests, errors and joined backend traces and logs), and plays replay segments next to that timeline. It reads Tempo, Loki and Prometheus through Grafana's data sources and reads replay segments from the gateway. Operators can load it as a private plugin or sign it.
+- `ops/v0.1.0` covers RUM: Grafana dashboards for the RUM overview, web vitals by view, device, browser and country, errors and frustration with the error inbox, the session explorer, and the gateway itself. Prometheus recording and alert rules cover vital regressions, error rate, gateway rejections, rate limiting, sink failures and latency, and the aggregator cap, shipped as rule files and as a `PrometheusRule`.
+- `ops/v0.2.0` adds the core service dashboards (RED by route and RPC, dependencies by `peer.service`, runtime) and latency SLO burn-rate alerts, which need a name catalog from the core libraries.
+- A later `ops` release adds the Grafana app plugin `libo11y-rum-app`. Its session explorer lists sessions, shows a session as one timeline (views, actions, requests, errors and joined backend traces and logs), and plays replay segments next to that timeline. It reads Tempo, Loki and Prometheus through Grafana's data sources and reads replay segments from the gateway. Operators can load it as a private plugin or sign it.
 
 ## Release model
 
 - Go modules keep path-prefixed tags: `go/vX.Y.Z`, `go/o11yconnect/vX.Y.Z`, `go/o11ysql/vX.Y.Z`, `go/o11yrum/vX.Y.Z`. As with `o11ygin`, a submodule requires the parent at the same version.
 - TypeScript packages release together from `ts/vX.Y.Z`, so every `@libo11y/*` package shares one version. A GitHub Actions workflow publishes them with npm provenance.
-- The specification keeps `spec/vX.Y.Z`. The ops pack uses `ops/vX.Y.Z`, and its release attaches the dashboards, the rules and the plugin archive.
+- The specification keeps `spec/vX.Y.Z`. The ops pack uses `ops/vX.Y.Z`, and its GitHub Release attaches `libo11y-ops-vX.Y.Z.tar.gz` (the dashboards, the rules and the kustomization) and `SHA256SUMS`. The plugin archive joins it once the plugin ships.
 - `make release-check` covers every tag family.
 - Each language and the ops pack has its own Keep a Changelog file.
 
@@ -252,7 +252,7 @@ Every collector and every feature can be switched on or off and tuned in code. R
 | L5 | RUM: `rum`, `rum-react`, `rum-tanstack-router`, `rum-connect`, remote config client | `ts/v0.3.0` |
 | L6 | Gateway: `go/o11yrum`, the image, `@libo11y/sourcemaps` | `go/o11yrum/v0.1.0` |
 | L7 | Replay: `rum-replay`, gateway replay storage | `ts/v0.4.0`, `go/o11yrum/v0.2.0` |
-| L8 | Ops pack: dashboards, rules, the Grafana app plugin | `ops/v0.1.0` |
+| L8 | Ops pack: RUM and gateway dashboards with a session explorer dashboard, rules; the app plugin follows | `ops/v0.1.0` |
 | L9 | iOS: Swift codegen target, `Libo11y` (core) and `Libo11yRUM`, the mobile convention group, dSYM symbolication in the gateway | `swift/v0.1.0` |
 | L10 | Android: Kotlin codegen target, `libo11y-android` (core) and `libo11y-rum-android`, R8/ProGuard symbolication in the gateway | `android/v0.1.0` |
 | L11 | React Native: `@libo11y/react-native` and `@libo11y/rum-react-native`, an Expo config plugin, and a native module that delegates to L9 and L10 | a `ts/vX.Y.Z` release |

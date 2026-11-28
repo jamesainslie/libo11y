@@ -7,6 +7,8 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-27
+
 ### Added
 
 - The ops module skeleton.
@@ -27,3 +29,8 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - The catalog fixture uploads a source map and sends a symbolicated error, so the catalog records the gateway's symbolication and upload counters. Replay panels follow once the gateway exports replay metrics.
 - `opsgen` parses every generated rule with the Prometheus parser and refuses thresholds that produce PromQL Prometheus would not load. The query lint accepts `up`, which Prometheus writes for every scrape target.
 - `make ops-promtool-test` tests the promtool installer, and CI caches the promtool download.
+- An integration test, `make ops-integration`, that CI runs. It starts Loki, Tempo, Prometheus, Grafana and an OpenTelemetry Collector in Docker Compose behind the gateway built from the checkout. It sends three sessions of fixture traffic and runs every panel query through Grafana's query API, and it checks that the panels the fixture covers show data. It also checks that Prometheus loads every rule, that Loki never indexes `session_id` or `o11y_rum_view_id`, and, in headless Chrome, that the session explorer's view link and Loki app variable work.
+- The release archive `libo11y-ops-vX.Y.Z.tar.gz` with `SHA256SUMS`, attached to the GitHub Release for each `ops/vX.Y.Z` tag. `scripts/ops-release-check.sh` validates a release and builds the archive, and `make ops-release-check` runs it.
+
+[Unreleased]: https://github.com/jamesainslie/libo11y/compare/ops/v0.1.0...HEAD
+[0.1.0]: https://github.com/jamesainslie/libo11y/releases/tag/ops/v0.1.0

@@ -136,6 +136,13 @@ docker pull ghcr.io/jamesainslie/o11yrum-gateway:0.1.0
 [`go/o11yrum/README.md`](go/o11yrum/README.md) covers configuration and
 deployment.
 
+The RUM ops pack, [`ops/`](ops/README.md), is the Grafana and Prometheus
+side: dashboards for the RUM overview, web vitals, errors and frustration, a
+session explorer over Loki and Tempo, and the gateway, plus recording and
+alert rules as rule files and a `PrometheusRule`. Import the JSON files into
+Grafana, provision them, or install the whole pack with kustomize from the
+`libo11y-ops-vX.Y.Z.tar.gz` archive on its GitHub Release.
+
 The latest Go release, `go/v0.4.0`, implements spec 1.3.0 and stamps that
 version's schema URL on every resource. The TypeScript packages at
 `ts/v0.3.0` implement spec 1.3.0 too.
@@ -652,6 +659,13 @@ smoke build against the registry, and creates a GitHub Release titled
 [`rust/CHANGELOG.md`](rust/CHANGELOG.md). `make release-check` (and
 `make rust-release-check`) validates lockstep versions, crates.io metadata,
 and package contents before tagging.
+
+The RUM ops pack releases from an `ops/vX.Y.Z` tag, starting at
+`ops/v0.1.0`, and records its changes in [`ops/CHANGELOG.md`](ops/CHANGELOG.md).
+Each release is published as a GitHub Release titled `libo11y-ops vX.Y.Z`
+with `libo11y-ops-vX.Y.Z.tar.gz` and `SHA256SUMS`. `make release-check` (and
+`make ops-release-check`) checks that the version, the changelog, the
+generated artifacts and the runbook links agree, and builds the archive.
 
 ## License
 
