@@ -6,7 +6,8 @@ const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 
-pub const c_version = "0.1.0";
+/// The library version, from `build.zig.zon` through the build script.
+pub const c_version: [:0]const u8 = @import("c_build_options").c_version ++ "";
 
 /// Allocator backed by libc malloc/realloc/free (thread-safe).
 pub const gpa: Allocator = std.heap.c_allocator;

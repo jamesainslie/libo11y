@@ -77,6 +77,49 @@ static void test_sync_and_observable_instruments(void) {
     o11y_test_destroy(rec);
 }
 
+static void observe_i64(void *userdata, o11y_observation_i64_t *obs) {
+    o11y_observation_i64_observe(obs, *(const int64_t *)userdata, NULL, 0);
+}
+
+static void observe_f64(void *userdata, o11y_observation_f64_t *obs) {
+    o11y_observation_f64_observe(obs, *(const double *)userdata, NULL, 0);
+}
+
+/* Every observable kind exists for both number types. */
+static void test_every_observable_instrument(void) {
+    o11y_test_options_t topts = o11y_test_options_default();
+    o11y_test_recorder_t *rec = NULL;
+    ASSERT_EQ_ERR(O11Y_OK, o11y_test_start(&topts, &rec, NULL));
+    o11y_meter_t *meter = o11y_meter(o11y_test_sdk(rec), "pool");
+
+    int64_t i_val = 7;
+    double f_val = 2.5;
+    ASSERT_EQ_ERR(O11Y_OK, o11y_meter_observable_counter_i64(meter, "pool.acquired", NULL, observe_i64, &i_val));
+    ASSERT_EQ_ERR(O11Y_OK, o11y_meter_observable_counter_f64(meter, "pool.wait.time", NULL, observe_f64, &f_val));
+    ASSERT_EQ_ERR(O11Y_OK, o11y_meter_observable_updown_i64(meter, "pool.idle", NULL, observe_i64, &i_val));
+    ASSERT_EQ_ERR(O11Y_OK, o11y_meter_observable_updown_f64(meter, "pool.load", NULL, observe_f64, &f_val));
+    ASSERT_EQ_ERR(O11Y_OK, o11y_meter_observable_gauge_i64(meter, "pool.size", NULL, observe_i64, &i_val));
+    ASSERT_EQ_ERR(O11Y_OK, o11y_meter_observable_gauge_f64(meter, "pool.utilization", NULL, observe_f64, &f_val));
+
+    static const char *const int_names[] = { "pool.acquired", "pool.idle", "pool.size" };
+    static const char *const float_names[] = { "pool.wait.time", "pool.load", "pool.utilization" };
+    for (size_t i = 0; i < 3; i++) {
+        int64_t got_i = 0;
+        double got_f = 0.0;
+        ASSERT_TRUE(o11y_test_metric_sum_i64(rec, int_names[i], &got_i));
+        ASSERT_EQ_INT(7, got_i);
+        ASSERT_TRUE(o11y_test_metric_sum_f64(rec, float_names[i], &got_f));
+        ASSERT_EQ_DBL(2.5, got_f, 1e-9);
+    }
+
+    /* A NULL meter or callback is refused, and a NULL SDK's meter is a no-op. */
+    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_meter_observable_gauge_i64(NULL, "x", NULL, observe_i64, &i_val));
+    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_meter_observable_gauge_i64(meter, "x", NULL, NULL, &i_val));
+    ASSERT_EQ_ERR(O11Y_OK, o11y_meter_observable_gauge_i64(o11y_meter(NULL, "noop"), "x", NULL, observe_i64, &i_val));
+
+    o11y_test_destroy(rec);
+}
+
 static void test_exemplars_and_three_way_triangle(void) {
     o11y_test_options_t topts = o11y_test_options_default();
     o11y_test_recorder_t *rec = NULL;
@@ -142,6 +185,7 @@ static void test_exemplar_filter_always_off(void) {
 
 int main(void) {
     RUN_TEST(test_sync_and_observable_instruments);
+    RUN_TEST(test_every_observable_instrument);
     RUN_TEST(test_exemplars_and_three_way_triangle);
     RUN_TEST(test_exemplar_filter_always_off);
     TEST_SUMMARY("test_metrics");

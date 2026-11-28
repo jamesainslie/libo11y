@@ -9,7 +9,11 @@
 #include "test_framework.h"
 
 static void test_version_and_error_names(void) {
-    ASSERT_EQ_STR("0.1.0", o11y_version());
+    /* The headers and the linked library are the same release. */
+    ASSERT_EQ_STR(O11Y_VERSION, o11y_version());
+    char from_parts[32];
+    snprintf(from_parts, sizeof(from_parts), "%d.%d.%d", O11Y_VERSION_MAJOR, O11Y_VERSION_MINOR, O11Y_VERSION_PATCH);
+    ASSERT_EQ_STR(O11Y_VERSION, from_parts);
     ASSERT_EQ_STR("O11Y_OK", o11y_err_name(O11Y_OK));
     ASSERT_EQ_STR("O11Y_ERR_ALREADY_SETUP", o11y_err_name(O11Y_ERR_ALREADY_SETUP));
     ASSERT_EQ_STR("O11Y_ERR_NO_SERVICE_NAME", o11y_err_name(O11Y_ERR_NO_SERVICE_NAME));
@@ -84,6 +88,74 @@ static void test_setup_typed_errors_and_diagnostics(void) {
     ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_init(&opts, NULL, &diag));
 }
 
+/* An enum value the header does not define fails setup instead of becoming a default. */
+static void test_unknown_option_enums_fail_setup(void) {
+    o11y_options_t base = o11y_options_default();
+    base.env_mode = O11Y_ENV_HERMETIC;
+    base.service_name = "checkout";
+    base.environment = O11Y_ENVIRONMENT_TEST;
+    base.console_enabled = false;
+    base.runtime_metrics = false;
+
+    o11y_sdk_t *sdk = NULL;
+    o11y_diagnostic_t diag = {0};
+    o11y_options_t opts;
+
+    opts = base;
+    opts.env_mode = (o11y_env_mode_t)99;
+    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_init(&opts, &sdk, &diag));
+    ASSERT_NULL(sdk);
+    ASSERT_STR_CONTAINS(diag.message, "env_mode");
+
+    opts = base;
+    opts.protocol = (o11y_protocol_t)99;
+    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_init(&opts, &sdk, &diag));
+    ASSERT_STR_CONTAINS(diag.message, "protocol");
+
+    opts = base;
+    opts.log_level = (o11y_level_t)99;
+    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_init(&opts, &sdk, &diag));
+    ASSERT_STR_CONTAINS(diag.message, "log_level");
+
+    opts = base;
+    opts.console_format = (o11y_console_format_t)99;
+    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_init(&opts, &sdk, &diag));
+    ASSERT_STR_CONTAINS(diag.message, "console_format");
+
+    opts = base;
+    opts.console_target = (o11y_console_target_t)99;
+    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_init(&opts, &sdk, &diag));
+    ASSERT_STR_CONTAINS(diag.message, "console_target");
+
+    opts = base;
+    opts.console_target = O11Y_CONSOLE_CUSTOM; /* without console_write_fn */
+    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_init(&opts, &sdk, &diag));
+    ASSERT_STR_CONTAINS(diag.message, "console_write_fn");
+
+    opts = base;
+    opts.pii_mode = (o11y_pii_mode_t)99;
+    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_init(&opts, &sdk, &diag));
+    ASSERT_STR_CONTAINS(diag.message, "pii_mode");
+
+    opts = base;
+    opts.sampler_kind = (o11y_sampler_kind_t)99;
+    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_init(&opts, &sdk, &diag));
+    ASSERT_STR_CONTAINS(diag.message, "sampler_kind");
+
+    opts = base;
+    opts.exemplar_filter = (o11y_exemplar_filter_t)99;
+    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_init(&opts, &sdk, &diag));
+    ASSERT_STR_CONTAINS(diag.message, "exemplar_filter");
+    ASSERT_NULL(sdk);
+
+    /* A later success clears the diagnostic. */
+    ASSERT_EQ_ERR(O11Y_OK, o11y_init(&base, &sdk, &diag));
+    ASSERT_NOT_NULL(sdk);
+    ASSERT_EQ_SIZE(0, diag.len);
+    ASSERT_EQ_STR("", diag.message);
+    o11y_destroy(sdk);
+}
+
 static void test_double_setup_guard_and_idempotent_shutdown(void) {
     o11y_options_t opts = o11y_options_default();
     opts.env_mode = O11Y_ENV_HERMETIC;
@@ -144,7 +216,7 @@ static void test_env_precedence_and_sdk_resource_metadata(void) {
     ASSERT_EQ_STR("staging", o11y_test_span_resource_attr_str(recorded, O11Y_ENVIRONMENT_KEY));
     ASSERT_EQ_STR("libo11y", o11y_test_span_resource_attr_str(recorded, "telemetry.sdk.name"));
     ASSERT_EQ_STR("c", o11y_test_span_resource_attr_str(recorded, "telemetry.sdk.language"));
-    ASSERT_EQ_STR("0.1.0", o11y_test_span_resource_attr_str(recorded, "telemetry.sdk.version"));
+    ASSERT_EQ_STR(O11Y_VERSION, o11y_test_span_resource_attr_str(recorded, "telemetry.sdk.version"));
     ASSERT_NOT_NULL(o11y_test_span_resource_attr_str(recorded, "service.instance.id"));
 
     o11y_test_destroy(rec);
@@ -243,19 +315,42 @@ static void test_shutdown_on_signals(void) {
     pthread_t th;
     ASSERT_EQ_INT(0, pthread_create(&th, NULL, signal_waiter_thread, &arg));
 
-    struct timespec ts = { .tv_sec = 0, .tv_nsec = 50000000L }; /* 50ms */
-    nanosleep(&ts, NULL);
+    /* Raise the signal only once the waiter has installed its handler. Until
+     * then SIGUSR1 keeps its default action, which ends the process. */
+    struct timespec ts = { .tv_sec = 0, .tv_nsec = 1000000L }; /* 1 ms */
+    bool installed = false;
+    for (int i = 0; i < 10000 && !installed; i++) {
+        struct sigaction current;
+        ASSERT_EQ_INT(0, sigaction(SIGUSR1, NULL, &current));
+        installed = current.sa_handler != SIG_DFL;
+        if (!installed) nanosleep(&ts, NULL);
+    }
+    ASSERT_TRUE(installed);
     ASSERT_EQ_INT(0, raise(SIGUSR1));
 
     ASSERT_EQ_INT(0, pthread_join(th, NULL));
     ASSERT_EQ_INT(1, atomic_load(&arg.before_called));
     ASSERT_EQ_ERR(O11Y_OK, arg.rc);
+
+    /* Bad signal lists are refused without waiting. */
+    int too_many[17] = {0};
+    for (size_t i = 0; i < 17; i++) too_many[i] = SIGUSR1;
+    o11y_signal_options_t bad = { .signals = too_many, .signals_len = 17 };
+    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_shutdown_on_signals(sdk, &bad, NULL));
+    int out_of_range[] = { 0 };
+    bad.signals = out_of_range;
+    bad.signals_len = 1;
+    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_shutdown_on_signals(sdk, &bad, NULL));
+    bad.signals = NULL;
+    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_shutdown_on_signals(sdk, &bad, NULL));
+    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_shutdown_on_signals(NULL, NULL, NULL));
     o11y_destroy(sdk);
 }
 
 int main(void) {
     RUN_TEST(test_version_and_error_names);
     RUN_TEST(test_setup_typed_errors_and_diagnostics);
+    RUN_TEST(test_unknown_option_enums_fail_setup);
     RUN_TEST(test_double_setup_guard_and_idempotent_shutdown);
     RUN_TEST(test_env_precedence_and_sdk_resource_metadata);
     RUN_TEST(test_non_strict_identity_migration_mode);

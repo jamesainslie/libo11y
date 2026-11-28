@@ -21,16 +21,20 @@ pub const SdkHandle = struct {
     effective_config_z: [*:0]const u8,
 };
 
+/// A context handle owns everything its `ctx` refers to except the wide-event
+/// record: the trace state text and the baggage live in `arena`, every string
+/// in them is NUL-terminated, and `ctx.span` is always null, so a context
+/// stays valid after the span it was derived from ends.
 pub const CtxHandle = struct {
     arena: std.heap.ArenaAllocator,
     ctx: o11y.Context,
-    baggage: ?o11y.Baggage = null,
-    trace_state_z: ?[*:0]const u8 = null,
 };
 
 pub const SpanHandle = struct {
     span: o11y.Span,
     owns_self: bool,
+    /// The span's trace state, copied once when the handle is created and
+    /// freed when the span ends.
     trace_state_z: ?[*:0]u8 = null,
 };
 
@@ -40,6 +44,7 @@ pub const RecordHandle = struct {
 
 pub const DetachedCarrierHandle = struct {
     carrier: o11y.detached.Carrier,
+    /// The carrier's trace state, copied once when the handle is created.
     trace_state_z: ?[*:0]u8 = null,
 };
 
@@ -172,16 +177,37 @@ pub fn fromZigSpanContext(sc: o11y.SpanContext, ts_z: ?[*:0]const u8) c.SpanCont
     };
 }
 
-pub fn toZigPiiMode(m: c.PiiMode) o11y.PIIMode {
+// Option enums are checked: a value the header does not define fails setup
+// with `O11Y_ERR_INVALID_ARGUMENT` instead of silently becoming a default.
+
+pub fn checkedLevel(l: c.Level, diag_out: ?*c.Diagnostic) error{InvalidArgument}!o11y.Level {
+    return switch (l) {
+        .debug => .debug,
+        .info => .info,
+        .warn => .warn,
+        .err => .err,
+        _ => invalidOption(diag_out, "unknown log_level"),
+    };
+}
+
+pub fn toZigConsoleFormat(f: c.ConsoleFormat, diag_out: ?*c.Diagnostic) error{InvalidArgument}!o11y.ConsoleFormat {
+    return switch (f) {
+        .json => .json,
+        .text => .text,
+        _ => invalidOption(diag_out, "unknown console_format"),
+    };
+}
+
+pub fn checkedPiiMode(m: c.PiiMode, diag_out: ?*c.Diagnostic) error{InvalidArgument}!o11y.PIIMode {
     return switch (m) {
         .drop => .drop,
         .hash => .hash,
         .allow => .allow,
-        _ => .drop,
+        _ => invalidOption(diag_out, "unknown pii_mode"),
     };
 }
 
-pub fn toZigSampler(kind: c.SamplerKind, ratio: f64) ?o11y.Sampler {
+pub fn checkedSampler(kind: c.SamplerKind, ratio: f64, diag_out: ?*c.Diagnostic) error{InvalidArgument}!?o11y.Sampler {
     return switch (kind) {
         .default => null,
         .always_on => .always_on,
@@ -190,17 +216,17 @@ pub fn toZigSampler(kind: c.SamplerKind, ratio: f64) ?o11y.Sampler {
         .parent_based_always_on => .{ .parent_based = .{ .root = .always_on } },
         .parent_based_always_off => .{ .parent_based = .{ .root = .always_off } },
         .parent_based_trace_id_ratio => .{ .parent_based = .{ .root = .{ .trace_id_ratio = .init(ratio) } } },
-        _ => null,
+        _ => invalidOption(diag_out, "unknown sampler_kind"),
     };
 }
 
-pub fn toZigExemplarFilter(f: c.ExemplarFilter) ?o11y.ExemplarFilter {
+pub fn checkedExemplarFilter(f: c.ExemplarFilter, diag_out: ?*c.Diagnostic) error{InvalidArgument}!?o11y.ExemplarFilter {
     return switch (f) {
         .default => null,
         .trace_based => .trace_based,
         .always_on => .always_on,
         .always_off => .always_off,
-        _ => null,
+        _ => invalidOption(diag_out, "unknown exemplar_filter"),
     };
 }
 
@@ -450,26 +476,215 @@ pub const ErrorHandlerTrampoline = struct {
 
     pub fn handle(ptr: ?*anyopaque, component: []const u8, err: o11y.ExportError, detail: []const u8) void {
         const self: *ErrorHandlerTrampoline = @ptrCast(@alignCast(ptr orelse return));
+        // A message longer than the buffer is truncated, never dropped.
         var buf: [512]u8 = undefined;
-        const formatted = std.fmt.bufPrint(&buf, "{s}: {s}: {s}", .{ component, @errorName(err), detail }) catch component;
-        const n = @min(formatted.len, buf.len - 1);
-        buf[n] = 0;
+        var w: Io.Writer = .fixed(buf[0 .. buf.len - 1]);
+        w.print("{s}: {s}: {s}", .{ component, @errorName(err), detail }) catch {};
+        buf[w.end] = 0;
         self.func(self.userdata, @ptrCast(&buf));
     }
 };
 
-// Global baggage egress callback slot (since Zig's baggage_egress_allow is a plain fn pointer).
-var baggage_allow_fn: std.atomic.Value(?c.BaggageEgressAllowFn) = .init(null);
+// =========================================================================
+// Propagators and the baggage egress filter
+// =========================================================================
 
-fn baggageEgressBridge(key: []const u8) bool {
-    const f = baggage_allow_fn.load(.acquire) orelse return true;
-    return f(key.ptr, key.len);
+/// The error a C option can cause before the engine sees it.
+pub const OptionError = error{ OutOfMemory, InvalidArgument };
+
+/// Writes "o11y: <msg>" to the diagnostic and returns `error.InvalidArgument`.
+pub fn invalidOption(diag_out: ?*c.Diagnostic, comptime msg: []const u8) error{InvalidArgument} {
+    writeDiagnosticText(diag_out, "o11y: " ++ msg);
+    return error.InvalidArgument;
 }
 
-pub fn installBaggageAllow(f: ?c.BaggageEgressAllowFn) ?*const fn ([]const u8) bool {
-    const cb = f orelse return null;
-    baggage_allow_fn.store(cb, .release);
-    return baggageEgressBridge;
+/// A C carrier whose callbacks read and write an engine carrier. A custom
+/// propagator receives one of these.
+const EngineCarrierBridge = struct {
+    carrier: o11y.Carrier,
+    arena: Allocator,
+
+    fn cCarrier(self: *EngineCarrierBridge) c.Carrier {
+        return .{ .userdata = self, .get = get, .set = set };
+    }
+
+    fn get(userdata: ?*anyopaque, key: [*:0]const u8) callconv(.c) ?[*:0]const u8 {
+        const self: *EngineCarrierBridge = @ptrCast(@alignCast(userdata orelse return null));
+        const value = self.carrier.get(std.mem.span(key)) orelse return null;
+        const z = rt.dupeZ(self.arena, value) catch return null;
+        return z.ptr;
+    }
+
+    fn set(userdata: ?*anyopaque, key: [*:0]const u8, value: [*:0]const u8) callconv(.c) void {
+        const self: *EngineCarrierBridge = @ptrCast(@alignCast(userdata orelse return));
+        self.carrier.set(std.mem.span(key), std.mem.span(value));
+    }
+};
+
+/// An `o11y_propagator_t` of kind `O11Y_PROPAGATOR_CUSTOM` as an engine
+/// propagator. It lives in the SDK's arena.
+const CustomPropagator = struct {
+    def: c.Propagator,
+    field_names: []const []const u8,
+
+    const vtable: o11y.Propagator.VTable = .{ .inject = inject, .extract = extract, .fields = fields };
+
+    fn propagator(self: *const CustomPropagator) o11y.Propagator {
+        return .{ .ptr = self, .vtable = &vtable };
+    }
+
+    fn cast(ptr: *const anyopaque) *const CustomPropagator {
+        return @ptrCast(@alignCast(ptr));
+    }
+
+    fn inject(ptr: *const anyopaque, ctx: o11y.Context, _: Allocator, carrier: o11y.Carrier) void {
+        const self = cast(ptr);
+        const f = self.def.inject orelse return;
+        var view: CtxHandle = .{ .arena = .init(gpa), .ctx = .background };
+        defer view.arena.deinit();
+        view.ctx = ownContext(view.arena.allocator(), ctx) catch return;
+        var bridge: EngineCarrierBridge = .{ .carrier = carrier, .arena = view.arena.allocator() };
+        const c_carrier = bridge.cCarrier();
+        f(self.def.userdata, &view, &c_carrier);
+    }
+
+    fn extract(ptr: *const anyopaque, ctx: o11y.Context, arena: Allocator, carrier: o11y.Carrier) o11y.Context {
+        const self = cast(ptr);
+        const f = self.def.extract orelse return ctx;
+        var view: CtxHandle = .{ .arena = .init(gpa), .ctx = .background };
+        defer view.arena.deinit();
+        view.ctx = ownContext(view.arena.allocator(), ctx) catch return ctx;
+        var bridge: EngineCarrierBridge = .{ .carrier = carrier, .arena = view.arena.allocator() };
+        const c_carrier = bridge.cCarrier();
+        const returned = f(self.def.userdata, &view, &c_carrier) orelse return ctx;
+        const out: *CtxHandle = @ptrCast(@alignCast(returned));
+        // The callback returns a context it derived. Its input is not its to return.
+        if (out == &view) return ctx;
+        defer o11y_ctx_destroy(out);
+        var result = ownContext(arena, out.ctx) catch return ctx;
+        // Only what a propagator carries comes from the callback's context.
+        result.span = ctx.span;
+        result.force_emit = ctx.force_emit;
+        result.record = ctx.record;
+        return result;
+    }
+
+    fn fields(ptr: *const anyopaque) []const []const u8 {
+        return cast(ptr).field_names;
+    }
+};
+
+/// The propagators of one SDK behind a baggage egress filter that calls a C
+/// predicate with its userdata. The engine's own filter takes a bare function
+/// pointer, which cannot carry per-SDK state, so the C layer filters here and
+/// leaves the engine's filter at its default, which allows every key.
+const EgressFilter = struct {
+    inners: []const o11y.Propagator,
+    field_names: []const []const u8,
+    allow: c.BaggageEgressAllowFn,
+    userdata: ?*anyopaque,
+
+    const vtable: o11y.Propagator.VTable = .{ .inject = inject, .extract = extract, .fields = fields };
+
+    fn propagator(self: *const EgressFilter) o11y.Propagator {
+        return .{ .ptr = self, .vtable = &vtable };
+    }
+
+    fn cast(ptr: *const anyopaque) *const EgressFilter {
+        return @ptrCast(@alignCast(ptr));
+    }
+
+    fn injectAll(self: *const EgressFilter, ctx: o11y.Context, scratch: Allocator, carrier: o11y.Carrier) void {
+        for (self.inners) |p| p.inject(ctx, scratch, carrier);
+    }
+
+    /// Injects with only the baggage members the predicate allows. When the
+    /// filtered list cannot be built, it injects no baggage at all instead of
+    /// unfiltered baggage.
+    fn inject(ptr: *const anyopaque, ctx: o11y.Context, scratch: Allocator, carrier: o11y.Carrier) void {
+        const self = cast(ptr);
+        const bag = ctx.baggage orelse return self.injectAll(ctx, scratch, carrier);
+        if (bag.members.len == 0) return self.injectAll(ctx, scratch, carrier);
+        var arena_state: std.heap.ArenaAllocator = .init(gpa);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        const kept = arena.alloc(o11y.Baggage.Member, bag.members.len) catch
+            return self.injectAll(ctx.withBaggage(null), scratch, carrier);
+        var n: usize = 0;
+        for (bag.members) |m| {
+            const key_z = rt.dupeZ(arena, m.key) catch
+                return self.injectAll(ctx.withBaggage(null), scratch, carrier);
+            if (!self.allow(self.userdata, key_z.ptr)) continue;
+            kept[n] = m;
+            n += 1;
+        }
+        const filtered: o11y.Baggage = .{ .members = kept[0..n] };
+        self.injectAll(ctx.withBaggage(&filtered), scratch, carrier);
+    }
+
+    fn extract(ptr: *const anyopaque, ctx: o11y.Context, arena: Allocator, carrier: o11y.Carrier) o11y.Context {
+        var out = ctx;
+        for (cast(ptr).inners) |p| out = p.extract(out, arena, carrier);
+        return out;
+    }
+
+    fn fields(ptr: *const anyopaque) []const []const u8 {
+        return cast(ptr).field_names;
+    }
+};
+
+/// Builds the value of the engine's `propagators` option from the C options.
+/// With no predicate it is the configured list, which the engine composes and
+/// which is empty for the W3C default. With a predicate it is one
+/// `EgressFilter` around the configured list or around the W3C default.
+/// Everything is allocated in `arena`, which must live as long as the SDK.
+pub fn buildPropagators(
+    arena: Allocator,
+    raw: ?[*]const c.Propagator,
+    len: usize,
+    allow: ?c.BaggageEgressAllowFn,
+    allow_userdata: ?*anyopaque,
+    diag_out: ?*c.Diagnostic,
+) OptionError![]const o11y.Propagator {
+    const defs: []const c.Propagator = if (raw) |ptr| ptr[0..len] else &.{};
+    const list = try arena.alloc(o11y.Propagator, defs.len);
+    for (defs, list) |def, *dst| {
+        dst.* = switch (def.kind) {
+            .trace_context => o11y.TraceContextPropagator.propagator,
+            .baggage => o11y.BaggagePropagator.propagator,
+            .custom => blk: {
+                if (def.inject == null and def.extract == null) {
+                    return invalidOption(diag_out, "a custom propagator needs an inject or an extract callback");
+                }
+                const names = try arena.alloc([]const u8, if (def.fields == null) 0 else def.fields_len);
+                for (names, 0..) |*name, i| name.* = try arena.dupe(u8, rt.cStrOrEmpty(def.fields.?[i]));
+                const custom = try arena.create(CustomPropagator);
+                custom.* = .{ .def = def, .field_names = names };
+                break :blk custom.propagator();
+            },
+            _ => return invalidOption(diag_out, "unknown propagator kind"),
+        };
+    }
+
+    const allow_fn = allow orelse return list;
+    const inners: []const o11y.Propagator = if (list.len > 0) list else try arena.dupe(o11y.Propagator, &.{
+        o11y.TraceContextPropagator.propagator,
+        o11y.BaggagePropagator.propagator,
+    });
+    var names: std.ArrayList([]const u8) = .empty;
+    for (inners) |p| {
+        for (p.fields()) |name| {
+            const seen = for (names.items) |have| {
+                if (std.mem.eql(u8, have, name)) break true;
+            } else false;
+            if (!seen) try names.append(arena, name);
+        }
+    }
+    const filter = try arena.create(EgressFilter);
+    filter.* = .{ .inners = inners, .field_names = names.items, .allow = allow_fn, .userdata = allow_userdata };
+    const wrapped = try arena.alloc(o11y.Propagator, 1);
+    wrapped[0] = filter.propagator();
+    return wrapped;
 }
 
 pub fn buildAppRegistries(arena: Allocator, raw: ?[*]const c.AppRegistrySource, len: usize) Allocator.Error![]o11y.AppRegistrySource {
@@ -670,6 +885,10 @@ export fn o11y_options_default() c.Options {
 }
 
 fn createSdk(is_setup: bool, opts_ptr: ?*const c.Options, out_sdk: ?*?*SdkHandle, diag_out: ?*c.Diagnostic) c.Err {
+    if (diag_out) |d| {
+        d.message[0] = 0;
+        d.len = 0;
+    }
     const out = out_sdk orelse {
         writeDiagnosticText(diag_out, "o11y: out_sdk pointer must not be null");
         return .invalid_argument;
@@ -677,34 +896,43 @@ fn createSdk(is_setup: bool, opts_ptr: ?*const c.Options, out_sdk: ?*?*SdkHandle
     out.* = null;
 
     const opts = if (opts_ptr) |p| p.* else c.Options{};
+    out.* = buildSdk(is_setup, opts, diag_out) catch |err| return switch (err) {
+        error.InvalidArgument => .invalid_argument,
+        else => |e| mapSetupError(e),
+    };
+    return .ok;
+}
+
+/// Converts the C options and builds the SDK. Every failure path releases
+/// what it allocated, including the engine SDK and its setup guard.
+fn buildSdk(is_setup: bool, opts: c.Options, diag_out: ?*c.Diagnostic) (o11y.SetupError || error{InvalidArgument})!*SdkHandle {
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
     errdefer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    // Build Env source.
     const env: o11y.Env = switch (opts.env_mode) {
         .hermetic => .hermetic,
-        .process => .{ .pairs = rt.readProcessEnvPairs(arena) catch return .out_of_memory },
+        .process => .{ .pairs = try rt.readProcessEnvPairs(arena) },
         .pairs => blk: {
             if (opts.env_pairs_len == 0 or opts.env_pairs == null) break :blk .{ .pairs = &.{} };
-            const ps = arena.alloc([2][]const u8, opts.env_pairs_len) catch return .out_of_memory;
+            const ps = try arena.alloc([2][]const u8, opts.env_pairs_len);
             for (opts.env_pairs.?[0..opts.env_pairs_len], ps) |src, *dst| {
                 dst.* = .{
-                    arena.dupe(u8, rt.cStrOrEmpty(src.key)) catch return .out_of_memory,
-                    arena.dupe(u8, rt.cStrOrEmpty(src.value)) catch return .out_of_memory,
+                    try arena.dupe(u8, rt.cStrOrEmpty(src.key)),
+                    try arena.dupe(u8, rt.cStrOrEmpty(src.value)),
                 };
             }
             break :blk .{ .pairs = ps };
         },
         .entries => blk: {
             if (opts.env_entries_len == 0 or opts.env_entries == null) break :blk .{ .entries = &.{} };
-            const es = arena.alloc([]const u8, opts.env_entries_len) catch return .out_of_memory;
+            const es = try arena.alloc([]const u8, opts.env_entries_len);
             for (opts.env_entries.?[0..opts.env_entries_len], es) |src, *dst| {
-                dst.* = arena.dupe(u8, rt.cStrOrEmpty(src)) catch return .out_of_memory;
+                dst.* = try arena.dupe(u8, rt.cStrOrEmpty(src));
             }
             break :blk .{ .entries = es };
         },
-        _ => .hermetic,
+        _ => return invalidOption(diag_out, "unknown env_mode"),
     };
 
     const protocol: ?o11y.Protocol = switch (opts.protocol) {
@@ -712,46 +940,56 @@ fn createSdk(is_setup: bool, opts_ptr: ?*const c.Options, out_sdk: ?*?*SdkHandle
         .http_protobuf => .http_protobuf,
         .http_json => .http_json,
         .grpc => .grpc,
-        _ => null,
+        _ => return invalidOption(diag_out, "unknown protocol"),
     };
 
     const console_writer: o11y.ConsoleWriter = switch (opts.console_target) {
         .stdout => .stdout,
         .stderr => .stderr,
         .custom => blk: {
-            const f = opts.console_write_fn orelse {
-                writeDiagnosticText(diag_out, "o11y: custom console target requires console_write_fn");
-                return .invalid_argument;
-            };
-            const tr = arena.create(ConsoleWriterTrampoline) catch return .out_of_memory;
+            const f = opts.console_write_fn orelse
+                return invalidOption(diag_out, "custom console target requires console_write_fn");
+            const tr = try arena.create(ConsoleWriterTrampoline);
             tr.* = .{ .func = f, .userdata = opts.console_write_userdata };
             break :blk .{ .custom = .{ .ptr = tr, .writeFn = ConsoleWriterTrampoline.write } };
         },
-        _ => .stdout,
+        _ => return invalidOption(diag_out, "unknown console_target"),
     };
 
+    const console_format: o11y.ConsoleFormat = try toZigConsoleFormat(opts.console_format, diag_out);
+    const log_level = try checkedLevel(opts.log_level, diag_out);
+    const pii_mode = try checkedPiiMode(opts.pii_mode, diag_out);
+    const sampler = try checkedSampler(opts.sampler_kind, opts.sampler_ratio, diag_out);
+    const exemplar_filter = try checkedExemplarFilter(opts.exemplar_filter, diag_out);
+
     const attr_replacer: ?o11y.AttrReplacer = if (opts.attr_replacer_fn) |f| blk: {
-        const tr = arena.create(AttrReplacerTrampoline) catch return .out_of_memory;
+        const tr = try arena.create(AttrReplacerTrampoline);
         tr.* = .{ .func = f, .userdata = opts.attr_replacer_userdata };
         break :blk .{ .ptr = tr, .replace = AttrReplacerTrampoline.replace };
     } else null;
 
     const err_handler: ?o11y.ErrorHandler = if (opts.error_handler_fn) |f| blk: {
-        const tr = arena.create(ErrorHandlerTrampoline) catch return .out_of_memory;
+        const tr = try arena.create(ErrorHandlerTrampoline);
         tr.* = .{ .func = f, .userdata = opts.error_handler_userdata };
         break :blk .{ .ptr = tr, .report = ErrorHandlerTrampoline.handle };
     } else null;
 
-    const baggage_fn = installBaggageAllow(opts.baggage_egress_allow);
-
-    const extra_envs = buildExtraEnvs(arena, opts.extra_environments, opts.extra_environments_len) catch return .out_of_memory;
-    const res_attrs = convertAttrs(arena, opts.resource_attributes, opts.resource_attributes_len) catch return .out_of_memory;
-    const extra_sinks = buildExtraSinks(arena, opts.extra_log_sinks, opts.extra_log_sinks_len) catch return .out_of_memory;
-    const app_regs = buildAppRegistries(arena, opts.app_registries, opts.app_registries_len) catch return .out_of_memory;
-    const hist_buckets = buildHistogramBuckets(arena, opts.histogram_buckets, opts.histogram_buckets_len) catch return .out_of_memory;
-    const build_info = buildBuildInfo(arena, opts.build_info) catch return .out_of_memory;
+    const propagators = try buildPropagators(
+        arena,
+        opts.propagators,
+        opts.propagators_len,
+        opts.baggage_egress_allow,
+        opts.baggage_egress_allow_userdata,
+        diag_out,
+    );
+    const extra_envs = try buildExtraEnvs(arena, opts.extra_environments, opts.extra_environments_len);
+    const res_attrs = try convertAttrs(arena, opts.resource_attributes, opts.resource_attributes_len);
+    const extra_sinks = try buildExtraSinks(arena, opts.extra_log_sinks, opts.extra_log_sinks_len);
+    const app_regs = try buildAppRegistries(arena, opts.app_registries, opts.app_registries_len);
+    const hist_buckets = try buildHistogramBuckets(arena, opts.histogram_buckets, opts.histogram_buckets_len);
+    const build_info = try buildBuildInfo(arena, opts.build_info);
     const pii_key: []const u8 = if (opts.pii_hash_key_len > 0 and opts.pii_hash_key != null)
-        (arena.dupe(u8, opts.pii_hash_key.?[0..opts.pii_hash_key_len]) catch return .out_of_memory)
+        try arena.dupe(u8, opts.pii_hash_key.?[0..opts.pii_hash_key_len])
     else
         "";
 
@@ -768,24 +1006,20 @@ fn createSdk(is_setup: bool, opts_ptr: ?*const c.Options, out_sdk: ?*?*SdkHandle
         .resource_attributes = res_attrs,
         .build_info = build_info,
         .build_info_enabled = opts.build_info.enabled,
-        .log_level = toZigLevel(opts.log_level),
+        .log_level = log_level,
         .console_enabled = opts.console_enabled,
-        .console_format = switch (opts.console_format) {
-            .json => .json,
-            .text => .text,
-            _ => .json,
-        },
+        .console_format = console_format,
         .console_writer = console_writer,
         .log_export = opts.log_export,
         .attr_replacer = attr_replacer,
         .extra_log_sinks = extra_sinks,
-        .pii_mode = toZigPiiMode(opts.pii_mode),
+        .pii_mode = pii_mode,
         .pii_hash_key = pii_key,
         .app_registries = app_regs,
-        .sampler = toZigSampler(opts.sampler_kind, opts.sampler_ratio),
-        .baggage_egress_allow = baggage_fn,
+        .sampler = sampler,
+        .propagators = propagators,
         .histogram_buckets = hist_buckets,
-        .exemplar_filter = toZigExemplarFilter(opts.exemplar_filter),
+        .exemplar_filter = exemplar_filter,
         .runtime_metrics = opts.runtime_metrics,
         .startup_summary = opts.startup_summary,
         .install_std_log = false,
@@ -799,20 +1033,19 @@ fn createSdk(is_setup: bool, opts_ptr: ?*const c.Options, out_sdk: ?*?*SdkHandle
     const io = rt.globalIo();
     const telemetry = (if (is_setup) o11y.setup(gpa, io, zig_opts) else o11y.init(gpa, io, zig_opts)) catch |err| {
         writeDiagnostic(diag_out, &zig_diag);
-        return mapSetupError(err);
+        return err;
     };
     errdefer telemetry.deinit();
 
-    const eff_z = rt.dupeZ(arena, telemetry.effectiveConfig()) catch return .out_of_memory;
-    const handle = gpa.create(SdkHandle) catch return .out_of_memory;
+    const eff_z = try rt.dupeZ(arena, telemetry.effectiveConfig());
+    const handle = try gpa.create(SdkHandle);
     handle.* = .{
         .telemetry = telemetry,
         .owns_telemetry = true,
         .arena = arena_state,
         .effective_config_z = eff_z.ptr,
     };
-    out.* = handle;
-    return .ok;
+    return handle;
 }
 
 export fn o11y_setup(options: ?*const c.Options, out_sdk: ?*?*SdkHandle, diag: ?*c.Diagnostic) c.Err {
@@ -853,7 +1086,11 @@ export fn o11y_force_flush(sdk: ?*SdkHandle, timeout_ms: u64, out_report: ?*c.Sh
 export fn o11y_destroy(sdk: ?*SdkHandle) void {
     const h = sdk orelse return;
     if (!h.owns_telemetry) return;
+    // Detach the callbacks first, so no later SDK that reuses the provider's
+    // address can lose its own. They stay alive through the final flush.
+    const callbacks = detachObservableCallbacks(h.telemetry.meterProvider());
     h.telemetry.deinit();
+    freeObservableCallbacks(callbacks);
     h.arena.deinit();
     gpa.destroy(h);
 }
@@ -862,6 +1099,11 @@ export fn o11y_effective_config(sdk: ?*const SdkHandle) [*:0]const u8 {
     const h = sdk orelse return "";
     return h.effective_config_z;
 }
+
+/// The most signal numbers `o11y_shutdown_on_signals` accepts.
+const max_signals = 16;
+/// The highest signal number it accepts. Linux real-time signals end at 64.
+const max_signal_number = 64;
 
 const BeforeShutdownTrampoline = struct {
     func: *const fn (?*anyopaque) callconv(.c) void,
@@ -884,14 +1126,16 @@ export fn o11y_shutdown_on_signals(sdk: ?*SdkHandle, opts_ptr: ?*const c.SignalO
         before = .{ .ptr = &tramp, .func = BeforeShutdownTrampoline.call };
     }
 
-    var sig_buf: [16]std.posix.SIG = undefined;
+    var sig_buf: [max_signals]std.posix.SIG = undefined;
     var sigs: []const std.posix.SIG = &.{ .INT, .TERM };
-    if (builtin.os.tag != .windows and opts.signals_len > 0 and opts.signals != null) {
-        const n = @min(opts.signals_len, sig_buf.len);
-        for (0..n) |i| {
-            sig_buf[i] = @fromBackingInt(@intCast(opts.signals.?[i]));
+    if (builtin.os.tag != .windows and opts.signals_len > 0) {
+        const raw = opts.signals orelse return .invalid_argument;
+        if (opts.signals_len > sig_buf.len) return .invalid_argument;
+        for (raw[0..opts.signals_len], sig_buf[0..opts.signals_len]) |number, *dst| {
+            if (number < 1 or number > max_signal_number) return .invalid_argument;
+            dst.* = @fromBackingInt(@intCast(number));
         }
-        sigs = sig_buf[0..n];
+        sigs = sig_buf[0..opts.signals_len];
     }
 
     const report = o11y.shutdownOnSignals(rt.globalIo(), h.telemetry, .{
@@ -906,54 +1150,59 @@ export fn o11y_shutdown_on_signals(sdk: ?*SdkHandle, opts_ptr: ?*const c.SignalO
 // Context
 // =========================================================================
 
-fn cloneCtxHandle(parent: ?*const CtxHandle) ?*CtxHandle {
-    const h = gpa.create(CtxHandle) catch return null;
-    h.* = .{
-        .arena = .init(gpa),
-        .ctx = .background,
-    };
-    const arena = h.arena.allocator();
-    if (parent) |p| {
-        h.ctx = p.ctx;
-        if (p.ctx.span_context.trace_state.header.len > 0) {
-            const ts_z = rt.dupeZ(arena, p.ctx.span_context.trace_state.header) catch {
-                h.arena.deinit();
-                gpa.destroy(h);
-                return null;
-            };
-            h.ctx.span_context.trace_state = .{ .header = ts_z };
-            h.trace_state_z = ts_z.ptr;
-        }
-        if (p.ctx.baggage) |bag| {
-            const members = arena.alloc(o11y.Baggage.Member, bag.members.len) catch {
-                h.arena.deinit();
-                gpa.destroy(h);
-                return null;
-            };
-            for (bag.members, members) |m, *dst| {
-                dst.* = .{
-                    .key = arena.dupe(u8, m.key) catch {
-                        h.arena.deinit();
-                        gpa.destroy(h);
-                        return null;
-                    },
-                    .value = arena.dupe(u8, m.value) catch {
-                        h.arena.deinit();
-                        gpa.destroy(h);
-                        return null;
-                    },
-                    .metadata = arena.dupe(u8, m.metadata) catch {
-                        h.arena.deinit();
-                        gpa.destroy(h);
-                        return null;
-                    },
+/// Returns `ctx` with everything it borrows copied into `arena`: the trace
+/// state text and the baggage, with a NUL after the trace state and after
+/// every baggage value so C reads them in place. The live span pointer is
+/// dropped. A C context may outlive the span it was derived from, and the
+/// engine reads only `span_context`.
+pub fn ownContext(arena: Allocator, ctx: o11y.Context) Allocator.Error!o11y.Context {
+    var out = ctx;
+    out.span = null;
+    const header = ctx.span_context.trace_state.header;
+    out.span_context.trace_state = .{ .header = if (header.len > 0) try rt.dupeZ(arena, header) else "" };
+    if (ctx.baggage) |bag| {
+        const members = try arena.alloc(o11y.Baggage.Member, bag.members.len);
+        for (bag.members, members) |m, *dst| {
+            const props = try arena.alloc(o11y.Baggage.Property, m.properties.len);
+            for (m.properties, props) |prop, *pd| {
+                pd.* = .{
+                    .key = try arena.dupe(u8, prop.key),
+                    .value = if (prop.value) |v| try arena.dupe(u8, v) else null,
                 };
             }
-            h.baggage = .{ .members = members };
-            h.ctx.baggage = &h.baggage.?;
+            dst.* = .{
+                .key = try arena.dupe(u8, m.key),
+                .value = try rt.dupeZ(arena, m.value),
+                .properties = props,
+                .metadata = try arena.dupe(u8, m.metadata),
+            };
         }
+        const owned = try arena.create(o11y.Baggage);
+        owned.* = .{ .members = members };
+        out.baggage = owned;
     }
+    return out;
+}
+
+/// Allocates a context handle that owns a copy of `ctx`. Null when out of
+/// memory.
+pub fn newCtxHandle(ctx: o11y.Context) ?*CtxHandle {
+    const h = gpa.create(CtxHandle) catch return null;
+    h.* = .{ .arena = .init(gpa), .ctx = .background };
+    h.ctx = ownContext(h.arena.allocator(), ctx) catch {
+        h.arena.deinit();
+        gpa.destroy(h);
+        return null;
+    };
     return h;
+}
+
+/// The handle's trace state as a C string, or null when it is empty.
+/// `ownContext` wrote the NUL after it.
+fn ctxTraceStateZ(h: *const CtxHandle) ?[*:0]const u8 {
+    const header = h.ctx.span_context.trace_state.header;
+    if (header.len == 0) return null;
+    return @ptrCast(header.ptr);
 }
 
 pub fn unwrapCtx(ctx: ?*const CtxHandle) o11y.Context {
@@ -962,7 +1211,7 @@ pub fn unwrapCtx(ctx: ?*const CtxHandle) o11y.Context {
 }
 
 export fn o11y_ctx_create() ?*CtxHandle {
-    return cloneCtxHandle(null);
+    return newCtxHandle(.background);
 }
 
 export fn o11y_ctx_destroy(ctx: ?*CtxHandle) void {
@@ -972,101 +1221,65 @@ export fn o11y_ctx_destroy(ctx: ?*CtxHandle) void {
 }
 
 export fn o11y_ctx_with_span(parent: ?*const CtxHandle, span: ?*SpanHandle) ?*CtxHandle {
-    const h = cloneCtxHandle(parent) orelse return null;
-    if (span) |sp| {
-        h.ctx = h.ctx.withSpan(&sp.span);
-        if (h.ctx.span_context.trace_state.header.len > 0) {
-            const ts_z = rt.dupeZ(h.arena.allocator(), h.ctx.span_context.trace_state.header) catch null;
-            if (ts_z) |z| {
-                h.ctx.span_context.trace_state = .{ .header = z };
-                h.trace_state_z = z.ptr;
-            }
-        } else {
-            h.trace_state_z = null;
-        }
-    }
-    return h;
+    const base = unwrapCtx(parent);
+    const sp = span orelse return newCtxHandle(base);
+    return newCtxHandle(base.withSpan(&sp.span));
 }
 
 export fn o11y_ctx_with_span_context(parent: ?*const CtxHandle, sc: c.SpanContext) ?*CtxHandle {
-    const h = cloneCtxHandle(parent) orelse return null;
-    var zsc = toZigSpanContext(sc);
-    if (zsc.trace_state.header.len > 0) {
-        const ts_z = rt.dupeZ(h.arena.allocator(), zsc.trace_state.header) catch {
-            h.arena.deinit();
-            gpa.destroy(h);
-            return null;
-        };
-        zsc.trace_state = .{ .header = ts_z };
-        h.trace_state_z = ts_z.ptr;
-    } else {
-        h.trace_state_z = null;
-    }
-    h.ctx = h.ctx.withSpanContext(zsc);
-    return h;
+    return newCtxHandle(unwrapCtx(parent).withSpanContext(toZigSpanContext(sc)));
 }
 
 export fn o11y_ctx_with_force_emit(parent: ?*const CtxHandle) ?*CtxHandle {
-    const h = cloneCtxHandle(parent) orelse return null;
-    h.ctx = h.ctx.withForceEmit();
-    return h;
+    return newCtxHandle(unwrapCtx(parent).withForceEmit());
 }
 
 export fn o11y_ctx_with_record(parent: ?*const CtxHandle, record: ?*RecordHandle) ?*CtxHandle {
-    const h = cloneCtxHandle(parent) orelse return null;
-    h.ctx = h.ctx.withRecord(if (record) |r| &r.rec else null);
-    return h;
+    return newCtxHandle(unwrapCtx(parent).withRecord(if (record) |r| &r.rec else null));
 }
 
 export fn o11y_ctx_with_baggage_item(parent: ?*const CtxHandle, key: ?[*:0]const u8, value: ?[*:0]const u8) ?*CtxHandle {
-    const h = cloneCtxHandle(parent) orelse return null;
-    const k = rt.cStrOpt(key) orelse return h;
-    if (k.len == 0) return h;
+    const base = unwrapCtx(parent);
+    const k = rt.cStrOrEmpty(key);
+    if (k.len == 0) return newCtxHandle(base);
     const v = rt.cStrOrEmpty(value);
-    const arena = h.arena.allocator();
 
-    const existing = if (h.baggage) |b| b.members else &.{};
-    var list: std.ArrayList(o11y.Baggage.Member) = .empty;
+    const existing: []const o11y.Baggage.Member = if (base.baggage) |b| b.members else &.{};
+    const members = gpa.alloc(o11y.Baggage.Member, existing.len + 1) catch return null;
+    defer gpa.free(members);
+    var n: usize = 0;
     var replaced = false;
     for (existing) |m| {
         if (std.mem.eql(u8, m.key, k)) {
-            list.append(arena, .{
-                .key = m.key,
-                .value = arena.dupe(u8, v) catch return h,
-                .metadata = "",
-            }) catch return h;
+            members[n] = .{ .key = k, .value = v };
             replaced = true;
         } else {
-            list.append(arena, m) catch return h;
+            members[n] = m;
         }
+        n += 1;
     }
     if (!replaced) {
-        list.append(arena, .{
-            .key = arena.dupe(u8, k) catch return h,
-            .value = arena.dupe(u8, v) catch return h,
-            .metadata = "",
-        }) catch return h;
+        members[n] = .{ .key = k, .value = v };
+        n += 1;
     }
-    h.baggage = .{ .members = list.items };
-    h.ctx.baggage = &h.baggage.?;
-    return h;
+    const bag: o11y.Baggage = .{ .members = members[0..n] };
+    return newCtxHandle(base.withBaggage(&bag));
 }
 
 export fn o11y_ctx_span_context(ctx: ?*const CtxHandle) c.SpanContext {
     const h = ctx orelse return .{};
-    return fromZigSpanContext(h.ctx.span_context, h.trace_state_z);
+    return fromZigSpanContext(h.ctx.span_context, ctxTraceStateZ(h));
 }
 
 export fn o11y_ctx_baggage_get(ctx: ?*const CtxHandle, key: ?[*:0]const u8) ?[*:0]const u8 {
     const h = ctx orelse return null;
     const k = rt.cStrOpt(key) orelse return null;
     const bag = h.ctx.baggage orelse return null;
-    const val = for (bag.members) |m| {
-        if (std.mem.eql(u8, m.key, k)) break m.value;
-    } else return null;
-    const mut: *CtxHandle = @constCast(h);
-    const z = rt.dupeZ(mut.arena.allocator(), val) catch return null;
-    return z.ptr;
+    for (bag.members) |m| {
+        // `ownContext` wrote a NUL after every value.
+        if (std.mem.eql(u8, m.key, k)) return @ptrCast(m.value.ptr);
+    }
+    return null;
 }
 
 export fn o11y_ctx_record(ctx: ?*const CtxHandle) ?*RecordHandle {
@@ -1136,22 +1349,22 @@ export fn o11y_tracer_start(
         .span = tr.start(unwrapCtx(ctx), rt.cStrOrEmpty(name), start_opts),
         .owns_self = true,
     };
+    h.trace_state_z = spanTraceStateZ(&h.span);
     return h;
+}
+
+/// Copies the span's trace state into a C string, or returns null when it is
+/// empty or memory runs out. A span's trace state never changes after start.
+fn spanTraceStateZ(span: *const o11y.Span) ?[*:0]u8 {
+    const header = span.spanContext().trace_state.header;
+    if (header.len == 0) return null;
+    const z = rt.dupeZ(gpa, header) catch return null;
+    return z.ptr;
 }
 
 export fn o11y_span_context(span: ?*const SpanHandle) c.SpanContext {
     const h = span orelse return .{};
-    const sc = h.span.spanContext();
-    var ts_z: ?[*:0]const u8 = null;
-    if (sc.trace_state.header.len > 0) {
-        const mut: *SpanHandle = @constCast(h);
-        if (mut.trace_state_z) |prev| rt.freeZ(gpa, prev);
-        if (rt.dupeZ(gpa, sc.trace_state.header)) |z| {
-            mut.trace_state_z = z.ptr;
-            ts_z = z.ptr;
-        } else |_| {}
-    }
-    return fromZigSpanContext(sc, ts_z);
+    return fromZigSpanContext(h.span.spanContext(), h.trace_state_z);
 }
 
 export fn o11y_span_is_recording(span: ?*const SpanHandle) bool {
@@ -1404,45 +1617,80 @@ export fn o11y_gauge_f64_record(inst: c.InstHandle, ctx: ?*const CtxHandle, valu
     measureInst(o11y.Gauge(f64), f64, inst, ctx, value, attrs, attrs_len);
 }
 
-const ObsI64Trampoline = struct {
+/// The callback of one observable instrument. A meter handle is the engine's
+/// own `*const Meter`, which does not lead back to the `SdkHandle`, so the
+/// trampolines are kept in one process-wide list keyed by the meter provider
+/// that calls them, and `o11y_destroy` frees the ones of its provider.
+pub const ObsTrampoline = struct {
+    next: ?*ObsTrampoline = null,
+    provider: *const anyopaque,
     func: c.ObserveI64Fn,
     userdata: ?*anyopaque,
-
-    fn call(ptr: ?*anyopaque, obs: o11y.Observation(i64)) void {
-        const self: *ObsI64Trampoline = @ptrCast(@alignCast(ptr orelse return));
-        var box = obs;
-        self.func(self.userdata, &box);
-    }
 };
 
-const ObsF64Trampoline = struct {
-    func: c.ObserveF64Fn,
-    userdata: ?*anyopaque,
+var obs_lock: Io.Mutex = .init;
+var obs_head: ?*ObsTrampoline = null;
 
-    fn call(ptr: ?*anyopaque, obs: o11y.Observation(f64)) void {
-        const self: *ObsF64Trampoline = @ptrCast(@alignCast(ptr orelse return));
-        var box = obs;
-        self.func(self.userdata, &box);
+/// Unlinks every trampoline of `provider` and returns them as a list. Call it
+/// before the provider is destroyed and free the list after.
+pub fn detachObservableCallbacks(provider: ?*const anyopaque) ?*ObsTrampoline {
+    const key = provider orelse return null;
+    var detached: ?*ObsTrampoline = null;
+    const io = rt.globalIo();
+    obs_lock.lockUncancelable(io);
+    defer obs_lock.unlock(io);
+    var link: *?*ObsTrampoline = &obs_head;
+    while (link.*) |node| {
+        if (node.provider == key) {
+            link.* = node.next;
+            node.next = detached;
+            detached = node;
+        } else {
+            link = &node.next;
+        }
     }
-};
+    return detached;
+}
 
-export fn o11y_observation_i64_observe(obs_ptr: ?*anyopaque, value: i64, attrs: ?[*]const c.Attr, attrs_len: usize) void {
-    const obs: *o11y.Observation(i64) = @ptrCast(@alignCast(obs_ptr orelse return));
+pub fn freeObservableCallbacks(list: ?*ObsTrampoline) void {
+    var next = list;
+    while (next) |node| {
+        next = node.next;
+        gpa.destroy(node);
+    }
+}
+
+fn ObsCall(comptime N: type) type {
+    return struct {
+        fn call(ptr: ?*anyopaque, obs: o11y.Observation(N)) void {
+            const self: *ObsTrampoline = @ptrCast(@alignCast(ptr orelse return));
+            var box = obs;
+            self.func(self.userdata, &box);
+        }
+    };
+}
+
+fn observeInto(comptime N: type, obs_ptr: ?*anyopaque, value: N, attrs: ?[*]const c.Attr, attrs_len: usize) void {
+    const obs: *o11y.Observation(N) = @ptrCast(@alignCast(obs_ptr orelse return));
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
     defer arena_state.deinit();
     const converted = convertAttrs(arena_state.allocator(), attrs, attrs_len) catch return;
     obs.observe(value, converted);
 }
 
-export fn o11y_observation_f64_observe(obs_ptr: ?*anyopaque, value: f64, attrs: ?[*]const c.Attr, attrs_len: usize) void {
-    const obs: *o11y.Observation(f64) = @ptrCast(@alignCast(obs_ptr orelse return));
-    var arena_state: std.heap.ArenaAllocator = .init(gpa);
-    defer arena_state.deinit();
-    const converted = convertAttrs(arena_state.allocator(), attrs, attrs_len) catch return;
-    obs.observe(value, converted);
+export fn o11y_observation_i64_observe(obs: ?*anyopaque, value: i64, attrs: ?[*]const c.Attr, attrs_len: usize) void {
+    observeInto(i64, obs, value, attrs, attrs_len);
 }
 
-export fn o11y_meter_observable_counter_i64(
+export fn o11y_observation_f64_observe(obs: ?*anyopaque, value: f64, attrs: ?[*]const c.Attr, attrs_len: usize) void {
+    observeInto(f64, obs, value, attrs, attrs_len);
+}
+
+const ObservableKind = enum { counter, up_down_counter, gauge };
+
+fn registerObservable(
+    comptime N: type,
+    comptime kind: ObservableKind,
     meter: ?*const o11y.Meter,
     name: ?[*:0]const u8,
     opts_ptr: ?*const c.InstrumentOptions,
@@ -1451,35 +1699,63 @@ export fn o11y_meter_observable_counter_i64(
 ) c.Err {
     const m = meter orelse return .invalid_argument;
     const cb = callback orelse return .invalid_argument;
+    // A no-op meter observes nothing, so there is no callback to keep.
+    const provider = m.provider orelse return .ok;
     const o = if (opts_ptr) |p| p.* else c.InstrumentOptions{};
-    const tr = gpa.create(ObsI64Trampoline) catch return .out_of_memory;
-    tr.* = .{ .func = cb, .userdata = userdata };
-    _ = m.observableCounter(i64, rt.cStrOrEmpty(name), .{
-        .description = rt.cStrOrEmpty(o.description),
-        .unit = rt.cStrOrEmpty(o.unit),
-        .callbacks = &.{.{ .ptr = tr, .func = ObsI64Trampoline.call }},
-    });
+
+    const tr = gpa.create(ObsTrampoline) catch return .out_of_memory;
+    tr.* = .{ .provider = provider, .func = cb, .userdata = userdata };
+    const io = rt.globalIo();
+    obs_lock.lockUncancelable(io);
+    tr.next = obs_head;
+    obs_head = tr;
+    obs_lock.unlock(io);
+
+    const inst_name = rt.cStrOrEmpty(name);
+    const description = rt.cStrOrEmpty(o.description);
+    const unit = rt.cStrOrEmpty(o.unit);
+    switch (kind) {
+        .counter => _ = m.observableCounter(N, inst_name, .{
+            .description = description,
+            .unit = unit,
+            .callbacks = &.{.{ .ptr = tr, .func = ObsCall(N).call }},
+        }),
+        .up_down_counter => _ = m.observableUpDownCounter(N, inst_name, .{
+            .description = description,
+            .unit = unit,
+            .callbacks = &.{.{ .ptr = tr, .func = ObsCall(N).call }},
+        }),
+        .gauge => _ = m.observableGauge(N, inst_name, .{
+            .description = description,
+            .unit = unit,
+            .callbacks = &.{.{ .ptr = tr, .func = ObsCall(N).call }},
+        }),
+    }
     return .ok;
 }
 
-export fn o11y_meter_observable_gauge_f64(
-    meter: ?*const o11y.Meter,
-    name: ?[*:0]const u8,
-    opts_ptr: ?*const c.InstrumentOptions,
-    callback: ?c.ObserveF64Fn,
-    userdata: ?*anyopaque,
-) c.Err {
-    const m = meter orelse return .invalid_argument;
-    const cb = callback orelse return .invalid_argument;
-    const o = if (opts_ptr) |p| p.* else c.InstrumentOptions{};
-    const tr = gpa.create(ObsF64Trampoline) catch return .out_of_memory;
-    tr.* = .{ .func = cb, .userdata = userdata };
-    _ = m.observableGauge(f64, rt.cStrOrEmpty(name), .{
-        .description = rt.cStrOrEmpty(o.description),
-        .unit = rt.cStrOrEmpty(o.unit),
-        .callbacks = &.{.{ .ptr = tr, .func = ObsF64Trampoline.call }},
-    });
-    return .ok;
+export fn o11y_meter_observable_counter_i64(meter: ?*const o11y.Meter, name: ?[*:0]const u8, opts: ?*const c.InstrumentOptions, callback: ?c.ObserveI64Fn, userdata: ?*anyopaque) c.Err {
+    return registerObservable(i64, .counter, meter, name, opts, callback, userdata);
+}
+
+export fn o11y_meter_observable_counter_f64(meter: ?*const o11y.Meter, name: ?[*:0]const u8, opts: ?*const c.InstrumentOptions, callback: ?c.ObserveF64Fn, userdata: ?*anyopaque) c.Err {
+    return registerObservable(f64, .counter, meter, name, opts, callback, userdata);
+}
+
+export fn o11y_meter_observable_updown_i64(meter: ?*const o11y.Meter, name: ?[*:0]const u8, opts: ?*const c.InstrumentOptions, callback: ?c.ObserveI64Fn, userdata: ?*anyopaque) c.Err {
+    return registerObservable(i64, .up_down_counter, meter, name, opts, callback, userdata);
+}
+
+export fn o11y_meter_observable_updown_f64(meter: ?*const o11y.Meter, name: ?[*:0]const u8, opts: ?*const c.InstrumentOptions, callback: ?c.ObserveF64Fn, userdata: ?*anyopaque) c.Err {
+    return registerObservable(f64, .up_down_counter, meter, name, opts, callback, userdata);
+}
+
+export fn o11y_meter_observable_gauge_i64(meter: ?*const o11y.Meter, name: ?[*:0]const u8, opts: ?*const c.InstrumentOptions, callback: ?c.ObserveI64Fn, userdata: ?*anyopaque) c.Err {
+    return registerObservable(i64, .gauge, meter, name, opts, callback, userdata);
+}
+
+export fn o11y_meter_observable_gauge_f64(meter: ?*const o11y.Meter, name: ?[*:0]const u8, opts: ?*const c.InstrumentOptions, callback: ?c.ObserveF64Fn, userdata: ?*anyopaque) c.Err {
+    return registerObservable(f64, .gauge, meter, name, opts, callback, userdata);
 }
 
 // =========================================================================
@@ -1617,28 +1893,34 @@ export fn o11y_inject(sdk: ?*const SdkHandle, ctx: ?*const CtxHandle, carrier_pt
 }
 
 export fn o11y_extract(sdk: ?*const SdkHandle, parent: ?*const CtxHandle, carrier_ptr: ?*const c.Carrier) ?*CtxHandle {
-    const h = cloneCtxHandle(parent) orelse return null;
-    const sh = sdk orelse return h;
-    const cp = carrier_ptr orelse return h;
+    const base = unwrapCtx(parent);
+    const sh = sdk orelse return newCtxHandle(base);
+    const cp = carrier_ptr orelse return newCtxHandle(base);
 
     var scratch_state: std.heap.ArenaAllocator = .init(gpa);
     defer scratch_state.deinit();
     var adapter: CCarrierAdapter = .{ .carrier = cp.*, .arena = scratch_state.allocator() };
     const zcarrier: o11y.Carrier = .{ .ptr = &adapter, .vtable = &CCarrierAdapter.vtable };
+    return newCtxHandle(sh.telemetry.propagator().extract(base, scratch_state.allocator(), zcarrier));
+}
 
-    const extracted = sh.telemetry.propagator().extract(h.ctx, h.arena.allocator(), zcarrier);
-    h.ctx = extracted;
-    if (extracted.span_context.trace_state.header.len > 0) {
-        if (rt.dupeZ(h.arena.allocator(), extracted.span_context.trace_state.header)) |z| {
-            h.ctx.span_context.trace_state = .{ .header = z };
-            h.trace_state_z = z.ptr;
-        } else |_| {}
-    } else {
-        h.trace_state_z = null;
-    }
-    if (extracted.baggage) |b| {
-        h.baggage = b.*;
-        h.ctx.baggage = &h.baggage.?;
+/// Wraps `carrier` in a handle and copies its trace state. On failure it
+/// frees the carrier and returns null.
+fn newCarrierHandle(carrier: o11y.detached.Carrier) ?*DetachedCarrierHandle {
+    var owned = carrier;
+    const h = gpa.create(DetachedCarrierHandle) catch {
+        owned.deinit(gpa);
+        return null;
+    };
+    h.* = .{ .carrier = owned };
+    const header = h.carrier.spanContext().trace_state.header;
+    if (header.len > 0) {
+        const z = rt.dupeZ(gpa, header) catch {
+            h.carrier.deinit(gpa);
+            gpa.destroy(h);
+            return null;
+        };
+        h.trace_state_z = z.ptr;
     }
     return h;
 }
@@ -1652,13 +1934,7 @@ export fn o11y_detached_capture(
     out.* = null;
     const sh = sdk orelse return .invalid_argument;
     const carrier = sh.telemetry.captureDetached(gpa, unwrapCtx(ctx)) catch return .out_of_memory;
-    const h = gpa.create(DetachedCarrierHandle) catch {
-        var mut = carrier;
-        mut.deinit(gpa);
-        return .out_of_memory;
-    };
-    h.* = .{ .carrier = carrier };
-    out.* = h;
+    out.* = newCarrierHandle(carrier) orelse return .out_of_memory;
     return .ok;
 }
 
@@ -1669,17 +1945,7 @@ export fn o11y_detached_is_zero(carrier: ?*const DetachedCarrierHandle) bool {
 
 export fn o11y_detached_span_context(carrier: ?*const DetachedCarrierHandle) c.SpanContext {
     const h = carrier orelse return .{};
-    const sc = h.carrier.spanContext();
-    var ts_z: ?[*:0]const u8 = null;
-    if (sc.trace_state.header.len > 0) {
-        const mut: *DetachedCarrierHandle = @constCast(h);
-        if (mut.trace_state_z) |prev| rt.freeZ(gpa, prev);
-        if (rt.dupeZ(gpa, sc.trace_state.header)) |z| {
-            mut.trace_state_z = z.ptr;
-            ts_z = z.ptr;
-        } else |_| {}
-    }
-    return fromZigSpanContext(sc, ts_z);
+    return fromZigSpanContext(h.carrier.spanContext(), h.trace_state_z);
 }
 
 export fn o11y_detached_marshal(carrier: ?*const DetachedCarrierHandle, out_text: ?*?[*:0]u8) c.Err {
@@ -1703,13 +1969,7 @@ export fn o11y_detached_unmarshal(text: ?[*]const u8, text_len: usize, out_carri
         error.InvalidCarrier => .invalid_carrier,
         error.OutOfMemory => .out_of_memory,
     };
-    const h = gpa.create(DetachedCarrierHandle) catch {
-        var mut = parsed;
-        mut.deinit(gpa);
-        return .out_of_memory;
-    };
-    h.* = .{ .carrier = parsed };
-    out.* = h;
+    out.* = newCarrierHandle(parsed) orelse return .out_of_memory;
     return .ok;
 }
 
@@ -1740,13 +2000,13 @@ export fn o11y_detached_start_linked(
         .span_handle = .{ .span = .noop, .owns_self = false },
     };
     h.span_handle.span = h.linked.span;
-    h.ctx_handle.ctx = h.linked.context();
-    if (h.ctx_handle.ctx.span_context.trace_state.header.len > 0) {
-        if (rt.dupeZ(h.ctx_handle.arena.allocator(), h.ctx_handle.ctx.span_context.trace_state.header)) |z| {
-            h.ctx_handle.ctx.span_context.trace_state = .{ .header = z };
-            h.ctx_handle.trace_state_z = z.ptr;
-        } else |_| {}
-    }
+    h.span_handle.trace_state_z = spanTraceStateZ(&h.span_handle.span);
+    h.ctx_handle.ctx = ownContext(h.ctx_handle.arena.allocator(), h.linked.context()) catch blk: {
+        // Out of memory: keep the span identity and lose trace state and baggage.
+        var sc = h.linked.span.spanContext();
+        sc.trace_state = .empty;
+        break :blk o11y.Context.background.withSpanContext(sc);
+    };
     return h;
 }
 
@@ -1803,7 +2063,6 @@ export fn o11y_proc_extract_env(
     traceparent: ?[*:0]const u8,
     tracestate: ?[*:0]const u8,
 ) ?*CtxHandle {
-    const h = cloneCtxHandle(parent) orelse return null;
     var pairs: [2][2][]const u8 = undefined;
     var n: usize = 0;
     if (rt.cStrOpt(traceparent)) |tp| {
@@ -1814,18 +2073,10 @@ export fn o11y_proc_extract_env(
         pairs[n] = .{ o11y.proc.env_tracestate, ts };
         n += 1;
     }
+    var scratch_state: std.heap.ArenaAllocator = .init(gpa);
+    defer scratch_state.deinit();
     const env: o11y.Env = .{ .pairs = pairs[0..n] };
-    const extracted = o11y.proc.extractEnv(h.ctx, h.arena.allocator(), env);
-    h.ctx = extracted;
-    if (extracted.span_context.trace_state.header.len > 0) {
-        if (rt.dupeZ(h.arena.allocator(), extracted.span_context.trace_state.header)) |z| {
-            h.ctx.span_context.trace_state = .{ .header = z };
-            h.trace_state_z = z.ptr;
-        } else |_| {}
-    } else {
-        h.trace_state_z = null;
-    }
-    return h;
+    return newCtxHandle(o11y.proc.extractEnv(unwrapCtx(parent), scratch_state.allocator(), env));
 }
 
 // =========================================================================

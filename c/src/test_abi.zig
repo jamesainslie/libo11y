@@ -69,6 +69,10 @@ export fn o11y_test_start(
     out_rec: ?*?*RecorderHandle,
     diag_out: ?*c.Diagnostic,
 ) c.Err {
+    if (diag_out) |d| {
+        d.message[0] = 0;
+        d.len = 0;
+    }
     const out = out_rec orelse {
         abi.writeDiagnosticText(diag_out, "o11ytest: out_rec pointer must not be null");
         return .invalid_argument;
@@ -76,26 +80,42 @@ export fn o11y_test_start(
     out.* = null;
 
     const opts = if (opts_ptr) |p| p.* else c.TestOptions{};
+    out.* = startRecorder(opts, diag_out) catch |err| return switch (err) {
+        error.InvalidArgument => .invalid_argument,
+        else => |e| abi.mapSetupError(e),
+    };
+    return .ok;
+}
+
+/// Converts the C options and starts the recorder. Every failure path
+/// releases what it allocated.
+fn startRecorder(opts: c.TestOptions, diag_out: ?*c.Diagnostic) (o11y.SetupError || error{InvalidArgument})!*RecorderHandle {
     var opt_arena: std.heap.ArenaAllocator = .init(gpa);
     errdefer opt_arena.deinit();
     const arena = opt_arena.allocator();
 
     const attr_replacer: ?o11y.AttrReplacer = if (opts.attr_replacer_fn) |f| blk: {
-        const tr = arena.create(abi.AttrReplacerTrampoline) catch return .out_of_memory;
+        const tr = try arena.create(abi.AttrReplacerTrampoline);
         tr.* = .{ .func = f, .userdata = opts.attr_replacer_userdata };
         break :blk .{ .ptr = tr, .replace = abi.AttrReplacerTrampoline.replace };
     } else null;
 
-    const baggage_fn = abi.installBaggageAllow(opts.baggage_egress_allow);
-
-    const extra_envs = abi.buildExtraEnvs(arena, opts.extra_environments, opts.extra_environments_len) catch return .out_of_memory;
-    const res_attrs = abi.convertAttrs(arena, opts.resource_attributes, opts.resource_attributes_len) catch return .out_of_memory;
-    const extra_sinks = abi.buildExtraSinks(arena, opts.extra_log_sinks, opts.extra_log_sinks_len) catch return .out_of_memory;
-    const app_regs = abi.buildAppRegistries(arena, opts.app_registries, opts.app_registries_len) catch return .out_of_memory;
-    const hist_buckets = abi.buildHistogramBuckets(arena, opts.histogram_buckets, opts.histogram_buckets_len) catch return .out_of_memory;
-    const build_info = abi.buildBuildInfo(arena, opts.build_info) catch return .out_of_memory;
+    const propagators = try abi.buildPropagators(
+        arena,
+        opts.propagators,
+        opts.propagators_len,
+        opts.baggage_egress_allow,
+        opts.baggage_egress_allow_userdata,
+        diag_out,
+    );
+    const extra_envs = try abi.buildExtraEnvs(arena, opts.extra_environments, opts.extra_environments_len);
+    const res_attrs = try abi.convertAttrs(arena, opts.resource_attributes, opts.resource_attributes_len);
+    const extra_sinks = try abi.buildExtraSinks(arena, opts.extra_log_sinks, opts.extra_log_sinks_len);
+    const app_regs = try abi.buildAppRegistries(arena, opts.app_registries, opts.app_registries_len);
+    const hist_buckets = try abi.buildHistogramBuckets(arena, opts.histogram_buckets, opts.histogram_buckets_len);
+    const build_info = try abi.buildBuildInfo(arena, opts.build_info);
     const pii_key: []const u8 = if (opts.pii_hash_key_len > 0 and opts.pii_hash_key != null)
-        (arena.dupe(u8, opts.pii_hash_key.?[0..opts.pii_hash_key_len]) catch return .out_of_memory)
+        try arena.dupe(u8, opts.pii_hash_key.?[0..opts.pii_hash_key_len])
     else
         "";
 
@@ -110,23 +130,19 @@ export fn o11y_test_start(
         .resource_attributes = res_attrs,
         .build_info = build_info,
         .build_info_enabled = opts.build_info.enabled,
-        .log_level = abi.toZigLevel(opts.log_level),
+        .log_level = try abi.checkedLevel(opts.log_level, diag_out),
         .console_enabled = opts.console_enabled,
-        .console_format = switch (opts.console_format) {
-            .json => .json,
-            .text => .text,
-            _ => .json,
-        },
+        .console_format = try abi.toZigConsoleFormat(opts.console_format, diag_out),
         .log_export = opts.log_export,
         .attr_replacer = attr_replacer,
         .extra_log_sinks = extra_sinks,
-        .pii_mode = abi.toZigPiiMode(opts.pii_mode),
+        .pii_mode = try abi.checkedPiiMode(opts.pii_mode, diag_out),
         .pii_hash_key = pii_key,
         .app_registries = app_regs,
-        .sampler = abi.toZigSampler(opts.sampler_kind, opts.sampler_ratio) orelse .always_on,
-        .baggage_egress_allow = baggage_fn,
+        .sampler = (try abi.checkedSampler(opts.sampler_kind, opts.sampler_ratio, diag_out)) orelse .always_on,
+        .propagators = propagators,
         .histogram_buckets = hist_buckets,
-        .exemplar_filter = abi.toZigExemplarFilter(opts.exemplar_filter) orelse .trace_based,
+        .exemplar_filter = (try abi.checkedExemplarFilter(opts.exemplar_filter, diag_out)) orelse .trace_based,
         .runtime_metrics = opts.runtime_metrics,
         .diagnostic = &zig_diag,
         .sdk_language = "c",
@@ -134,12 +150,12 @@ export fn o11y_test_start(
         .emit_process_runtime = false,
     }) catch |err| {
         abi.writeDiagnostic(diag_out, &zig_diag);
-        return abi.mapSetupError(err);
+        return err;
     };
     errdefer rec.deinit();
 
-    const eff_z = rt.dupeZ(arena, rec.telemetry().effectiveConfig()) catch return .out_of_memory;
-    const h = gpa.create(RecorderHandle) catch return .out_of_memory;
+    const eff_z = try rt.dupeZ(arena, rec.telemetry().effectiveConfig());
+    const h = try gpa.create(RecorderHandle);
     h.* = .{
         .rec = rec,
         .sdk_view = .{
@@ -151,13 +167,14 @@ export fn o11y_test_start(
         .opt_arena = opt_arena,
         .str_arena = .init(gpa),
     };
-    out.* = h;
-    return .ok;
+    return h;
 }
 
 export fn o11y_test_destroy(rec: ?*RecorderHandle) void {
     const h = rec orelse return;
+    const callbacks = abi.detachObservableCallbacks(h.rec.telemetry().meterProvider());
     h.rec.deinit();
+    abi.freeObservableCallbacks(callbacks);
     h.sdk_view.arena.deinit();
     h.str_arena.deinit();
     h.opt_arena.deinit();
@@ -655,6 +672,28 @@ export fn o11y_test_report_destroy(report: ?*ReportHandle) void {
 // In-Process OTLP/HTTP Receiver
 // =========================================================================
 
+const ReceiverError = error{ OutOfMemory, Io };
+
+fn mapReceiverError(err: ReceiverError) c.Err {
+    return switch (err) {
+        error.OutOfMemory => .out_of_memory,
+        error.Io => .io,
+    };
+}
+
+fn tlsOptions(comptime T: type, tls: c.TestTlsOptions) ?T {
+    if (!tls.enabled) return null;
+    return .{
+        .cert_pem = rt.cStrOpt(tls.cert_pem) orelse o11ytest.certs.server,
+        .key_pem = rt.cStrOpt(tls.key_pem) orelse o11ytest.certs.server_key,
+        .client_ca_pem = rt.cStrOpt(tls.client_ca_pem),
+    };
+}
+
+fn millis(ms: u64) Io.Duration {
+    return .fromMilliseconds(@intCast(@min(ms, std.math.maxInt(i64))));
+}
+
 export fn o11y_test_http_receiver_start(
     opts_ptr: ?*const c.TestHttpReceiverOptions,
     out_rx: ?*?*HttpReceiverHandle,
@@ -662,48 +701,43 @@ export fn o11y_test_http_receiver_start(
     const out = out_rx orelse return .invalid_argument;
     out.* = null;
     const opts = if (opts_ptr) |p| p.* else c.TestHttpReceiverOptions{};
+    out.* = startHttpReceiver(opts) catch |err| return mapReceiverError(err);
+    return .ok;
+}
 
+fn startHttpReceiver(opts: c.TestHttpReceiverOptions) ReceiverError!*HttpReceiverHandle {
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    const replies: []o11ytest.HttpReply = if (opts.replies_len > 0 and opts.replies != null) blk: {
-        const arr = arena.alloc(o11ytest.HttpReply, opts.replies_len) catch return .out_of_memory;
-        for (opts.replies.?[0..opts.replies_len], arr) |src, *dst| {
-            dst.* = .{
-                .status = if (src.status == 0) 200 else src.status,
-                .retry_after = rt.cStrOpt(src.retry_after),
-                .body = if (src.body_len > 0 and src.body != null) src.body.?[0..src.body_len] else "",
-                .content_type = rt.cStrOpt(src.content_type) orelse "application/x-protobuf",
-                .delay = .fromMilliseconds(@intCast(@min(src.delay_ms, std.math.maxInt(i64)))),
-                .hang = src.hang,
-                .close_after = src.close_after,
-            };
-        }
-        break :blk arr;
-    } else &.{};
-
-    const tls_opts: ?o11ytest.HttpTlsOptions = if (opts.tls.enabled) .{
-        .cert_pem = rt.cStrOpt(opts.tls.cert_pem) orelse o11ytest.certs.server,
-        .key_pem = rt.cStrOpt(opts.tls.key_pem) orelse o11ytest.certs.server_key,
-        .client_ca_pem = rt.cStrOpt(opts.tls.client_ca_pem),
-    } else null;
+    const raw: []const c.TestHttpReply = if (opts.replies) |ptr| ptr[0..opts.replies_len] else &.{};
+    const replies = try arena.alloc(o11ytest.HttpReply, raw.len);
+    for (raw, replies) |src, *dst| {
+        dst.* = .{
+            .status = if (src.status == 0) 200 else src.status,
+            .retry_after = rt.cStrOpt(src.retry_after),
+            .body = if (src.body_len > 0 and src.body != null) src.body.?[0..src.body_len] else "",
+            .content_type = rt.cStrOpt(src.content_type) orelse "application/x-protobuf",
+            .delay = millis(src.delay_ms),
+            .hang = src.hang,
+            .close_after = src.close_after,
+        };
+    }
 
     const rx = o11ytest.HttpReceiver.start(gpa, rt.globalIo(), .{
         .replies = replies,
-        .tls = tls_opts,
-    }) catch return .io;
+        .tls = tlsOptions(o11ytest.HttpTlsOptions, opts.tls),
+    }) catch |err| return if (err == error.OutOfMemory) error.OutOfMemory else error.Io;
     errdefer rx.deinit();
 
-    const base_url = rx.baseUrl(gpa) catch return .out_of_memory;
+    const base_url = try rx.baseUrl(gpa);
     defer gpa.free(base_url);
-    const url_z = rt.dupeZ(gpa, base_url) catch return .out_of_memory;
-    errdefer gpa.free(url_z[0 .. url_z.len + 1]);
+    const url_z = try rt.dupeZ(gpa, base_url);
+    errdefer rt.freeZ(gpa, url_z.ptr);
 
-    const h = gpa.create(HttpReceiverHandle) catch return .out_of_memory;
+    const h = try gpa.create(HttpReceiverHandle);
     h.* = .{ .rx = rx, .url_z = url_z.ptr };
-    out.* = h;
-    return .ok;
+    return h;
 }
 
 export fn o11y_test_http_receiver_destroy(rx: ?*HttpReceiverHandle) void {
@@ -769,8 +803,7 @@ export fn o11y_test_http_receiver_decode_errors(rx: ?*HttpReceiverHandle) usize 
 
 export fn o11y_test_http_receiver_wait_requests(rx: ?*HttpReceiverHandle, min_count: usize, timeout_ms: u64) bool {
     const h = rx orelse return false;
-    const dur: Io.Duration = .fromMilliseconds(@intCast(@min(timeout_ms, std.math.maxInt(i64))));
-    h.rx.waitForRequests(min_count, dur) catch return false;
+    h.rx.waitForRequests(min_count, millis(timeout_ms)) catch return false;
     return true;
 }
 
@@ -785,46 +818,41 @@ export fn o11y_test_grpc_receiver_start(
     const out = out_rx orelse return .invalid_argument;
     out.* = null;
     const opts = if (opts_ptr) |p| p.* else c.TestGrpcReceiverOptions{};
+    out.* = startGrpcReceiver(opts) catch |err| return mapReceiverError(err);
+    return .ok;
+}
 
+fn startGrpcReceiver(opts: c.TestGrpcReceiverOptions) ReceiverError!*GrpcReceiverHandle {
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    const replies: []o11ytest.GrpcReply = if (opts.replies_len > 0 and opts.replies != null) blk: {
-        const arr = arena.alloc(o11ytest.GrpcReply, opts.replies_len) catch return .out_of_memory;
-        for (opts.replies.?[0..opts.replies_len], arr) |src, *dst| {
-            dst.* = .{
-                .http_status = if (src.http_status == 0) 200 else src.http_status,
-                .grpc_status = src.grpc_status,
-                .grpc_message = rt.cStrOpt(src.grpc_message),
-                .delay = .fromMilliseconds(@intCast(@min(src.delay_ms, std.math.maxInt(i64)))),
-                .hang = src.hang,
-            };
-        }
-        break :blk arr;
-    } else &.{};
-
-    const tls_opts: ?o11ytest.GrpcTlsOptions = if (opts.tls.enabled) .{
-        .cert_pem = rt.cStrOpt(opts.tls.cert_pem) orelse o11ytest.certs.server,
-        .key_pem = rt.cStrOpt(opts.tls.key_pem) orelse o11ytest.certs.server_key,
-        .client_ca_pem = rt.cStrOpt(opts.tls.client_ca_pem),
-    } else null;
+    const raw: []const c.TestGrpcReply = if (opts.replies) |ptr| ptr[0..opts.replies_len] else &.{};
+    const replies = try arena.alloc(o11ytest.GrpcReply, raw.len);
+    for (raw, replies) |src, *dst| {
+        dst.* = .{
+            .http_status = if (src.http_status == 0) 200 else src.http_status,
+            .grpc_status = src.grpc_status,
+            .grpc_message = rt.cStrOpt(src.grpc_message),
+            .delay = millis(src.delay_ms),
+            .hang = src.hang,
+        };
+    }
 
     const rx = o11ytest.GrpcReceiver.start(gpa, rt.globalIo(), .{
         .replies = replies,
-        .tls = tls_opts,
-    }) catch return .io;
+        .tls = tlsOptions(o11ytest.GrpcTlsOptions, opts.tls),
+    }) catch |err| return if (err == error.OutOfMemory) error.OutOfMemory else error.Io;
     errdefer rx.deinit();
 
-    const ep = rx.url(gpa) catch return .out_of_memory;
-    defer gpa.free(ep);
-    const ep_z = rt.dupeZ(gpa, ep) catch return .out_of_memory;
-    errdefer gpa.free(ep_z[0 .. ep_z.len + 1]);
+    const endpoint = try rx.url(gpa);
+    defer gpa.free(endpoint);
+    const endpoint_z = try rt.dupeZ(gpa, endpoint);
+    errdefer rt.freeZ(gpa, endpoint_z.ptr);
 
-    const h = gpa.create(GrpcReceiverHandle) catch return .out_of_memory;
-    h.* = .{ .rx = rx, .endpoint_z = ep_z.ptr };
-    out.* = h;
-    return .ok;
+    const h = try gpa.create(GrpcReceiverHandle);
+    h.* = .{ .rx = rx, .endpoint_z = endpoint_z.ptr };
+    return h;
 }
 
 export fn o11y_test_grpc_receiver_destroy(rx: ?*GrpcReceiverHandle) void {
@@ -866,8 +894,7 @@ export fn o11y_test_grpc_receiver_decode_errors(rx: ?*GrpcReceiverHandle) usize 
 
 export fn o11y_test_grpc_receiver_wait_requests(rx: ?*GrpcReceiverHandle, min_count: usize, timeout_ms: u64) bool {
     const h = rx orelse return false;
-    const dur: Io.Duration = .fromMilliseconds(@intCast(@min(timeout_ms, std.math.maxInt(i64))));
-    h.rx.waitForRequests(min_count, dur) catch return false;
+    h.rx.waitForRequests(min_count, millis(timeout_ms)) catch return false;
     return true;
 }
 
