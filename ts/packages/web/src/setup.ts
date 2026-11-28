@@ -83,8 +83,8 @@ export function defaultSetupDeps(): SetupDeps {
  * queue (openQueue, unless transport.offlineQueue is false), the endpoints, the HTTP transport, the
  * delivery (mode from document visibility, and a lease of three times transport.timeoutMillis when
  * that is longer than the default lease), webPlatform, setupWith with console defaulting to
- * false, then the handle. consent.onRevoke flushes every provider into the closed gate, then clears
- * the delivery. After setup the queue is drained once.
+ * false, then the handle. consent.onRevoke clears the delivery and, without waiting for that,
+ * flushes every provider into the closed gate. After setup the queue is drained once.
  *
  * The handle is core's Telemetry extended in place with consent (so exemplarStoreOf still finds
  * it), and its shutdown also removes the instrumentation and listeners, clears the active consent,
@@ -213,11 +213,17 @@ export async function setupWithDeps(
   }
 
   const activeDelivery = delivery;
-  // Revocation: the gate is already closed, so flushing drains the SDK buffers into it and they
-  // are dropped; then the persistent queue is emptied.
+  // Revocation: the gate is already closed. The persistent queue is emptied first, whatever the
+  // flush does: a flush waits for exports in flight, up to its deadline, and a page closed in that
+  // time would otherwise keep the queue for a later grant to send. The flush then drains the SDK
+  // buffers into the closed gate, which drops them.
   const unregisterRevoke = controller.onRevoke(async () => {
-    await telemetry.forceFlush();
-    await activeDelivery.clear();
+    const cleared = activeDelivery.clear();
+    try {
+      await telemetry.forceFlush();
+    } finally {
+      await cleared;
+    }
   });
   const uninstalls: (() => void)[] = [];
 

@@ -194,9 +194,14 @@ export async function setupContentScriptWith(
   const doc = deps.document;
   if (doc !== undefined) steps.unshift(deps.installFlushOnHide(doc, deps.window, () => core.forceFlush()));
   steps.unshift(
+    // The queue is emptied first, whatever the flush does, as on a page.
     controller.onRevoke(async () => {
-      await core.forceFlush();
-      await delivery.clear();
+      const cleared = delivery.clear();
+      try {
+        await core.forceFlush();
+      } finally {
+        await cleared;
+      }
     }),
   );
   const messaging = createTracedMessaging(chrome, core.propagator);

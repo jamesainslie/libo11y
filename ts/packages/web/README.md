@@ -80,10 +80,12 @@ create no span and inject no header while consent is not granted.
 
 - `consent.grant()` moves to `granted` and returns the new state. It
   returns `denied` when a respected privacy signal refuses it.
-- `consent.revoke()` moves to `denied` before it returns. It then flushes
-  the SDK buffers into the closed gate, where they are dropped, and clears
-  the IndexedDB queue. The promise resolves when the queues are clear and
-  never rejects. A request already on the wire is not recalled.
+- `consent.revoke()` moves to `denied` before it returns. It then clears
+  the IndexedDB queue at once and flushes the SDK buffers into the closed
+  gate, where they are dropped. The queue is cleared whether the flush
+  succeeds, fails or runs to its deadline. The promise resolves when the
+  queues are clear and never rejects. A request already on the wire is not
+  recalled.
 - `consent.state()` returns the current state.
 - `consent.subscribe(listener)` calls `listener` after every change and
   returns a function that unsubscribes.

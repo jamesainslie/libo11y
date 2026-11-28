@@ -50,6 +50,16 @@ adhere to [Semantic Versioning](https://semver.org/).
 - `@libo11y/rum`: `RumRuntime` gains `timeOrigin`, the epoch milliseconds
   `now()` counts from, and `addAction` places its span with it instead of
   reading `performance.timeOrigin`, which a runtime may lack.
+- `@libo11y/web` and `@libo11y/webext`: `consent.revoke()` now clears the
+  offline queue at once, before the flush, and whatever the flush does.
+  In 0.3.0 the queue was cleared only after the flush finished. A flush
+  waits for exports already in flight, up to its deadline of 5 seconds
+  by default. An app that revoked while the collector was unreachable
+  kept its queued telemetry in IndexedDB for that time. If the page
+  closed first, the batches recorded before the revoke stayed queued and
+  were sent after a later grant. The same applied to the webext worker's
+  queue and the content script's memory queue. Upgrade if your app lets
+  users withdraw consent. A page that never revokes is not affected.
 
 ## [0.3.0] - 2026-11-27
 
