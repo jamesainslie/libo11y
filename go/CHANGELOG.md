@@ -27,6 +27,15 @@ adhere to [Semantic Versioning](https://semver.org/).
   could rewrite the name. The replacer no longer sees the `event.name` of
   an event. A plain slog record that carries its own `event.name`
   attribute is unchanged.
+- `(*Record).Max` now ignores `math.NaN()` instead of letting `NaN`
+  overwrite a recorded maximum or create a `NaN` entry.
+- `o11ytest`: `(*Recorder).AssertCorrelated` now checks `span_id`
+  alongside `trace_id` on correlated log records.
+- `redact`: `Struct` JSON marshaling now renders a `slog.KindDuration`
+  value returned by a `slog.LogValuer` as its `String` form (such as
+  `"1s"`), matching direct `time.Duration` fields and the text surface.
+- Updated `PIIAllow` godoc and stale `go/README.md` entries for
+  `WithLogExporter`, `WithErrorHandler`, and `o11y.rum.element.text`.
 
 ## [0.4.0] - 2026-11-27
 

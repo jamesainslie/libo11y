@@ -31,8 +31,8 @@ const (
 	// stay joinable across records without being reversible by anyone who
 	// lacks the key. Requires [WithPIIHashKey].
 	PIIHash
-	// PIIAllow emits PII attributes unchanged. Never the default; requires
-	// an explicit opt-in and a data-handling justification.
+	// PIIAllow emits PII attributes unchanged. Never the default; takes no
+	// justification, so record the data-handling reason where you set it.
 	PIIAllow
 )
 

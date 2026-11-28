@@ -297,7 +297,7 @@ func appendJSON(buf []byte, v slog.Value) []byte {
 	case slog.KindBool:
 		return strconv.AppendBool(buf, v.Bool())
 	case slog.KindDuration:
-		return strconv.AppendInt(buf, int64(v.Duration()), 10)
+		return appendJSONString(buf, v.Duration().String())
 	case slog.KindAny:
 		if v.Any() == nil {
 			return append(buf, "null"...)

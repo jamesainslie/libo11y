@@ -3,6 +3,7 @@ package o11y
 import (
 	"context"
 	"log/slog"
+	"math"
 	"sync"
 )
 
@@ -74,10 +75,10 @@ func (r *Record) Add(key string, delta int64) {
 }
 
 // Max records the larger of the existing and new value for key (for example
-// the slowest downstream call in a request). A key holding a value of
-// another kind is replaced by v.
+// the slowest downstream call in a request). NaN values are ignored. A key
+// holding a value of another kind is replaced by v.
 func (r *Record) Max(key string, v float64) {
-	if r == nil {
+	if r == nil || math.IsNaN(v) {
 		return
 	}
 	r.mu.Lock()
