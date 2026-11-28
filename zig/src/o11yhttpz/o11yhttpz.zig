@@ -84,11 +84,20 @@ pub const Options = struct {
     /// attaching an `o11y.Record` to `o11yhttpz.context(req)`.
     canonical_line: bool = false,
     /// Append `Server-Timing: traceparent;desc="00-<tid>-<sid>-<flags>"` to
-    /// instrumented responses.
+    /// instrumented HTML responses, so a browser page can join the server
+    /// span's trace.
     server_timing: bool = false,
-    /// When `server_timing` is true and this is true, emit `Server-Timing`
-    /// only on `text/html` responses.
-    server_timing_html_only: bool = false,
+    /// With `server_timing`, add the header only to responses whose
+    /// `content-type` is `text/html`. This is the default, as in Go and
+    /// TypeScript, so an API response does not hand trace IDs to its
+    /// callers. Set it to false to add the header to every instrumented
+    /// response.
+    ///
+    /// The content type is known only once the handler has run. A handler
+    /// that streams its response with `res.chunk` has sent its headers by
+    /// then, so a streamed HTML response gets the header only when this is
+    /// false.
+    server_timing_html_only: bool = true,
 };
 
 const middleware_state_key = "libo11y.o11yhttpz.state";

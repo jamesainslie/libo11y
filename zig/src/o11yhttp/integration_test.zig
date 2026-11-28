@@ -581,6 +581,72 @@ test "o11yhttp loopback: canonical_line, Server-Timing, route_fn, and 200/404/50
     }
 }
 
+test "o11yhttp loopback: Server-Timing goes on HTML responses only unless the option says otherwise" {
+    const rec = try o11ytest.start(testing.allocator, testing.io, .{});
+    defer rec.deinit();
+
+    const Handler = struct {
+        fn run(sreq: *o11yhttp.ServerRequest) !void {
+            if (std.mem.eql(u8, sreq.path(), "/page")) {
+                try sreq.respond("<html></html>", .{
+                    .extra_headers = &.{.{ .name = "content-type", .value = "text/html; charset=utf-8" }},
+                });
+                return;
+            }
+            try sreq.respond("{}", .{
+                .extra_headers = &.{.{ .name = "content-type", .value = "application/json" }},
+            });
+        }
+    };
+    const Probe = struct {
+        /// Reports whether the response to `path` carries Server-Timing.
+        fn hasServerTiming(server_url: []const u8, client: *std.http.Client) !bool {
+            var req = try client.request(.GET, try std.Uri.parse(server_url), .{});
+            defer req.deinit();
+            try req.sendBodiless();
+            var resp = try req.receiveHead(&.{});
+            var found = false;
+            var headers = resp.head.iterateHeaders();
+            while (headers.next()) |h| {
+                if (std.ascii.eqlIgnoreCase(h.name, "server-timing")) found = true;
+            }
+            var transfer: [256]u8 = undefined;
+            _ = try resp.reader(&transfer).discardRemaining();
+            return found;
+        }
+    };
+
+    var std_client: std.http.Client = .{ .allocator = testing.allocator, .io = testing.io };
+    defer std_client.deinit();
+
+    // The default, as Go's WithServerTiming: an API response does not
+    // expose trace IDs to its callers.
+    {
+        const srv = try LoopbackServer(void, Handler.run).start(testing.allocator, testing.io, .{
+            .telemetry = rec.telemetry(),
+            .server_timing = true,
+        }, {});
+        defer srv.deinit();
+        const page = try srv.url(testing.allocator, "/page");
+        defer testing.allocator.free(page);
+        const json = try srv.url(testing.allocator, "/json");
+        defer testing.allocator.free(json);
+        try testing.expect(try Probe.hasServerTiming(page, &std_client));
+        try testing.expect(!try Probe.hasServerTiming(json, &std_client));
+    }
+    {
+        const srv = try LoopbackServer(void, Handler.run).start(testing.allocator, testing.io, .{
+            .telemetry = rec.telemetry(),
+            .server_timing = true,
+            .server_timing_html_only = false,
+        }, {});
+        defer srv.deinit();
+        const json = try srv.url(testing.allocator, "/json");
+        defer testing.allocator.free(json);
+        try testing.expect(try Probe.hasServerTiming(json, &std_client));
+    }
+}
+
 test "o11yhttp client: strips credentials from url.full, honors propagate_fn, and records transport errors" {
     const rec = try o11ytest.start(testing.allocator, testing.io, .{});
     defer rec.deinit();
