@@ -192,41 +192,42 @@ spec:
         - alert: O11yRUMGatewayRejections
           expr: |-
             (
-              sum by (job, o11yrum_app) (rate(o11yrum_batches_total{job=~"(.*/)?o11yrum-gateway", o11yrum_outcome="rejected", o11yrum_reason!~"rate_limited|sink"}[10m]))
+              sum by (job) (rate(o11yrum_batches_total{job=~"(.*/)?o11yrum-gateway", o11yrum_outcome="rejected", o11yrum_reason!~"rate_limited|sink"}[10m]))
             /
-              sum by (job, o11yrum_app) (rate(o11yrum_batches_total{job=~"(.*/)?o11yrum-gateway"}[10m]))
+              sum by (job) (rate(o11yrum_batches_total{job=~"(.*/)?o11yrum-gateway"}[10m]))
             ) > 0.05
-            and on (job, o11yrum_app) sum by (job, o11yrum_app) (rate(o11yrum_batches_total{job=~"(.*/)?o11yrum-gateway"}[10m])) > 0.05
+            and on (job) sum by (job) (rate(o11yrum_batches_total{job=~"(.*/)?o11yrum-gateway"}[10m])) > 0.05
           for: 15m
           labels:
             severity: warning
           annotations:
             dashboard: /d/libo11y-rum-gateway
-            description: More than 5% of the requests for {{ $labels.o11yrum_app }} to {{ $labels.job }} were rejected over the last 10 minutes, for reasons other than rate limiting and sink failures.
+            description: More than 5% of the requests to {{ $labels.job }} were rejected over the last 10 minutes, for reasons other than rate limiting and sink failures.
             runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumgatewayrejections
-            summary: The gateway is rejecting requests for {{ $labels.o11yrum_app }}
+            summary: '{{ $labels.job }} is rejecting requests'
         - alert: O11yRUMGatewayRateLimited
           expr: |-
             (
-              sum by (job, o11yrum_app) (rate(o11yrum_batches_total{job=~"(.*/)?o11yrum-gateway", o11yrum_outcome="rejected", o11yrum_reason="rate_limited"}[10m]))
+              sum by (job) (rate(o11yrum_batches_total{job=~"(.*/)?o11yrum-gateway", o11yrum_outcome="rejected", o11yrum_reason="rate_limited"}[10m]))
             /
-              sum by (job, o11yrum_app) (rate(o11yrum_batches_total{job=~"(.*/)?o11yrum-gateway"}[10m]))
+              sum by (job) (rate(o11yrum_batches_total{job=~"(.*/)?o11yrum-gateway"}[10m]))
             ) > 0.2
-            and on (job, o11yrum_app) sum by (job, o11yrum_app) (rate(o11yrum_batches_total{job=~"(.*/)?o11yrum-gateway"}[10m])) > 0.05
+            and on (job) sum by (job) (rate(o11yrum_batches_total{job=~"(.*/)?o11yrum-gateway"}[10m])) > 0.05
           for: 15m
           labels:
             severity: info
           annotations:
             dashboard: /d/libo11y-rum-gateway
-            description: More than 20% of the requests for {{ $labels.o11yrum_app }} to {{ $labels.job }} were refused by the per-client rate limit over the last 10 minutes.
+            description: More than 20% of the requests to {{ $labels.job }} were refused by the per-client rate limit over the last 10 minutes.
             runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumgatewayratelimited
-            summary: The gateway is rate limiting {{ $labels.o11yrum_app }}
+            summary: '{{ $labels.job }} is rate limiting clients'
         - alert: O11yRUMGatewaySinkFailing
           expr: |-
-            sum by (job) (rate(o11yrum_batches_total{job=~"(.*/)?o11yrum-gateway", o11yrum_outcome="rejected", o11yrum_reason="sink"}[5m]))
+            (
+              sum by (job) (rate(o11yrum_batches_total{job=~"(.*/)?o11yrum-gateway", o11yrum_outcome="rejected", o11yrum_reason="sink"}[5m]))
             /
-            sum by (job) (rate(o11yrum_batches_total{job=~"(.*/)?o11yrum-gateway"}[5m]))
-            > 0.01
+              sum by (job) (rate(o11yrum_batches_total{job=~"(.*/)?o11yrum-gateway"}[5m]))
+            ) > 0.01
             and on (job) sum by (job) (rate(o11yrum_batches_total{job=~"(.*/)?o11yrum-gateway"}[5m])) > 0.05
           for: 5m
           labels:

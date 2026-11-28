@@ -195,3 +195,15 @@ func TestErrorRateNeedsViews(t *testing.T) {
 		}
 	}
 }
+
+// TestGatewayAlertsIgnoreApp keeps the gateway alerts per gateway. The
+// gateway counts a request it refuses before it knows the app, such as a
+// rate limited one, under app unknown, so a share per app would compare
+// those refusals with nothing but themselves.
+func TestGatewayAlertsIgnoreApp(t *testing.T) {
+	for _, r := range alertsOf(map[string]rules.File{gatewayRulesPath: RuleFiles(thresholds.Default(), "0.1.0")[gatewayRulesPath]}) {
+		if strings.Contains(r.Expr, "o11yrum_app") {
+			t.Errorf("%s groups or matches by o11yrum_app:\n%s", r.Alert, r.Expr)
+		}
+	}
+}

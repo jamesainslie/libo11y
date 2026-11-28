@@ -8,35 +8,42 @@ rule_files:
   - ../libo11y-rum-gateway.rules.yaml
 evaluation_interval: 1m
 tests:
-  # Rejections. Each minute brings 54 accepted requests and 6 refused for a
-  # disallowed origin: 1 request a second, 10 percent rejected, above the
-  # 5 percent threshold and the 0.05 requests a second minimum.
+  # Rejections, judged per gateway: the gateway labels a request it refuses
+  # before it knows the app (rate limiting, decoding, an unknown service)
+  # with app unknown, so a share per app would be meaningless. Each minute
+  # brings 54 accepted requests for shop-web, 3 refused for a disallowed
+  # origin, and 3 refused as undecodable before the app is known: 1 request
+  # a second, 10 percent rejected, above the 5 percent threshold and the
+  # 0.05 requests a second minimum.
   - interval: 1m
     input_series:
       - series: 'o11yrum_batches_total{job="o11yrum-gateway", o11yrum_app="shop-web", o11yrum_signal="logs", o11yrum_outcome="accepted", o11yrum_reason="ok"}'
         values: '0+54x60'
       - series: 'o11yrum_batches_total{job="o11yrum-gateway", o11yrum_app="shop-web", o11yrum_signal="logs", o11yrum_outcome="rejected", o11yrum_reason="origin"}'
-        values: '0+6x60'
+        values: '0+3x60'
+      - series: 'o11yrum_batches_total{job="o11yrum-gateway", o11yrum_app="unknown", o11yrum_signal="logs", o11yrum_outcome="rejected", o11yrum_reason="decode"}'
+        values: '0+3x60'
     alert_rule_test:
       - eval_time: 30m
         alertname: O11yRUMGatewayRejections
         exp_alerts:
-          - exp_labels: {severity: warning, job: o11yrum-gateway, o11yrum_app: shop-web}
+          - exp_labels: {severity: warning, job: o11yrum-gateway}
             exp_annotations:
-              summary: 'The gateway is rejecting requests for shop-web'
-              description: 'More than 5% of the requests for shop-web to o11yrum-gateway were rejected over the last 10 minutes, for reasons other than rate limiting and sink failures.'
+              summary: 'o11yrum-gateway is rejecting requests'
+              description: 'More than 5% of the requests to o11yrum-gateway were rejected over the last 10 minutes, for reasons other than rate limiting and sink failures.'
               runbook_url: 'https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumgatewayrejections'
               dashboard: '/d/libo11y-rum-gateway'
       - eval_time: 30m
         alertname: O11yRUMGatewayRateLimited
         exp_alerts: []
 
-  # Rejections at 2 percent stay silent.
+  # Rejections at 2 percent stay silent, even though every request of the
+  # unknown app is a rejection.
   - interval: 1m
     input_series:
       - series: 'o11yrum_batches_total{job="o11yrum-gateway", o11yrum_app="shop-web", o11yrum_signal="logs", o11yrum_outcome="accepted", o11yrum_reason="ok"}'
         values: '0+49x60'
-      - series: 'o11yrum_batches_total{job="o11yrum-gateway", o11yrum_app="shop-web", o11yrum_signal="logs", o11yrum_outcome="rejected", o11yrum_reason="origin"}'
+      - series: 'o11yrum_batches_total{job="o11yrum-gateway", o11yrum_app="unknown", o11yrum_signal="logs", o11yrum_outcome="rejected", o11yrum_reason="unknown_service"}'
         values: '0+1x60'
     alert_rule_test:
       - eval_time: 30m
@@ -44,22 +51,24 @@ tests:
         exp_alerts: []
 
   # Rate limiting. A quarter of the requests are refused by the rate limit,
-  # above its 20 percent threshold. Only O11yRUMGatewayRateLimited fires:
-  # the rejections alert leaves rate limiting out.
+  # which runs before the gateway reads the body and so counts them under
+  # app unknown. That is above the 20 percent threshold. Only
+  # O11yRUMGatewayRateLimited fires: the rejections alert leaves rate
+  # limiting out.
   - interval: 1m
     input_series:
       - series: 'o11yrum_batches_total{job="o11yrum-gateway", o11yrum_app="shop-web", o11yrum_signal="traces", o11yrum_outcome="accepted", o11yrum_reason="ok"}'
         values: '0+45x60'
-      - series: 'o11yrum_batches_total{job="o11yrum-gateway", o11yrum_app="shop-web", o11yrum_signal="traces", o11yrum_outcome="rejected", o11yrum_reason="rate_limited"}'
+      - series: 'o11yrum_batches_total{job="o11yrum-gateway", o11yrum_app="unknown", o11yrum_signal="traces", o11yrum_outcome="rejected", o11yrum_reason="rate_limited"}'
         values: '0+15x60'
     alert_rule_test:
       - eval_time: 30m
         alertname: O11yRUMGatewayRateLimited
         exp_alerts:
-          - exp_labels: {severity: info, job: o11yrum-gateway, o11yrum_app: shop-web}
+          - exp_labels: {severity: info, job: o11yrum-gateway}
             exp_annotations:
-              summary: 'The gateway is rate limiting shop-web'
-              description: 'More than 20% of the requests for shop-web to o11yrum-gateway were refused by the per-client rate limit over the last 10 minutes.'
+              summary: 'o11yrum-gateway is rate limiting clients'
+              description: 'More than 20% of the requests to o11yrum-gateway were refused by the per-client rate limit over the last 10 minutes.'
               runbook_url: 'https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumgatewayratelimited'
               dashboard: '/d/libo11y-rum-gateway'
       - eval_time: 30m
@@ -71,7 +80,7 @@ tests:
     input_series:
       - series: 'o11yrum_batches_total{job="o11yrum-gateway", o11yrum_app="shop-web", o11yrum_signal="traces", o11yrum_outcome="accepted", o11yrum_reason="ok"}'
         values: '0+54x60'
-      - series: 'o11yrum_batches_total{job="o11yrum-gateway", o11yrum_app="shop-web", o11yrum_signal="traces", o11yrum_outcome="rejected", o11yrum_reason="rate_limited"}'
+      - series: 'o11yrum_batches_total{job="o11yrum-gateway", o11yrum_app="unknown", o11yrum_signal="traces", o11yrum_outcome="rejected", o11yrum_reason="rate_limited"}'
         values: '0+6x60'
     alert_rule_test:
       - eval_time: 30m

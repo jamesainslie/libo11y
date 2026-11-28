@@ -81,7 +81,7 @@
         "type": "prometheus",
         "uid": "${prometheus}"
       },
-      "description": "The share of requests the gateway refused over the time range, for any reason. Rejections by reason below tells a misconfigured origin from rate limiting or a failing sink.",
+      "description": "The share of requests the gateway refused over the time range, for any reason. Rejections by reason below tells a misconfigured origin from rate limiting or a failing sink. Requests refused before the gateway knows their app count under app unknown, so pick All to see every rejection.",
       "fieldConfig": {
         "defaults": {
           "thresholds": {
@@ -355,7 +355,7 @@
         "type": "prometheus",
         "uid": "${prometheus}"
       },
-      "description": "Refused requests per second by reason. origin and client_token point at configuration, rate_limited at a busy client, sink at a failing backend.",
+      "description": "Refused requests per second by reason. origin and client_token point at configuration, rate_limited at a busy client, sink at a failing backend. Requests refused before the gateway knows their app, rate limited ones included, count under app unknown.",
       "fieldConfig": {
         "defaults": {
           "unit": "reqps"

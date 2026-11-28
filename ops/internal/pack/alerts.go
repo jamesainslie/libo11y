@@ -106,10 +106,14 @@ func gatewayRules(t thresholds.Thresholds, version string) rules.File {
 		}
 		return `o11yrum_batches_total{` + gs + extra + `}`
 	}
-	// share is the fraction of requests matching extra over window, by job
-	// and app. The alerts pair it with gate, the minimum request rate.
+	// share is the fraction of a gateway's requests matching extra over
+	// window, and gate keeps gateways taking at least the minimum request
+	// rate. Both are per job, not per app: the gateway counts a request it
+	// refuses before it knows the app, such as a rate limited one, under app
+	// unknown, so a share per app would compare those refusals with nothing
+	// but themselves.
 	share := func(extra, window string) string {
-		by := "sum by (job, o11yrum_app) "
+		by := "sum by (job) "
 		total := by + "(rate(" + batches("") + "[" + window + "]))"
 		return lines(
 			"(",
@@ -120,7 +124,9 @@ func gatewayRules(t thresholds.Thresholds, version string) rules.File {
 		)
 	}
 	minRate := num(t.GatewayMinRequestsPerSec)
-	gate := "and on (job, o11yrum_app) sum by (job, o11yrum_app) (rate(" + batches("") + "[10m])) > " + minRate
+	gate := func(window string) string {
+		return "and on (job) sum by (job) (rate(" + batches("") + "[" + window + "])) > " + minRate
+	}
 	alert := func(name, expr, forDur, severity, summary, description string) rules.Rule {
 		return rules.Rule{
 			Alert: name, Expr: expr, For: forDur,
@@ -130,23 +136,17 @@ func gatewayRules(t thresholds.Thresholds, version string) rules.File {
 	}
 	g := rules.Group{Name: "libo11y-rum-gateway-alerts", Rules: []rules.Rule{
 		alert("O11yRUMGatewayRejections",
-			lines(share(`o11yrum_outcome="rejected", o11yrum_reason!~"rate_limited|sink"`, "10m")+" > "+num(t.GatewayRejectionRatio), gate),
+			lines(share(`o11yrum_outcome="rejected", o11yrum_reason!~"rate_limited|sink"`, "10m")+" > "+num(t.GatewayRejectionRatio), gate("10m")),
 			"15m", "warning",
-			"The gateway is rejecting requests for {{ $labels.o11yrum_app }}",
-			"More than "+percent(t.GatewayRejectionRatio)+" of the requests for {{ $labels.o11yrum_app }} to {{ $labels.job }} were rejected over the last 10 minutes, for reasons other than rate limiting and sink failures."),
+			"{{ $labels.job }} is rejecting requests",
+			"More than "+percent(t.GatewayRejectionRatio)+" of the requests to {{ $labels.job }} were rejected over the last 10 minutes, for reasons other than rate limiting and sink failures."),
 		alert("O11yRUMGatewayRateLimited",
-			lines(share(`o11yrum_outcome="rejected", o11yrum_reason="rate_limited"`, "10m")+" > "+num(t.RateLimitedRatio), gate),
+			lines(share(`o11yrum_outcome="rejected", o11yrum_reason="rate_limited"`, "10m")+" > "+num(t.RateLimitedRatio), gate("10m")),
 			"15m", "info",
-			"The gateway is rate limiting {{ $labels.o11yrum_app }}",
-			"More than "+percent(t.RateLimitedRatio)+" of the requests for {{ $labels.o11yrum_app }} to {{ $labels.job }} were refused by the per-client rate limit over the last 10 minutes."),
+			"{{ $labels.job }} is rate limiting clients",
+			"More than "+percent(t.RateLimitedRatio)+" of the requests to {{ $labels.job }} were refused by the per-client rate limit over the last 10 minutes."),
 		alert("O11yRUMGatewaySinkFailing",
-			lines(
-				"sum by (job) (rate("+batches(`o11yrum_outcome="rejected", o11yrum_reason="sink"`)+"[5m]))",
-				"/",
-				"sum by (job) (rate("+batches("")+"[5m]))",
-				"> "+num(t.SinkFailureRatio),
-				"and on (job) sum by (job) (rate("+batches("")+"[5m])) > "+minRate,
-			),
+			lines(share(`o11yrum_outcome="rejected", o11yrum_reason="sink"`, "5m")+" > "+num(t.SinkFailureRatio), gate("5m")),
 			"5m", "critical",
 			"{{ $labels.job }} cannot export to its sinks",
 			"More than "+percent(t.SinkFailureRatio)+" of the requests to {{ $labels.job }} failed in a sink over the last 5 minutes. The gateway answers them with 503 and Retry-After, so a short outage loses little, but a sink that stays down loses telemetry."),

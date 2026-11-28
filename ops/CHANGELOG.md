@@ -21,7 +21,9 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - Builder support for a dashboard's default time range and a panel's `fieldConfig.defaults.custom`. Loki query variables render as the `label_values()` string Grafana's Loki datasource reads, and the JSON keeps `&`, `<` and `>` unescaped.
 - The gateway dashboard: requests by outcome and signal, rejections and dropped records by reason, attributes the policy removed, sink latency and outcomes, the derived metric aggregator, symbolicated frames by result and source map uploads by outcome, filtered by gateway and app.
 - Recording rules for each vital's hourly p75 and sample count and for views and errors over 15 minutes, by app.
-- Alert rules: poor and regressed vital p75 with a minimum traffic gate, error rate, gateway rejections, rate limiting, sink failures, sink latency, the aggregator series cap and gateway down. Each alert has a runbook section in this README.
+- Alert rules: poor and regressed vital p75 with a minimum traffic gate, error rate, gateway rejections, rate limiting, sink failures, sink latency, the aggregator series cap and gateway down. Each alert has a runbook section in `README.md`.
 - promtool 3.15.1 unit tests of every alert, run through `scripts/ops-promtool.sh`, which installs promtool only when its tarball matches a pinned SHA-256.
 - `kustomization.yaml` with one `PrometheusRule` and one ConfigMap per dashboard for Grafana's dashboard sidecar, and `datasources/example.yaml`, an example of Grafana datasource provisioning.
 - The catalog fixture uploads a source map and sends a symbolicated error, so the catalog records the gateway's symbolication and upload counters. Replay panels follow once the gateway exports replay metrics.
+- `opsgen` parses every generated rule with the Prometheus parser and refuses thresholds that produce PromQL Prometheus would not load. The query lint accepts `up`, which Prometheus writes for every scrape target.
+- `make ops-promtool-test` tests the promtool installer, and CI caches the promtool download.
