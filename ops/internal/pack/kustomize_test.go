@@ -74,13 +74,11 @@ func TestKustomization(t *testing.T) {
 	if !slices.Equal(names, UIDs) {
 		t.Errorf("ConfigMaps %q, want one per dashboard in order %q", names, UIDs)
 	}
-	for _, p := range append(slices.Clone(k.Resources), func() []string {
-		var fs []string
-		for _, g := range k.ConfigMapGenerator {
-			fs = append(fs, g.Files...)
-		}
-		return fs
-	}()...) {
+	listed := slices.Clone(k.Resources)
+	for _, g := range k.ConfigMapGenerator {
+		listed = append(listed, g.Files...)
+	}
+	for _, p := range listed {
 		if _, ok := arts[p]; !ok {
 			t.Errorf("the kustomization lists %s, which the pack does not generate", p)
 		}
@@ -117,8 +115,11 @@ func TestPrometheusRuleArtifact(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pr.Kind != "PrometheusRule" || pr.Metadata.Name != "libo11y-rum" || string(got) != string(wantYAML) {
-		t.Errorf("PrometheusRule %s %s does not hold the rule files' groups in order", pr.Kind, pr.Metadata.Name)
+	if pr.Kind != "PrometheusRule" || pr.Metadata.Name != "libo11y-rum" {
+		t.Errorf("kind %s name %s, want PrometheusRule libo11y-rum", pr.Kind, pr.Metadata.Name)
+	}
+	if string(got) != string(wantYAML) {
+		t.Errorf("spec.groups differ from the rule files' groups in order\n got:\n%s\nwant:\n%s", got, wantYAML)
 	}
 }
 

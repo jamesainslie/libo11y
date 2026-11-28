@@ -79,7 +79,8 @@ func rumRules(t thresholds.Thresholds, version string) rules.File {
 			},
 		)
 	}
-	minViews15m := num(float64(t.MinViewsPerHour) / 4)
+	// At least one view, so a minimum of 0 never divides by zero views.
+	minViews15m := num(math.Max(float64(t.MinViewsPerHour)/4, 1))
 	alerts.Rules = append(alerts.Rules, rules.Rule{
 		Alert: "O11yRUMErrorRateHigh",
 		Expr: lines(
@@ -105,8 +106,8 @@ func gatewayRules(t thresholds.Thresholds, version string) rules.File {
 		}
 		return `o11yrum_batches_total{` + gs + extra + `}`
 	}
-	// share is the fraction of requests matching extra over window, by
-	// job and app, for apps sending at least the minimum request rate.
+	// share is the fraction of requests matching extra over window, by job
+	// and app. The alerts pair it with gate, the minimum request rate.
 	share := func(extra, window string) string {
 		by := "sum by (job, o11yrum_app) "
 		total := by + "(rate(" + batches("") + "[" + window + "]))"
@@ -140,10 +141,11 @@ func gatewayRules(t thresholds.Thresholds, version string) rules.File {
 			"More than "+percent(t.RateLimitedRatio)+" of the requests for {{ $labels.o11yrum_app }} to {{ $labels.job }} were refused by the per-client rate limit over the last 10 minutes."),
 		alert("O11yRUMGatewaySinkFailing",
 			lines(
-				"sum by (job) (rate("+batches(`o11yrum_reason="sink"`)+"[5m]))",
+				"sum by (job) (rate("+batches(`o11yrum_outcome="rejected", o11yrum_reason="sink"`)+"[5m]))",
 				"/",
 				"sum by (job) (rate("+batches("")+"[5m]))",
 				"> "+num(t.SinkFailureRatio),
+				"and on (job) sum by (job) (rate("+batches("")+"[5m])) > "+minRate,
 			),
 			"5m", "critical",
 			"{{ $labels.job }} cannot export to its sinks",

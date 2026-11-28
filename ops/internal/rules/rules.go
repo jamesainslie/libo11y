@@ -48,13 +48,14 @@ type prometheusRule struct {
 
 type metadata struct {
 	Name   string            `yaml:"name"`
-	Labels map[string]string `yaml:"labels"`
+	Labels map[string]string `yaml:"labels,omitempty"`
 }
 
-// PrometheusRule renders one Prometheus Operator PrometheusRule named name
-// holding the groups of every file, in order. It sets no namespace, so a
-// kustomization or kubectl decides where it goes.
-func PrometheusRule(name string, files ...File) ([]byte, error) {
+// PrometheusRule renders one Prometheus Operator PrometheusRule named name,
+// with the given metadata labels, holding the groups of every file in
+// order. It sets no namespace, so a kustomization or kubectl decides where
+// it goes.
+func PrometheusRule(name string, labels map[string]string, files ...File) ([]byte, error) {
 	if name == "" {
 		return nil, errors.New("rules: a PrometheusRule needs a name")
 	}
@@ -65,7 +66,7 @@ func PrometheusRule(name string, files ...File) ([]byte, error) {
 	return encode(prometheusRule{
 		APIVersion: "monitoring.coreos.com/v1",
 		Kind:       "PrometheusRule",
-		Metadata:   metadata{Name: name, Labels: map[string]string{"app.kubernetes.io/part-of": "libo11y"}},
+		Metadata:   metadata{Name: name, Labels: labels},
 		Spec:       spec,
 	})
 }

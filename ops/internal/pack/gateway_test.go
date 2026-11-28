@@ -110,8 +110,8 @@ func hasRegexp(vs *parser.VectorSelector, name, value string) bool {
 	})
 }
 
-// TestGatewayLinks keeps the gateway dashboard one click from the
-// overview and back.
+// TestGatewayLinks keeps the overview one click from the gateway
+// dashboard. TestOverview checks the link the other way.
 func TestGatewayLinks(t *testing.T) {
 	d := board(t, gatewayUID)
 	var urls []string

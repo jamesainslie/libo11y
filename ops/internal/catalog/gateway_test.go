@@ -391,7 +391,7 @@ func upload(t *testing.T, addr string, sourceMap []byte) {
 		t.Fatal(err)
 	}
 	body, err := io.ReadAll(resp.Body)
-	_ = resp.Body.Close()
+	_ = resp.Body.Close() // the body is read; a close error changes nothing
 	if err != nil {
 		t.Fatalf("upload: read the response: %v", err)
 	}

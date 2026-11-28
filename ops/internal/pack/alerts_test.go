@@ -172,3 +172,26 @@ func TestRunbookAnchors(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildRefusesInvalidRules makes the generator fail, rather than write
+// rule files Prometheus would refuse, when thresholds that pass validation
+// still produce an expression that does not parse.
+func TestBuildRefusesInvalidRules(t *testing.T) {
+	th := thresholds.Default()
+	th.GatewaySelector = `job="x",`
+	if _, err := Build(th, "0.1.0"); err == nil {
+		t.Fatal("a selector with a trailing comma produced rules that do not parse, and Build accepted them")
+	}
+}
+
+// TestErrorRateNeedsViews keeps the error rate alert from dividing by zero
+// views when the minimum traffic is set to 0.
+func TestErrorRateNeedsViews(t *testing.T) {
+	th := thresholds.Default()
+	th.MinViewsPerHour = 0
+	for _, r := range alertsOf(RuleFiles(th, "0.1.0")) {
+		if r.Alert == "O11yRUMErrorRateHigh" && !strings.Contains(r.Expr, recordedViews+" >= 1") {
+			t.Errorf("O11yRUMErrorRateHigh does not need at least one view:\n%s", r.Expr)
+		}
+	}
+}

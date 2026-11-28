@@ -223,10 +223,11 @@ spec:
             summary: The gateway is rate limiting {{ $labels.o11yrum_app }}
         - alert: O11yRUMGatewaySinkFailing
           expr: |-
-            sum by (job) (rate(o11yrum_batches_total{job=~"(.*/)?o11yrum-gateway", o11yrum_reason="sink"}[5m]))
+            sum by (job) (rate(o11yrum_batches_total{job=~"(.*/)?o11yrum-gateway", o11yrum_outcome="rejected", o11yrum_reason="sink"}[5m]))
             /
             sum by (job) (rate(o11yrum_batches_total{job=~"(.*/)?o11yrum-gateway"}[5m]))
             > 0.01
+            and on (job) sum by (job) (rate(o11yrum_batches_total{job=~"(.*/)?o11yrum-gateway"}[5m])) > 0.05
           for: 5m
           labels:
             severity: critical

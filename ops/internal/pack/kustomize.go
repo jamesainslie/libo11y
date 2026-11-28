@@ -9,6 +9,12 @@ import (
 // prometheusRulePath is the PrometheusRule the kustomization deploys.
 const prometheusRulePath = "kubernetes/prometheusrule.yaml"
 
+// The label every Kubernetes object of the pack carries.
+const (
+	partOfLabel = "app.kubernetes.io/part-of"
+	partOfValue = "libo11y"
+)
+
 // ruleFileOrder is the order the PrometheusRule holds the rule files'
 // groups in.
 var ruleFileOrder = []string{rumRulesPath, gatewayRulesPath}
@@ -28,11 +34,11 @@ generatorOptions:
   disableNameSuffixHash: true
   labels:
     grafana_dashboard: "1"
-    app.kubernetes.io/part-of: libo11y
+    ` + partOfLabel + `: ` + partOfValue + `
 configMapGenerator:
 `)
 	for _, d := range dashboards {
-		b.WriteString("  - name: " + d.UID + "\n    files: [dashboards/" + d.UID + ".json]\n")
+		b.WriteString("  - name: " + d.UID + "\n    files: [" + dashboardPath(d.UID) + "]\n")
 	}
 	return b.Bytes()
 }

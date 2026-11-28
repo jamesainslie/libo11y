@@ -90,7 +90,7 @@ More than 20% of the requests for one app were refused by the gateway's per-clie
 
 ### O11yRUMGatewaySinkFailing
 
-More than 1% of the requests to a gateway failed in a sink over the last 5 minutes, for 5 minutes. The gateway answers them with 503 and a Retry-After header, so a short outage loses little, but a sink that stays down loses telemetry. Severity `critical`. Dashboard: gateway.
+More than 1% of the requests to a gateway failed in a sink over the last 5 minutes, for 5 minutes. The gateway must take at least 0.05 requests a second. The gateway answers them with 503 and a Retry-After header, so a short outage loses little, but a sink that stays down loses telemetry. Severity `critical`. Dashboard: gateway.
 
 1. Open `Sink exports by outcome` to see which sink fails.
 2. Check the backend behind that sink, such as the collector, and the network path to it.

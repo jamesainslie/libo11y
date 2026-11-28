@@ -200,3 +200,16 @@ tests:
               description: 'The scrape of 10.0.0.7:9464 in job o11yrum-gateway has failed for 5 minutes. The alert sees only gateways Prometheus scrapes: up exists only for scrape targets, so a gateway that pushes its metrics over OTLP needs its own absence check.'
               runbook_url: 'https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumgatewaydown'
               dashboard: '/d/libo11y-rum-gateway'
+
+  # Sink failures at almost no traffic stay silent: one request a minute,
+  # half failing in a sink, is under the 0.05 requests a second minimum.
+  - interval: 1m
+    input_series:
+      - series: 'o11yrum_batches_total{job="o11yrum-gateway", o11yrum_app="shop-web", o11yrum_signal="logs", o11yrum_outcome="accepted", o11yrum_reason="ok"}'
+        values: '0+1x30'
+      - series: 'o11yrum_batches_total{job="o11yrum-gateway", o11yrum_app="shop-web", o11yrum_signal="logs", o11yrum_outcome="rejected", o11yrum_reason="sink"}'
+        values: '0+1x30'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: O11yRUMGatewaySinkFailing
+        exp_alerts: []

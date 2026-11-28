@@ -98,7 +98,7 @@ func TestFileYAMLKeyOrder(t *testing.T) {
 func TestPrometheusRule(t *testing.T) {
 	a := sample()
 	b := File{Groups: []Group{{Name: "h", Rules: []Rule{{Alert: "Y", Expr: "up == 0", Labels: map[string]string{"severity": "critical"}}}}}}
-	out, err := PrometheusRule("libo11y-rum", a, b)
+	out, err := PrometheusRule("libo11y-rum", map[string]string{"app.kubernetes.io/part-of": "libo11y"}, a, b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func TestPrometheusRule(t *testing.T) {
 	if !slices.Equal(names, []string{"g", "h"}) || pr.Spec.Groups[0].Rules[1].Expr != a.Groups[0].Rules[1].Expr {
 		t.Errorf("spec.groups %+v, want the groups of both files in order", pr.Spec.Groups)
 	}
-	if _, err := PrometheusRule(""); err == nil {
+	if _, err := PrometheusRule("", nil); err == nil {
 		t.Error("a PrometheusRule without a name was accepted")
 	}
 }

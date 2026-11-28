@@ -92,7 +92,7 @@ func gatewayDashboard(t thresholds.Thresholds) dash.Dashboard {
 				timeseries("Rejections by reason", "Refused requests per second by reason. origin and client_token point at configuration, rate_limited at a busy client, sink at a failing backend.",
 					byRate("o11yrum_reason", rejected), "{{o11yrum_reason}}", "reqps"),
 				timeseries("Records dropped by reason", "Records validation removed from accepted requests, per second, by reason.",
-					byRate("o11yrum_reason", `o11yrum_records_dropped_total{`+selGatewayApp+`}`), "{{o11yrum_reason}}", "short"),
+					byRate("o11yrum_reason", `o11yrum_records_dropped_total{`+selGatewayApp+`}`), "{{o11yrum_reason}}", "cps"),
 			},
 			{
 				{
@@ -111,13 +111,13 @@ func gatewayDashboard(t thresholds.Thresholds) dash.Dashboard {
 			},
 			{
 				timeseries("Attributes removed by policy", "Attributes the attribute policy removed per second, by app: o11y.* keys the specification does not define, and keys past the limits.",
-					byRate("o11yrum_app", `o11yrum_attributes_removed_total{`+selGatewayApp+`}`), "{{o11yrum_app}}", "short"),
+					byRate("o11yrum_app", `o11yrum_attributes_removed_total{`+selGatewayApp+`}`), "{{o11yrum_app}}", "cps"),
 				timeseries("Aggregator series by metric", "Attribute sets each derived metric holds, summed across apps. Each app may hold aggregation.max_series_per_metric (default 2000) in one metric before its measurements go to the overflow series. The app picker does not apply.",
 					`sum by (o11yrum_metric) (o11yrum_aggregator_series{`+selGateway+`})`, "{{o11yrum_metric}}", "short"),
 			},
 			{
 				timeseries("Symbolicated frames by result", "Stack frames symbolication handled per second: hit (resolved), unmapped (no mapping at the position), miss (no map for the script), error (the map could not be read) and skipped (no release, or over a batch's budget). A rise in miss usually means a release went out before its maps were uploaded.",
-					byRate("o11yrum_result", `o11yrum_symbolication_frames_total{`+selGatewayApp+`}`), "{{o11yrum_result}}", "short"),
+					byRate("o11yrum_result", `o11yrum_symbolication_frames_total{`+selGatewayApp+`}`), "{{o11yrum_result}}", "cps"),
 				{
 					Type: "table", Title: "Source map uploads by outcome", W: 12, Datasource: &dash.Prometheus,
 					Description: "Source map uploads over the time range, by app and outcome. unauthorized uploads name app unknown when the service is not configured.",

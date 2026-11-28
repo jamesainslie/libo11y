@@ -405,7 +405,7 @@
       "description": "Records validation removed from accepted requests, per second, by reason.",
       "fieldConfig": {
         "defaults": {
-          "unit": "short"
+          "unit": "cps"
         },
         "overrides": []
       },
@@ -575,7 +575,7 @@
       "description": "Attributes the attribute policy removed per second, by app: o11y.* keys the specification does not define, and keys past the limits.",
       "fieldConfig": {
         "defaults": {
-          "unit": "short"
+          "unit": "cps"
         },
         "overrides": []
       },
@@ -669,7 +669,7 @@
       "description": "Stack frames symbolication handled per second: hit (resolved), unmapped (no mapping at the position), miss (no map for the script), error (the map could not be read) and skipped (no release, or over a batch's budget). A rise in miss usually means a release went out before its maps were uploaded.",
       "fieldConfig": {
         "defaults": {
-          "unit": "short"
+          "unit": "cps"
         },
         "overrides": []
       },
