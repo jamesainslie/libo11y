@@ -1,0 +1,18 @@
+{
+  "description": "The Meta event's href is stripped like any URL, and the event keeps only href, width and height.",
+  "query_allow_list": ["page"],
+  "text_allowed_ids": [],
+  "editable_ids": [],
+  "blocked_ids": [],
+  "parent_tags": {},
+  "secrets": ["jane", "Jane", "receipt", "pw@"],
+  "allowed_texts": [],
+  "events": [
+    { "type": 4, "timestamp": 1, "data": { "href": "https://jane:pw@shop.example/orders/42?email=jane%40x.test&page=2#receipt", "width": 1280, "height": 720 } },
+    { "type": 4, "timestamp": 2, "data": { "href": "javascript:alert('jane')", "width": 1, "height": 1, "title": "Jane" } }
+  ],
+  "expected": [
+    { "type": 4, "timestamp": 1, "data": { "href": "https://shop.example/orders/42?page=2", "width": 1280, "height": 720 } },
+    { "type": 4, "timestamp": 2, "data": { "href": "", "width": 1, "height": 1 } }
+  ]
+}

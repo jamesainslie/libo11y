@@ -1,0 +1,69 @@
+{
+  "description": "A mutation batch: text changes follow their node's text rule (script, textarea and editable text emptied, allowed style text kept with URLs stripped), attribute changes follow the attribute rules, and added nodes are scrubbed like a snapshot.",
+  "query_allow_list": ["page"],
+  "text_allowed_ids": [23, 30],
+  "editable_ids": [24],
+  "blocked_ids": [],
+  "parent_tags": { "20": "p", "21": "textarea", "22": "script", "23": "style", "24": "div", "30": "p" },
+  "secrets": ["Jane", "jane", "SECRET", "steal", "typed"],
+  "allowed_texts": ["Public news", "Allowed title"],
+  "events": [
+    {
+      "type": 3,
+      "timestamp": 5,
+      "data": {
+        "source": 0,
+        "texts": [
+          { "id": 20, "value": "Hello Jane" },
+          { "id": 21, "value": "Dear Jane" },
+          { "id": 22, "value": "steal('jane')" },
+          { "id": 23, "value": "a{background:url(/x.png?token=SECRET)}" },
+          { "id": 24, "value": "typed by Jane" },
+          { "id": 30, "value": "Public news" },
+          { "id": 31, "value": null }
+        ],
+        "attributes": [
+          { "id": 30, "attributes": { "title": "Allowed title", "data-x": "SECRET" } },
+          { "id": 40, "attributes": { "title": "Jane", "style": { "background-image": "url(/u.png?token=SECRET)", "color": ["red", "important"], "margin": false }, "href": "/u/1?email=jane%40x.test&page=2", "class": null, "data-ssn": null } },
+          { "id": 41, "attributes": { "onclick": "steal()" } }
+        ],
+        "removes": [{ "parentId": 1, "id": 50 }],
+        "adds": [
+          { "parentId": 40, "nextId": null, "node": { "type": 3, "id": 41, "textContent": "Jane Doe" } },
+          { "parentId": 40, "nextId": 41, "previousId": null, "node": { "type": 2, "id": 42, "tagName": "textarea", "attributes": {}, "childNodes": [
+            { "type": 3, "id": 43, "textContent": "Dear Jane" }
+          ] } }
+        ]
+      }
+    }
+  ],
+  "expected": [
+    {
+      "type": 3,
+      "timestamp": 5,
+      "data": {
+        "source": 0,
+        "texts": [
+          { "id": 20, "value": "***** ****" },
+          { "id": 21, "value": "" },
+          { "id": 22, "value": "" },
+          { "id": 23, "value": "a{background:url(\"/x.png\")}" },
+          { "id": 24, "value": "" },
+          { "id": 30, "value": "Public news" },
+          { "id": 31, "value": null }
+        ],
+        "attributes": [
+          { "id": 30, "attributes": { "title": "Allowed title" } },
+          { "id": 40, "attributes": { "title": "****", "style": { "background-image": "url(\"/u.png\")", "color": ["red", "important"], "margin": false }, "href": "/u/1?page=2", "class": null } }
+        ],
+        "removes": [{ "parentId": 1, "id": 50 }],
+        "adds": [
+          { "parentId": 40, "nextId": null, "node": { "type": 3, "id": 41, "textContent": "**** ***" } },
+          { "parentId": 40, "nextId": 41, "previousId": null, "node": { "type": 2, "id": 42, "tagName": "textarea", "attributes": {}, "childNodes": [
+            { "type": 3, "id": 43, "textContent": "" }
+          ] } }
+        ]
+      }
+    }
+  ]
+}

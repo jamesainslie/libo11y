@@ -1,0 +1,24 @@
+{
+  "description": "CSSOM edits (StyleSheetRule, StyleDeclaration, AdoptedStyleSheet) keep their rules and declarations with every URL stripped.",
+  "query_allow_list": ["page"],
+  "text_allowed_ids": [],
+  "editable_ids": [],
+  "blocked_ids": [],
+  "parent_tags": {},
+  "secrets": ["SECRET"],
+  "allowed_texts": [],
+  "events": [
+    { "type": 3, "timestamp": 1, "data": { "source": 8, "id": 3, "adds": [{ "rule": "a{background:url(/x.png?token=SECRET&page=4)}", "index": 0 }, { "rule": 7 }], "removes": [{ "index": [1, 2] }, { "index": "SECRET" }], "replaceSync": "@import '/t.css?token=SECRET';", "extra": "SECRET" } },
+    { "type": 3, "timestamp": 2, "data": { "source": 8, "styleId": 2, "replace": "b{background:url(data:image/png,SECRET)}" } },
+    { "type": 3, "timestamp": 3, "data": { "source": 13, "styleId": 2, "index": [0, 1], "set": { "property": "background", "value": "url(data:image/png,SECRET)", "priority": "" } } },
+    { "type": 3, "timestamp": 4, "data": { "source": 13, "id": 9, "index": [2], "remove": { "property": "color" } } },
+    { "type": 3, "timestamp": 5, "data": { "source": 15, "id": 1, "styleIds": [4], "styles": [{ "styleId": 4, "rules": [{ "rule": "b{background:url(/y?token=SECRET)}", "index": 0 }] }] } }
+  ],
+  "expected": [
+    { "type": 3, "timestamp": 1, "data": { "source": 8, "id": 3, "adds": [{ "rule": "a{background:url(\"/x.png?page=4\")}", "index": 0 }], "removes": [{ "index": [1, 2] }], "replaceSync": "@import \"/t.css\";" } },
+    { "type": 3, "timestamp": 2, "data": { "source": 8, "styleId": 2, "replace": "b{background:url(\"\")}" } },
+    { "type": 3, "timestamp": 3, "data": { "source": 13, "styleId": 2, "index": [0, 1], "set": { "property": "background", "value": "url(\"\")", "priority": "" } } },
+    { "type": 3, "timestamp": 4, "data": { "source": 13, "id": 9, "index": [2], "remove": { "property": "color" } } },
+    { "type": 3, "timestamp": 5, "data": { "source": 15, "id": 1, "styleIds": [4], "styles": [{ "styleId": 4, "rules": [{ "rule": "b{background:url(\"/y\")}", "index": 0 }] }] } }
+  ]
+}
