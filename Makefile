@@ -8,7 +8,7 @@ GO_TEST_P ?= 4
 # gate runs on each module separately.
 GO_MODULES := go go/o11ygin go/o11yconnect go/o11ysql go/o11yrum ops
 
-.PHONY: spec-check spec-generate spec-drift ops-generate ops-check test lint vet tidy-check vuln release-check zig-release-check python-release-check rust-release-check rust-release-check-test c-release-check schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-npm-plan-test ts-install ts-check ts-size ts-browser-test rum-e2e rust-check rust-msrv zig-check zig-integrations-check zig-hygiene-test python-check python-hygiene-test c-check ci
+.PHONY: spec-check spec-generate spec-drift ops-generate ops-check test lint vet tidy-check vuln release-check zig-release-check python-release-check rust-release-check rust-release-check-test c-release-check o11yrum-release-check print-o11yrum-release-version o11yrum-image schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-npm-plan-test ts-install ts-check ts-size ts-browser-test rum-e2e rust-check rust-msrv zig-check zig-integrations-check zig-hygiene-test python-check python-hygiene-test c-check ci
 
 # Validate the spec registry against the libo11y policy suite (naming,
 # ownership, sensitivity, cardinality, events, units).
@@ -146,6 +146,12 @@ RUST_RELEASE_VERSION ?= v0.1.0
 # Moves only in a release commit.
 C_RELEASE_VERSION ?= v0.1.0
 
+# The o11yrum gateway module's own version line (go/o11yrum/vX.Y.Z), which
+# o11yrum-release-check.sh validates and the release workflow requires to
+# match the tag. Moves only in a release commit, together with the
+# script's default and a dated go/o11yrum/CHANGELOG.md section.
+O11YRUM_RELEASE_VERSION ?= v0.1.0
+
 # Validate the Zig package at ZIG_RELEASE_VERSION as an external consumer
 # fetches and runs it against an in-process OTLP receiver.
 # Needs a clean working tree and zig 0.17.1.
@@ -183,15 +189,37 @@ c-release-check:
 # ZIG_RELEASE_VERSION, validate the Python wheel and sdist at
 # PYTHON_RELEASE_VERSION, validate the Rust workspace at
 # RUST_RELEASE_VERSION, and validate the C11 install prefix at
-# C_RELEASE_VERSION.
+# C_RELEASE_VERSION. The o11yrum module is checked at
+# O11YRUM_RELEASE_VERSION after the lockstep Go modules.
 # Needs a clean working tree.
 release-check:
 	scripts/release-check.sh $(RELEASE_VERSION)
+	scripts/o11yrum-release-check.sh $(O11YRUM_RELEASE_VERSION)
 	scripts/ts-release-check.sh $(TS_RELEASE_VERSION)
 	scripts/zig-release-check.sh $(ZIG_RELEASE_VERSION)
 	scripts/python-release-check.sh $(PYTHON_RELEASE_VERSION)
 	scripts/rust-release-check.sh $(RUST_RELEASE_VERSION)
 	scripts/c-release-check.sh $(C_RELEASE_VERSION)
+
+# Validate the o11yrum release at O11YRUM_RELEASE_VERSION against a
+# throwaway local remote: the parent version it requires is a real go/
+# tag, the module builds, vets and tests without its replace directive,
+# the installed command reports the version, and an external consumer
+# builds. Needs a clean working tree.
+o11yrum-release-check:
+	scripts/o11yrum-release-check.sh $(O11YRUM_RELEASE_VERSION)
+
+# Prints O11YRUM_RELEASE_VERSION, for the release workflow.
+print-o11yrum-release-version:
+	@echo $(O11YRUM_RELEASE_VERSION)
+
+# Build the o11yrum-gateway image for the local platform and check it: the
+# version it reports, the 40 MiB size budget, the numeric non-root user,
+# the example configuration, and /healthz and /readyz from a read-only
+# root filesystem (needs docker with buildx, and curl). The release
+# workflow builds linux/amd64 and linux/arm64 from the same Dockerfile.
+o11yrum-image:
+	scripts/o11yrum-image-check.sh
 
 # Release step, not a ci gate (it needs the network): confirm the schema URL
 # serves spec/schemas/<version> byte for byte before tagging spec/vX.Y.Z.
@@ -287,4 +315,4 @@ c-check:
 
 # vuln runs last: it depends on the advisory database and the toolchain's
 # patch level, so local runs exercise every other gate first.
-ci: lint vet test tidy-check spec-check spec-drift ops-check ts-check ts-size ts-browser-test rum-e2e rust-check rust-msrv zig-check python-check c-check schema-published-test release-notes-test release-tag-test rust-release-check-test ts-browser-bundle-test ts-npm-plan-test release-check vuln
+ci: lint vet test tidy-check spec-check spec-drift ops-check ts-check ts-size ts-browser-test rum-e2e o11yrum-image rust-check rust-msrv zig-check python-check c-check schema-published-test release-notes-test release-tag-test rust-release-check-test ts-browser-bundle-test ts-npm-plan-test release-check vuln

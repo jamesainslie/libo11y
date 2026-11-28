@@ -2,12 +2,14 @@
 // configuration file, and the standard OTEL_* environment variables for
 // its own telemetry.
 //
-//	o11yrum-gateway -config /etc/o11yrum/gateway.yaml
+//	o11yrum-gateway -config /etc/o11yrum/config.yaml
 //
 // It serves the gateway under /_o11y/v1/, liveness at /healthz and
 // readiness at /readyz, and drains in-flight requests on SIGINT or
-// SIGTERM. When the configuration sets no sinks.otlp.endpoint, batches go
-// to OTEL_EXPORTER_OTLP_ENDPOINT if that is set.
+// SIGTERM. Once shutdown begins /readyz answers 503, and the gateway keeps
+// serving for the configuration's shutdown_delay before it drains. When
+// the configuration sets no sinks.otlp.endpoint, batches go to
+// OTEL_EXPORTER_OTLP_ENDPOINT if that is set.
 //
 // The metrics the gateway derives leave with its own metrics, through the
 // reader OTEL_METRICS_EXPORTER selects. When OTEL_METRICS_PRODUCERS is
@@ -32,8 +34,10 @@ import (
 	"os"
 	"os/signal"
 	"regexp"
+	"runtime/debug"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -43,11 +47,32 @@ import (
 	"github.com/jamesainslie/libo11y/go/spec"
 )
 
-// version is set at build time with -ldflags "-X main.version=...".
+// version is set at build time with -ldflags "-X main.version=...". When
+// it is not, resolveVersion falls back to the module version Go records in
+// the binary, so `go install ...@v0.1.0` reports v0.1.0.
 var version = "dev"
 
-// Shutdown budget. Together they stay inside Kubernetes' default 30s
-// termination grace period, so the final telemetry flush is not killed.
+// resolveVersion returns the version the gateway reports: the linker flag
+// when one was given, else the main module's version from info, else dev.
+func resolveVersion(linked string, info *debug.BuildInfo) string {
+	if linked != "" && linked != "dev" {
+		return linked
+	}
+	if info != nil && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+	return "dev"
+}
+
+// buildVersion is resolveVersion for this binary.
+func buildVersion() string {
+	info, _ := debug.ReadBuildInfo() // nil when the binary carries none
+	return resolveVersion(version, info)
+}
+
+// Shutdown budget. With shutdown_delay 0 and no preStop sleep, they stay
+// inside Kubernetes' default 30s termination grace period, so the final
+// telemetry flush is not killed. A delay or a sleep adds to the budget.
 const (
 	serverDrain    = 15 * time.Second // in-flight requests and their exports
 	telemetryFlush = 10 * time.Second // the gateway's own telemetry
@@ -79,7 +104,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if *showVersion {
-		_, _ = fmt.Fprintln(stdout, version)
+		_, _ = fmt.Fprintln(stdout, buildVersion())
 		return 0
 	}
 	if *configPath == "" {
@@ -228,7 +253,7 @@ func serve(ctx context.Context, cfg *o11yrum.Config, sink *o11yrum.OTLPSink, sto
 	registerProducer(producer)
 	sdk, err := o11y.New(ctx,
 		o11y.WithServiceName(cfg.Telemetry.ServiceName),
-		o11y.WithServiceVersion(version),
+		o11y.WithServiceVersion(buildVersion()),
 		o11y.WithEnvironment(spec.Environment(cfg.Environment)))
 	if err != nil {
 		return fmt.Errorf("telemetry: %w", err)
@@ -257,7 +282,16 @@ func serve(ctx context.Context, cfg *o11yrum.Config, sink *o11yrum.OTLPSink, sto
 	mux := http.NewServeMux()
 	mux.Handle("/_o11y/", h)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
-	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	// Readiness fails from the moment shutdown begins, before the
+	// listener closes, so a load balancer probing it stops sending traffic.
+	var draining atomic.Bool
+	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) {
+		if draining.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
 	srv := &http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
@@ -278,6 +312,17 @@ func serve(ctx context.Context, cfg *o11yrum.Config, sink *o11yrum.OTLPSink, sto
 	case err := <-serveErr:
 		return err
 	case <-ctx.Done():
+	}
+	draining.Store(true)
+	if cfg.ShutdownDelay > 0 {
+		_, _ = fmt.Fprintf(stderr, "o11yrum-gateway: shutting down; /readyz answers 503, draining in %v\n", cfg.ShutdownDelay)
+		delay := time.NewTimer(cfg.ShutdownDelay)
+		select {
+		case err := <-serveErr:
+			delay.Stop()
+			return err
+		case <-delay.C:
+		}
 	}
 	drainCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), serverDrain)
 	defer cancel()

@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"sync"
@@ -200,6 +201,101 @@ func TestServeAndShutdown(t *testing.T) {
 		}
 	case <-time.After(30 * time.Second):
 		t.Fatal("the gateway did not shut down")
+	}
+}
+
+// TestReadyzFailsWhenShutdownBegins checks that /readyz answers 503 from
+// the moment shutdown begins, while the gateway keeps serving everything
+// else for shutdown_delay so a load balancer can take it out of rotation
+// before the listener closes.
+func TestReadyzFailsWhenShutdownBegins(t *testing.T) {
+	collector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer collector.Close()
+	quietTelemetry(t)
+	cfg := writeConfig(t, collector.URL)
+	f, err := os.OpenFile(cfg, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("shutdown_delay: 3s\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pr, pw := io.Pipe()
+	defer func() { _ = pw.Close() }()
+	done := make(chan int, 1)
+	go func() { done <- run(ctx, []string{"-config", cfg}, io.Discard, pw) }()
+	base := "http://" + waitForListening(t, pr)
+	client := &http.Client{Timeout: 2 * time.Second, Transport: &http.Transport{DisableKeepAlives: true}}
+	status := func(path string) int {
+		t.Helper()
+		resp, err := client.Get(base + path)
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+	if got := status("/readyz"); got != http.StatusOK {
+		t.Fatalf("/readyz before shutdown: status %d", got)
+	}
+
+	start := time.Now()
+	cancel()
+	deadline := time.Now().Add(time.Second)
+	for status("/readyz") != http.StatusServiceUnavailable {
+		if time.Now().After(deadline) {
+			t.Fatal("/readyz did not answer 503 within 1s of shutdown beginning")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := status("/healthz"); got != http.StatusOK {
+		t.Errorf("/healthz during the shutdown delay: status %d", got)
+	}
+	if got := status("/_o11y/v1/config?service=shop-web"); got != http.StatusOK {
+		t.Errorf("config during the shutdown delay: status %d", got)
+	}
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("exit %d", code)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the gateway did not shut down")
+	}
+	if elapsed := time.Since(start); elapsed < 3*time.Second {
+		t.Errorf("the gateway exited %v after shutdown began, before its 3s shutdown_delay", elapsed)
+	}
+}
+
+func TestResolveVersion(t *testing.T) {
+	info := func(v string) *debug.BuildInfo {
+		return &debug.BuildInfo{Main: debug.Module{Path: "github.com/jamesainslie/libo11y/go/o11yrum", Version: v}}
+	}
+	for name, tc := range map[string]struct {
+		linked string
+		info   *debug.BuildInfo
+		want   string
+	}{
+		"linker flag wins":         {"v0.1.0", info("v0.0.9"), "v0.1.0"},
+		"go install at a version":  {"dev", info("v0.1.0"), "v0.1.0"},
+		"pseudo-version from vcs":  {"dev", info("v0.1.1-0.20261127000000-abcdefabcdef"), "v0.1.1-0.20261127000000-abcdefabcdef"},
+		"devel build":              {"dev", info("(devel)"), "dev"},
+		"no module version":        {"dev", info(""), "dev"},
+		"no build info":            {"dev", nil, "dev"},
+		"empty flag keeps default": {"", nil, "dev"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := resolveVersion(tc.linked, tc.info); got != tc.want {
+				t.Errorf("resolveVersion(%q) = %q, want %q", tc.linked, got, tc.want)
+			}
+		})
 	}
 }
 

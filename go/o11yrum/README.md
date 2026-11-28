@@ -6,27 +6,88 @@ and validates them against the libo11y specification, and forwards them to
 your backend. The design is in
 [the RUM design document](../../docs/design/2026-11-27-libo11y-rum-design.md).
 
-In development; not yet released.
+o11yrum versions on its own line, tagged `go/o11yrum/vX.Y.Z`. Its changes
+are in [`CHANGELOG.md`](CHANGELOG.md).
+
+## Installing
+
+Install the command:
+
+```sh
+go install github.com/jamesainslie/libo11y/go/o11yrum/cmd/o11yrum-gateway@v0.1.0
+```
+
+Or run the container image, built for `linux/amd64` and `linux/arm64`:
+
+```sh
+docker pull ghcr.io/jamesainslie/o11yrum-gateway:0.1.0
+```
+
+Each release tags the image `X.Y.Z`. A release without a `-prerelease`
+suffix also tags `X.Y` and `latest`. Pin the image by digest in
+production. The summary of the release workflow's `image` job prints the
+digest. Every
+image carries build provenance, which you can check before you mirror it:
+
+```sh
+gh attestation verify oci://ghcr.io/jamesainslie/o11yrum-gateway:0.1.0 --repo jamesainslie/libo11y
+```
+
+Use the module as a library with `go get
+github.com/jamesainslie/libo11y/go/o11yrum@v0.1.0`. It requires
+`github.com/jamesainslie/libo11y/go` v0.4.0 or later.
 
 ## Running the gateway
 
-From `go/o11yrum`:
-
 ```sh
-go install ./cmd/o11yrum-gateway
 o11yrum-gateway -check-config -config gateway.yaml
 o11yrum-gateway -config gateway.yaml
+o11yrum-gateway -version
 ```
 
 [`cmd/o11yrum-gateway/testdata/gateway.yaml`](cmd/o11yrum-gateway/testdata/gateway.yaml)
-is a complete configuration. `environment` is required and takes
-`production`, `staging`, `development` or `test`. Without
-`sinks.otlp.endpoint`, batches go to `OTEL_EXPORTER_OTLP_ENDPOINT` with
-`OTEL_EXPORTER_OTLP_HEADERS`, which must use the `http/protobuf` protocol.
-The gateway's own telemetry follows the standard `OTEL_*` variables.
+is a complete configuration. It listens on `127.0.0.1:0` for tests, so
+remove `listen` or set it to `:8080` before you use it in the container.
+`environment` is required and takes
+`production`, `staging`, `development` or `test`. The gateway's own
+telemetry follows the standard `OTEL_*` variables.
 
-The config endpoint shares the ingest rate limit, so a page load that
-fetches its configuration spends one request of the client's budget.
+The gateway serves the RUM endpoints under `/_o11y/v1/`, liveness at
+`/healthz` and readiness at `/readyz`. On SIGTERM or SIGINT, `/readyz`
+answers 503 at once. The gateway keeps serving for `shutdown_delay`
+(default 0), then stops accepting connections and drains. In-flight
+requests get 15 seconds to finish and the gateway's own telemetry gets 10
+seconds to flush. A second signal ends the process at once.
+
+### The batch sink and the OTEL_EXPORTER_OTLP_* fallback
+
+Batches go to the collector `sinks.otlp.endpoint` names, as OTLP/HTTP
+protobuf. When the configuration leaves it unset, the gateway reads the
+same variables its own telemetry uses:
+
+- `OTEL_EXPORTER_OTLP_ENDPOINT` becomes the sink's endpoint. The signal
+  specific variables, such as `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, are
+  not read for the sink.
+- `OTEL_EXPORTER_OTLP_HEADERS` adds its headers. A header the
+  configuration sets wins.
+- `OTEL_EXPORTER_OTLP_PROTOCOL` must be unset or `http/protobuf`, because
+  that is what the sink speaks. When the endpoint comes from the
+  environment, any other value stops the gateway at startup. Set `sinks.otlp.endpoint` to send the gateway's own telemetry
+  over gRPC and the batches over HTTP.
+
+With neither set, the gateway accepts and validates batches but forwards
+them nowhere. It still derives metrics from them.
+
+### The shared rate limit
+
+Every request from one client spends the same budget,
+`edge.rate_limit_per_minute` (default 60): ingest of traces, logs and app
+metrics, and `GET /_o11y/v1/config`. A page load that fetches its
+configuration spends one request of that budget. A failed source map
+upload authentication spends it too. Authenticated uploads do not.
+Clients behind one address, such as an office NAT, share one budget,
+because the gateway keys the limiter on the client address it resolves.
+Raise the limit when many users share an address.
 
 ## Derived metrics
 
@@ -106,7 +167,7 @@ The script path is the URL's path, so one upload serves every origin and
 unknown app and an app without uploads all answer 401, and each failed
 attempt spends the client's rate limit. Authenticated uploads are not
 rate limited. `@libo11y/sourcemaps` and its `libo11y-sourcemaps` command
-upload a build's maps.
+upload a build's maps. That package is not on npm yet.
 
 Each frame is looked up by the resource's `service.version` and
 `o11y.rum.app.update_id` (a record's own update ID wins). A resolved frame
@@ -134,3 +195,112 @@ request. Frames past that budget count as `skipped`. `o11yrum.symbolication.fram
 counts frames by `o11yrum.result`: `hit`, `unmapped`, `miss`, `error` and
 `skipped`. `o11yrum.sourcemaps.uploads` counts uploads by outcome. A
 failing store is logged at most once a minute.
+
+## Deploying
+
+### The container
+
+The image holds one static binary on `gcr.io/distroless/static-debian12`.
+It runs as user and group 65532, a numeric ID, so Kubernetes can enforce
+`runAsNonRoot`. Its default arguments are `-config
+/etc/o11yrum/config.yaml`. Setting `args` in Kubernetes replaces them, so
+keep `-config` when you do. It listens on port 8080, the default `listen`
+address. It writes nothing at
+runtime, so it runs with a read-only root filesystem and every capability
+dropped. A `filesystem` object store is the one exception: mount a
+writable volume at its `root`. The image has no shell and no `sleep`, so
+an `exec` probe or hook cannot work. Probe over HTTP.
+
+### Kubernetes
+
+Mount the configuration from a ConfigMap under the key `config.yaml`, and
+each upload token from a Secret at the path its `upload_token_file`
+names. `OTEL_EXPORTER_OTLP_ENDPOINT` names the collector for the
+gateway's own telemetry, and for the batches too unless the configuration
+sets `sinks.otlp.endpoint`. On EKS, give the
+service account an S3 role through Pod Identity or IRSA when the object
+store is `s3`.
+
+```yaml
+spec:
+  terminationGracePeriodSeconds: 40
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    seccompProfile: {type: RuntimeDefault}
+  containers:
+    - name: o11yrum-gateway
+      image: ghcr.io/jamesainslie/o11yrum-gateway@sha256:<digest>
+      ports:
+        - {name: http, containerPort: 8080}
+      env:
+        - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://otel-collector:4318"}
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities: {drop: [ALL]}
+      livenessProbe:
+        httpGet: {path: /healthz, port: http}
+      readinessProbe:
+        httpGet: {path: /readyz, port: http}
+        periodSeconds: 5
+      lifecycle:
+        preStop:
+          sleep: {seconds: 5}
+      volumeMounts:
+        - {name: config, mountPath: /etc/o11yrum, readOnly: true}
+  volumes:
+    - name: config
+      configMap: {name: o11yrum-gateway}
+```
+
+Keep the `preStop` sleep. Kubernetes takes a terminating pod out of its
+Service endpoints on its own, but kube-proxy, the ingress controller and
+any cloud load balancer learn of it a few seconds later. Until then they
+still send it traffic. `/readyz` fails as soon as the gateway receives
+SIGTERM, and the listener closes right after when `shutdown_delay` is 0.
+A connection that arrives in that gap is refused. The sleep holds SIGTERM
+back until the routers have caught up. The `sleep` action needs
+Kubernetes 1.30 or later. On an older cluster, set `shutdown_delay: 5s`
+in the configuration instead, which keeps the gateway serving with
+`/readyz` failing for that long. Use one or the other, because the two
+add up. `shutdown_delay` also suits a load balancer outside Kubernetes
+that health-checks `/readyz` directly.
+
+Size `terminationGracePeriodSeconds` to cover the `preStop` sleep or
+`shutdown_delay`, plus 25 seconds: 15 for draining requests and 10 for
+flushing the gateway's own telemetry. The default 30 seconds fits only
+when both are 0.
+
+### Behind a router
+
+Route `/_o11y/*` on the app's own origin to the gateway, so browsers send
+same-origin requests and need no CORS preflight. The gateway also answers
+cross-origin requests from each app's `origins`, so it can run on its own
+host instead.
+
+Set `edge.trusted_proxies` to the addresses of the hops in front of the
+gateway, such as the ingress controller's pod network. The gateway
+believes the forwarding header only from those hops, and takes the first
+address it cannot vouch for as the client.
+
+### Trusting a CDN with trusted_from
+
+`edge.country.trusted_from` lists the hops allowed to set the country
+header, such as Cloudflare's `CF-IPCountry`. Those hops also count as
+trusted proxies for the forwarding header. Listing a CDN's published
+address ranges trusts everyone who can send traffic through that CDN, not
+only your own zone. Another customer of the same CDN can point a worker or
+a proxy rule at your origin and set any country, and any forwarding
+header, on its requests. A forged forwarding header lets one sender
+present a new client address on each request, which slips past the
+per-client rate limit and skews the country breakdown.
+
+Accept origin traffic only from your own CDN zone before you list its
+ranges. Authenticated origin pulls (mutual TLS from the CDN), a tunnel
+from the CDN to the cluster, or a shared secret header that the ingress
+checks all do this. Better still, let the ingress controller that verifies
+the CDN rewrite the headers, and list only that controller's addresses in
+`trusted_proxies` and `trusted_from`.
+

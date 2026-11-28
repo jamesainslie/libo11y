@@ -149,6 +149,20 @@ jobs:
           node-version: "24.x"
       - run: make rum-e2e
 
+  # The o11yrum-gateway image for the runner's platform: it builds, reports
+  # its version, fits the size budget, runs as a numeric non-root user and
+  # serves /healthz from a read-only root filesystem. The release workflow
+  # builds both platforms from the same Dockerfile.
+  o11yrum-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - run: make o11yrum-image
+
   # The browser packages' suites under Playwright: @libo11y/web and
   # @libo11y/webext in headless Chromium, @libo11y/rum and its adapters in
   # headless Chromium, Firefox and WebKit.

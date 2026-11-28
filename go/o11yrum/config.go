@@ -29,6 +29,12 @@ type Config struct {
 	// production, staging, development or test. The o11yrum-gateway
 	// command requires it. The library ignores it.
 	Environment string `yaml:"environment"`
+	// ShutdownDelay is how long the o11yrum-gateway command keeps serving
+	// after a shutdown signal, with /readyz answering 503, before it stops
+	// accepting connections and drains. It gives a load balancer that
+	// probes /readyz time to stop sending traffic. Default 0. The library
+	// ignores it.
+	ShutdownDelay time.Duration `yaml:"shutdown_delay"`
 	// Telemetry configures the gateway's own telemetry.
 	Telemetry TelemetryConfig `yaml:"telemetry"`
 
@@ -369,6 +375,9 @@ func (c *Config) validate() error {
 	}
 	if c.Edge.ClockSkewThreshold < 0 {
 		return errors.New("edge.clock_skew_threshold must not be negative")
+	}
+	if c.ShutdownDelay < 0 {
+		return errors.New("shutdown_delay must not be negative")
 	}
 	if err := c.ObjectStore.validate(); err != nil {
 		return err

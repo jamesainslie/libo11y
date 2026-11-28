@@ -1,0 +1,8 @@
+# The o11yrum-gateway image builds from go/o11yrum (see Dockerfile). Only
+# the module's go.mod, go.sum and non-test Go sources are admitted.
+*
+!go.mod
+!go.sum
+!**/*.go
+**/*_test.go
+**/testdata

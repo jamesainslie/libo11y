@@ -119,6 +119,19 @@ the main module at the same version. The modules require Go 1.26.0 or
 later. Build with the latest patch release of the 1.26 or 1.27 line to
 pick up the standard-library security fixes.
 
+The RUM gateway is its own Go module, `go/o11yrum`, with its own version
+line. It receives OTLP from browsers, browser extensions and React Native
+apps, validates and enriches it, derives the standard RUM metrics, and
+forwards it to your collector. Install the command or pull the image:
+
+```sh
+go install github.com/jamesainslie/libo11y/go/o11yrum/cmd/o11yrum-gateway@v0.1.0
+docker pull ghcr.io/jamesainslie/o11yrum-gateway:0.1.0
+```
+
+[`go/o11yrum/README.md`](go/o11yrum/README.md) covers configuration and
+deployment.
+
 The latest Go release, `go/v0.4.0`, implements spec 1.3.0 and stamps that
 version's schema URL on every resource. The TypeScript packages at
 `ts/v0.2.1` implement spec 1.2.0. Spec 1.3.0 support is on `main` and
@@ -485,7 +498,11 @@ From `go/v0.2.0`, each release also tags `go/o11yconnect/vX.Y.Z` and
 `go/o11ysql/vX.Y.Z` on that commit. Each Go release is listed in
 [`go/CHANGELOG.md`](go/CHANGELOG.md) and on the GitHub releases page.
 `make release-check` validates the tag sequence against a throwaway local
-remote before a release.
+remote before a release. The RUM gateway module releases on its own line
+as `go/o11yrum/vX.Y.Z`, listed in
+[`go/o11yrum/CHANGELOG.md`](go/o11yrum/CHANGELOG.md), and each release
+publishes the `ghcr.io/jamesainslie/o11yrum-gateway` image with attested
+build provenance.
 
 The TypeScript packages release in lockstep. One `ts/vX.Y.Z` tag publishes
 `@libo11y/spec`, `@libo11y/core`, `@libo11y/server`, `@libo11y/test`,

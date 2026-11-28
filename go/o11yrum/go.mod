@@ -6,7 +6,7 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.48.2
 	github.com/aws/aws-sdk-go-v2/config v1.33.23
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.116.2
-	github.com/jamesainslie/libo11y/go v0.3.0
+	github.com/jamesainslie/libo11y/go v0.4.0
 	go.opentelemetry.io/collector/pdata v1.72.0
 	go.opentelemetry.io/contrib/exporters/autoexport v0.72.0
 	go.opentelemetry.io/otel v1.47.0
@@ -84,8 +84,3 @@ require (
 	google.golang.org/grpc v1.85.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 )
-
-// The parent module resolves from this checkout when the go.work
-// workspace is off. Downstream consumers ignore replace directives and
-// resolve the version required above.
-replace github.com/jamesainslie/libo11y/go => ../
