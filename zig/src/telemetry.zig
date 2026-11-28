@@ -526,6 +526,22 @@ pub const Telemetry = struct {
         }
     }
 
+    /// Reports a configuration value that was ignored. Setup still
+    /// succeeds. Without a caller's error handler the warning goes to
+    /// stderr. With one it arrives under the component `configuration`,
+    /// so a handler can tell it from an export failure. `ExportError` has
+    /// no member for it, so the error is `error.ExportFailed`.
+    fn warnConfig(self: *Telemetry, options: Options, comptime fmt: []const u8, args: anytype) void {
+        var msg_buf: [256]u8 = undefined;
+        var w: Io.Writer = .fixed(&msg_buf);
+        w.print(fmt, args) catch {};
+        if (options.error_handler == null) {
+            self.default_error_handler.reportWarning(w.buffered());
+        } else {
+            self.error_handler.handle("configuration", error.ExportFailed, w.buffered());
+        }
+    }
+
     fn emitStartupCanary(self: *Telemetry) error{CanaryRejected}!void {
         try self.emitEventFallible(.background, spec.event.telemetry_configured, self.summary.attrs);
     }
@@ -675,14 +691,7 @@ fn finishBuild(
     const disabled_info = parseSdkDisabled(options.env);
     self.disabled = disabled_info.disabled;
     if (disabled_info.invalid_value) |bad| {
-        var msg_buf: [256]u8 = undefined;
-        var w: Io.Writer = .fixed(&msg_buf);
-        w.print("o11y: OTEL_SDK_DISABLED={s} is neither true nor false; the SDK stays enabled", .{bad}) catch {};
-        if (options.error_handler == null) {
-            self.default_error_handler.reportWarning(w.buffered());
-        } else {
-            self.error_handler.handle("o11y", error.ExportFailed, w.buffered());
-        }
+        self.warnConfig(options, "o11y: OTEL_SDK_DISABLED={s} is neither true nor false; the SDK stays enabled", .{bad});
     }
 
     // Propagator + inject-only baggage egress filter.
@@ -720,7 +729,7 @@ fn finishBuild(
             readers_buf[0] = r;
             reader_count = 1;
         } else if (!options.env.isHermetic()) {
-            const exp_name = std.mem.trim(u8, options.env.getOr("OTEL_METRICS_EXPORTER", "otlp"), " \t\r\n");
+            const exp_name = summary_mod.exporterName(options.env, "OTEL_METRICS_EXPORTER");
             if (std.ascii.eqlIgnoreCase(exp_name, "none")) {
                 // Disabled via env.
             } else if (std.ascii.eqlIgnoreCase(exp_name, "otlp")) {
@@ -765,14 +774,21 @@ fn finishBuild(
                 readers_buf[0] = self.owned_periodic_reader.?.reader();
                 reader_count = 1;
             } else {
-                return failDiag(options.diagnostic, error.Exporter, "o11y: unsupported OTEL_METRICS_EXPORTER");
+                return failExporter(options.diagnostic, "OTEL_METRICS_EXPORTER", exp_name);
             }
         }
     }
 
-    const exemplar_filter: metric_exemplar.Filter = options.exemplar_filter orelse
-        (if (!options.env.isHermetic()) metric_exemplar.filterFromEnv(options.env) else null) orelse
-        .trace_based;
+    const env_exemplar_filter = if (!options.env.isHermetic()) metric_exemplar.filterFromEnv(options.env) else null;
+    if (options.exemplar_filter == null and env_exemplar_filter == null and !options.env.isHermetic()) {
+        const raw = std.mem.trim(u8, options.env.getOr("OTEL_METRICS_EXEMPLAR_FILTER", ""), " \t\r\n");
+        if (raw.len > 0) self.warnConfig(
+            options,
+            "o11y: OTEL_METRICS_EXEMPLAR_FILTER={s} is not trace_based, always_on or always_off; trace_based applies",
+            .{raw},
+        );
+    }
+    const exemplar_filter: metric_exemplar.Filter = options.exemplar_filter orelse env_exemplar_filter orelse .trace_based;
 
     self.meter_provider = try metric_meter.MeterProvider.create(gpa, io, .{
         .resource = self.owned_resource.resource,
@@ -802,6 +818,18 @@ fn finishBuild(
             options.env.get("OTEL_TRACES_SAMPLER"),
             options.env.get("OTEL_TRACES_SAMPLER_ARG"),
         );
+        if (env_s.problem) |problem| switch (problem) {
+            .unsupported_sampler => self.warnConfig(
+                options,
+                "o11y: OTEL_TRACES_SAMPLER={s} names no supported sampler; the default sampler applies",
+                .{options.env.getOr("OTEL_TRACES_SAMPLER", "")},
+            ),
+            .invalid_argument, .negative_ratio, .ratio_above_one => self.warnConfig(
+                options,
+                "o11y: OTEL_TRACES_SAMPLER_ARG={s} is not a ratio between 0 and 1; a ratio of 1 applies",
+                .{options.env.getOr("OTEL_TRACES_SAMPLER_ARG", "")},
+            ),
+        };
         break :blk env_s.sampler orelse .default;
     };
 
@@ -821,7 +849,7 @@ fn finishBuild(
             span_procs_buf[span_proc_count] = self.owned_batch_span_processor.?.processor();
             span_proc_count += 1;
         } else if (options.span_processor == null and !options.env.isHermetic()) {
-            const exp_name = std.mem.trim(u8, options.env.getOr("OTEL_TRACES_EXPORTER", "otlp"), " \t\r\n");
+            const exp_name = summary_mod.exporterName(options.env, "OTEL_TRACES_EXPORTER");
             if (std.ascii.eqlIgnoreCase(exp_name, "none")) {
                 // Disabled via env.
             } else if (std.ascii.eqlIgnoreCase(exp_name, "otlp")) {
@@ -861,7 +889,7 @@ fn finishBuild(
                 span_procs_buf[span_proc_count] = self.owned_batch_span_processor.?.processor();
                 span_proc_count += 1;
             } else {
-                return failDiag(options.diagnostic, error.Exporter, "o11y: unsupported OTEL_TRACES_EXPORTER");
+                return failExporter(options.diagnostic, "OTEL_TRACES_EXPORTER", exp_name);
             }
         }
     }
@@ -874,7 +902,7 @@ fn finishBuild(
     });
 
     // LoggerProvider (OTLP log export leg).
-    const env_logs_exporter = if (options.env.isHermetic()) "" else std.mem.trim(u8, options.env.getOr("OTEL_LOGS_EXPORTER", "otlp"), " \t\r\n");
+    const env_logs_exporter = if (options.env.isHermetic()) "" else summary_mod.exporterName(options.env, "OTEL_LOGS_EXPORTER");
     const log_export_enabled = !self.disabled and options.log_export and
         (options.log_exporter != null or (!options.env.isHermetic() and !std.ascii.eqlIgnoreCase(env_logs_exporter, "none")));
 
@@ -913,7 +941,7 @@ fn finishBuild(
                 },
             };
         } else {
-            return failDiag(options.diagnostic, error.Exporter, "o11y: unsupported OTEL_LOGS_EXPORTER");
+            return failExporter(options.diagnostic, "OTEL_LOGS_EXPORTER", env_logs_exporter);
         };
 
         const blrp_cfg = if (options.env.isHermetic())
@@ -1177,6 +1205,13 @@ fn bspConfigFromEnv(env: resource_mod.Env) batch.Config {
     }
     cfg.max_export_batch_size = @min(cfg.max_export_batch_size, cfg.max_queue_size);
     return cfg;
+}
+
+/// Fails setup for an `OTEL_*_EXPORTER` value that names no exporter this
+/// SDK has. Only `otlp` and `none` are supported.
+fn failExporter(diag: ?*resource_mod.Diagnostic, variable: []const u8, name: []const u8) SetupError {
+    if (diag) |d| d.print("o11y: unsupported {s}: {s}", .{ variable, name });
+    return error.Exporter;
 }
 
 fn failDiag(diag: ?*resource_mod.Diagnostic, err: SetupError, msg: []const u8) SetupError {
@@ -1624,6 +1659,106 @@ test "process metrics disabled when runtime_metrics is false" {
             try testing.expect(!std.mem.startsWith(u8, m.name, "process."));
         }
     }
+}
+
+test "exporter variables take the first entry of a list, and a blank value means otlp" {
+    const name = summary_mod.exporterName;
+    try testing.expectEqualStrings("otlp", name(.{ .pairs = &.{} }, "OTEL_TRACES_EXPORTER"));
+    try testing.expectEqualStrings("otlp", name(.{ .pairs = &.{.{ "OTEL_TRACES_EXPORTER", " \t " }} }, "OTEL_TRACES_EXPORTER"));
+    try testing.expectEqualStrings("otlp", name(.{ .pairs = &.{.{ "OTEL_TRACES_EXPORTER", "otlp,console" }} }, "OTEL_TRACES_EXPORTER"));
+    try testing.expectEqualStrings("none", name(.{ .pairs = &.{.{ "OTEL_TRACES_EXPORTER", " none , otlp" }} }, "OTEL_TRACES_EXPORTER"));
+    try testing.expectEqualStrings("console", name(.{ .pairs = &.{.{ "OTEL_TRACES_EXPORTER", ", ,console" }} }, "OTEL_TRACES_EXPORTER"));
+
+    // A list whose first entry is none switches the signal off, as it does
+    // in TypeScript and Rust. It used to fail setup.
+    const t = try init(testing.allocator, testing.io, .{
+        .env = .{ .pairs = &.{
+            .{ "OTEL_TRACES_EXPORTER", "none,otlp" },
+            .{ "OTEL_METRICS_EXPORTER", " none , console" },
+            .{ "OTEL_LOGS_EXPORTER", "NONE,otlp" },
+        } },
+        .service_name = "svc",
+        .environment = "test",
+        .console_enabled = false,
+        .runtime_metrics = false,
+    });
+    defer t.deinit();
+    try testing.expect(std.mem.indexOf(u8, t.effectiveConfig(), "o11y.config.traces=none") != null);
+
+    // console is not an exporter this SDK has. The diagnostic names it.
+    var diag: resource_mod.Diagnostic = .{};
+    try testing.expectError(error.Exporter, init(testing.allocator, testing.io, .{
+        .env = .{ .pairs = &.{.{ "OTEL_TRACES_EXPORTER", "console" }} },
+        .service_name = "svc",
+        .environment = "test",
+        .console_enabled = false,
+        .runtime_metrics = false,
+        .diagnostic = &diag,
+    }));
+    try testing.expect(std.mem.indexOf(u8, diag.message(), "OTEL_TRACES_EXPORTER") != null);
+    try testing.expect(std.mem.indexOf(u8, diag.message(), "console") != null);
+}
+
+test "invalid sampler and exemplar filter variables are reported, not silently ignored" {
+    const Collector = struct {
+        buf: [2048]u8 = undefined,
+        len: usize = 0,
+
+        fn report(ptr: ?*anyopaque, _: []const u8, _: processor.ExportError, detail: []const u8) void {
+            const self: *@This() = @ptrCast(@alignCast(ptr.?));
+            const n = @min(detail.len, self.buf.len - self.len);
+            @memcpy(self.buf[self.len..][0..n], detail[0..n]);
+            self.len += n;
+        }
+    };
+    var seen: Collector = .{};
+
+    const t = try init(testing.allocator, testing.io, .{
+        .env = .{ .pairs = &.{
+            .{ "OTEL_TRACES_SAMPLER", "traceidratio" },
+            .{ "OTEL_TRACES_SAMPLER_ARG", "abc" },
+            .{ "OTEL_METRICS_EXEMPLAR_FILTER", "sometimes" },
+            .{ "OTEL_TRACES_EXPORTER", "none" },
+            .{ "OTEL_METRICS_EXPORTER", "none" },
+            .{ "OTEL_LOGS_EXPORTER", "none" },
+        } },
+        .service_name = "svc",
+        .environment = "test",
+        .console_enabled = false,
+        .runtime_metrics = false,
+        .error_handler = .{ .ptr = &seen, .report = Collector.report },
+    });
+    defer t.deinit();
+
+    const reported = seen.buf[0..seen.len];
+    try testing.expect(std.mem.indexOf(u8, reported, "OTEL_TRACES_SAMPLER_ARG") != null);
+    try testing.expect(std.mem.indexOf(u8, reported, "OTEL_METRICS_EXEMPLAR_FILTER") != null);
+    try testing.expect(std.mem.indexOf(u8, reported, "sometimes") != null);
+}
+
+test "a propagator that names no fields is reported as custom in the effective config" {
+    const Fieldless = struct {
+        fn propagator() propagation.Propagator {
+            return .{ .ptr = undefined, .vtable = &.{ .inject = inject, .extract = extract, .fields = fields } };
+        }
+        fn inject(_: *const anyopaque, _: Context, _: Allocator, _: propagation.Carrier) void {}
+        fn extract(_: *const anyopaque, ctx: Context, _: Allocator, _: propagation.Carrier) Context {
+            return ctx;
+        }
+        fn fields(_: *const anyopaque) []const []const u8 {
+            return &.{};
+        }
+    };
+    const t = try init(testing.allocator, testing.io, .{
+        .service_name = "svc",
+        .environment = "test",
+        .console_enabled = false,
+        .runtime_metrics = false,
+        .propagators = &.{Fieldless.propagator()},
+    });
+    defer t.deinit();
+    // As in Go: an empty value would be easy to misread.
+    try testing.expect(std.mem.indexOf(u8, t.effectiveConfig(), "o11y.config.propagators=custom") != null);
 }
 
 test "propagator wraps custom propagator in baggage egress filter without globals" {
