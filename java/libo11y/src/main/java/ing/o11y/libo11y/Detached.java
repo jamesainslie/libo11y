@@ -122,7 +122,7 @@ public final class Detached {
          *
          * @param text the serialized carrier
          * @return the carrier
-         * @throws O11yException with {@link O11yException.ErrorCode.INVALID_OPTION} when the text
+         * @throws O11yException with {@link O11yException.ErrorCode#INVALID_OPTION} when the text
          *     is longer than {@link #MAX_CARRIER_BYTES}, is not a query string, or holds no valid
          *     W3C traceparent
          */
