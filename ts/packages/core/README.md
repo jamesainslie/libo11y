@@ -63,6 +63,8 @@ Two options still reach outside a `createTelemetryWith` handle:
 - `captureConsole: true` patches the platform's console object until
   `shutdown`. On `@libo11y/server` that is `globalThis.console`. It is off
   by default. Leave it off for a handle that must touch nothing global.
+  The arguments of a captured call become the record body, which the
+  sensitivity policy never classifies.
 - `runtimeMetrics`, on by default, starts the platform's runtime metrics.
   On `@libo11y/server` upstream's instrumentation installs a
   require-in-the-middle hook on `Module.prototype.require`, and the hook
@@ -279,8 +281,25 @@ application registries.
 
 Metric attributes are never tokenized, because a token per value would
 multiply the series. Violations on logs, spans and the resource are counted
-on `o11y.schema.violations`. The policy does not classify log record bodies,
-span names, values under unclassified keys, or baggage.
+on `o11y.schema.violations`.
+
+The policy classifies attribute values by key and nothing else. It does not
+cover:
+
+- a value under a key that neither the spec nor a loaded application
+  registry classifies;
+- log record bodies, which include the arguments of a captured `console`
+  call, and the other free text: span names, span status descriptions and
+  span event names;
+- instrumentation scope attributes;
+- metrics from a metric producer on an injected `metricReader`, which
+  reach the reader without passing through the meter provider;
+- the members of a map-valued span or metric attribute, which is judged on
+  its own key only;
+- the attributes an injected `spanProcessor` reads in `onStart` and
+  `onEnding`, where it sees the live span. It gets the redacted span in
+  `onEnd`;
+- baggage, which crosses process boundaries unclassified.
 
 A token is `hmac-sha256:` and 32 hex digits, computed over one canonical
 rendering of the value. Every surface in the table uses that same
