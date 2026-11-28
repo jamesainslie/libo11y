@@ -48,6 +48,9 @@ type app struct {
 	// uploadToken is the SHA-256 of the app's upload token, nil when the
 	// app accepts no uploads.
 	uploadToken *[32]byte
+	// replayNS is the key segment of the app's recordings, "" when the app
+	// records none.
+	replayNS string
 }
 
 // NewHandler builds a gateway handler. WithConfig is required. Without
@@ -102,6 +105,11 @@ func NewHandler(opts ...Option) (*Handler, error) {
 	if h.store, err = objectStore(cfg, s.store); err != nil {
 		return nil, err
 	}
+	if cfg.replayEnabled() {
+		if err := replayStore(h.store); err != nil {
+			return nil, err
+		}
+	}
 	if h.store != nil {
 		h.symbols = newSymbolicator(h.store, cfg.Symbolication, symbolicatorDeps{
 			maxValueLen: cfg.Limits.MaxValueLength,
@@ -124,6 +132,9 @@ func NewHandler(opts ...Option) (*Handler, error) {
 			if a.uploadToken, err = loadUploadToken(cfg.resolvePath(ac.Sourcemaps.UploadTokenFile)); err != nil {
 				return nil, fmt.Errorf("o11yrum: app %s: %w", ac.ServiceName, err)
 			}
+		}
+		if ac.Replay.Enabled {
+			a.replayNS = ac.replayNamespace()
 		}
 		h.apps[ac.ServiceName] = a
 	}
