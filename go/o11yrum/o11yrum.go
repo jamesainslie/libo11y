@@ -1,6 +1,7 @@
 package o11yrum
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -33,6 +34,9 @@ type Handler struct {
 	replaySlots chan struct{}
 	// reader serves the replay read API on its own listener.
 	reader *replayReader
+	// sweepStop is nil without a retention sweeper; sweepDone waits for it.
+	sweepStop context.CancelFunc
+	sweepDone sync.WaitGroup
 
 	// derive is nil without WithMetricProducer.
 	derive           *deriver
@@ -151,6 +155,10 @@ func NewHandler(opts ...Option) (*Handler, error) {
 			return nil, err
 		}
 	}
+	// The sweeper starts last, so a failed NewHandler leaves none running.
+	if every := cfg.Replay.sweepEvery(); cfg.replayEnabled() && every > 0 {
+		h.startSweeper(every)
+	}
 	return h, nil
 }
 
@@ -171,6 +179,10 @@ func objectStore(cfg *Config, given ObjectStore) (ObjectStore, error) {
 // Close releases background resources. It is safe to call more than once.
 func (h *Handler) Close() error {
 	h.closeOnce.Do(func() {
+		if h.sweepStop != nil {
+			h.sweepStop()
+			h.sweepDone.Wait()
+		}
 		if h.unregisterDerive != nil {
 			h.closeErr = h.unregisterDerive()
 		}

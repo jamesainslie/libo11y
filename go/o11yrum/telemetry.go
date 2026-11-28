@@ -60,6 +60,7 @@ type telemetry struct {
 	replayDrops    metric.Int64Counter
 	replayStoreDur metric.Float64Histogram
 	replayReads    metric.Int64Counter
+	replaySweeps   metric.Int64Counter
 }
 
 // newTelemetry creates the instruments on mp, or on a noop provider when
@@ -130,6 +131,10 @@ func newTelemetry(mp metric.MeterProvider, log *slog.Logger) *telemetry {
 		metric.WithDescription("Replay read API requests, by operation and outcome.")); !check("o11yrum.replay.reads", err) {
 		t.replayReads, _ = fallback.Int64Counter("o11yrum.replay.reads")
 	}
+	if t.replaySweeps, err = m.Int64Counter("o11yrum.replay.swept", metric.WithUnit("{object}"),
+		metric.WithDescription("Replay objects the retention sweeper deleted, or failed to, by outcome.")); !check("o11yrum.replay.swept", err) {
+		t.replaySweeps, _ = fallback.Int64Counter("o11yrum.replay.swept")
+	}
 	return t
 }
 
@@ -159,6 +164,13 @@ func (t *telemetry) replayDropped(ctx context.Context, app string, s scrubStats)
 func (t *telemetry) replayRead(ctx context.Context, op, outcome string) {
 	t.replayReads.Add(ctx, 1, metric.WithAttributes(
 		attribute.String(telOperation, op), attribute.String(telOutcome, outcome)))
+}
+
+// replaySwept counts n objects one sweep pass deleted (outcome ok) or
+// failed to delete (outcome error). Zero counts are recorded too, so the
+// series exist from the first pass.
+func (t *telemetry) replaySwept(ctx context.Context, outcome string, n int64) {
+	t.replaySweeps.Add(ctx, n, metric.WithAttributes(attribute.String(telOutcome, outcome)))
 }
 
 // replayStore records one object store operation on replay objects.

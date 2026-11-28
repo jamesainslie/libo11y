@@ -31,7 +31,12 @@ type fakeS3 struct {
 	fail    bool
 	deletes int
 	pages   int
+	// modified overrides an object's LastModified, keyed by path.
+	modified map[string]time.Time
 }
+
+// fakeModified is the LastModified of an object without an override.
+var fakeModified = time.Date(2026, 11, 27, 10, 0, 0, 0, time.UTC)
 
 // listPageSize is the fake's ListObjectsV2 page size, small so a test
 // crosses pages.
@@ -61,8 +66,12 @@ func (f *fakeS3) list(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(&b, "<Name>%s</Name><Prefix>%s</Prefix><KeyCount>%d</KeyCount><MaxKeys>1000</MaxKeys><IsTruncated>%t</IsTruncated>",
 		strings.Trim(bucket, "/"), prefix, len(keys), truncated)
 	for _, k := range keys {
-		fmt.Fprintf(&b, "<Contents><Key>%s</Key><LastModified>2026-11-27T10:00:00.000Z</LastModified><Size>%d</Size></Contents>",
-			k, len(f.objects[bucket+k]))
+		mod, ok := f.modified[bucket+k]
+		if !ok {
+			mod = fakeModified
+		}
+		fmt.Fprintf(&b, "<Contents><Key>%s</Key><LastModified>%s</LastModified><Size>%d</Size></Contents>",
+			k, mod.UTC().Format("2006-01-02T15:04:05.000Z"), len(f.objects[bucket+k]))
 	}
 	if truncated {
 		fmt.Fprintf(&b, "<NextContinuationToken>%s</NextContinuationToken>", keys[len(keys)-1])
@@ -74,7 +83,7 @@ func (f *fakeS3) list(w http.ResponseWriter, r *http.Request) {
 
 func newFake(t *testing.T) (*s3.Client, *fakeS3) {
 	t.Helper()
-	f := &fakeS3{objects: map[string][]byte{}}
+	f := &fakeS3{objects: map[string][]byte{}, modified: map[string]time.Time{}}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
