@@ -74,6 +74,22 @@ const SECRETS = [
   "LeakTextareaTyped",
   "LeakTypedEditable",
   "LeakCustom",
+  "LeakEditorLinkQuery",
+  "LeakEditorImg",
+  "LeakEditorAlt",
+  "LeakCodeMask",
+  "LeakChatId",
+  "LeakChatTitle",
+  "LeakChatText",
+  "LeakChatAttr",
+  "LeakChatAria",
+  "LeakIntoChat",
+  "LeakChatTextMutated",
+  "LeakInsertRule",
+  "LeakDecl",
+  "LeakAdopted",
+  "LeakSetProperty",
+  "LeakCanvasText",
 ];
 
 test("nothing private survives the scrubber, even with rrweb's own masking off", async ({ page }) => {
@@ -108,7 +124,11 @@ test("nothing private survives the scrubber, even with rrweb's own masking off",
   ]) {
     expect(s.scrubbed, kept).toContain(kept);
   }
-  // No input, custom, plugin, canvas, font or log events.
+  // Canvas and inline image pixels reach the raw stream (recordCanvas and inlineImages are on) but
+  // never the scrubbed one, and neither do input, custom or canvas mutation events.
+  expect(s.raw).toContain("rr_dataURL");
+  expect(s.scrubbed).not.toContain("rr_dataURL");
+  expect(s.raw).toMatch(/"source":9/);
   expect(
     s.types.filter(
       (t) => t.type >= 5 || t.source === 5 || (t.source !== undefined && t.source >= 9 && t.source <= 11),

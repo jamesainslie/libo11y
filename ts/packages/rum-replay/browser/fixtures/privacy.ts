@@ -28,7 +28,11 @@ const HTML = `
 <button aria-label="LeakAria">LeakButton</button>
 <a href="/p?email=LeakHref#LeakFrag">LeakLink</a>
 <textarea id="ta">LeakTextarea</textarea>
-<div contenteditable id="editor">LeakEditable</div>
+<div contenteditable id="editor">LeakEditable<a href="/p?q=LeakEditorLinkQuery">x</a><img src="https://files.example/LeakEditorImg.png" alt="LeakEditorAlt"></div>
+<div class="public"><span class="secret">LeakCodeMask</span></div>
+<div class="chat" id="LeakChatId" title="LeakChatTitle"><img src="/LeakChatPath.png"><p>LeakChatText</p></div>
+<canvas id="cv" width="20" height="20"></canvas>
+<img id="inline" src="/asset?type=png">
 <svg width="10" height="10"><text x="1" y="9">LeakSvg</text><title>LeakSvgTitle</title></svg>
 <select><option value="LeakOptValue" selected>LeakOption</option></select>
 <input type="password" id="pw">
@@ -75,7 +79,13 @@ shadow("plain-host", "<p>LeakShadowPlain</p>");
 frame("frame", "<p>LeakIframe</p>");
 frame("masked-frame", '<p class="public">LeakIframeMasked</p>');
 
-const policy = resolvePolicy({ unmask: [".public"] }, new Set());
+const policy = resolvePolicy({ unmask: [".public"], mask: [".secret"], block: [".chat"] }, new Set());
+const cv = document.getElementById("cv") as HTMLCanvasElement | null;
+const g = cv?.getContext("2d");
+if (g) {
+  g.fillStyle = "#c00";
+  g.fillRect(0, 0, 20, 20);
+}
 const ctx = domScrubContext(policy, (id) => record.mirror.getNode(id) as Node | null);
 const raw: unknown[] = [];
 const scrubbed: RrwebEvent[] = [];
@@ -90,7 +100,8 @@ record({
   maskAllInputs: false,
   maskInputOptions: { password: false },
   inlineStylesheet: true,
-  recordCanvas: false,
+  recordCanvas: true,
+  inlineImages: true,
   collectFonts: false,
 });
 
@@ -128,6 +139,26 @@ record({
     if (mfp) mfp.textContent = "LeakIframeMaskedMutated";
     document.querySelector("img")?.setAttribute("srcset", "/y.png?token=LeakSrcsetMutated 2x");
     document.querySelector("img")?.setAttribute("style", "background:url(/z.png?token=LeakStyleMutated)");
+    const chat = document.querySelector(".chat");
+    chat?.setAttribute("data-x", "LeakChatAttr");
+    chat?.setAttribute("aria-label", "LeakChatAria");
+    const intoChat = document.createElement("p");
+    intoChat.textContent = "LeakIntoChat";
+    chat?.append(intoChat);
+    chat?.querySelector("p")?.replaceChildren("LeakChatTextMutated");
+    const sheet = document.styleSheets[0];
+    sheet?.insertRule(".x{background:url(/r.png?token=LeakInsertRule)}", 0);
+    (sheet?.cssRules[0] as CSSStyleRule | undefined)?.style.setProperty(
+      "background",
+      "url(/c.png?token=LeakDecl)",
+    );
+    const adopted = new CSSStyleSheet();
+    adopted.replaceSync(".y{background:url(/a.png?token=LeakAdopted)}");
+    document.adoptedStyleSheets = [adopted];
+    document
+      .getElementById("plain")
+      ?.style.setProperty("background-image", "url(/b.png?token=LeakSetProperty)");
+    if (g) g.fillText("LeakCanvasText", 0, 10);
   },
   custom(): void {
     record.addCustomEvent("profile", { email: "LeakCustom" });
