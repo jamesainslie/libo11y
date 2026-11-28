@@ -128,8 +128,8 @@ class MicrometerIntegrationTest {
                 assertEquals("stripe", summary.attributes().get("payment.provider"));
                 assertEquals("ord-777", summary.attributes().get("order.id"));
                 // The record's owner, not a nested observation, decides the outcome and duration.
-                assertFalse(summary.attributes().containsKey(Spec.Attributes.OUTCOME));
-                assertFalse(summary.attributes().containsKey(Spec.Attributes.DURATION));
+                assertFalse(summary.attributes().containsKey(Spec.Attributes.OUTCOME.getKey()));
+                assertFalse(summary.attributes().containsKey(Spec.Attributes.DURATION.getKey()));
 
                 // This record's owner sets none of the request summary's required attributes, and
                 // the nested observation must not set its outcome or duration, so the conformance

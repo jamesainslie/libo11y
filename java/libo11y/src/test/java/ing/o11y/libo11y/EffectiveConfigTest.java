@@ -118,7 +118,7 @@ class EffectiveConfigTest {
 
     @Test
     void everyEmittedKeyIsRegistered() {
-        assertTrue(SpecTables.SENSITIVITY_OF.containsKey(Spec.Attributes.CONFIG));
+        assertTrue(SpecTables.SENSITIVITY_OF.containsKey(Spec.Attributes.CONFIG.getKey()));
         assertEquals(Set.of(), unregistered(config(b -> { })));
         assertEquals(Set.of(), unregistered(config(b -> b.serviceVersion(null).buildInfoEnabled(false))));
     }
@@ -127,7 +127,7 @@ class EffectiveConfigTest {
         Set<String> registered = registeredConfigKeys();
         Set<String> bad = new TreeSet<>();
         for (String key : cfg.keySet()) {
-            boolean ok = key.startsWith(Spec.Attributes.CONFIG + ".")
+            boolean ok = key.startsWith(Spec.Attributes.CONFIG.getKey() + ".")
                     ? registered.contains(key)
                     : SpecTables.SENSITIVITY_OF.containsKey(key);
             if (!ok) {

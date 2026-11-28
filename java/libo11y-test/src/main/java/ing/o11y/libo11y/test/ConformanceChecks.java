@@ -38,8 +38,8 @@ final class ConformanceChecks {
     /** Rules the resource composer records under lenient identity for an unmet identity requirement. */
     private static final String IDENTITY_RULE_PREFIX = "identity_";
 
-    private static final AttributeKey<String> RULE_KEY = AttributeKey.stringKey(Spec.Attributes.RULE);
-    private static final AttributeKey<String> SIGNAL_KEY = AttributeKey.stringKey(Spec.Attributes.SIGNAL);
+    private static final AttributeKey<String> RULE_KEY = AttributeKey.stringKey(Spec.Attributes.RULE.getKey());
+    private static final AttributeKey<String> SIGNAL_KEY = AttributeKey.stringKey(Spec.Attributes.SIGNAL.getKey());
     private static final AttributeKey<String> EVENT_NAME_KEY = AttributeKey.stringKey(Spec.EVENT_NAME_KEY);
 
     private ConformanceChecks() {}
@@ -84,13 +84,13 @@ final class ConformanceChecks {
                 if (SECRET_ATTRIBUTE_RULE.equals(rule)) {
                     secretsBySignal.merge(signal == null ? "" : signal, lp.getValue(), Long::sum);
                 } else if (rule != null && rule.startsWith(IDENTITY_RULE_PREFIX)
-                        && Spec.Signal.RESOURCE.equals(signal)) {
+                        && Spec.Signal.RESOURCE.value().equals(signal)) {
                     identityRules.merge(rule, lp.getValue(), Long::sum);
                 }
             }
         }
         secretsBySignal.forEach((signal, n) -> {
-            if (Spec.Signal.RESOURCE.equals(signal)) {
+            if (Spec.Signal.RESOURCE.value().equals(signal)) {
                 problems.add(String.format(Locale.ROOT,
                         "options passed to O11yRecorder.start put a secret-classified attribute on the resource "
                                 + "(%d redaction(s) counted); it was redacted, but secrets must never be emitted", n));

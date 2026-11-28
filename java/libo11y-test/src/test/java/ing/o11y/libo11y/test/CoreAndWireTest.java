@@ -319,7 +319,7 @@ class CoreAndWireTest {
             warnRec.telemetry().logger().info("suppressed");
             assertEquals(0, warnRec.entries().size());
             try (Scope ignored = ForceEmit.enable()) {
-                warnRec.telemetry().logger().info("audit-line", Map.of(Spec.Attributes.RECORD_CLASS, Spec.RecordClass.AUDIT));
+                warnRec.telemetry().logger().info("audit-line", Map.of(Spec.Attributes.RECORD_CLASS.getKey(), Spec.RecordClass.AUDIT.value()));
             }
             assertEquals(1, warnRec.entries().size());
             assertEquals("audit-line", warnRec.entries().get(0).message());

@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ing.o11y.libo11y.TestReaders.CollectingReader;
 import ing.o11y.libo11y.internal.ResourceComposer;
+import ing.o11y.libo11y.spec.generated.Spec;
 import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.sdk.metrics.data.HistogramPointData;
 import io.opentelemetry.sdk.metrics.data.MetricData;
@@ -20,6 +21,20 @@ import org.junit.jupiter.api.Test;
 class ResourceIdentityTest {
     private static String attr(Resource r, String key) {
         return r.getAttribute(AttributeKey.stringKey(key));
+    }
+
+    @Test
+    void buildModifiedIsABooleanAsItsRegistryTypeSays() {
+        Telemetry t = O11y.init(TestReaders.baseOptions(new CollectingReader())
+                .buildInfo(new O11yOptions.BuildInfo("1.2.3", null, "2026-01-02T03:04:05Z", true))
+                .build());
+        try {
+            Resource res = t.resource();
+            assertEquals(Boolean.TRUE, res.getAttribute(AttributeKey.booleanKey(Spec.Attributes.BUILD_MODIFIED.getKey())));
+            assertEquals("2026-01-02T03:04:05Z", attr(res, Spec.Attributes.BUILD_TIME.getKey()));
+        } finally {
+            t.shutdown();
+        }
     }
 
     @Test

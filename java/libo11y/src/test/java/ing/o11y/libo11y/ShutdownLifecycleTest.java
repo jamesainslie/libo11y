@@ -144,7 +144,7 @@ class ShutdownLifecycleTest {
                 .filter(e -> Spec.Events.TELEMETRY_DROPPED.equals(e.eventName()))
                 .toList();
         assertEquals(1, dropped.size(), "dropped events: " + dropped);
-        assertEquals(Spec.Signal.TRACES, dropped.get(0).attributes().get(Spec.Attributes.SIGNAL));
+        assertEquals(Spec.Signal.TRACES.value(), dropped.get(0).attributes().get(Spec.Attributes.SIGNAL.getKey()));
         assertEquals(report.traceError().getClass().getName(), dropped.get(0).attributes().get("error.type"));
     }
 

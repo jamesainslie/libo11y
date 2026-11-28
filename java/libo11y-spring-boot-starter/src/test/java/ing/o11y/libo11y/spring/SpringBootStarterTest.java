@@ -182,7 +182,7 @@ class SpringBootStarterTest {
         assertEquals("42", summary.attributes().get("order.id"));
         assertEquals("/orders/{id}", summary.attributes().get("http.route"));
         assertEquals("primary", summary.attributes().get("store"));
-        assertEquals(Spec.Outcome.SUCCESS, summary.attributes().get(Spec.Attributes.OUTCOME));
+        assertEquals(Spec.Outcome.SUCCESS.value(), summary.attributes().get(Spec.Attributes.OUTCOME.getKey()));
 
         // Both HTTP server histogram AND Micrometer counter carry trace exemplars!
         recorder.assertConforms();

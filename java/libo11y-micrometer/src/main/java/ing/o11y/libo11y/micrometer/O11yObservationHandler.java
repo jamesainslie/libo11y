@@ -59,8 +59,8 @@ public final class O11yObservationHandler implements ObservationHandler<Observat
         O11yRecord record = O11yRecord.fromContext(Context.current());
         if (record != null) {
             // The record's owner decides the outcome and duration of the wide event.
-            attrs.remove(Spec.Attributes.OUTCOME);
-            attrs.remove(Spec.Attributes.DURATION);
+            attrs.remove(Spec.Attributes.OUTCOME.getKey());
+            attrs.remove(Spec.Attributes.DURATION.getKey());
             record.setAll(attrs);
             return;
         }
@@ -69,14 +69,14 @@ public final class O11yObservationHandler implements ObservationHandler<Observat
         }
         Throwable error = context.getError();
         if (error != null) {
-            attrs.put(Spec.Attributes.OUTCOME, Spec.Outcome.FAILURE);
+            attrs.put(Spec.Attributes.OUTCOME.getKey(), Spec.Outcome.FAILURE.value());
             attrs.put("error.type", error.getClass().getName());
         } else {
-            attrs.putIfAbsent(Spec.Attributes.OUTCOME, Spec.Outcome.SUCCESS);
+            attrs.putIfAbsent(Spec.Attributes.OUTCOME.getKey(), Spec.Outcome.SUCCESS.value());
         }
         Long startNanos = context.get(START_NANOS_KEY);
         double durationSec = startNanos != null ? (System.nanoTime() - startNanos) / 1_000_000_000.0 : 0.0;
-        attrs.put(Spec.Attributes.DURATION, durationSec);
+        attrs.put(Spec.Attributes.DURATION.getKey(), durationSec);
         telemetry.event(context.getName(), attrs);
     }
 }

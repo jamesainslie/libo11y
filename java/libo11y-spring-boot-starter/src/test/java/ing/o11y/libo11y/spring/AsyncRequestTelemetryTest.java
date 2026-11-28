@@ -221,7 +221,7 @@ class AsyncRequestTelemetryTest {
         assertEquals(true, summary.attributes().get("callable.ran"));
         assertEquals(span.getSpanId(), summary.attributes().get("advice.span"));
         assertEquals(200L, summary.attributes().get("http.response.status_code"));
-        assertEquals(Spec.Outcome.SUCCESS, summary.attributes().get(Spec.Attributes.OUTCOME));
+        assertEquals(Spec.Outcome.SUCCESS.value(), summary.attributes().get(Spec.Attributes.OUTCOME.getKey()));
     }
 
     @Test
@@ -245,7 +245,7 @@ class AsyncRequestTelemetryTest {
         assertEquals(1, durationCount("/async/deferred"));
         StructuredLogger.LogEntry summary = onlySummary();
         assertEquals(span.getSpanId(), summary.attributes().get("advice.span"));
-        assertEquals(Spec.Outcome.SUCCESS, summary.attributes().get(Spec.Attributes.OUTCOME));
+        assertEquals(Spec.Outcome.SUCCESS.value(), summary.attributes().get(Spec.Attributes.OUTCOME.getKey()));
     }
 
     @Test
@@ -261,7 +261,7 @@ class AsyncRequestTelemetryTest {
         assertEquals(500L, span.getAttributes().get(AttributeKey.longKey("http.response.status_code")));
         assertNotNull(span.getAttributes().get(AttributeKey.stringKey("error.type")));
         assertEquals(1, durationCount("/async/callable-error"));
-        assertEquals(Spec.Outcome.FAILURE, onlySummary().attributes().get(Spec.Attributes.OUTCOME));
+        assertEquals(Spec.Outcome.FAILURE.value(), onlySummary().attributes().get(Spec.Attributes.OUTCOME.getKey()));
     }
 
     @Test
@@ -283,6 +283,6 @@ class AsyncRequestTelemetryTest {
         assertEquals("503", span.getAttributes().get(AttributeKey.stringKey("error.type")));
         assertEquals(StatusCode.ERROR, span.getStatus().getStatusCode());
         assertEquals(1, durationCount("/async/timeout"));
-        assertEquals(Spec.Outcome.FAILURE, onlySummary().attributes().get(Spec.Attributes.OUTCOME));
+        assertEquals(Spec.Outcome.FAILURE.value(), onlySummary().attributes().get(Spec.Attributes.OUTCOME.getKey()));
     }
 }

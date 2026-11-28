@@ -59,7 +59,7 @@ public final class Telemetry implements AutoCloseable {
             ExportFailures spanFailures,
             ExportFailures metricFailures,
             ExportFailures logFailures,
-            Map<String, List<Supplier<CompletableResultCode>>> unownedParts,
+            Map<Spec.Signal, List<Supplier<CompletableResultCode>>> unownedParts,
             Consumer<Telemetry> onShutdownComplete) {}
 
     private final SdkTracerProvider sdkTracerProvider;
@@ -78,7 +78,7 @@ public final class Telemetry implements AutoCloseable {
     private final ExportFailures spanFailures;
     private final ExportFailures metricFailures;
     private final ExportFailures logFailures;
-    private final Map<String, List<Supplier<CompletableResultCode>>> unownedParts;
+    private final Map<Spec.Signal, List<Supplier<CompletableResultCode>>> unownedParts;
     private final Consumer<Telemetry> onShutdownComplete;
 
     private final AtomicReference<CompletableFuture<ShutdownReport>> shutdownFuture = new AtomicReference<>();
@@ -238,7 +238,7 @@ public final class Telemetry implements AutoCloseable {
     }
 
     private static Throwable flushOutcome(
-            String signal,
+            Spec.Signal signal,
             CompletableResultCode result,
             Throwable thrown,
             ExportFailures.Window window,
@@ -340,7 +340,7 @@ public final class Telemetry implements AutoCloseable {
      * {@code null}, once every part has finished, however long that takes.
      */
     private CompletableFuture<Throwable> startShutdown(
-            String signal, Supplier<CompletableResultCode> provider, ExportFailures failures) {
+            Spec.Signal signal, Supplier<CompletableResultCode> provider, ExportFailures failures) {
         CompletableFuture<Throwable> done = new CompletableFuture<>();
         ExportFailures.Window window = failures.open();
         List<Supplier<CompletableResultCode>> steps = new ArrayList<>();
@@ -371,7 +371,7 @@ public final class Telemetry implements AutoCloseable {
         return done;
     }
 
-    private static Throwable await(String signal, CompletableFuture<Throwable> step, long deadlineNanos) {
+    private static Throwable await(Spec.Signal signal, CompletableFuture<Throwable> step, long deadlineNanos) {
         try {
             return step.get(Math.max(0L, deadlineNanos - System.nanoTime()), TimeUnit.NANOSECONDS);
         } catch (TimeoutException ex) {
@@ -397,17 +397,17 @@ public final class Telemetry implements AutoCloseable {
         }
     }
 
-    private static TimeoutException waited(String signal) {
+    private static TimeoutException waited(Spec.Signal signal) {
         return new TimeoutException("waiting for the " + signal + " shutdown another caller runs exceeded deadline");
     }
 
     /** Emits o11y.telemetry.dropped for a signal that failed, as Go does: its signal and the error's type. */
-    private void emitDropped(String signal, Throwable err) {
+    private void emitDropped(Spec.Signal signal, Throwable err) {
         if (err == null) {
             return;
         }
         Map<String, Object> attrs = new LinkedHashMap<>();
-        attrs.put(Spec.Attributes.SIGNAL, signal);
+        attrs.put(Spec.Attributes.SIGNAL.getKey(), signal.value());
         attrs.put("error.type", err.getClass().getName());
         try {
             logger.event(Spec.Events.TELEMETRY_DROPPED, attrs);

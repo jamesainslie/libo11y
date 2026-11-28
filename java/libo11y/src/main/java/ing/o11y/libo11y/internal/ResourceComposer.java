@@ -91,10 +91,10 @@ public final class ResourceComposer {
                 attrs.put("vcs.ref.head.revision", bi.vcsRevision());
             }
             if (bi.buildTime() != null && !bi.buildTime().isEmpty()) {
-                attrs.put(Spec.Attributes.BUILD_TIME, bi.buildTime());
+                attrs.put(Spec.Attributes.BUILD_TIME.getKey(), bi.buildTime());
             }
             if (bi.buildModified() != null) {
-                attrs.put(Spec.Attributes.BUILD_MODIFIED, Boolean.toString(bi.buildModified()));
+                attrs.put(Spec.Attributes.BUILD_MODIFIED.getKey(), Boolean.toString(bi.buildModified()));
             }
         }
 
@@ -186,7 +186,7 @@ public final class ResourceComposer {
                     || (sens == SpecTables.Sensitivity.PII && policy.piiMode() != PiiMode.KEEP)) {
                 counts.merge(SensitivityPolicy.ruleFor(sens), 1L, Long::sum);
             }
-            if (Spec.Attributes.BUILD_MODIFIED.equals(k)) {
+            if (Spec.Attributes.BUILD_MODIFIED.getKey().equals(k)) {
                 boolean b = Boolean.parseBoolean(v);
                 SensitivityPolicy.Decision d = policy.classifyScalar(k, b, null, false);
                 if (!d.drop()) {

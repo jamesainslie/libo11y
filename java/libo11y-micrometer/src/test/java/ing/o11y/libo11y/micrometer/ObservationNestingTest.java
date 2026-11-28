@@ -60,8 +60,8 @@ class ObservationNestingTest {
         }
 
         Map<String, Object> attrs = summary();
-        assertEquals(Spec.Outcome.SUCCESS, attrs.get(Spec.Attributes.OUTCOME));
-        assertEquals(1.25, attrs.get(Spec.Attributes.DURATION));
+        assertEquals(Spec.Outcome.SUCCESS.value(), attrs.get(Spec.Attributes.OUTCOME.getKey()));
+        assertEquals(1.25, attrs.get(Spec.Attributes.DURATION.getKey()));
         assertEquals("users", attrs.get("cache.name"));
         assertFalse(attrs.containsKey("error.type"), () -> "child error leaked into the summary: " + attrs);
         assertFalse(attrs.containsKey("exception.message"), () -> "child error leaked into the summary: " + attrs);
@@ -83,8 +83,8 @@ class ObservationNestingTest {
         }
 
         Map<String, Object> attrs = summary();
-        assertEquals(Spec.Outcome.FAILURE, attrs.get(Spec.Attributes.OUTCOME));
-        assertEquals(3.0, attrs.get(Spec.Attributes.DURATION));
+        assertEquals(Spec.Outcome.FAILURE.value(), attrs.get(Spec.Attributes.OUTCOME.getKey()));
+        assertEquals(3.0, attrs.get(Spec.Attributes.DURATION.getKey()));
         assertEquals("load", attrs.get("inner.step"));
     }
 
@@ -92,14 +92,14 @@ class ObservationNestingTest {
     void childKeyValuesCannotSetOutcomeOrDuration() {
         try (O11yRecord ignored = O11yRecord.start(t, Spec.Events.REQUEST_SUMMARY)) {
             Observation.createNotStarted("inner", observations)
-                    .lowCardinalityKeyValue(Spec.Attributes.OUTCOME, Spec.Outcome.FAILURE)
-                    .highCardinalityKeyValue(Spec.Attributes.DURATION, "9")
+                    .lowCardinalityKeyValue(Spec.Attributes.OUTCOME.getKey(), Spec.Outcome.FAILURE.value())
+                    .highCardinalityKeyValue(Spec.Attributes.DURATION.getKey(), "9")
                     .observe(() -> { });
         }
 
         Map<String, Object> attrs = summary();
-        assertFalse(attrs.containsKey(Spec.Attributes.OUTCOME), () -> "child set the outcome: " + attrs);
-        assertFalse(attrs.containsKey(Spec.Attributes.DURATION), () -> "child set the duration: " + attrs);
+        assertFalse(attrs.containsKey(Spec.Attributes.OUTCOME.getKey()), () -> "child set the outcome: " + attrs);
+        assertFalse(attrs.containsKey(Spec.Attributes.DURATION.getKey()), () -> "child set the duration: " + attrs);
     }
 
     @Test
@@ -114,8 +114,8 @@ class ObservationNestingTest {
                 .map(e -> e.attributes())
                 .toList();
         assertEquals(1, events.size());
-        assertEquals(Spec.Outcome.FAILURE, events.get(0).get(Spec.Attributes.OUTCOME));
+        assertEquals(Spec.Outcome.FAILURE.value(), events.get(0).get(Spec.Attributes.OUTCOME.getKey()));
         assertEquals(IllegalStateException.class.getName(), events.get(0).get("error.type"));
-        assertEquals(Double.class, events.get(0).get(Spec.Attributes.DURATION).getClass());
+        assertEquals(Double.class, events.get(0).get(Spec.Attributes.DURATION.getKey()).getClass());
     }
 }

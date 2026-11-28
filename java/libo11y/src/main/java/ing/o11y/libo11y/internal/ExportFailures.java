@@ -1,5 +1,6 @@
 package ing.o11y.libo11y.internal;
 
+import ing.o11y.libo11y.spec.generated.Spec;
 import io.opentelemetry.sdk.common.CompletableResultCode;
 import io.opentelemetry.sdk.common.export.MemoryMode;
 import io.opentelemetry.sdk.logs.data.LogRecordData;
@@ -28,11 +29,11 @@ public final class ExportFailures {
     /** Failures reported in full; later ones are only counted. */
     static final int REPORTED = 5;
 
-    private final String signal;
+    private final Spec.Signal signal;
     private final List<Window> open = new CopyOnWriteArrayList<>();
 
-    /** Creates the recorder of {@code signal} ({@code traces}, {@code metrics} or {@code logs}). */
-    public ExportFailures(String signal) {
+    /** Creates the recorder of {@code signal}: traces, metrics or logs. */
+    public ExportFailures(Spec.Signal signal) {
         this.signal = signal;
     }
 

@@ -58,8 +58,8 @@ class AssertConformsTest {
         Map<String, Object> attrs = new LinkedHashMap<>();
         attrs.put("http.request.method", "GET");
         attrs.put("http.response.status_code", 200L);
-        attrs.put(Spec.Attributes.OUTCOME, Spec.Outcome.SUCCESS);
-        attrs.put(Spec.Attributes.DURATION, 0.012);
+        attrs.put(Spec.Attributes.OUTCOME.getKey(), Spec.Outcome.SUCCESS.value());
+        attrs.put(Spec.Attributes.DURATION.getKey(), 0.012);
         return attrs;
     }
 

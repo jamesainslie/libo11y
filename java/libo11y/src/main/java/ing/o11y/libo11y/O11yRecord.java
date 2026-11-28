@@ -81,6 +81,20 @@ public final class O11yRecord implements AutoCloseable, ImplicitContextKeyed {
     }
 
     /**
+     * Sets the attribute at a generated typed key. The compiler checks {@code value} against the
+     * key's registry type, and a closed enum constant is stored as its wire string. A null key or
+     * value is ignored, as in {@link #set(String, Object)}.
+     *
+     * @param <T> the key's value type
+     * @param key the attribute key, from {@link Spec.Attributes}
+     * @param value the value
+     * @return this record
+     */
+    public <T> O11yRecord set(Spec.Key<T> key, T value) {
+        return key == null ? this : set(key.getKey(), key.wireValue(value));
+    }
+
+    /**
      * Adds {@code delta} to the integer counter at {@code key}, creating it at {@code delta} when
      * absent. A key holding a value of another kind is replaced by {@code delta}.
      */
@@ -115,7 +129,13 @@ public final class O11yRecord implements AutoCloseable, ImplicitContextKeyed {
         return this;
     }
 
-    public O11yRecord setOutcome(String outcome) {
+    /**
+     * Sets {@code o11y.outcome}. A null outcome is ignored.
+     *
+     * @param outcome the outcome of the work this record describes
+     * @return this record
+     */
+    public O11yRecord setOutcome(Spec.Outcome outcome) {
         return set(Spec.Attributes.OUTCOME, outcome);
     }
 

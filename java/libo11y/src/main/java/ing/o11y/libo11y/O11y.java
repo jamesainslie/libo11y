@@ -283,7 +283,7 @@ public final class O11y {
      * {@code OTEL_SDK_DISABLED} switched the SDK off, and the handle stops it at shutdown.
      */
     private static final class Owned {
-        private record Part(String signal, Object part, Supplier<CompletableResultCode> stop) {}
+        private record Part(Spec.Signal signal, Object part, Supplier<CompletableResultCode> stop) {}
 
         private final List<Part> parts = new ArrayList<>();
 
@@ -308,7 +308,7 @@ public final class O11y {
             return owned;
         }
 
-        <T> T own(String signal, T part, Supplier<CompletableResultCode> stop) {
+        <T> T own(Spec.Signal signal, T part, Supplier<CompletableResultCode> stop) {
             parts.add(new Part(signal, part, stop));
             return part;
         }
@@ -334,8 +334,8 @@ public final class O11y {
         }
 
         /** Returns the parts still owned, by signal, for the handle to stop at shutdown. */
-        Map<String, List<Supplier<CompletableResultCode>>> unowned() {
-            Map<String, List<Supplier<CompletableResultCode>>> out = new LinkedHashMap<>();
+        Map<Spec.Signal, List<Supplier<CompletableResultCode>>> unowned() {
+            Map<Spec.Signal, List<Supplier<CompletableResultCode>>> out = new LinkedHashMap<>();
             for (Part p : parts) {
                 out.computeIfAbsent(p.signal(), s -> new ArrayList<>()).add(p.stop());
             }
@@ -692,7 +692,7 @@ public final class O11y {
         if (serviceVersion != null && !serviceVersion.isEmpty()) {
             cfg.put("service.version", serviceVersion);
         }
-        String prefix = Spec.Attributes.CONFIG + ".";
+        String prefix = Spec.Attributes.CONFIG.getKey() + ".";
         cfg.put(prefix + "traces", traces.reported());
         cfg.put(prefix + "metrics", metrics.reported());
         cfg.put(prefix + "logs", logs.reported());
@@ -759,7 +759,7 @@ public final class O11y {
      * Builds what {@code build} returns, translating an SDK failure (an invalid certificate, for
      * example) into an {@code EXPORTER} error.
      */
-    private static <T> T exporter(String signal, Supplier<T> build) {
+    private static <T> T exporter(Spec.Signal signal, Supplier<T> build) {
         try {
             return build.get();
         } catch (O11yException ex) {

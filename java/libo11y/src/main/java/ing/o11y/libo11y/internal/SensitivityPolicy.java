@@ -28,9 +28,9 @@ public final class SensitivityPolicy {
     public static final int MAX_NODES = 2048;
 
     private static final AttributeKey<String> RULE_KEY =
-            AttributeKey.stringKey(Spec.Attributes.RULE);
+            AttributeKey.stringKey(Spec.Attributes.RULE.getKey());
     private static final AttributeKey<String> SIGNAL_KEY =
-            AttributeKey.stringKey(Spec.Attributes.SIGNAL);
+            AttributeKey.stringKey(Spec.Attributes.SIGNAL.getKey());
 
     /** Rule counted when a secret-classified attribute is dropped. */
     public static final String RULE_SECRET_ATTRIBUTE = "secret_attribute";
@@ -128,7 +128,7 @@ public final class SensitivityPolicy {
     }
 
     /** Counts n violations of rule on signal, once the violation counter is attached. */
-    public void recordViolations(String signal, String rule, long n) {
+    public void recordViolations(Spec.Signal signal, String rule, long n) {
         if (!counting || n <= 0) {
             return;
         }
@@ -136,7 +136,7 @@ public final class SensitivityPolicy {
         if (counter == null) {
             return;
         }
-        counter.add(n, Attributes.of(SIGNAL_KEY, signal, RULE_KEY, rule));
+        counter.add(n, Attributes.of(SIGNAL_KEY, signal.value(), RULE_KEY, rule));
     }
 
     /** Names the violation rule for an attribute of the given class that was dropped or rewritten. */
@@ -158,8 +158,8 @@ public final class SensitivityPolicy {
      * set and signal is not null. On metrics the rule of {@link #isMetricDisallowed} applies and
      * nothing is counted.
      */
-    public Decision classifyScalar(String key, Object value, String signal, boolean countViolation) {
-        if (Spec.Signal.METRICS.equals(signal)) {
+    public Decision classifyScalar(String key, Object value, Spec.Signal signal, boolean countViolation) {
+        if (signal == Spec.Signal.METRICS) {
             return isMetricDisallowed(key) ? Decision.DROP : Decision.keep(value);
         }
         SpecTables.Sensitivity sens = sensitivityOf(key);
@@ -185,7 +185,7 @@ public final class SensitivityPolicy {
     }
 
     /** Classifies an OpenTelemetry Attributes bag for spans, events, links, logs, or resource. */
-    public Attributes classifyAttributes(Attributes attrs, String signal, boolean countViolation) {
+    public Attributes classifyAttributes(Attributes attrs, Spec.Signal signal, boolean countViolation) {
         if (attrs == null || attrs.isEmpty()) {
             return Attributes.empty();
         }
