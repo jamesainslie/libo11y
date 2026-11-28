@@ -24,16 +24,16 @@ use libo11y::{EnvLookup, Environment, Sdk};
 /// Marks the child run.
 const CHILD: &str = "AMBIENT_HEADERS_TEST_CHILD";
 
-/// The process environment's headers: a credential for some other
-/// collector, which must never reach the one the lookup names.
+/// The process environment's headers: ASCII and `*-bin` binary credentials for
+/// some other collector, which must never reach the one the lookup names.
 const AMBIENT: &[(&str, &str)] = &[
     (
         "OTEL_EXPORTER_OTLP_HEADERS",
-        "authorization=Bearer%20ambient,x-ambient=general",
+        "authorization=Bearer%20ambient,x-ambient=general,x-token-bin=YW1iaWVudA%3D%3D,x-ambient-bin=c2VjcmV0",
     ),
     (
         "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
-        "authorization=Bearer%20ambient-logs,x-ambient=logs",
+        "authorization=Bearer%20ambient-logs,x-ambient=logs,x-ambient-bin=bG9ncy1zZWNyZXQ%3D",
     ),
 ];
 
@@ -64,7 +64,9 @@ fn the_lookups_otlp_headers_win_over_the_process_environment() {
 }
 
 fn child() {
-    http_headers_come_from_the_lookup(Some("authorization=Bearer%20explicit,x-explicit=1"));
+    http_headers_come_from_the_lookup(Some(
+        "authorization=Bearer%20explicit,x-explicit=1,x-token-bin=ZXhwbGljaXQ%3D",
+    ));
     http_headers_come_from_the_lookup(None);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -72,7 +74,7 @@ fn child() {
         .build()
         .expect("runtime");
     runtime.block_on(grpc_metadata_comes_from_the_lookup(Some(
-        "authorization=Bearer%20explicit,x-explicit=1",
+        "authorization=Bearer%20explicit,x-explicit=1,x-token-bin=ZXhwbGljaXQ%3D",
     )));
     runtime.block_on(grpc_metadata_comes_from_the_lookup(None));
 }
@@ -83,6 +85,11 @@ fn assert_headers(what: &str, headers: &HashMap<String, String>, lookup: Option<
         headers.get("x-ambient"),
         None,
         "{what}: an ambient header reached the collector"
+    );
+    assert_eq!(
+        headers.get("x-ambient-bin"),
+        None,
+        "{what}: an ambient binary header reached the collector"
     );
     if lookup.is_some() {
         assert_eq!(
@@ -95,11 +102,21 @@ fn assert_headers(what: &str, headers: &HashMap<String, String>, lookup: Option<
             Some("1"),
             "{what}"
         );
+        assert_eq!(
+            headers.get("x-token-bin").map(String::as_str),
+            Some("ZXhwbGljaXQ="),
+            "{what}"
+        );
     } else {
         assert_eq!(
             headers.get("authorization"),
             None,
             "{what}: an ambient credential reached the collector"
+        );
+        assert_eq!(
+            headers.get("x-token-bin"),
+            None,
+            "{what}: an ambient binary credential reached the collector"
         );
     }
 }
@@ -208,12 +225,15 @@ impl TraceService for RecordingTraces {
         let metadata = request
             .metadata()
             .iter()
-            .filter_map(|entry| match entry {
-                tonic::metadata::KeyAndValueRef::Ascii(key, value) => Some((
+            .map(|entry| match entry {
+                tonic::metadata::KeyAndValueRef::Ascii(key, value) => (
                     key.as_str().to_owned(),
                     value.to_str().unwrap_or_default().to_owned(),
-                )),
-                tonic::metadata::KeyAndValueRef::Binary(..) => None,
+                ),
+                tonic::metadata::KeyAndValueRef::Binary(key, value) => (
+                    key.as_str().to_owned(),
+                    String::from_utf8_lossy(value.as_encoded_bytes()).into_owned(),
+                ),
             })
             .collect();
         self.0.lock().expect("lock").push(metadata);

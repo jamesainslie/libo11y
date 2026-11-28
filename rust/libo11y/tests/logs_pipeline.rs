@@ -852,3 +852,79 @@ fn replacer_cannot_reintroduce_reserved_trace_span_or_event_name_keys() {
     assert!(!text.contains("fake-span"), "{text}");
     assert!(!text.contains("fake.event"), "{text}");
 }
+
+#[test]
+fn sqlx_query_logs_strip_raw_sql_fields_while_keeping_metadata() {
+    let console = SharedBuffer::default();
+    let extra = CaptureSink::default();
+    let otlp = KeptLogs::default();
+    let spans = common::Spans::default();
+    let sdk = hermetic("logs-sqlx-query")
+        .console_writer(console.clone())
+        .with_extra_log_sink(extra.clone())
+        .with_log_exporter(otlp.clone())
+        .with_span_exporter(spans.clone())
+        .build()
+        .expect("SDK");
+
+    traced(&sdk, || {
+        let _span = tracing::info_span!("db.op").entered();
+        tracing::warn!(
+            target: "sqlx::query",
+            summary = "SELECT * FROM users WHERE ssn = '123-45-6789' …",
+            db.statement = "\n\nSELECT * FROM users WHERE ssn = '123-45-6789'\n",
+            rows_affected = 3_u64,
+            elapsed_secs = 1.25_f64,
+            "slow statement: execution time exceeded alert threshold"
+        );
+        tracing::error!(
+            target: "sqlx::query",
+            summary = "SELECT * FROM secrets WHERE token = 'tok-999' …",
+            db.statement = "\n\nSELECT * FROM secrets WHERE token = 'tok-999'\n",
+            rows_affected = 1_u64,
+            "slow statement: execution time exceeded alert threshold"
+        );
+    });
+    sdk.force_flush().expect("flush");
+
+    let recs = extra.records();
+    assert_eq!(recs.len(), 2);
+    assert_eq!(
+        recs[0].message(),
+        "slow statement: execution time exceeded alert threshold"
+    );
+    for rec in &recs {
+        assert!(rec.attr("db.statement").is_none());
+        assert!(rec.attr("summary").is_none());
+    }
+    assert_eq!(recs[0].attr("rows_affected"), Some(&AnyValue::Int(3)));
+    assert_eq!(recs[0].attr("elapsed_secs"), Some(&AnyValue::Double(1.25)));
+
+    let otlp_recs = otlp.records();
+    assert_eq!(otlp_recs.len(), 2);
+    for rec in &otlp_recs {
+        assert!(otlp_attr(rec, "db.statement").is_none());
+        assert!(otlp_attr(rec, "summary").is_none());
+    }
+    assert_eq!(
+        otlp_attr(&otlp_recs[0], "rows_affected"),
+        Some(&AnyValue::Int(3))
+    );
+
+    let span = spans.named("db.op");
+    assert!(
+        span.events.events.is_empty(),
+        "ERROR-level sqlx::query events must not leak raw SQL onto spans: {:?}",
+        span.events.events
+    );
+
+    let text = console.text();
+    assert!(!text.contains("123-45-6789"), "raw SQL leaked: {text}");
+    assert!(!text.contains("tok-999"), "raw SQL leaked: {text}");
+    assert!(
+        !text.contains("db.statement"),
+        "db.statement leaked: {text}"
+    );
+    assert!(!text.contains("\"summary\""), "summary leaked: {text}");
+    assert!(text.contains("rows_affected"), "{text}");
+}

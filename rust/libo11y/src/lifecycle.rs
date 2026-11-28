@@ -14,14 +14,11 @@ use std::time::{Duration, Instant};
 
 use libo11y_spec::Signal;
 
-use crate::export::failures::SharedError;
+use crate::export::failures::{ExportFailures, SharedError};
+use opentelemetry_sdk::error::OTelSdkResult;
 
 /// How long shutdown and flush wait when the caller gives no timeout.
 pub const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// How long a shutdown whose deadline has passed still waits for its
-/// `o11y.telemetry.dropped` events to reach the log sinks.
-pub(crate) const DROPPED_REPORT_GRACE: Duration = Duration::from_millis(100);
 
 /// Which call a failure belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -333,9 +330,13 @@ pub(crate) struct Step {
     pub(crate) signal: Signal,
     /// Claimed while a step of this signal runs, across calls.
     pub(crate) busy: Arc<Busy>,
-    /// Given the time left before the deadline, returns the errors to
-    /// report, none on success.
-    pub(crate) run: Box<dyn FnOnce(Duration) -> Vec<SharedError> + Send + 'static>,
+    /// Signal export-failure recorder. When set, a recording window is opened
+    /// before waiting on `busy` so a shutdown queued behind an active flush
+    /// still captures export failures recorded before the provider's shutdown
+    /// runs.
+    pub(crate) failures: Option<ExportFailures>,
+    /// Given the time left before the deadline, runs the provider operation.
+    pub(crate) run: Box<dyn FnOnce(Duration) -> OTelSdkResult + Send + 'static>,
 }
 
 /// Runs every step on a thread of its own under one deadline, `timeout`
@@ -360,6 +361,11 @@ pub(crate) fn run_steps(op: Op, steps: Vec<Step>, timeout: Duration) -> Vec<Sign
             outcomes.push(Some(FailureKind::StillRunning));
             continue;
         }
+        // Open the failure-recording window before waiting on `busy` so a
+        // shutdown queued behind an active flush captures any export failure
+        // that happens while the flush finishes. Dropping `window` unregisters
+        // it automatically if thread spawning fails or the step panics.
+        let window = step.failures.as_ref().map(ExportFailures::open);
         let tx = tx.clone();
         let busy = Arc::clone(&step.busy);
         let run = step.run;
@@ -372,10 +378,22 @@ pub(crate) fn run_steps(op: Op, steps: Vec<Step>, timeout: Duration) -> Vec<Sign
                 let left = deadline.map_or(timeout, |deadline| {
                     deadline.saturating_duration_since(Instant::now())
                 });
-                let outcome = match catch_unwind(AssertUnwindSafe(|| run(left))) {
-                    Ok(errors) if errors.is_empty() => None,
-                    Ok(errors) => Some(FailureKind::Errors(errors)),
-                    Err(_) => Some(FailureKind::Panicked),
+                let outcome = if let Ok(result) = catch_unwind(AssertUnwindSafe(|| run(left))) {
+                    let errors = match window {
+                        Some(window) => window.finish(result),
+                        None => match result {
+                            Ok(()) => Vec::new(),
+                            Err(err) => vec![Arc::new(err) as SharedError],
+                        },
+                    };
+                    if errors.is_empty() {
+                        None
+                    } else {
+                        Some(FailureKind::Errors(errors))
+                    }
+                } else {
+                    drop(window);
+                    Some(FailureKind::Panicked)
                 };
                 busy.release();
                 // The caller may have stopped waiting; then nobody listens.
@@ -502,24 +520,23 @@ mod tests {
 
     use opentelemetry_sdk::error::OTelSdkError;
 
-    type Run = Box<dyn FnOnce(Duration) -> Vec<SharedError> + Send + 'static>;
+    type Run = Box<dyn FnOnce(Duration) -> OTelSdkResult + Send + 'static>;
 
     fn step(signal: Signal, run: Run) -> Step {
         Step {
             signal,
             busy: Arc::default(),
+            failures: None,
             run,
         }
     }
 
     fn ok() -> Run {
-        Box::new(|_| Vec::new())
+        Box::new(|_| Ok(()))
     }
 
     fn failing(message: &'static str) -> Run {
-        Box::new(move |_| {
-            vec![Arc::new(OTelSdkError::InternalFailure(message.to_owned())) as SharedError]
-        })
+        Box::new(move |_| Err(OTelSdkError::InternalFailure(message.to_owned())))
     }
 
     /// A step that blocks until `release` drops its sender.
@@ -528,7 +545,7 @@ mod tests {
         (
             Box::new(move |_| {
                 let _ = rx.recv();
-                Vec::new()
+                Ok(())
             }),
             tx,
         )
@@ -611,7 +628,7 @@ mod tests {
             Op::Flush,
             vec![step(
                 Signal::Traces,
-                Box::new(|_| -> Vec<SharedError> { panic!("exporter bug") }),
+                Box::new(|_| -> OTelSdkResult { panic!("exporter bug") }),
             )],
             Duration::from_secs(5),
         );
@@ -641,6 +658,7 @@ mod tests {
             vec![Step {
                 signal: Signal::Metrics,
                 busy: Arc::clone(&busy),
+                failures: None,
                 run: hung,
             }],
             Duration::from_millis(50),
@@ -652,6 +670,7 @@ mod tests {
                 Step {
                     signal: Signal::Metrics,
                     busy: Arc::clone(&busy),
+                    failures: None,
                     run: Box::new(|_| unreachable!("no second thread")),
                 },
                 step(Signal::Traces, ok()),
@@ -674,6 +693,7 @@ mod tests {
                 vec![Step {
                     signal: Signal::Metrics,
                     busy,
+                    failures: None,
                     run: ok(),
                 }],
                 Duration::from_secs(5),
@@ -692,6 +712,7 @@ mod tests {
             vec![Step {
                 signal: Signal::Metrics,
                 busy: Arc::clone(&busy),
+                failures: None,
                 run: hung,
             }],
             Duration::from_millis(50),
@@ -707,9 +728,10 @@ mod tests {
             vec![Step {
                 signal: Signal::Metrics,
                 busy,
+                failures: None,
                 run: Box::new(move |left| {
                     let _ = ran_tx.send(left);
-                    Vec::new()
+                    Ok(())
                 }),
             }],
             Duration::from_secs(20),
@@ -732,6 +754,7 @@ mod tests {
             vec![Step {
                 signal: Signal::Logs,
                 busy: Arc::clone(&busy),
+                failures: None,
                 run: hung,
             }],
             Duration::from_millis(50),
@@ -743,9 +766,10 @@ mod tests {
             vec![Step {
                 signal: Signal::Logs,
                 busy,
+                failures: None,
                 run: Box::new(move |left| {
                     let _ = ran_tx.send(left);
-                    Vec::new()
+                    Ok(())
                 }),
             }],
             Duration::from_millis(50),
@@ -760,6 +784,67 @@ mod tests {
             .recv_timeout(Duration::from_secs(5))
             .expect("the shutdown step ran once the flush ended");
         assert_eq!(left, Duration::ZERO, "no time was left to the step");
+    }
+
+    #[test]
+    fn a_queued_shutdown_captures_export_failures_from_an_active_flush() {
+        let busy = Arc::new(Busy::default());
+        let recorder = ExportFailures::default();
+        let (flush_started_tx, flush_started_rx) = mpsc::channel::<()>();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let flush_recorder = recorder.clone();
+        let flush_busy = Arc::clone(&busy);
+        let flusher = std::thread::spawn(move || {
+            run_steps(
+                Op::Flush,
+                vec![Step {
+                    signal: Signal::Traces,
+                    busy: flush_busy,
+                    failures: Some(flush_recorder.clone()),
+                    run: Box::new(move |_| {
+                        let _ = flush_started_tx.send(());
+                        let _ = release_rx.recv();
+                        flush_recorder.record(&Err(OTelSdkError::InternalFailure(
+                            "in-flight flush export rejected".to_owned(),
+                        )));
+                        Ok(())
+                    }),
+                }],
+                Duration::from_secs(10),
+            )
+        });
+        flush_started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("flush started");
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            let _ = release_tx.send(());
+        });
+        let shutdown_failures = run_steps(
+            Op::Shutdown,
+            vec![Step {
+                signal: Signal::Traces,
+                busy,
+                failures: Some(recorder.clone()),
+                run: ok(),
+            }],
+            Duration::from_secs(10),
+        );
+        releaser.join().expect("releaser joined");
+        let flush_failures = flusher.join().expect("flusher joined");
+        assert_eq!(flush_failures.len(), 1, "{flush_failures:?}");
+        assert_eq!(
+            shutdown_failures.len(),
+            1,
+            "shutdown missed export failure during active flush: {shutdown_failures:?}"
+        );
+        assert!(
+            shutdown_failures[0]
+                .to_string()
+                .contains("in-flight flush export rejected"),
+            "{shutdown_failures:?}"
+        );
+        assert!(!recorder.window_open());
     }
 
     #[test]

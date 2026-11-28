@@ -34,6 +34,7 @@ otlp-http = [
 ]
 # OTLP over gRPC through upstream's tonic exporters, with TLS through rustls.
 otlp-grpc = [
+    "dep:http",
     "dep:opentelemetry-otlp",
     "dep:tonic",
     "dep:tokio",

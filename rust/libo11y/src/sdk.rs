@@ -25,8 +25,8 @@ use crate::export::Selection;
 use crate::export::failures::ExportFailures;
 use crate::layer::{Parts, PartsCell, layers};
 use crate::lifecycle::{
-    Busy, DEFAULT_SHUTDOWN_TIMEOUT, DROPPED_REPORT_GRACE, FlushError, Op, ShutdownCell,
-    ShutdownError, SignalFailure, Step, run_steps,
+    Busy, DEFAULT_SHUTDOWN_TIMEOUT, FlushError, Op, ShutdownCell, ShutdownError, SignalFailure,
+    Step, run_steps,
 };
 use crate::log_layer::LogPipeline;
 use crate::metrics::Libo11yMeterProvider;
@@ -228,9 +228,9 @@ impl Sdk {
     ///
     /// Each failed signal is also reported as an `o11y.telemetry.dropped`
     /// event to the log sinks still running. The events are written on a
-    /// thread of their own. The call waits for them until the deadline, or
-    /// for 100 ms when less than that is left, so a log sink that blocks
-    /// cannot hold the call.
+    /// thread of their own. The call waits for them only while time remains
+    /// before the shutdown deadline, so a log sink that blocks cannot hold
+    /// the call past `timeout`.
     /// Shutting down the global SDK lets [`Builder::setup`] run again; its
     /// providers stay installed until then.
     ///
@@ -286,11 +286,10 @@ impl Sdk {
             steps.push(Step {
                 signal: Signal::Logs,
                 busy: Arc::clone(&busy[0]),
-                run: Box::new(move |timeout| {
-                    failures.during(|| match op {
-                        Op::Shutdown => provider.shutdown_with_timeout(timeout),
-                        Op::Flush => provider.force_flush(),
-                    })
+                failures: Some(failures),
+                run: Box::new(move |timeout| match op {
+                    Op::Shutdown => provider.shutdown_with_timeout(timeout),
+                    Op::Flush => provider.force_flush(),
                 }),
             });
         }
@@ -299,11 +298,10 @@ impl Sdk {
         steps.push(Step {
             signal: Signal::Metrics,
             busy: Arc::clone(&busy[1]),
-            run: Box::new(move |timeout| {
-                failures.during(|| match op {
-                    Op::Shutdown => meters.shutdown_with_timeout(timeout),
-                    Op::Flush => meters.force_flush(),
-                })
+            failures: Some(failures),
+            run: Box::new(move |timeout| match op {
+                Op::Shutdown => meters.shutdown_with_timeout(timeout),
+                Op::Flush => meters.force_flush(),
             }),
         });
         let tracers = self.0.tracer_provider.clone();
@@ -311,11 +309,10 @@ impl Sdk {
         steps.push(Step {
             signal: Signal::Traces,
             busy: Arc::clone(&busy[2]),
-            run: Box::new(move |timeout| {
-                failures.during(|| match op {
-                    Op::Shutdown => tracers.shutdown_with_timeout(timeout),
-                    Op::Flush => tracers.force_flush(),
-                })
+            failures: Some(failures),
+            run: Box::new(move |timeout| match op {
+                Op::Shutdown => tracers.shutdown_with_timeout(timeout),
+                Op::Flush => tracers.force_flush(),
             }),
         });
         steps
@@ -325,8 +322,8 @@ impl Sdk {
     /// `o11y.telemetry.dropped` event to the log sinks still running, best
     /// effort. The events are written on a thread of their own, because a
     /// log sink is application code that may block. The caller waits for
-    /// them until `deadline`, or for [`DROPPED_REPORT_GRACE`] when less than
-    /// that is left, and without a limit when there is no deadline.
+    /// them only until `deadline`, returning immediately when no time is left,
+    /// and without a limit when there is no deadline.
     fn report_dropped(&self, failures: &[SignalFailure], deadline: Option<Instant>) {
         if failures.is_empty() {
             return;
@@ -348,14 +345,17 @@ impl Sdk {
         }
         // Nothing is ever sent: the wait ends when the thread drops its end,
         // having written every event or panicked in a sink.
-        let _ = match deadline {
-            Some(deadline) => done.recv_timeout(
-                deadline
-                    .saturating_duration_since(Instant::now())
-                    .max(DROPPED_REPORT_GRACE),
-            ),
-            None => done.recv().map_err(Into::into),
-        };
+        match deadline {
+            Some(deadline) => {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if !remaining.is_zero() {
+                    let _ = done.recv_timeout(remaining);
+                }
+            }
+            None => {
+                let _ = done.recv();
+            }
+        }
     }
 
     /// Stops an SDK that setup is discarding: nothing in it is worth
@@ -742,6 +742,60 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert_eq!(seen.load(Ordering::SeqCst), 1, "the report was lost");
+    }
+
+    /// A log sink whose `o11y.telemetry.dropped` emit blocks until `release`
+    /// opens.
+    #[derive(Debug)]
+    struct GatedDropped {
+        release: Gate,
+        seen: Arc<AtomicUsize>,
+    }
+
+    impl crate::LogSink for GatedDropped {
+        fn emit(&self, record: &crate::LogRecord) -> Result<(), crate::BoxError> {
+            if record.event_name() == Some(libo11y_spec::event::TELEMETRY_DROPPED) {
+                self.release.wait();
+                self.seen.fetch_add(1, Ordering::SeqCst);
+            }
+            Ok(())
+        }
+    }
+
+    // When the shutdown deadline is already exhausted by a hung provider,
+    // `report_dropped` must return without adding any extra grace period.
+    #[test]
+    fn an_exhausted_deadline_does_not_wait_on_dropped_report_sinks() {
+        let log_gate = Gate::default();
+        let _open_logs = OpenOnDrop(log_gate.clone());
+        let dropped_gate = Gate::default();
+        let _open_dropped = OpenOnDrop(dropped_gate.clone());
+        let seen = Arc::new(AtomicUsize::new(0));
+        let sdk = hermetic()
+            .with_log_exporter(HangingLogs(log_gate))
+            .with_extra_log_sink(GatedDropped {
+                release: dropped_gate.clone(),
+                seen: Arc::clone(&seen),
+            })
+            .build()
+            .expect("SDK");
+        emit(&sdk, Signal::Logs, 1);
+
+        let err = sdk
+            .shutdown_with_timeout(Duration::from_millis(40))
+            .expect_err("the log export hangs");
+        assert_eq!(err.failures()[0].signal(), Signal::Logs);
+        assert!(err.failures()[0].is_timeout());
+        // The gated sink is still blocked because shutdown returned without
+        // waiting on it past the expired deadline.
+        assert_eq!(seen.load(Ordering::SeqCst), 0);
+
+        dropped_gate.open();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while seen.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(seen.load(Ordering::SeqCst), 1);
     }
 
     const SIGNALS: [Signal; 3] = [Signal::Traces, Signal::Logs, Signal::Metrics];

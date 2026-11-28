@@ -154,33 +154,67 @@ impl<C: opentelemetry_http::HttpClient> opentelemetry_http::HttpClient for Looku
     }
 }
 
+/// Validates a gRPC metadata entry (ASCII or `*-bin` base64) and returns it as
+/// an `http::HeaderName`/`http::HeaderValue` pair suitable for
+/// `tonic::metadata::MetadataMap::from_headers`.
+#[cfg(feature = "otlp-grpc")]
+pub(crate) fn parse_grpc_header(
+    name: &str,
+    value: &str,
+) -> Option<(http::HeaderName, http::HeaderValue)> {
+    let lower = name.to_ascii_lowercase();
+    let hname = http::HeaderName::from_bytes(lower.as_bytes()).ok()?;
+    let hval = parse_grpc_header_value(&hname, value)?;
+    Some((hname, hval))
+}
+
+/// Validates a gRPC metadata value for `name`: `*-bin` keys must be valid gRPC
+/// binary keys with valid base64 values; ASCII keys must be valid gRPC ASCII
+/// keys and values.
+#[cfg(feature = "otlp-grpc")]
+fn parse_grpc_header_value(name: &http::HeaderName, value: &str) -> Option<http::HeaderValue> {
+    let key_str = name.as_str();
+    if key_str.ends_with("-bin") {
+        let bin_key =
+            tonic::metadata::MetadataKey::<tonic::metadata::Binary>::from_bytes(key_str.as_bytes())
+                .ok()?;
+        let hval = http::HeaderValue::from_str(value).ok()?;
+        let mut check = http::HeaderMap::new();
+        check.insert(name.clone(), hval.clone());
+        let map = tonic::metadata::MetadataMap::from_headers(check);
+        map.get_bin(&bin_key)?.to_bytes().ok()?;
+        Some(hval)
+    } else {
+        tonic::metadata::MetadataKey::<tonic::metadata::Ascii>::from_bytes(key_str.as_bytes())
+            .ok()?;
+        tonic::metadata::MetadataValue::<tonic::metadata::Ascii>::try_from(value).ok()?;
+        http::HeaderValue::from_str(value).ok()
+    }
+}
+
 /// A tonic interceptor that puts the lookup's metadata back over the
 /// entries upstream's exporter took from the process environment. Upstream
-/// runs a caller's interceptor after it adds its own metadata.
+/// constructs its metadata with `MetadataMap::from_headers` (which admits both
+/// ASCII and `*-bin` binary entries) and runs a caller's interceptor after
+/// adding its own metadata. Operating on the underlying `http::HeaderMap`
+/// ensures both ASCII and binary metadata entries are replaced or removed.
 #[cfg(feature = "otlp-grpc")]
 #[derive(Debug, Clone)]
 struct LookupMetadata {
-    corrections: std::sync::Arc<[LookupMetadataEntry]>,
+    corrections: std::sync::Arc<[(http::HeaderName, Option<http::HeaderValue>)]>,
 }
 
 #[cfg(feature = "otlp-grpc")]
-type LookupMetadataEntry = (
-    tonic::metadata::MetadataKey<tonic::metadata::Ascii>,
-    Option<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>,
-);
-
-#[cfg(feature = "otlp-grpc")]
 impl LookupMetadata {
-    /// A correction whose name or value is not valid metadata removes the
-    /// entry, so nothing ambient is sent in its place.
+    /// A correction whose value is not valid gRPC metadata removes the entry,
+    /// so nothing ambient or malformed is sent in its place.
     fn new(corrections: Vec<(String, Option<String>)>) -> Self {
         let corrections = corrections
             .into_iter()
             .filter_map(|(name, value)| {
-                let key = tonic::metadata::MetadataKey::from_bytes(name.as_bytes()).ok()?;
-                let value =
-                    value.and_then(|value| tonic::metadata::MetadataValue::try_from(value).ok());
-                Some((key, value))
+                let name = http::HeaderName::from_bytes(name.as_bytes()).ok()?;
+                let value = value.and_then(|value| parse_grpc_header_value(&name, &value));
+                Some((name, value))
             })
             .collect();
         Self { corrections }
@@ -193,41 +227,42 @@ impl tonic::service::Interceptor for LookupMetadata {
         &mut self,
         mut request: tonic::Request<()>,
     ) -> Result<tonic::Request<()>, tonic::Status> {
-        for (key, value) in self.corrections.iter() {
+        let mut headers =
+            std::mem::replace(request.metadata_mut(), tonic::metadata::MetadataMap::new())
+                .into_headers();
+        for (name, value) in self.corrections.iter() {
             match value {
                 Some(value) => {
-                    request.metadata_mut().insert(key.clone(), value.clone());
+                    headers.insert(name, value.clone());
                 }
                 None => {
-                    request.metadata_mut().remove(key);
+                    headers.remove(name);
                 }
             }
         }
+        *request.metadata_mut() = tonic::metadata::MetadataMap::from_headers(headers);
         Ok(request)
     }
 }
 
 /// Resolves `OTEL_EXPORTER_OTLP_<SIGNAL>_HEADERS`, else
-/// `OTEL_EXPORTER_OTLP_HEADERS`, into a tonic `MetadataMap`.
+/// `OTEL_EXPORTER_OTLP_HEADERS`, into a tonic `MetadataMap`, preserving both
+/// ASCII and `*-bin` binary metadata entries.
 #[cfg(feature = "otlp-grpc")]
 fn signal_grpc_metadata(env: &EnvLookup, upper: &str) -> tonic::metadata::MetadataMap {
-    let mut map = tonic::metadata::MetadataMap::new();
+    let mut headers = http::HeaderMap::new();
     let Some(raw) = env
         .trimmed(&format!("OTEL_EXPORTER_OTLP_{upper}_HEADERS"))
         .or_else(|| env.trimmed("OTEL_EXPORTER_OTLP_HEADERS"))
     else {
-        return map;
+        return tonic::metadata::MetadataMap::new();
     };
     for (name, value) in crate::metrics::sink::parse_headers(&raw) {
-        let lower = name.to_ascii_lowercase();
-        if let (Ok(k), Ok(v)) = (
-            tonic::metadata::MetadataKey::<tonic::metadata::Ascii>::from_bytes(lower.as_bytes()),
-            tonic::metadata::MetadataValue::try_from(value.as_str()),
-        ) {
-            map.insert(k, v);
+        if let Some((k, v)) = parse_grpc_header(&name, &value) {
+            headers.insert(k, v);
         }
     }
-    map
+    tonic::metadata::MetadataMap::from_headers(headers)
 }
 
 /// Resolves `OTEL_EXPORTER_OTLP_<SIGNAL>_INSECURE`, else
@@ -243,10 +278,11 @@ fn signal_insecure(env: &EnvLookup, upper: &str) -> bool {
 /// Builds `$builder` (`SpanExporter::builder()` or `LogExporter::builder()`)
 /// over the transport `$export` names.
 macro_rules! build_otlp {
-    ($builder:expr, $export:expr, $env:expr, $upper:expr) => {{
+    ($builder:expr, $export:expr, $env:expr, $upper:expr, $signal:expr) => {{
         let export: &SignalExport = $export;
         let env: &EnvLookup = $env;
         let upper: &str = $upper;
+        let signal: &str = $signal;
         let tls: Option<TlsMaterial> = export.tls.load()?;
         let compression = signal_compression(env, upper);
         let corrections = header_corrections(&ambient_headers(upper), &lookup_headers(env, upper));
@@ -254,6 +290,7 @@ macro_rules! build_otlp {
             #[cfg(feature = "otlp-http")]
             Protocol::HttpProtobuf | Protocol::HttpJson => {
                 use opentelemetry_otlp::{WithExportConfig as _, WithHttpConfig as _};
+                crate::metrics::sink::validate_http_endpoint(signal, &export.endpoint)?;
                 let protocol = if export.protocol == Protocol::HttpJson {
                     opentelemetry_otlp::Protocol::HttpJson
                 } else {
@@ -287,6 +324,7 @@ macro_rules! build_otlp {
             #[cfg(feature = "otlp-grpc")]
             Protocol::Grpc => {
                 use opentelemetry_otlp::{WithExportConfig as _, WithTonicConfig as _};
+                let _ = signal;
                 require_tokio()?;
                 let endpoint_str = crate::metrics::sink::normalize_grpc_endpoint(
                     &export.endpoint,
@@ -320,11 +358,14 @@ macro_rules! build_otlp {
             // Selection refuses a protocol this build does not carry, so
             // this arm exists only for builds with one transport.
             #[allow(unreachable_patterns, reason = "reachable with one transport feature")]
-            other => Err(format!(
-                "OTLP protocol {other} needs the libo11y feature {}",
-                other.feature()
-            )
-            .into()),
+            other => {
+                let _ = signal;
+                Err(format!(
+                    "OTLP protocol {other} needs the libo11y feature {}",
+                    other.feature()
+                )
+                .into())
+            }
         }
     }};
 }
@@ -338,7 +379,8 @@ pub(crate) fn span_exporter(
         opentelemetry_otlp::SpanExporter::builder(),
         export,
         env,
-        "TRACES"
+        "TRACES",
+        "traces"
     )
 }
 
@@ -351,7 +393,8 @@ pub(crate) fn log_exporter(
         opentelemetry_otlp::LogExporter::builder(),
         export,
         env,
-        "LOGS"
+        "LOGS",
+        "logs"
     )
 }
 
@@ -437,6 +480,9 @@ mod tests {
             ),
             ("x-ambient".to_owned(), None),
             ("x-bad-value".to_owned(), Some("line\nbreak".to_owned())),
+            ("x-token-bin".to_owned(), Some("ZXhwbGljaXQ=".to_owned())),
+            ("x-ambient-bin".to_owned(), None),
+            ("x-bad-bin".to_owned(), Some("not!valid!base64".to_owned())),
         ]);
         let mut request = tonic::Request::new(());
         for (key, value) in [
@@ -449,6 +495,18 @@ mod tests {
                 .metadata_mut()
                 .append(key, value.parse().expect("metadata value"));
         }
+        request.metadata_mut().append_bin(
+            "x-token-bin",
+            tonic::metadata::MetadataValue::from_bytes(b"ambient"),
+        );
+        request.metadata_mut().append_bin(
+            "x-ambient-bin",
+            tonic::metadata::MetadataValue::from_bytes(b"secret"),
+        );
+        request.metadata_mut().append_bin(
+            "x-bad-bin",
+            tonic::metadata::MetadataValue::from_bytes(b"ambient-bad"),
+        );
         let request = interceptor.call(request).expect("intercepted");
         let metadata = request.metadata();
         let get = |key: &str| metadata.get(key).and_then(|value| value.to_str().ok());
@@ -456,6 +514,64 @@ mod tests {
         assert_eq!(get("x-ambient"), None);
         assert_eq!(get("x-bad-value"), None, "an ambient value survived");
         assert_eq!(get("x-kept"), Some("yes"));
+        assert_eq!(
+            metadata
+                .get_bin("x-token-bin")
+                .and_then(|value| value.to_bytes().ok())
+                .as_deref(),
+            Some(&b"explicit"[..])
+        );
+        assert_eq!(
+            metadata.get_bin("x-ambient-bin"),
+            None,
+            "an ambient binary credential survived"
+        );
+        assert_eq!(
+            metadata.get_bin("x-bad-bin"),
+            None,
+            "invalid base64 must remove the ambient binary value instead of sending malformed metadata"
+        );
+    }
+
+    #[cfg(feature = "otlp-http")]
+    #[test]
+    fn http_exporters_reject_malformed_endpoints_without_leaking_credentials() {
+        for bad in [
+            "not-a-url",
+            "://missing-scheme",
+            "ftp://user:secret@collector:4318/v1/traces?api_key=tok",
+            "http://",
+        ] {
+            let export = SignalExport {
+                route: crate::export::Route::Otlp,
+                protocol: Protocol::HttpProtobuf,
+                endpoint: bad.to_owned(),
+                timeout: std::time::Duration::from_secs(5),
+                tls: crate::export::tls::TlsFiles::default(),
+            };
+            let span_err =
+                span_exporter(&export, &EnvLookup::empty()).expect_err("malformed span endpoint");
+            let span_msg = span_err.to_string();
+            assert!(
+                span_msg.contains("invalid OTLP/HTTP traces endpoint"),
+                "for {bad}: {span_msg}"
+            );
+            assert!(
+                !span_msg.contains("secret"),
+                "credential leaked: {span_msg}"
+            );
+            assert!(!span_msg.contains("tok"), "query token leaked: {span_msg}");
+
+            let log_err =
+                log_exporter(&export, &EnvLookup::empty()).expect_err("malformed log endpoint");
+            let log_msg = log_err.to_string();
+            assert!(
+                log_msg.contains("invalid OTLP/HTTP logs endpoint"),
+                "for {bad}: {log_msg}"
+            );
+            assert!(!log_msg.contains("secret"), "credential leaked: {log_msg}");
+            assert!(!log_msg.contains("tok"), "query token leaked: {log_msg}");
+        }
     }
 
     #[cfg(feature = "otlp-http")]

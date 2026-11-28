@@ -18,6 +18,7 @@ use opentelemetry_sdk::metrics::{
     SdkMeterProvider, Stream,
 };
 
+use crate::diagnostics::ErrorHandler;
 use crate::env::EnvLookup;
 use crate::export::failures::{ExportFailures, ObservedMetricExporter};
 use crate::export::{Route, SignalExport};
@@ -28,7 +29,7 @@ pub use provider::Libo11yMeterProvider;
 pub use sink::{MemoryMetricSink, MetricSink};
 
 use exemplar::ExemplarRegistry;
-use exporter::ExemplarMetricExporter;
+use exporter::{ExemplarMetricExporter, RenamedStreams, stream_custom_name};
 use process::ProcessMetrics;
 use provider::{HistogramBucketRule, wildcard_match};
 use sink::{ConsoleMetricSink, temporality_preference};
@@ -54,6 +55,7 @@ pub(crate) trait PendingMetricExporter: Send {
         interval: Duration,
         failures: ExportFailures,
         exemplars: Arc<ExemplarRegistry>,
+        renamed: Arc<RenamedStreams>,
     ) -> MeterProviderBuilder;
 
     /// Shuts down an exporter the SDK will not use.
@@ -70,6 +72,7 @@ impl<E: PushMetricExporter> PendingMetricExporter for PendingMetric<E> {
         interval: Duration,
         failures: ExportFailures,
         _exemplars: Arc<ExemplarRegistry>,
+        _renamed: Arc<RenamedStreams>,
     ) -> MeterProviderBuilder {
         let exporter = ObservedMetricExporter::new(self.0, failures);
         builder.with_reader(
@@ -95,8 +98,9 @@ impl<S: MetricSink> PendingMetricExporter for PendingSink<S> {
         interval: Duration,
         failures: ExportFailures,
         exemplars: Arc<ExemplarRegistry>,
+        renamed: Arc<RenamedStreams>,
     ) -> MeterProviderBuilder {
-        let exemplar_exporter = ExemplarMetricExporter::new(self.0, exemplars);
+        let exemplar_exporter = ExemplarMetricExporter::new(self.0, exemplars, renamed);
         let observed = ObservedMetricExporter::new(exemplar_exporter, failures);
         builder.with_reader(
             PeriodicReader::builder(observed)
@@ -131,9 +135,10 @@ pub(crate) fn metric_exporter_for(
     route: Route,
     export: &SignalExport,
     env: &EnvLookup,
+    error_handler: &ErrorHandler,
 ) -> Result<Option<Box<dyn PendingMetricExporter>>, Error> {
     Ok(match route {
-        Route::Otlp => Some(otlp_metric_exporter(export, env)?),
+        Route::Otlp => Some(otlp_metric_exporter(export, env, error_handler)?),
         Route::Console => Some(Box::new(PendingSink(ConsoleMetricSink::stdout(
             temporality_preference(env),
         )))),
@@ -148,18 +153,26 @@ fn otlp_metric_exporter(
         allow(unused_variables, reason = "only OTLP transports read env")
     )]
     env: &EnvLookup,
+    #[cfg_attr(
+        not(any(feature = "otlp-http", feature = "otlp-grpc")),
+        allow(
+            unused_variables,
+            reason = "only OTLP transports report partial success"
+        )
+    )]
+    error_handler: &ErrorHandler,
 ) -> Result<Box<dyn PendingMetricExporter>, Error> {
     match export.protocol {
         #[cfg(feature = "otlp-http")]
         crate::export::Protocol::HttpProtobuf | crate::export::Protocol::HttpJson => {
-            let sink =
-                sink::OtlpHttpMetricSink::new(export, env).map_err(Error::BuildingMetricReader)?;
+            let sink = sink::OtlpHttpMetricSink::new(export, env, Arc::clone(error_handler))
+                .map_err(Error::BuildingMetricReader)?;
             Ok(Box::new(PendingSink(sink)))
         }
         #[cfg(feature = "otlp-grpc")]
         crate::export::Protocol::Grpc => {
-            let sink =
-                sink::OtlpGrpcMetricSink::new(export, env).map_err(Error::BuildingMetricReader)?;
+            let sink = sink::OtlpGrpcMetricSink::new(export, env, Arc::clone(error_handler))
+                .map_err(Error::BuildingMetricReader)?;
             Ok(Box::new(PendingSink(sink)))
         }
         #[allow(
@@ -224,10 +237,19 @@ pub(crate) fn build_meter_provider(
         });
     }
 
-    // Register user views.
+    // Register user views, recording any stream renames so exemplars from an
+    // original instrument are never attached to an unrelated renamed stream.
+    let renamed = Arc::new(RenamedStreams::default());
     for view in &parts.views {
         let view = Arc::clone(view);
-        builder = builder.with_view(move |inst: &Instrument| view(inst));
+        let renamed = Arc::clone(&renamed);
+        builder = builder.with_view(move |inst: &Instrument| {
+            let stream = view(inst)?;
+            if let Some(new_name) = stream_custom_name(&stream) {
+                renamed.record_rename(inst.scope(), inst.name(), &new_name);
+            }
+            Some(stream)
+        });
     }
 
     // Catch-all view pinning the default cardinality limit (2000) for any
@@ -268,6 +290,7 @@ pub(crate) fn build_meter_provider(
                 interval,
                 parts.failures.clone(),
                 Arc::clone(&registry),
+                Arc::clone(&renamed),
             );
         }
         for extra in parts.extra_sinks {
@@ -276,6 +299,7 @@ pub(crate) fn build_meter_provider(
                 interval,
                 parts.failures.clone(),
                 Arc::clone(&registry),
+                Arc::clone(&renamed),
             );
         }
     }

@@ -623,6 +623,16 @@ where
         let cx = event_context::<S>(event, self.dispatch.get());
         let mut extractor = FieldExtractor::default();
         event.record(&mut extractor);
+        // SQLx 0.9 logs slow statements at WARN by default under target
+        // `sqlx::query` with raw SQL in `db.statement` and `summary`. Drop
+        // those fields so raw query literals cannot leak through libo11y's
+        // default log pipeline; safe timing and row-count fields remain.
+        let target = metadata.target();
+        if target == "sqlx::query" || target.starts_with("sqlx::query::") {
+            extractor
+                .attrs
+                .retain(|(key, _)| !matches!(key.as_str(), "db.statement" | "summary"));
+        }
         let source = if metadata.file().is_some() || metadata.line().is_some() {
             Some(SourceLocation {
                 file: metadata.file(),

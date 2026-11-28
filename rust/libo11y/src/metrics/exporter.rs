@@ -2,11 +2,12 @@
 //! [`ExportMetricsServiceRequest`], attaches exemplars drained from its
 //! reader's [`ExemplarStore`], and hands the request to a [`MetricSink`].
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, UNIX_EPOCH};
 
+use opentelemetry::InstrumentationScope;
 use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
 use opentelemetry_proto::tonic::common::v1::KeyValue as ProtoKeyValue;
 use opentelemetry_proto::tonic::metrics::v1::{
@@ -14,15 +15,91 @@ use opentelemetry_proto::tonic::metrics::v1::{
     exemplar, metric::Data,
 };
 use opentelemetry_sdk::error::OTelSdkResult;
-use opentelemetry_sdk::metrics::Temporality;
 use opentelemetry_sdk::metrics::data::ResourceMetrics;
 use opentelemetry_sdk::metrics::exporter::PushMetricExporter;
+use opentelemetry_sdk::metrics::{Stream, Temporality};
 
 use crate::metrics::exemplar::{
     ExemplarRegistry, ExemplarStore, ExemplarValue, MetricKey, ScopeKey, StoredExemplar,
     bucket_index, default_fixed_reservoir_size,
 };
 use crate::metrics::sink::MetricSink;
+
+/// Tracks `(scope, name)` keys involved in a user view rename (`stream.name !=
+/// inst.name`), so exemplars sampled under an original instrument name are
+/// never attached to an unrelated stream that took the same name via a view.
+#[derive(Debug, Default)]
+pub(crate) struct RenamedStreams {
+    ambiguous: Mutex<HashSet<MetricKey>>,
+}
+
+impl RenamedStreams {
+    /// Records that a view renamed `original` to `renamed` within `scope`.
+    ///
+    /// Stream names are stored lowercased to match OpenTelemetry SDK's
+    /// case-insensitive stream merging within a scope.
+    pub(crate) fn record_rename(
+        &self,
+        scope: &InstrumentationScope,
+        original: &str,
+        renamed: &str,
+    ) {
+        if original == renamed {
+            return;
+        }
+        let scope_key = ScopeKey::from_scope(scope);
+        let mut set = self
+            .ambiguous
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        set.insert(MetricKey {
+            scope: scope_key.clone(),
+            name: original.to_ascii_lowercase(),
+        });
+        set.insert(MetricKey {
+            scope: scope_key,
+            name: renamed.to_ascii_lowercase(),
+        });
+    }
+
+    /// Returns whether `key` is the source or target of a view rename.
+    pub(crate) fn is_ambiguous(&self, key: &MetricKey) -> bool {
+        let normalized = MetricKey {
+            scope: key.scope.clone(),
+            name: key.name.to_ascii_lowercase(),
+        };
+        self.ambiguous
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(&normalized)
+    }
+}
+
+/// Extracts the custom stream name from an OpenTelemetry SDK [`Stream`] when a
+/// view explicitly renamed it. `opentelemetry_sdk::metrics::Stream` keeps its
+/// `name` field `pub(crate)`, so this inspects its `Debug` representation
+/// (`Stream { name: Some("..."), ... }`).
+pub(crate) fn stream_custom_name(stream: &Stream) -> Option<String> {
+    let rendered = format!("{stream:?}");
+    let rest = rendered.strip_prefix("Stream { name: Some(\"")?;
+    let mut name = String::new();
+    let mut chars = rest.chars();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' => return (!name.is_empty()).then_some(name),
+            '\\' => match chars.next()? {
+                '"' => name.push('"'),
+                '\\' => name.push('\\'),
+                'n' => name.push('\n'),
+                'r' => name.push('\r'),
+                't' => name.push('\t'),
+                other => name.push(other),
+            },
+            other => name.push(other),
+        }
+    }
+    None
+}
 
 /// A [`PushMetricExporter`] that converts SDK [`ResourceMetrics`] into OTLP
 /// protobuf, attaches exemplars sampled by
@@ -32,6 +109,7 @@ pub(crate) struct ExemplarMetricExporter<S> {
     sink: S,
     store: Arc<ExemplarStore>,
     registry: Arc<ExemplarRegistry>,
+    renamed: Arc<RenamedStreams>,
 }
 
 impl<S: fmt::Debug> fmt::Debug for ExemplarMetricExporter<S> {
@@ -45,12 +123,17 @@ impl<S: fmt::Debug> fmt::Debug for ExemplarMetricExporter<S> {
 impl<S> ExemplarMetricExporter<S> {
     /// Creates an exporter backed by `sink` with its own registered
     /// [`ExemplarStore`] in `registry`.
-    pub(crate) fn new(sink: S, registry: Arc<ExemplarRegistry>) -> Self {
+    pub(crate) fn new(
+        sink: S,
+        registry: Arc<ExemplarRegistry>,
+        renamed: Arc<RenamedStreams>,
+    ) -> Self {
         let store = registry.register();
         Self {
             sink,
             store,
             registry,
+            renamed,
         }
     }
 }
@@ -59,7 +142,7 @@ impl<S: MetricSink> PushMetricExporter for ExemplarMetricExporter<S> {
     async fn export(&self, metrics: &ResourceMetrics) -> OTelSdkResult {
         let mut drained = self.store.collect();
         let mut request = ExportMetricsServiceRequest::from(metrics);
-        attach_exemplars(&mut request, &mut drained);
+        attach_exemplars(&mut request, &mut drained, &self.renamed);
         self.sink.export(request).await
     }
 
@@ -81,6 +164,7 @@ impl<S: MetricSink> PushMetricExporter for ExemplarMetricExporter<S> {
 pub(crate) fn attach_exemplars(
     request: &mut ExportMetricsServiceRequest,
     drained: &mut HashMap<MetricKey, Vec<StoredExemplar>>,
+    renamed: &RenamedStreams,
 ) {
     if drained.is_empty() {
         return;
@@ -94,6 +178,10 @@ pub(crate) fn attach_exemplars(
                     scope: scope.clone(),
                     name: metric.name.clone(),
                 };
+                if renamed.is_ambiguous(&key) {
+                    let _ = drained.remove(&key);
+                    continue;
+                }
                 let Some(samples) = drained.remove(&key) else {
                     continue;
                 };
@@ -415,7 +503,7 @@ mod tests {
             ),
         ]);
 
-        attach_exemplars(&mut request, &mut drained);
+        attach_exemplars(&mut request, &mut drained, &RenamedStreams::default());
 
         let metrics = &request.resource_metrics[0].scope_metrics[0].metrics;
         let Some(Data::Sum(sum)) = &metrics[0].data else {
@@ -493,7 +581,7 @@ mod tests {
             )],
         )]);
 
-        attach_exemplars(&mut request, &mut drained);
+        attach_exemplars(&mut request, &mut drained, &RenamedStreams::default());
 
         let Some(Data::Sum(sum)) = &request.resource_metrics[0].scope_metrics[0].metrics[0].data
         else {
@@ -585,7 +673,7 @@ mod tests {
             ),
         ]);
 
-        attach_exemplars(&mut request, &mut drained);
+        attach_exemplars(&mut request, &mut drained, &RenamedStreams::default());
 
         let sms = &request.resource_metrics[0].scope_metrics;
         let Some(Data::Sum(sum_a)) = &sms[0].metrics[0].data else {
@@ -603,6 +691,22 @@ mod tests {
         assert_eq!(
             sum_b.data_points[0].exemplars[0].value,
             Some(exemplar::Value::AsInt(20))
+        );
+    }
+
+    #[test]
+    fn stream_custom_name_extracts_renamed_stream_names() {
+        let unnamed = Stream::builder().build().expect("stream");
+        assert_eq!(stream_custom_name(&unnamed), None);
+
+        let renamed = Stream::builder()
+            .with_name("renamed.metric")
+            .with_description("desc")
+            .build()
+            .expect("stream");
+        assert_eq!(
+            stream_custom_name(&renamed).as_deref(),
+            Some("renamed.metric")
         );
     }
 }
