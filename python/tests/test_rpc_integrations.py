@@ -150,10 +150,10 @@ def test_grpc_sync_unary_stream_errors_health_and_propagation() -> None:
         )
         assert int_srv.status.status_code == StatusCode.ERROR
 
-        assert len(rec.metric_points("rpc.server.duration")) >= 1
-        assert len(rec.metric_points("rpc.client.duration")) >= 1
-        assert len(rec.exemplars("rpc.server.duration")) >= 1
-        assert len(rec.exemplars("rpc.client.duration")) >= 1
+        assert len(rec.metric_points("rpc.server.call.duration")) >= 1
+        assert len(rec.metric_points("rpc.client.call.duration")) >= 1
+        assert len(rec.exemplars("rpc.server.call.duration")) >= 1
+        assert len(rec.exemplars("rpc.client.call.duration")) >= 1
 
 
 @pytest.mark.asyncio
@@ -186,7 +186,7 @@ async def test_grpc_aio_public_endpoint_links_remote_span() -> None:
         try:
             async with grpc.aio.insecure_channel(
                 f"127.0.0.1:{port}",
-                interceptors=[o11y_grpc.aio_client_interceptor(telemetry=rec.telemetry)],
+                interceptors=o11y_grpc.aio_client_interceptors(telemetry=rec.telemetry),
             ) as chan:
                 call: Any = cast(Any, chan).unary_unary("/demo.Echo/AioSay")
                 tok = context.attach(baggage.set_baggage("tenant", "beta"))
