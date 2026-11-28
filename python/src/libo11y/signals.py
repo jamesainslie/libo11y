@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
+import math
 import signal
 import threading
 import time
-from collections.abc import Awaitable, Callable, Iterable
-from typing import Any
+from collections.abc import Awaitable, Callable, Generator, Iterable
+from contextlib import contextmanager
+from types import FrameType
 
 from libo11y.telemetry import ShutdownReport, Telemetry
+
+type _SignalHandler = Callable[[int, FrameType | None], object]
 
 
 def _default_signals() -> tuple[signal.Signals, ...]:
@@ -20,83 +23,100 @@ def _default_signals() -> tuple[signal.Signals, ...]:
     return tuple(sigs)
 
 
+@contextmanager
+def _signal_handlers(
+    signals: Iterable[signal.Signals] | None,
+    trigger: Callable[[], None],
+    *,
+    has_stop_event: bool,
+) -> Generator[None]:
+    if threading.current_thread() is not threading.main_thread():
+        if not has_stop_event:
+            raise RuntimeError("signal shutdown requires the main thread or an explicit stop_event")
+        yield
+        return
+
+    previous: dict[signal.Signals, _SignalHandler | int] = {}
+
+    def handle(_signum: int, _frame: FrameType | None) -> None:
+        trigger()
+
+    try:
+        for sig in dict.fromkeys(_default_signals() if signals is None else signals):
+            handler = signal.getsignal(sig)
+            if handler is None:
+                raise RuntimeError(f"the previous handler for {sig.name} cannot be restored")
+            signal.signal(sig, handle)
+            previous[sig] = handler
+        yield
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+
+
+def _budget(telemetry: Telemetry, timeout: float | None) -> float:
+    budget = telemetry.shutdown_timeout if timeout is None else timeout
+    if not math.isfinite(budget) or budget < 0:
+        raise ValueError("timeout must be finite and non-negative")
+    return budget
+
+
 def shutdown_on_signals(
     telemetry: Telemetry,
     *,
     signals: Iterable[signal.Signals] | None = None,
-    before_shutdown: Callable[[], Any] | None = None,
+    before_shutdown: Callable[[], object] | None = None,
     timeout: float | None = None,
     stop_event: threading.Event | None = None,
 ) -> ShutdownReport:
-    """Wait for SIGINT/SIGTERM (or stop_event), restore defaults, and shut down.
+    """Wait for a signal or stop event, restore the handlers, and shut down.
 
-    Both before_shutdown and telemetry.shutdown share one deadline when timeout
-    is given (or telemetry's default shutdown_timeout).
+    Time spent in before_shutdown reduces the time available for telemetry.
+    If the callback raises, telemetry shuts down before the exception propagates.
     """
-    sigs = tuple(signals) if signals is not None else _default_signals()
+    budget = _budget(telemetry, timeout)
     triggered = stop_event if stop_event is not None else threading.Event()
-    previous: dict[signal.Signals, Any] = {}
-
-    def _handle(_signum: int, _frame: Any) -> None:
-        triggered.set()
-
-    for sig in sigs:
-        try:
-            previous[sig] = signal.getsignal(sig)
-            signal.signal(sig, _handle)
-        except (ValueError, OSError):
-            pass
-
-    try:
+    with _signal_handlers(signals, triggered.set, has_stop_event=stop_event is not None):
         triggered.wait()
-    finally:
-        for sig, prev in previous.items():
-            with contextlib.suppress(ValueError, OSError):
-                signal.signal(sig, signal.SIG_DFL if prev is _handle else prev)
 
-    total_budget = telemetry._shutdown_timeout if timeout is None else max(timeout, 0.0)  # pyright: ignore[reportPrivateUsage]
-    start = time.monotonic()
-    if before_shutdown is not None:
-        before_shutdown()
-    remaining = max(total_budget - (time.monotonic() - start), 0.0)
-    return telemetry.shutdown(timeout=remaining)
+    deadline = time.monotonic() + budget
+    try:
+        if before_shutdown is not None:
+            before_shutdown()
+    finally:
+        report = telemetry.shutdown(timeout=max(0.0, deadline - time.monotonic()))
+    return report
 
 
 async def ashutdown_on_signals(
     telemetry: Telemetry,
     *,
     signals: Iterable[signal.Signals] | None = None,
-    before_shutdown: Callable[[], Any | Awaitable[Any]] | None = None,
+    before_shutdown: Callable[[], object] | None = None,
     timeout: float | None = None,
     stop_event: asyncio.Event | None = None,
 ) -> ShutdownReport:
-    """Asyncio counterpart to shutdown_on_signals() using loop signal handlers."""
+    """Wait asynchronously and restore signal handlers before running the callback."""
+    budget = _budget(telemetry, timeout)
     loop = asyncio.get_running_loop()
-    sigs = tuple(signals) if signals is not None else _default_signals()
     triggered = stop_event if stop_event is not None else asyncio.Event()
-    installed: list[signal.Signals] = []
 
-    def _on_sig() -> None:
-        triggered.set()
-
-    for sig in sigs:
-        try:
-            loop.add_signal_handler(sig, _on_sig)
-            installed.append(sig)
-        except (NotImplementedError, ValueError, RuntimeError):
-            pass
+    def trigger() -> None:
+        loop.call_soon_threadsafe(triggered.set)
 
     try:
-        await triggered.wait()
-    finally:
-        for sig in installed:
-            loop.remove_signal_handler(sig)
+        with _signal_handlers(signals, trigger, has_stop_event=stop_event is not None):
+            await triggered.wait()
+    except asyncio.CancelledError:
+        await telemetry.ashutdown(timeout=budget)
+        raise
 
-    total_budget = telemetry._shutdown_timeout if timeout is None else max(timeout, 0.0)  # pyright: ignore[reportPrivateUsage]
-    start = time.monotonic()
-    if before_shutdown is not None:
-        res = before_shutdown()
-        if asyncio.iscoroutine(res) or isinstance(res, Awaitable):
-            await res
-    remaining = max(total_budget - (time.monotonic() - start), 0.0)
-    return await telemetry.ashutdown(timeout=remaining)
+    deadline = time.monotonic() + budget
+    try:
+        if before_shutdown is not None:
+            result = before_shutdown()
+            if isinstance(result, Awaitable):
+                await result
+    finally:
+        report = await telemetry.ashutdown(timeout=max(0.0, deadline - time.monotonic()))
+    return report
