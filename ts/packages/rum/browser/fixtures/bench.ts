@@ -1,11 +1,12 @@
 /**
  * The overhead benchmark fixture: a list of 200 items, a router-like soft navigation (pushState
  * and a swap of the 200 nodes) and a button whose handler updates 50 nodes. With ?rum=1 it starts
- * RUM with every collector; without, it runs the same page bare. The page's query names the sink
+ * RUM with every collector (views, actions, errors, vitals, resources and long animation frames);
+ * without, it runs the same page bare. The page's query names the sink
  * endpoint. window.__benchReady is set once the page (and RUM) is ready; when setup fails,
  * window.__benchError holds the message instead.
  */
-import { actions, errors, setupRum, views } from "@libo11y/rum";
+import { actions, errors, longAnimationFrames, resources, setupRum, views, vitals } from "@libo11y/rum";
 
 const params = new URLSearchParams(location.search);
 const list = document.createElement("ul");
@@ -53,7 +54,7 @@ async function start(): Promise<void> {
       consent: { initial: "granted" },
       runtimeMetrics: false,
       transport: { compression: "none" },
-      rum: { collectors: [views(), actions(), errors()] },
+      rum: { collectors: [views(), actions(), errors(), vitals(), resources(), longAnimationFrames()] },
     });
   }
   w.__benchReady = true;

@@ -1,6 +1,7 @@
 /**
  * The RUM overhead benchmark (CI only). For each of RUNS runs it opens the bench fixture without
- * and with RUM, in alternating order, and reads Chromium's main-thread TaskDuration through the
+ * and with RUM (every collector, vitals, resources and long animation frames included), in
+ * alternating order, and reads Chromium's main-thread TaskDuration through the
  * DevTools protocol before and after VIEWS soft navigations, and separately before and after
  * CLICKS clicks. The overhead per view is the median over runs of (with - without) / VIEWS, per
  * interaction (with - without) / CLICKS, in milliseconds. It writes dist/bench/overhead.json for
