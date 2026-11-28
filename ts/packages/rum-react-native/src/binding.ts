@@ -11,41 +11,49 @@ import {
   setupReactNativeWith,
 } from "@libo11y/react-native/internal";
 import type { RumBind, RumLifecycle } from "@libo11y/rum/core";
+import type { ConsentController } from "@libo11y/web/portable";
 
 /** A binding of React Native: its setup options and telemetry. */
 export type ReactNativeRumBind = RumBind<ReactNativeSetupOptions, ReactNativeTelemetry>;
 
-/**
- * The React Native binding: setupReactNativeWith over deps with RUM's wrappers, installing globally
- * when install is true. fetch, when given, is the fetch the OTLP transport sends with instead of
- * the pristine global fetch, as in tests.
- */
-export function reactNativeBinding(
-  deps: ReactNativeDeps,
-  install: boolean,
-  fetch?: typeof globalThis.fetch,
-): ReactNativeRumBind {
+/** How the binding runs the platform. */
+export interface ReactNativeBindingOptions {
+  /** Install the telemetry globally, as setupReactNative does. */
+  readonly install: boolean;
+  /** The fetch the OTLP transport sends with instead of the pristine global fetch, as in tests. */
+  readonly fetch?: typeof globalThis.fetch;
+  /** Called with the consent controller the platform built, after RUM's gate took it. */
+  readonly onConsent?: (controller: ConsentController) => void;
+}
+
+/** The React Native binding: setupReactNativeWith over deps with RUM's wrappers. */
+export function reactNativeBinding(deps: ReactNativeDeps, o: ReactNativeBindingOptions): ReactNativeRumBind {
+  const fetch = o.fetch;
   return (options, w) =>
     setupReactNativeWith(
       options,
       {
         ...deps,
-        createConsentController: (o) => w.consentController(deps.createConsentController(o)),
-        createHttpTransport: (o) =>
-          deps.createHttpTransport(w.transportOptions(fetch === undefined ? o : { ...o, fetch })),
+        createConsentController: (co) => {
+          const c = w.consentController(deps.createConsentController(co));
+          o.onConsent?.(c);
+          return c;
+        },
+        createHttpTransport: (t) =>
+          deps.createHttpTransport(w.transportOptions(fetch === undefined ? t : { ...t, fetch })),
         // Traces are injected, so the platform's span exporter goes unused; logs are routed by
         // session. The gateway accepts only delta sums and histograms, so app metrics export with
         // delta temporality.
         createExporterSet: (req, d, endpoints, eo) =>
           w.exporterSet(deps.createExporterSet(req, d, endpoints, { ...eo, metricTemporality: "delta" })),
-        installNetworkInstrumentation: (o) =>
-          deps.installNetworkInstrumentation({ ...o, onStart: w.onRequestStart }),
+        installNetworkInstrumentation: (n) =>
+          deps.installNetworkInstrumentation({ ...n, onStart: w.onRequestStart }),
         onPlatform: (platform, info) => {
           w.platform({ delivery: info.delivery, endpoints: info.endpoints }, info.env);
           deps.onPlatform?.(platform, info);
         },
       },
-      install,
+      o.install,
     );
 }
 
@@ -53,8 +61,7 @@ export function reactNativeBinding(
  * RUM's lifecycle over the app's: hide on going to the background, show on coming back. RUM
  * subscribes before the binding runs the platform's setup, so on a hide the summaries are emitted
  * before the platform's own listener flushes them. No restore: an app has no back/forward cache.
- * No activity yet: coming back to the foreground touches the session, and touches will once the
- * touch boundary records them.
+ * The setup adds activity: a new screen, until the touch boundary records touches.
  */
 export function rumLifecycle(app: AppLifecycle): RumLifecycle {
   return {

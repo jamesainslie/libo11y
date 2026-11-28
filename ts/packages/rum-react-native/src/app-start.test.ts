@@ -96,6 +96,8 @@ test("a grant after the cap with no render records app_load at its cap", async (
   h.advance(APP_LOAD_CAP_MILLIS + 5000);
   h.telemetry.consent.grant();
   await h.idle();
+  h.advance(0);
+  await h.idle();
   assert.equal(h.durationMillis(h.spans().find((x) => x.name === "app_load")), APP_LOAD_CAP_MILLIS);
 });
 
@@ -112,4 +114,75 @@ test("pending consent records no app_load", async () => {
   h.advance(APP_LOAD_CAP_MILLIS + 1);
   await h.idle();
   assert.deepEqual(h.spans(), []);
+});
+
+test("on a device clock that counts from boot, the first screen starts with the app, not at boot", async () => {
+  const day = 86_400_000;
+  const h = await started(
+    { consent: { initial: "granted" } },
+    {
+      screens: true,
+      clockStart: 3 * day,
+      timeOrigin: Date.now() - 3 * day,
+      startupTiming: { startTime: 3 * day - 500 },
+    },
+  );
+  h.advance(200);
+  h.telemetry.rum.viewRendered();
+  h.frame();
+  await h.idle();
+  const appLoad = h.spans().find((s) => s.name === "app_load");
+  const view = h.spans().find((s) => s.name === "view app");
+  assert.equal(h.relativeStartMillis(appLoad), 3 * day - 500);
+  assert.equal(h.relativeStartMillis(view), 3 * day - 500, "the load view starts when the app did");
+  assert.equal(h.durationMillis(view), 700, "and ends at the frame after its render");
+});
+
+test("a grant after the cap still ends app_load at the render remembered from before it", async () => {
+  const h = await started({ consent: { initial: "pending" } }, { startupTiming: { startTime: 5 } });
+  h.advance(200);
+  h.telemetry.rum.viewRendered();
+  h.advance(APP_LOAD_CAP_MILLIS + 30_000);
+  h.telemetry.consent.grant();
+  await h.idle();
+  h.advance(0);
+  await h.idle();
+  assert.equal(h.durationMillis(h.spans().find((s) => s.name === "app_load")), 295);
+});
+
+test("app_load ends at the first screen's render, whatever screens came before the grant", async () => {
+  const h = await started({ consent: { initial: "pending" } }, { startupTiming: { startTime: 5 } });
+  h.advance(200);
+  h.telemetry.rum.viewRendered();
+  h.advance(5000);
+  h.telemetry.rum.startView({ name: "/b" });
+  h.advance(200);
+  h.telemetry.rum.viewRendered();
+  h.advance(5000);
+  h.telemetry.consent.grant();
+  await h.idle();
+  assert.equal(h.durationMillis(h.spans().find((s) => s.name === "app_load")), 295);
+});
+
+test("a grant between a later screen's start and its render still ends app_load at the first render", async () => {
+  const h = await started({ consent: { initial: "pending" } }, { startupTiming: { startTime: 5 } });
+  h.advance(200);
+  h.telemetry.rum.viewRendered();
+  h.telemetry.rum.startView({ name: "/b" });
+  h.telemetry.consent.grant();
+  await h.idle();
+  h.advance(20_000);
+  h.telemetry.rum.viewRendered();
+  await h.idle();
+  assert.equal(h.durationMillis(h.spans().find((s) => s.name === "app_load")), 295);
+});
+
+test("a first screen left before it rendered ends app_load at its cap", async () => {
+  const h = await started({ consent: { initial: "granted" } }, { startupTiming: { startTime: 0 } });
+  h.telemetry.rum.startView({ name: "/b" });
+  h.advance(100);
+  h.telemetry.rum.viewRendered();
+  h.advance(APP_LOAD_CAP_MILLIS);
+  await h.idle();
+  assert.equal(h.durationMillis(h.spans().find((s) => s.name === "app_load")), APP_LOAD_CAP_MILLIS);
 });

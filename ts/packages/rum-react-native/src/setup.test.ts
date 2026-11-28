@@ -179,3 +179,38 @@ test("going to the background flushes the summaries; coming back starts the next
   assert.equal(summaries.length, 2);
   assert.equal(summaries[0]?.["o11y.rum.view.id"], summaries[1]?.["o11y.rum.view.id"]);
 });
+
+test("a new screen is activity: navigating keeps the session alive past the idle window", async () => {
+  const h = await started({ consent: { initial: "granted" } });
+  const id = h.telemetry.rum.sessionId();
+  for (let i = 0; i < 16; i++) {
+    h.advance(60_000);
+    h.telemetry.rum.startView({ name: `/s${i}` });
+  }
+  assert.equal(h.telemetry.rum.sessionId(), id);
+});
+
+test("a revoke in a launch that never granted removes what an earlier launch stored", async () => {
+  const storage = fakeStorage();
+  const a = await harness(
+    {
+      consent: { initial: "granted" },
+      rum: { sessionSampleRate: 0, remoteConfig: remoteConfig({ url: "https://gw.test/_o11y/v1/config" }) },
+    },
+    { storage },
+  );
+  a.telemetry.tracerProvider.getTracer("t").startSpan("detail").end();
+  await a.idle();
+  storage.map.set(CONFIG_STORAGE_KEY, "{}");
+  await a.telemetry.shutdown();
+  assert.ok(storage.map.has(SESSION_STORAGE_KEY));
+  assert.ok([...storage.map.keys()].some((k) => k.startsWith("libo11y/libo11y-rum-retention/b/")));
+  const b = await started({ consent: { initial: "pending" } }, { storage });
+  await b.telemetry.consent.revoke();
+  assert.equal(storage.map.has(SESSION_STORAGE_KEY), false);
+  assert.equal(storage.map.has(CONFIG_STORAGE_KEY), false);
+  assert.deepEqual(
+    [...storage.map.keys()].filter((k) => k.startsWith("libo11y/libo11y-rum-retention/b/")),
+    [],
+  );
+});

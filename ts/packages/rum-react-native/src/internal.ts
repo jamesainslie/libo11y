@@ -7,7 +7,12 @@
 
 export { runtimeOf } from "@libo11y/rum/core";
 export { type AppStart, type AppStartOptions, createAppStart } from "./app-start.ts";
-export { type ReactNativeRumBind, reactNativeBinding, rumLifecycle } from "./binding.ts";
+export {
+  type ReactNativeBindingOptions,
+  type ReactNativeRumBind,
+  reactNativeBinding,
+  rumLifecycle,
+} from "./binding.ts";
 export { preloadedStorage } from "./config-cache.ts";
 export type { RumReactNativeEnv, StartupTimingLike } from "./contracts/env.ts";
 export { screensWith } from "./screens.ts";
