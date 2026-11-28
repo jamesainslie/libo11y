@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 import { connectRequestNaming } from "@libo11y/rum-connect";
 import { RumErrorBoundary, RumProvider } from "@libo11y/rum-react";
-import { createElement } from "react";
+import type { ReactElement } from "react";
 import { type Harness, harness } from "./test-support/harness.ts";
 
 let open: Harness | undefined;
@@ -32,8 +32,9 @@ test("rum-connect names the React Native fetch spans through onRequestStart", as
 test("rum-react's provider takes the React Native handle, and its error boundary records through it", async () => {
   const h = await harness({ consent: { initial: "granted" } });
   open = h;
-  const provider = createElement(RumProvider, { rum: h.telemetry.rum });
-  assert.equal(provider.props.rum, h.telemetry.rum);
+  // The provider renders a context provider whose value is the handle, which useRum then reads.
+  const provided = RumProvider({ rum: h.telemetry.rum }) as ReactElement<{ value: unknown }>;
+  assert.equal(provided.props.value, h.telemetry.rum);
   const boundary = new RumErrorBoundary({ rum: h.telemetry.rum });
   boundary.componentDidCatch(new Error("render failed"), { componentStack: "\n    in Screen" });
   await h.idle();

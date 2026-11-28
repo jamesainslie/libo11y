@@ -9,16 +9,16 @@ export type {
   AddErrorOptions,
   CollectorName,
   RemoteConfig,
+  RemoteConfigOptions,
   RequestStartHook,
   Rum,
   RumCollector,
   RumOptions,
   RumRuntime,
 } from "@libo11y/rum";
-// The browser entry's remoteConfig, from the portable entry, so Metro never loads the browser's.
-export { remoteConfig } from "@libo11y/rum/core";
 
-import type { RumCollector } from "@libo11y/rum";
+import type { RemoteConfig, RemoteConfigOptions, RumCollector } from "@libo11y/rum";
+import { remoteConfig as portableRemoteConfig } from "@libo11y/rum/core";
 import { defaultRumEnv, defaultRumReactNativeDeps } from "./env.ts";
 import type { ReactNativeRumTelemetry, RumReactNativeSetupOptions } from "./options.ts";
 import { screensWith } from "./screens.ts";
@@ -55,4 +55,12 @@ export function setupRumReactNative(
  */
 export function screens(): RumCollector {
   return screensWith(defaultRumEnv());
+}
+
+/**
+ * Remote configuration from the RUM gateway, as `@libo11y/rum`'s remoteConfig, for rum.remoteConfig.
+ * It is fetched only once consent is granted, and cached in the app's storage.
+ */
+export function remoteConfig(opts: RemoteConfigOptions = {}): RemoteConfig {
+  return portableRemoteConfig(opts);
 }

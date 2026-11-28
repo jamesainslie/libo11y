@@ -81,15 +81,18 @@ adhere to [Semantic Versioning](https://semver.org/).
   `rum.setViewName` names it. The session, the retention buffer of
   sessions not yet kept and the remote configuration cache live in the
   app's key-value storage, written only once consent is granted, so a
-  relaunch within the 15-minute idle window continues the session.
+  relaunch within the 15-minute idle window continues the session. A new
+  screen counts as activity. A revoke removes all three, also when only
+  an earlier launch had consent.
   AppState drives hide and show: going to the background emits the view
   summaries and flushes. App metrics export with delta temporality, as the
   gateway requires. `screens()` records a view span per screen that ends
   at the first frame after `rum.viewRendered()`, at most 10 seconds. One
   `app_load` span per process runs from React Native's
   `rnStartupTiming.startTime` to the first screen's render, at most 60
-  seconds, and parents the first screen's span. It is recorded on the
-  first grant, also when consent comes after the first screen. The
+  seconds, and parents the first screen's span, which starts with it. It
+  is recorded on the first grant, also when consent comes after the first
+  screen and after other screens. The
   `./expo` entry's `setupRumExpo` keeps it all in the app's documents, as
   `setupExpo` does. The fixture Expo app runs it under jest-expo.
 - `@libo11y/core` exports `sha1`, for platforms without Web Crypto.
@@ -109,7 +112,8 @@ adhere to [Semantic Versioning](https://semver.org/).
 - `@libo11y/rum/core`: `setupRumCore` takes `viewKind`, for a platform
   whose views are all of one kind, such as React Native's `screen`, and
   `onRuntime`, which hands a platform's own recorders the runtime before
-  consent is wired. The views collector parents the load view's span to
+  consent is wired, and `initialViewStart`, where the first view starts on
+  a clock that does not count from navigation start. The views collector parents the load view's span to
   `app_load` by the tracker's load view rather than by its kind, the same
   rule on the web. The core exports `viewsWith` for a platform's own views
   collector.

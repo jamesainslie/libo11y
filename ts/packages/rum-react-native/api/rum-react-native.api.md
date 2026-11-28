@@ -10,7 +10,7 @@ import { KeyValueStorage } from '@libo11y/react-native';
 import { ReactNativeSetupOptions } from '@libo11y/react-native';
 import { ReactNativeTelemetry } from '@libo11y/react-native';
 import { RemoteConfig } from '@libo11y/rum';
-import { remoteConfig } from '@libo11y/rum/core';
+import { RemoteConfigOptions } from '@libo11y/rum';
 import { RequestStartHook } from '@libo11y/rum';
 import { Rum } from '@libo11y/rum';
 import { RumCollector } from '@libo11y/rum';
@@ -34,7 +34,10 @@ export { ReactNativeTelemetry }
 
 export { RemoteConfig }
 
-export { remoteConfig }
+// @public
+export function remoteConfig(opts?: RemoteConfigOptions): RemoteConfig;
+
+export { RemoteConfigOptions }
 
 export { RequestStartHook }
 
