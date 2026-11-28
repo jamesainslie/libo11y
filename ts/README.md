@@ -1,8 +1,8 @@
 # libo11y for TypeScript
 
-The TypeScript implementation of libo11y, as a Bun workspace of ten
-`@libo11y/*` packages. `@libo11y/server` and `@libo11y/test` run on Bun
-1.3.13 and Node 24. `@libo11y/web`, `@libo11y/webext`, `@libo11y/rum` and the
+The TypeScript implementation of libo11y, as a Bun workspace of eleven
+`@libo11y/*` packages. `@libo11y/server`, `@libo11y/test` and
+`@libo11y/sourcemaps` run on Bun 1.3.13 and Node 24. `@libo11y/web`, `@libo11y/webext`, `@libo11y/rum` and the
 RUM adapters run in browsers and Manifest V3 extensions. `@libo11y/spec` and `@libo11y/core` run in
 both. The packages are built on
 OpenTelemetry JS 3.x (`@opentelemetry/api` 1.10.0, the SDK packages at
@@ -20,12 +20,13 @@ each release.
 | [`@libo11y/web`](packages/web)                                 | the browser platform: `setup` with a pluggable context manager, the browser resource, the OTLP/HTTP JSON transport with an IndexedDB retry queue, the consent gate, and `fetch`, XHR and document-load spans |
 | [`@libo11y/webext`](packages/webext)                           | the Manifest V3 extension platform: `setupWorker` for the service worker, `setupContentScript` for content scripts and extension pages, and traced runtime messaging                                         |
 | [`@libo11y/rum`](packages/rum)                                 | browser RUM over `@libo11y/web`: `setupRum`, sessions shared across tabs, session sampling with a retention buffer, and per-view summaries. In development                                                   |
+| [`@libo11y/sourcemaps`](packages/sourcemaps)                   | the `libo11y-sourcemaps` command and `uploadSourceMaps`, which upload source maps to the RUM gateway (`go/o11yrum`) for symbolication. In development                                                        |
 | [`@libo11y/rum-react`](packages/rum-react)                     | the React adapter for `@libo11y/rum`: `RumProvider`, `useRum` and `RumErrorBoundary`, which records render errors with the component stack. In development                                                   |
 | [`@libo11y/rum-tanstack-router`](packages/rum-tanstack-router) | the TanStack Router adapter for `@libo11y/rum`: `instrumentTanStackRouter` names views by route template and times soft navigations. In development                                                          |
 | [`@libo11y/rum-connect`](packages/rum-connect)                 | the Connect adapter for `@libo11y/rum`: `connectRequestNaming` names the fetch spans of Connect RPCs by service and method. In development                                                                   |
 
-`@libo11y/web` and `@libo11y/webext` first ship in `ts/v0.2.1`. `@libo11y/rum`
-and its adapters have not shipped yet.
+`@libo11y/web` and `@libo11y/webext` first ship in `ts/v0.2.1`. `@libo11y/rum`,
+its adapters and `@libo11y/sourcemaps` have not shipped yet.
 [docs/PARITY.md](../docs/PARITY.md) compares every capability with Go.
 
 ## Install
@@ -87,6 +88,7 @@ ts/
   packages/webext/     @libo11y/webext, with its Playwright specs and test extension in browser/
   packages/rum/        @libo11y/rum, with its Playwright specs and fixtures in browser/
   packages/rum-*/      the RUM adapters for React, TanStack Router and Connect, each with browser/ specs
+  packages/sourcemaps/ @libo11y/sourcemaps, with the gateway end-to-end journey in src/e2e/
   examples/            bun-server and node-server, private workspace apps
   scripts/             release.ts sets the version and packs the packages; size.ts checks the bundle size budgets
   size-budget.json     the browser bundle size budgets

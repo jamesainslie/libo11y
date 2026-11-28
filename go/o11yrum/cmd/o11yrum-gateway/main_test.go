@@ -462,3 +462,86 @@ func TestProducersEnvMustNameO11yrum(t *testing.T) {
 		})
 	}
 }
+
+func TestServeSourcemapUploads(t *testing.T) {
+	quietTelemetry(t)
+	dir := t.TempDir()
+	writeTestFile(t, filepath.Join(dir, "token"), "upload-secret\n")
+	writeTestFile(t, filepath.Join(dir, "gateway.yaml"), `listen: 127.0.0.1:0
+environment: test
+object_store: {filesystem: {root: maps}}
+apps:
+  - service_name: shop-web
+    origins: ["https://shop.example"]
+    sourcemaps: {upload_token_file: token}
+`)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pr, pw := io.Pipe()
+	defer func() { _ = pw.Close() }()
+	done := make(chan int, 1)
+	go func() { done <- run(ctx, []string{"-config", filepath.Join(dir, "gateway.yaml")}, io.Discard, pw) }()
+	base := "http://" + waitForListening(t, pr)
+	raw, err := os.ReadFile("../../internal/sourcemap/testdata/simple.js.map")
+	if err != nil {
+		t.Fatal(err)
+	}
+	post := func(token string) int {
+		req, err := http.NewRequest(http.MethodPost, base+"/_o11y/v1/sourcemaps?service=shop-web&version=1.4.2&url=/assets/app.js", bytes.NewReader(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+	if code := post(""); code != http.StatusUnauthorized {
+		t.Fatalf("without a token: %d", code)
+	}
+	if code := post("upload-secret"); code != http.StatusCreated {
+		t.Fatalf("with the token: %d", code)
+	}
+	if entries, err := os.ReadDir(filepath.Join(dir, "maps", "sourcemaps", "shop-web", "1.4.2", "_")); err != nil || len(entries) != 1 {
+		t.Fatalf("stored maps: %v %v", entries, err)
+	}
+	cancel()
+	if code := <-done; code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+}
+
+func TestCheckConfigS3Store(t *testing.T) {
+	// The default credential chain finds these and makes no request.
+	t.Setenv("AWS_ACCESS_KEY_ID", "test")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
+	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
+	t.Setenv("AWS_CONFIG_FILE", "/nonexistent")
+	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", "/nonexistent")
+	dir := t.TempDir()
+	writeTestFile(t, filepath.Join(dir, "token"), "upload-secret\n")
+	writeTestFile(t, filepath.Join(dir, "gateway.yaml"), `environment: test
+object_store:
+  s3: {bucket: maps, prefix: o11yrum/, region: eu-west-1, endpoint: "http://127.0.0.1:1", use_path_style: true}
+apps:
+  - service_name: shop-web
+    origins: ["https://shop.example"]
+    sourcemaps: {upload_token_file: token}
+`)
+	var errOut bytes.Buffer
+	if code := run(context.Background(), []string{"-check-config", "-config", filepath.Join(dir, "gateway.yaml")}, io.Discard, &errOut); code != 0 {
+		t.Fatalf("code %d: %s", code, errOut.String())
+	}
+}
+
+func writeTestFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}

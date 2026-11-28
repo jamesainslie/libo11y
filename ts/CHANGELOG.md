@@ -3,8 +3,8 @@
 All notable changes to the libo11y TypeScript packages are documented
 here: `@libo11y/spec`, `@libo11y/core`, `@libo11y/server`,
 `@libo11y/test`, `@libo11y/web`, `@libo11y/webext`, `@libo11y/rum`,
-`@libo11y/rum-react`, `@libo11y/rum-tanstack-router` and
-`@libo11y/rum-connect`, which release together at one version from a `ts/vX.Y.Z`
+`@libo11y/rum-react`, `@libo11y/rum-tanstack-router`, `@libo11y/rum-connect`
+and `@libo11y/sourcemaps`, which release together at one version from a `ts/vX.Y.Z`
 tag. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the packages
 adhere to [Semantic Versioning](https://semver.org/).
@@ -68,6 +68,14 @@ adhere to [Semantic Versioning](https://semver.org/).
   `bun scripts/size.ts --check` (`make ts-size`) in CI.
 - `conformance/rum-summary/`, the view summary vectors the TypeScript
   suite checks.
+- `@libo11y/sourcemaps`, a new package for Bun and Node. In development; it
+  is not on npm yet. `findSourceMaps` finds the scripts of a build that
+  have an external source map, `uploadSourceMaps` uploads each map gzipped
+  to the RUM gateway's `POST /_o11y/v1/sourcemaps` with a bearer token,
+  retrying 429 and 5xx answers, and can delete the uploaded maps and their
+  `sourceMappingURL` comments from the build output. The
+  `libo11y-sourcemaps upload` command does the same from a build job and
+  reads the token only from an environment variable.
 
 ## [0.2.1] - 2026-11-27
 

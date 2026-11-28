@@ -224,7 +224,8 @@ container (`O11Y_PG_TEST_DSN`).
   `TS_RELEASE_VERSION`. It checks every package is at that version, builds and packs
   the packages, checks each tarball's `exports` and `bin` targets, and
   installs the tarballs into a throwaway consumer that imports the server
-  packages under Node and Bun and runs the `libo11y` bin. The consumer
+  packages under Node and Bun and runs the `libo11y` and
+  `libo11y-sourcemaps` bins. The consumer
   then bundles every entry point of `@libo11y/web`, `@libo11y/webext`
   and `@libo11y/rum` with `bun build --target=browser` through
   `scripts/ts-browser-bundle-check.sh`, which fails when the module graph
@@ -263,7 +264,8 @@ container (`O11Y_PG_TEST_DSN`).
   under the `next` dist-tag. A smoke job waits up to ten minutes for the
   registry to serve the new version of every published package. It
   installs `@libo11y/server` and `@libo11y/test` into fresh projects
-  under Node and Bun, and runs the `libo11y` bin under Node. It installs
+  under Node and Bun, and runs the `libo11y` and `libo11y-sourcemaps`
+  bins under Node. It installs
   `@libo11y/web`, `@libo11y/webext` and `@libo11y/rum` into another fresh project and
   runs the same bundle check on them. In each of these installs, a
   package not on npm yet comes from its packed tarball. A last step
@@ -410,6 +412,7 @@ install that version locally. Keep the two in step when adding a gate.
 | `make ts-check` | the TypeScript workspace: Biome, tsc, the build, the API reports, and every unit suite under Bun and Node |
 | `make ts-browser-test` | the browser suites under Playwright: `@libo11y/web` and `@libo11y/webext` in headless Chromium, and `@libo11y/rum` and its adapters in headless Chromium, Firefox and WebKit (projects `rum-chromium`, `rum-firefox` and `rum-webkit`). It needs Playwright's browsers for the pinned version, which CI installs with `bun x --no-install playwright install --with-deps chromium firefox webkit` in `ts/`. A host with only Chromium runs `bun run test:browser --project=web --project=webext --project=rum-chromium`. CI runs it in the separate `ts-browser` job |
 | `make ts-size` | the browser bundle size budgets in `ts/size-budget.json`. CI runs the same check, `bun scripts/size.ts --check --summary`, in the `ts` job and writes the table to the job summary |
+| `make rum-e2e` | builds `o11yrum-gateway` and runs the end-to-end journey in `ts/packages/sourcemaps/src/e2e` against the TS OTLP sink from `@libo11y/test`, under Node and Bun: derived metrics from a view summary, a source map upload that symbolicates an error, the 404 for an app without remote config, and the edge refusals. `make ts-check` skips the journey, because it runs only when `O11YRUM_GATEWAY_BIN` is set. CI runs it in the `rum-e2e` job |
 | `make ts-browser-bundle-test` | `scripts/ts-browser-bundle-check.sh` against fixture packages (needs bun). CI runs it in the `ts` job after `make ts-check` |
 | `make release-check` | the Go release sequence, packing and a consumer smoke test of the TypeScript packages (including the browser bundle check), the Zig consumer tarball smoke test, and the Python wheel/sdist build and consumer smoke test (needs a clean tree) |
 | `make release-notes-test`, `make release-tag-test` | the release workflow's scripts: changelog sections become release notes, and each release tag routes to its kind, module and version |

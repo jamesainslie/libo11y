@@ -33,6 +33,24 @@ apps:
   - service_name: shop-mobile
     allow_missing_origin: true
     client_token: pub-shop-mobile
+    # Source map uploads for this app need the bearer token in this file.
+    # Maps are kept under the namespace, which defaults to service_name.
+    # sourcemaps:
+    #   namespace: shop-mobile
+    #   upload_token_file: /run/secrets/shop-mobile-sourcemaps
+
+# Where uploaded source maps are kept. Set one of filesystem and s3.
+# object_store:
+#   filesystem: {root: /var/lib/o11yrum}
+#   s3: {bucket: shop-sourcemaps, prefix: o11yrum/, region: us-east-1}
+# sourcemaps:
+#   max_upload_bytes: 33554432
+# symbolication:
+#   cache_maps: 64
+#   cache_bytes: 268435456
+#   cache_ttl: 10m
+#   negative_ttl: 60s
+#   max_frames: 50
 
 sinks:
   otlp:
