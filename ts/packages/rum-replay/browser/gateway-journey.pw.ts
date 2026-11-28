@@ -7,7 +7,7 @@
  * (`make rum-e2e`), so the browser suites need no Go toolchain.
  */
 import { type ChildProcess, spawn } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, type Page, test } from "@playwright/test";
@@ -24,9 +24,17 @@ interface Gateway {
   readonly base: string;
   /** The read API listener's base URL. */
   readonly read: string;
+  /** The filesystem object store's root. */
+  readonly store: string;
   readonly sink: OtlpSink;
   stop(): Promise<void>;
 }
+
+/** Every gateway a test started, stopped after it whether it passed, failed or timed out. */
+const running = new Set<Gateway>();
+test.afterEach(async () => {
+  await Promise.all([...running].map((gw) => gw.stop()));
+});
 
 /** Starts a gateway that records replay for the fixture app on origin, with unmaskedText as set. */
 async function startGateway(origin: string, unmaskedText: boolean): Promise<Gateway> {
@@ -58,22 +66,36 @@ async function startGateway(origin: string, unmaskedText: boolean): Promise<Gate
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
-  const stop = async (): Promise<void> => {
-    if (child.exitCode === null && child.signalCode === null) {
-      const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
-      child.kill("SIGTERM");
-      await exited;
-    }
-    await sink.close();
-    rmSync(dir, { recursive: true, force: true });
+  // A binary that cannot start emits "error" and never "exit".
+  const spawned = new Promise<boolean>((resolve) => {
+    child.once("spawn", () => resolve(true));
+    child.once("error", () => resolve(false));
+  });
+  let stopped: Promise<void> | undefined;
+  const gw: Gateway = {
+    base: "",
+    read: "",
+    store: join(dir, "store"),
+    sink,
+    stop: () => {
+      stopped ??= (async () => {
+        running.delete(gw);
+        if ((await spawned) && child.exitCode === null && child.signalCode === null) {
+          const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+          child.kill("SIGTERM");
+          const killer = setTimeout(() => child.kill("SIGKILL"), 5000);
+          await exited;
+          clearTimeout(killer);
+        }
+        await sink.close();
+        rmSync(dir, { recursive: true, force: true });
+      })();
+      return stopped;
+    },
   };
-  try {
-    const [base, read] = await addresses(child);
-    return { base: `http://${base}`, read: `http://${read}`, sink, stop };
-  } catch (err) {
-    await stop();
-    throw err;
-  }
+  running.add(gw);
+  const [base, read] = await addresses(child);
+  return { ...gw, base: `http://${base}`, read: `http://${read}` };
 }
 
 /** Resolves the public and read API addresses from the gateway's "listening on" lines. */
@@ -93,6 +115,10 @@ function addresses(child: ChildProcess): Promise<[string, string]> {
     child.once("exit", (code) => {
       clearTimeout(timer);
       reject(new Error(`the gateway exited with ${code}:\n${output}`));
+    });
+    child.once("error", (err) => {
+      clearTimeout(timer);
+      reject(new Error(`the gateway did not start: ${err.message}`));
     });
   });
 }
@@ -154,18 +180,19 @@ function readAPI(gw: Gateway, path: string, method = "GET"): Promise<Response> {
   });
 }
 
-/** Polls the read API's list route until it lists at least one segment. */
-async function listSegments(gw: Gateway, session: string): Promise<SegmentMeta[]> {
+/** Polls the read API's list route until it lists at least count segments. */
+async function listSegments(gw: Gateway, session: string, count = 1): Promise<SegmentMeta[]> {
   const deadline = Date.now() + 10_000;
   for (;;) {
     const res = await readAPI(gw, session);
     if (res.status === 200) {
       const body = (await res.json()) as { segments: SegmentMeta[] };
-      if (body.segments.length > 0) return body.segments;
+      if (body.segments.length >= count) return body.segments;
     } else {
       await res.body?.cancel();
     }
-    if (Date.now() > deadline) throw new Error(`no segment listed within 10 s (last status ${res.status})`);
+    if (Date.now() > deadline)
+      throw new Error(`${count} segments not listed within 10 s (last status ${res.status})`);
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
 }
@@ -228,73 +255,81 @@ test("a strict gateway stores, serves and replays a masked session, then erases 
   baseURL,
 }) => {
   const gw = await startGateway(new URL(baseURL ?? "").origin, false);
-  try {
-    const session = await recordSession(page, gw);
+  const session = await recordSession(page, gw);
 
-    // The read API needs the token.
-    const anonymous = await fetch(`${gw.read}/v1/replay/${SERVICE}/sessions/${session}`);
-    expect(anonymous.status).toBe(401);
-    await anonymous.body?.cancel();
+  // The read API needs the token.
+  const anonymous = await fetch(`${gw.read}/v1/replay/${SERVICE}/sessions/${session}`);
+  expect(anonymous.status).toBe(401);
+  await anonymous.body?.cancel();
 
-    const segments = await listSegments(gw, session);
-    expect(segments[0]).toMatchObject({ segment: 0, session, service: SERVICE });
-    expect(segments[0]?.event_count).toBeGreaterThan(1);
+  const segments = await listSegments(gw, session);
+  expect(segments[0]).toMatchObject({ segment: 0, session, service: SERVICE });
+  expect(segments[0]?.event_count).toBeGreaterThan(1);
 
-    // The segment is served gzipped; fetch inflates it.
-    const res = await readAPI(gw, `${session}/segments/0`);
-    expect(res.status).toBe(200);
-    expect(res.headers.get("content-encoding")).toBe("gzip");
-    const stored = (await res.json()) as StoredSegment;
-    expect(stored).toMatchObject({ segment: 0, session, service: SERVICE });
-    const text = JSON.stringify(stored);
-    for (const secret of [...SECRETS, "Public heading"]) expect(text, secret).not.toContain(secret);
+  // The segment is served gzipped; fetch inflates it.
+  const res = await readAPI(gw, `${session}/segments/0`);
+  expect(res.status).toBe(200);
+  expect(res.headers.get("content-encoding")).toBe("gzip");
+  const stored = (await res.json()) as StoredSegment;
+  expect(stored).toMatchObject({ segment: 0, session, service: SERVICE });
+  const text = JSON.stringify(stored);
+  for (const secret of [...SECRETS, "Public heading"]) expect(text, secret).not.toContain(secret);
 
-    // The gateway masks all text by default, the app's unmask list included.
-    const played = await play(page, stored.events);
-    expect(played.heading).toMatch(/^\*+ \*+$/);
-    expect(played.name).toMatch(/^\*+ \*+$/);
-    expect(played.masked).toMatch(/^\*+ \*+$/);
-    expect(played.email ?? "").not.toContain("jane");
+  // The gateway masks all text by default, the app's unmask list included.
+  const played = await play(page, stored.events);
+  expect(played.heading).toMatch(/^\*+ \*+$/);
+  expect(played.name).toMatch(/^\*+ \*+$/);
+  expect(played.masked).toMatch(/^\*+ \*+$/);
+  expect(played.email).toBe(null);
 
-    // An error after the first segment was numbered carries its number through the gateway.
-    await page.locator("#boom").click();
-    await page.evaluate(() => window.dispatchEvent(new Event("pagehide")));
-    const error = await errorRecord(gw.sink);
-    expect(Number(error.get("o11y.rum.replay.segment")?.intValue)).toBe(0);
-
-    // Erasure removes every object of the session, and the read API then has nothing.
-    const erased = await readAPI(gw, session, "DELETE");
-    expect(erased.status).toBe(200);
-    const body = (await erased.json()) as { deleted: number; segments: number[] };
-    expect(body.deleted).toBeGreaterThanOrEqual(2);
-    expect(body.segments).toContain(0);
-    for (const path of [session, `${session}/segments/0`]) {
-      const after = await readAPI(gw, path);
-      expect(after.status, path).toBe(404);
-      await after.body?.cancel();
-    }
-  } finally {
-    await gw.stop();
+  // The tab comes back into view (it is visible, so this reads as a show): RUM handles one hide
+  // per show.
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  // An error after the first segment was numbered carries its number through the gateway.
+  await page.locator("#boom").click();
+  // Two DOM changes after the cut: the first opens segment 1 with a full snapshot, the second
+  // gives it an incremental event, so the next hide uploads it. The erasure below waits for it,
+  // so it covers two segments and cannot race an upload.
+  for (const name of ["Jim Poe", "Ann Lee"]) {
+    await page.evaluate((n) => {
+      const el = document.getElementById("name");
+      if (el !== null) el.textContent = n;
+    }, name);
+    await page.waitForTimeout(200);
   }
+  await page.evaluate(() => window.dispatchEvent(new Event("pagehide")));
+  const error = await errorRecord(gw.sink);
+  expect(Number(error.get("o11y.rum.replay.segment")?.intValue)).toBe(0);
+  expect((await listSegments(gw, session, 2)).map((m) => m.segment)).toEqual([0, 1]);
+
+  // Erasure removes every object of the session, and the read API then has nothing.
+  const erased = await readAPI(gw, session, "DELETE");
+  expect(erased.status).toBe(200);
+  const body = (await erased.json()) as { deleted: number; segments: number[] };
+  expect(body).toMatchObject({ deleted: 4, segments: [0, 1] });
+  for (const path of [session, `${session}/segments/0`, `${session}/segments/1`]) {
+    const after = await readAPI(gw, path);
+    expect(after.status, path).toBe(404);
+    await after.body?.cancel();
+  }
+  // Nothing of the session is left in the store either.
+  const dir = join(gw.store, "replay", SERVICE, session);
+  expect(existsSync(dir) ? readdirSync(dir) : []).toEqual([]);
 });
 
 test("a gateway with unmasked_text keeps only the text the app unmasked", async ({ page, baseURL }) => {
   const gw = await startGateway(new URL(baseURL ?? "").origin, true);
-  try {
-    const session = await recordSession(page, gw);
-    const segments = await listSegments(gw, session);
-    expect(segments[0]?.segment).toBe(0);
-    const res = await readAPI(gw, `${session}/segments/0`);
-    expect(res.status).toBe(200);
-    const stored = (await res.json()) as StoredSegment;
-    const text = JSON.stringify(stored);
-    for (const secret of SECRETS) expect(text, secret).not.toContain(secret);
-    const played = await play(page, stored.events);
-    expect(played.heading).toBe("Public heading");
-    expect(played.name).toMatch(/^\*+ \*+$/);
-    expect(played.masked).toMatch(/^\*+ \*+$/);
-    expect(played.email ?? "").not.toContain("jane");
-  } finally {
-    await gw.stop();
-  }
+  const session = await recordSession(page, gw);
+  const segments = await listSegments(gw, session);
+  expect(segments[0]?.segment).toBe(0);
+  const res = await readAPI(gw, `${session}/segments/0`);
+  expect(res.status).toBe(200);
+  const stored = (await res.json()) as StoredSegment;
+  const text = JSON.stringify(stored);
+  for (const secret of SECRETS) expect(text, secret).not.toContain(secret);
+  const played = await play(page, stored.events);
+  expect(played.heading).toBe("Public heading");
+  expect(played.name).toMatch(/^\*+ \*+$/);
+  expect(played.masked).toMatch(/^\*+ \*+$/);
+  expect(played.email).toBe(null);
 });

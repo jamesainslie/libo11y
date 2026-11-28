@@ -1,9 +1,8 @@
 # The RUM overhead benchmark: the extra main-thread task time @libo11y/rum adds
 # per soft navigation and per click, in Chromium, and what @libo11y/rum-replay
-# adds over that. It is a benchmark, so it runs
-# here and never on a shared machine. The limits are a first guard against
-# regressions, not a target. A separate workflow, so it runs only when ts/
-# changes.
+# adds over that. It is a benchmark, so it runs here and never on a shared
+# machine. The limits are a first guard against regressions, not a target. A
+# separate workflow, so it runs only when ts/ changes.
 name: ts-bench
 
 on:

@@ -10,5 +10,14 @@ for (const variant of ["bare", "rum", "replay"] as const satisfies readonly Benc
     await openBench(page, variant, sink.endpoint);
     const started = await page.evaluate(() => "__rum" in globalThis);
     expect(started).toBe(variant !== "bare");
+    if (variant !== "replay") return;
+    // replay() turns itself off quietly when it cannot record, which would make the benchmark
+    // measure RUM twice: check it records and uploads.
+    await page.waitForTimeout(300);
+    await page.click("#update");
+    await page.waitForTimeout(200);
+    await page.evaluate(() => window.dispatchEvent(new Event("pagehide")));
+    const got = await sink.waitFor((rs) => rs.some((r) => r.signal === "replay"));
+    expect(got.some((r) => r.signal === "replay")).toBe(true);
   });
 }

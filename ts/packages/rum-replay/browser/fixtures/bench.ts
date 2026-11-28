@@ -5,8 +5,8 @@
  * errors, vitals, resources and long animation frames); with ?rum=1&replay=1, replay() too, with
  * its defaults; without, it runs the same page bare. It lives in rum-replay, not rum, because
  * only this package can import @libo11y/rum-replay, and every variant loads the same bundle. The
- * page's query names the sink endpoint. window.__benchReady is set once the page (and RUM) is ready; when setup fails,
- * window.__benchError holds the message instead.
+ * page's query names the sink endpoint. window.__benchReady is set once the page (and RUM) is
+ * ready; when setup fails, window.__benchError holds the message instead.
  */
 import { actions, errors, longAnimationFrames, resources, setupRum, views, vitals } from "@libo11y/rum";
 import { replay } from "@libo11y/rum-replay";

@@ -14,7 +14,8 @@ import { type Page, test } from "@playwright/test";
 import { createSink } from "../../../web/browser/harness/sink.ts";
 import { type BenchVariant, openBench } from "../harness/bench.ts";
 
-const RUNS = 5;
+/** Six runs, so each of the three variants goes first twice in the rotation. */
+const RUNS = 6;
 const VIEWS = 20;
 const CLICKS = 50;
 /** Long enough for RUM's render detection (100 ms of quiet, then a paint) to finish each view. */
@@ -80,7 +81,8 @@ test("RUM and replay overhead per view and per interaction", async ({ page, requ
   for (let run = 0; run < RUNS; run++) {
     // Rotate the order, so warm-up and drift do not favor one variant.
     for (let k = 0; k < VARIANTS.length; k++) {
-      const variant = VARIANTS[(run + k) % VARIANTS.length] ?? "bare";
+      const variant = VARIANTS[(run + k) % VARIANTS.length];
+      if (variant === undefined) throw new Error("unreachable: the rotation left the variants");
       totals[variant].push(await measure(page, variant, sink.endpoint));
     }
   }
