@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { startFakeGateway } from "./test-support/gateway.ts";
+import { tempDirs } from "./test-support/tmp.ts";
 import { VERSION } from "./version.ts";
+
+const tempDir = tempDirs();
 
 const CLI = resolve(import.meta.dirname, "cli.ts");
 
@@ -35,7 +37,7 @@ function cli(args: readonly string[], env: Readonly<Record<string, string>> = {}
 }
 
 function buildDir(): string {
-  const dir = mkdtempSync(join(tmpdir(), "sm-cli-"));
+  const dir = tempDir("sm-cli-");
   mkdirSync(join(dir, "assets"));
   writeFileSync(join(dir, "assets/app.js"), "x()\n//# sourceMappingURL=app.js.map\n");
   writeFileSync(join(dir, "assets/app.js.map"), '{"version":3}');
@@ -107,10 +109,18 @@ test("usage errors exit 2", async () => {
       { O11Y_SOURCEMAPS_TOKEN: "t" },
       /concurrency/,
     ],
+    [
+      "bad endpoint",
+      ["upload", "--endpoint", "nope", ...full.slice(2), "dir"],
+      { O11Y_SOURCEMAPS_TOKEN: "t" },
+      /endpoint/,
+    ],
+    ["bad token", ["upload", ...full, "dir"], { O11Y_SOURCEMAPS_TOKEN: "a\nsecret-value" }, /token/],
   ] as const) {
     const r = await cli(args, env);
     assert.equal(r.code, 2, `${name}: ${r.stderr}`);
     assert.match(r.stderr, want, name);
+    assert.equal(r.stderr.includes("secret-value"), false, `${name}: the token was printed`);
   }
 });
 
@@ -150,10 +160,43 @@ test("a directory with no maps exits 1", async () => {
       "1",
       "--url-prefix",
       "/",
-      mkdtempSync(join(tmpdir(), "sm-empty-")),
+      tempDir("sm-empty-"),
     ],
     { O11Y_SOURCEMAPS_TOKEN: "t" },
   );
   assert.equal(r.code, 1);
   assert.match(r.stderr, /no source maps/);
+});
+
+test("a partial failure still lists the maps that uploaded", async () => {
+  const gw = await startFakeGateway((_i, q) => (q.url === "/assets/b.js" ? 401 : 201));
+  try {
+    const dir = tempDir("sm-cli-");
+    mkdirSync(join(dir, "assets"));
+    for (const n of ["a", "b"]) {
+      writeFileSync(join(dir, `assets/${n}.js`), `x()\n//# sourceMappingURL=${n}.js.map\n`);
+      writeFileSync(join(dir, `assets/${n}.js.map`), '{"version":3}');
+    }
+    const r = await cli(
+      [
+        "upload",
+        "--endpoint",
+        gw.url,
+        "--service",
+        "s",
+        "--release",
+        "1",
+        "--url-prefix",
+        "/",
+        "--concurrency",
+        "1",
+        dir,
+      ],
+      { O11Y_SOURCEMAPS_TOKEN: "t" },
+    );
+    assert.equal(r.code, 1);
+    assert.equal(r.stdout, "uploaded /assets/a.js -> k-0\n");
+  } finally {
+    await gw.close();
+  }
 });

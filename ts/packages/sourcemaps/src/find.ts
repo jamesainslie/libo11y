@@ -1,4 +1,4 @@
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 /** A script and the source map that describes it. */
@@ -11,25 +11,27 @@ export interface SourceMapFile {
   readonly url: string;
 }
 
-const SCRIPT = /\.(?:m?js|cjs|bundle)$/;
+const SCRIPT = /\.(?:m?js|cjs|bundle|jsbundle)$/;
 const MAP_COMMENT = /^\/\/[#@]\s*sourceMappingURL=(\S+)\s*$/;
 
 /**
  * Finds every script under directory that has an external source map: the file its
  * `//# sourceMappingURL=` comment names, or a sibling `<script>.map` when it has no comment. Scripts
- * with an inline `data:` map are skipped, and so is a map outside directory. `node_modules` is not
- * searched. Each script's URL is urlPrefix joined to its path relative to directory, so with
- * urlPrefix "/assets/" the file `app.js` is served at "/assets/app.js". A "~/" prefix stands for the
- * site root. The result is sorted by URL.
+ * with an inline `data:` map are skipped, and so is a map outside directory, symbolic links
+ * resolved. `node_modules`, symbolically linked scripts and symbolically linked directories are not
+ * searched. Each script's URL is urlPrefix joined to its path relative to directory, percent-encoded
+ * as a browser reports it, so with urlPrefix "/assets/" the file `app.js` is served at
+ * "/assets/app.js". A "~/" prefix stands for the site root. The result is sorted by URL.
  */
 export async function findSourceMaps(directory: string, urlPrefix: string): Promise<SourceMapFile[]> {
   const root = resolve(directory);
+  const realRoot = await realpath(root);
   const out: SourceMapFile[] = [];
   for (const script of await walk(root)) {
     if (!SCRIPT.test(script)) continue;
-    const map = await mapFor(root, script);
+    const map = await mapFor(realRoot, script);
     if (map === undefined) continue;
-    const rel = relative(root, script).split(sep).join("/");
+    const rel = relative(root, script).split(sep).map(encodeURIComponent).join("/");
     out.push({ script, map, url: joinUrl(urlPrefix, rel) });
   }
   return out.sort((a, b) => (a.url < b.url ? -1 : a.url > b.url ? 1 : 0));
@@ -41,7 +43,8 @@ export function mapComment(text: string): string | undefined {
   return MAP_COMMENT.exec(tail.trim())?.[1];
 }
 
-async function mapFor(root: string, script: string): Promise<string | undefined> {
+// mapFor returns the map of script, when it is a file whose real path is inside realRoot.
+async function mapFor(realRoot: string, script: string): Promise<string | undefined> {
   const ref = mapComment(await readFile(script, "utf8"));
   let candidate: string;
   if (ref !== undefined) {
@@ -57,8 +60,14 @@ async function mapFor(root: string, script: string): Promise<string | undefined>
   } else {
     candidate = `${script}.map`;
   }
-  if (!inside(root, candidate)) return undefined;
-  return (await isFile(candidate)) ? candidate : undefined;
+  let real: string;
+  try {
+    real = await realpath(candidate);
+  } catch {
+    return undefined;
+  }
+  if (!inside(realRoot, real)) return undefined;
+  return (await isFile(real)) ? candidate : undefined;
 }
 
 // inside reports whether path is root or below it.

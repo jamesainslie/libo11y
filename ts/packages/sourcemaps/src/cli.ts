@@ -13,7 +13,7 @@
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { type UploadOptions, uploadSourceMaps } from "./upload.ts";
+import { checkToken, UploadError, type UploadOptions, uploadSourceMaps } from "./upload.ts";
 import { VERSION } from "./version.ts";
 
 const USAGE = `usage: libo11y-sourcemaps upload --endpoint URL --service NAME --release VERSION --url-prefix PREFIX
@@ -80,10 +80,22 @@ export async function run(
     err(`libo11y-sourcemaps: --concurrency must be a positive integer, got ${values.concurrency}`);
     return 2;
   }
+  try {
+    new URL(values.endpoint ?? "");
+  } catch {
+    err(`libo11y-sourcemaps: --endpoint ${values.endpoint} is not a URL`);
+    return 2;
+  }
   const tokenEnv = values["token-env"] ?? DEFAULT_TOKEN_ENV;
-  const token = env[tokenEnv] ?? "";
+  const token = (env[tokenEnv] ?? "").trim();
   if (token === "") {
     err(`libo11y-sourcemaps: the upload token variable ${tokenEnv} is not set`);
+    return 2;
+  }
+  try {
+    checkToken(token);
+  } catch (e) {
+    err(`libo11y-sourcemaps: ${tokenEnv}: ${message(e)}`);
     return 2;
   }
   const options: UploadOptions = {
@@ -101,6 +113,9 @@ export async function run(
   try {
     uploaded = await upload(options);
   } catch (e) {
+    if (e instanceof UploadError) {
+      for (const u of e.uploaded) out(`uploaded ${u.url} -> ${u.key}`);
+    }
     err(`libo11y-sourcemaps: ${message(e)}`);
     return 1;
   }

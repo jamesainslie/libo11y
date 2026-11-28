@@ -64,7 +64,7 @@ before(async () => {
 });
 
 after(async () => {
-  if (gateway !== undefined && gateway.exitCode === null) {
+  if (gateway !== undefined && gateway.exitCode === null && gateway.signalCode === null) {
     const exited = new Promise<void>((resolve) => gateway?.once("exit", () => resolve()));
     gateway.kill("SIGTERM");
     await exited;

@@ -23,9 +23,10 @@ export interface UploadedMap {
 
 // @public
 export class UploadError extends Error {
-    constructor(message: string, status: number, script: string, options?: ErrorOptions);
+    constructor(message: string, status: number, script: string, uploaded?: readonly UploadedMap[], options?: ErrorOptions);
     readonly script: string;
     readonly status: number;
+    readonly uploaded: readonly UploadedMap[];
 }
 
 // @public

@@ -40,7 +40,8 @@ libo11y-sourcemaps upload \
 
 The token is read only from the environment, so it never appears in a
 process list. The flag is `--release` so that `--version` prints the
-tool's version. The command prints `uploaded <url> -> <key>` for each map.
+tool's version. The command prints `uploaded <url> -> <key>` for each map
+that uploaded, also when a later one fails.
 It exits 0 when every map uploaded, 1 when an upload failed or the
 directory holds no maps, and 2 on a usage error.
 
@@ -62,15 +63,25 @@ const uploaded = await uploadSourceMaps({
 `findSourceMaps(directory, urlPrefix)` lists the scripts that have an
 external source map, without uploading anything. A script's map is the
 file its last-line `//# sourceMappingURL=` comment names, or a sibling
-`<script>.map` when it has no comment. Inline `data:` maps, maps outside
-the directory and `node_modules` are skipped.
+`<script>.map` when it has no comment. Inline `data:` maps, maps whose
+real path is outside the directory, `node_modules`, and symbolically
+linked scripts and directories are skipped. URLs are percent-encoded the
+way browsers report them, so `a b.js` is uploaded as `a%20b.js`. Android
+(`index.android.bundle`) and iOS (`main.jsbundle`) React Native bundles
+are found too.
 
 Each map is sent gzipped to `POST /_o11y/v1/sourcemaps` with the token as
-a bearer token. A 429, a 5xx or a network failure is retried, up to three
-attempts. Once an upload fails no further upload starts, and the first
-failure is thrown as an `UploadError` carrying the HTTP `status` (0 when
-the gateway could not be reached) and the `script`. With
-`deleteAfterUpload`, only maps that uploaded are removed.
+a bearer token. An attempt that takes longer than two minutes is
+abandoned. A 429, a 5xx, a timeout or a network failure is retried, up to
+three attempts, after the response's `Retry-After` (at most ten seconds)
+or a short backoff. Once an upload fails no further upload starts, and
+the first failure is thrown as an `UploadError` carrying the HTTP
+`status` (0 when the gateway could not be reached or the map could not be
+read), the `script`, and the maps that did upload in `uploaded`. A token
+that holds white space or characters an HTTP header cannot carry is
+refused before anything is sent, and no message ever includes the token.
+With `deleteAfterUpload`, a map is removed only once every script it
+describes has uploaded.
 
 ## The gateway side
 

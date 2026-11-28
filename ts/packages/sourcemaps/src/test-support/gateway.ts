@@ -28,10 +28,12 @@ export interface FakeGateway {
 /**
  * Starts a fake gateway. status picks each response's status from the upload's 0-based arrival
  * index and its query; the default is 201. delayMillis holds each response, so concurrency shows.
+ * retryAfter is sent with every refusal.
  */
 export async function startFakeGateway(
   status: (index: number, query: Readonly<Record<string, string>>) => number = () => 201,
   delayMillis = 0,
+  retryAfter?: string,
 ): Promise<FakeGateway> {
   const uploads: RecordedUpload[] = [];
   let inFlight = 0;
@@ -58,7 +60,9 @@ export async function startFakeGateway(
       const code = status(index, query);
       setTimeout(() => {
         inFlight--;
-        res.writeHead(code, { "content-type": "application/json" });
+        const headers: Record<string, string> = { "content-type": "application/json" };
+        if (code !== 201 && retryAfter !== undefined) headers["retry-after"] = retryAfter;
+        res.writeHead(code, headers);
         res.end(code === 201 ? JSON.stringify({ key: `k-${index}` }) : "refused");
       }, delayMillis);
     });

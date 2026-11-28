@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { type FakeGateway, startFakeGateway } from "./test-support/gateway.ts";
+import { tempDirs } from "./test-support/tmp.ts";
 import { UploadError, uploadSourceMaps, uploadSourceMapsWith } from "./upload.ts";
 
+const tempDir = tempDirs();
+
 function buildDir(n = 2): string {
-  const dir = mkdtempSync(join(tmpdir(), "sm-up-"));
+  const dir = tempDir("sm-up-");
   mkdirSync(join(dir, "assets"));
   for (let i = 0; i < n; i++) {
     writeFileSync(join(dir, `assets/app-${i}.js`), `f${i}()\n//# sourceMappingURL=app-${i}.js.map\n`);
@@ -213,7 +215,7 @@ test("deleteAfterUpload removes uploaded maps and their comments only", async ()
 
 test("deleteAfterUpload keeps a script without a comment unchanged", async () => {
   await withGateway(startFakeGateway(), async (gw) => {
-    const dir = mkdtempSync(join(tmpdir(), "sm-up-"));
+    const dir = tempDir("sm-up-");
     writeFileSync(join(dir, "vendor.js"), "y()\n//# debugId=ABC\n");
     writeFileSync(join(dir, "vendor.js.map"), '{"version":3}');
     await uploadSourceMaps({
@@ -273,4 +275,160 @@ test("the fetch option replaces the global fetch", async () => {
   });
   assert.equal(uploaded[0]?.key, "k");
   assert.match(seen[0] ?? "", /^https:\/\/gw\.example\/_o11y\/v1\/sourcemaps\?/);
+});
+
+test("a token a header cannot carry is refused without echoing it", async () => {
+  for (const token of ["sec\nret", "sec ret", "sécret"]) {
+    await assert.rejects(
+      uploadSourceMaps({
+        endpoint: "http://127.0.0.1:1",
+        token,
+        service: "s",
+        version: "1",
+        urlPrefix: "/",
+        directory: buildDir(1),
+      }),
+      (err: unknown) => err instanceof TypeError && /token/.test(err.message) && !err.message.includes(token),
+    );
+  }
+});
+
+test("network errors name their cause and never the token", async () => {
+  const gw = await startFakeGateway();
+  const url = gw.url;
+  await gw.close();
+  await assert.rejects(
+    uploadSourceMapsWith(
+      { endpoint: url, token: "tok-123", service: "s", version: "1", urlPrefix: "/", directory: buildDir(1) },
+      noSleep,
+    ),
+    (err: unknown) =>
+      err instanceof UploadError &&
+      /ECONNREFUSED|refused|connect/i.test(err.message) &&
+      !err.message.includes("tok-123"),
+  );
+});
+
+test("an attempt that hangs times out and is retried", async () => {
+  await withGateway(startFakeGateway(undefined, 2000), async (gw) => {
+    const started = Date.now();
+    await assert.rejects(
+      uploadSourceMapsWith(
+        { endpoint: gw.url, token: "t", service: "s", version: "1", urlPrefix: "/", directory: buildDir(1) },
+        { ...noSleep, timeoutMillis: 100 },
+      ),
+      (err: unknown) =>
+        err instanceof UploadError && err.status === 0 && /timed out|abort/i.test(err.message),
+    );
+    assert.ok(Date.now() - started < 1500);
+    assert.equal(gw.uploads.length, 3);
+  });
+});
+
+test("Retry-After sets the wait before a retry, capped at ten seconds", async () => {
+  for (const [header, want] of [
+    ["3", 3000],
+    ["600", 10_000],
+    ["soon", 200],
+  ] as const) {
+    await withGateway(
+      startFakeGateway((i) => (i === 0 ? 503 : 201), 0, header),
+      async (gw) => {
+        const slept: number[] = [];
+        await uploadSourceMapsWith(
+          {
+            endpoint: gw.url,
+            token: "t",
+            service: "s",
+            version: "1",
+            urlPrefix: "/",
+            directory: buildDir(1),
+          },
+          {
+            sleep: async (ms) => {
+              slept.push(ms);
+            },
+          },
+        );
+        assert.deepEqual(slept, [want], `Retry-After ${header}`);
+      },
+    );
+  }
+});
+
+test("a failed upload reports the maps that did upload", async () => {
+  await withGateway(
+    startFakeGateway((_i, q) => (q.url === "/assets/app-1.js" ? 401 : 201)),
+    async (gw) => {
+      await assert.rejects(
+        uploadSourceMapsWith(
+          {
+            endpoint: gw.url,
+            token: "t",
+            service: "s",
+            version: "1",
+            urlPrefix: "/",
+            directory: buildDir(2),
+            concurrency: 2,
+          },
+          noSleep,
+        ),
+        (err: unknown) =>
+          err instanceof UploadError &&
+          err.uploaded.length === 1 &&
+          err.uploaded[0]?.url === "/assets/app-0.js",
+      );
+    },
+  );
+});
+
+test("deleteAfterUpload keeps the bytes of a script that is not UTF-8", async () => {
+  await withGateway(startFakeGateway(), async (gw) => {
+    const dir = tempDir("sm-up-");
+    const head = Buffer.from([0x78, 0xff, 0xfe, 0x0a]);
+    writeFileSync(
+      join(dir, "app.js"),
+      Buffer.concat([head, Buffer.from("//# sourceMappingURL=app.js.map\n")]),
+    );
+    writeFileSync(join(dir, "app.js.map"), '{"version":3}');
+    await uploadSourceMaps({
+      endpoint: gw.url,
+      token: "t",
+      service: "s",
+      version: "1",
+      urlPrefix: "/",
+      directory: dir,
+      deleteAfterUpload: true,
+    });
+    assert.deepEqual(readFileSync(join(dir, "app.js")), head);
+  });
+});
+
+test("deleteAfterUpload keeps a map shared with a script that failed", async () => {
+  await withGateway(
+    startFakeGateway((_i, q) => (q.url === "/b.js" ? 401 : 201)),
+    async (gw) => {
+      const dir = tempDir("sm-up-");
+      writeFileSync(join(dir, "a.js"), "a()\n//# sourceMappingURL=shared.map\n");
+      writeFileSync(join(dir, "b.js"), "b()\n//# sourceMappingURL=shared.map\n");
+      writeFileSync(join(dir, "shared.map"), '{"version":3}');
+      await assert.rejects(
+        uploadSourceMapsWith(
+          {
+            endpoint: gw.url,
+            token: "t",
+            service: "s",
+            version: "1",
+            urlPrefix: "/",
+            directory: dir,
+            deleteAfterUpload: true,
+            concurrency: 2,
+          },
+          noSleep,
+        ),
+        UploadError,
+      );
+      assert.equal(existsSync(join(dir, "shared.map")), true);
+    },
+  );
 });
