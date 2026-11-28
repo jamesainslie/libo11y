@@ -1,5 +1,5 @@
 /** The sessions an OTLP JSON batch holds records of, so the retention flush can check each batch. */
-import type { OtlpBatch } from "@libo11y/web/internal";
+import type { OtlpBatch } from "@libo11y/web/portable";
 import { ATTR_SESSION_ID } from "../attrs.ts";
 
 interface Attr {

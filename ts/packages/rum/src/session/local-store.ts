@@ -2,11 +2,12 @@
  * The web session store: the record in localStorage, so a reload and every tab of the origin read
  * it, and a BroadcastChannel, so other tabs hear a change at once. Saves are versioned JSON.
  */
-import { RUM_SESSION_RETAINED_VALUES, type RUMSessionRetained } from "@libo11y/spec";
 import { diag } from "@opentelemetry/api";
 import type { SessionState, SessionStore } from "../contracts/session.ts";
+import { parseSessionState, SESSION_STORAGE_KEY } from "./state.ts";
 
-export const SESSION_STORAGE_KEY = "libo11y.rum.session";
+export { parseSessionState, SESSION_STORAGE_KEY } from "./state.ts";
+
 export const SESSION_CHANNEL = "libo11y.rum";
 
 /** The part of BroadcastChannel the store uses. */
@@ -22,28 +23,6 @@ export interface LocalSessionStoreOptions {
   readonly storage?: Pick<Storage, "getItem" | "setItem" | "removeItem">;
   /** Default new BroadcastChannel(SESSION_CHANNEL) where it exists. */
   readonly channel?: BroadcastChannelLike;
-}
-
-const RETAINED: ReadonlySet<string> = new Set(RUM_SESSION_RETAINED_VALUES);
-
-/** The SessionState in a stored or broadcast record, or undefined when it is not a valid version 1 record. */
-export function parseSessionState(value: unknown): SessionState | undefined {
-  if (typeof value !== "object" || value === null) return undefined;
-  const r = value as Record<string, unknown>;
-  if (r.v !== 1 || typeof r.id !== "string" || r.id === "") return undefined;
-  if (typeof r.startedAt !== "number" || typeof r.lastActivityAt !== "number") return undefined;
-  if (typeof r.sampled !== "boolean") return undefined;
-  if (r.retained !== undefined && (typeof r.retained !== "string" || !RETAINED.has(r.retained)))
-    return undefined;
-  if (r.configVersion !== undefined && typeof r.configVersion !== "string") return undefined;
-  return {
-    id: r.id,
-    startedAt: r.startedAt,
-    lastActivityAt: r.lastActivityAt,
-    sampled: r.sampled,
-    ...(r.retained === undefined ? {} : { retained: r.retained as RUMSessionRetained }),
-    ...(r.configVersion === undefined ? {} : { configVersion: r.configVersion }),
-  };
 }
 
 function defaultStorage(): LocalSessionStoreOptions["storage"] {

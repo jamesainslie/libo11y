@@ -201,6 +201,30 @@ test("the timeout falls back to a timer when AbortSignal.timeout is missing", as
   }
 });
 
+test("the timer fallback needs no DOMException, which bare React Native lacks", async (t) => {
+  const savedTimeout = AbortSignal.timeout;
+  const savedDom = Object.getOwnPropertyDescriptor(globalThis, "DOMException");
+  (AbortSignal as { timeout?: unknown }).timeout = undefined;
+  Object.defineProperty(globalThis, "DOMException", { value: undefined, configurable: true, writable: true });
+  t.after(() => {
+    AbortSignal.timeout = savedTimeout;
+    if (savedDom !== undefined) Object.defineProperty(globalThis, "DOMException", savedDom);
+  });
+  let reason: unknown;
+  const hanging = (async (_: RequestInfo | URL, init?: RequestInit) =>
+    new Promise<Response>((_r, reject) => {
+      init?.signal?.addEventListener("abort", () => {
+        reason = init.signal?.reason;
+        reject(reason);
+      });
+    })) as typeof fetch;
+  const got = await transport({ fetch: hanging, timeoutMillis: 20 }).send(req("{}"));
+  assert.equal(got.kind, "retry");
+  assert.match(got.kind === "retry" ? got.reason : "", /timeout/);
+  assert.ok(reason instanceof Error);
+  assert.equal(reason.name, "TimeoutError");
+});
+
 test("offline is a retry without a request", async () => {
   const f = fakeFetch();
   const t = transport({ fetch: f, isOnline: () => false });

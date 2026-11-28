@@ -6,7 +6,7 @@
  * openQueue gives a memory queue and a reload loses it. The queue is opened on first use, so a
  * caller that uses it only after consent creates no database before consent.
  */
-import type { Delivery, OtlpBatch, PersistentQueue } from "@libo11y/web/internal";
+import type { Delivery, OtlpBatch, PersistentQueue } from "@libo11y/web/portable";
 import { diag } from "@opentelemetry/api";
 import type { RetentionBuffer } from "../contracts/retention.ts";
 

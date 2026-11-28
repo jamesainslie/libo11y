@@ -33,13 +33,17 @@ function navigatorOnline(): boolean {
   return (globalThis as { navigator?: { onLine?: boolean } }).navigator?.onLine !== false;
 }
 
-// timeoutSignal is AbortSignal.timeout where it exists, else an AbortController a timer aborts.
-// dispose clears the fallback timer.
+// timeoutSignal is AbortSignal.timeout where it exists, else an AbortController a timer aborts
+// with an Error named TimeoutError, because bare React Native has no DOMException. dispose clears
+// the fallback timer.
 function timeoutSignal(ms: number): { signal: AbortSignal; dispose: () => void } {
   if (typeof AbortSignal.timeout === "function")
     return { signal: AbortSignal.timeout(ms), dispose: () => {} };
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(new DOMException("request timed out", "TimeoutError")), ms);
+  const timer = setTimeout(
+    () => controller.abort(Object.assign(new Error("request timed out"), { name: "TimeoutError" })),
+    ms,
+  );
   return { signal: controller.signal, dispose: () => clearTimeout(timer) };
 }
 

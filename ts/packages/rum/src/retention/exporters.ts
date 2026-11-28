@@ -7,7 +7,7 @@
  */
 import type { ExporterSet } from "@libo11y/core";
 import { EVENT_RUM_VIEW_SUMMARY } from "@libo11y/spec";
-import { serializeLogs, serializeSpans } from "@libo11y/web/internal";
+import { serializeLogs, serializeSpans } from "@libo11y/web/portable";
 import { type ExportResult, ExportResultCode } from "@opentelemetry/core";
 import type { LogRecordExporter, ReadableLogRecord } from "@opentelemetry/sdk-logs";
 import type { ReadableSpan, SpanExporter } from "@opentelemetry/sdk-trace";

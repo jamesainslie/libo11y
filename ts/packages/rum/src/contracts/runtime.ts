@@ -1,5 +1,5 @@
 /**
- * Contract, frozen by R3a, extended by R3b and R3c. What every collector receives. Collectors are created by factories such
+ * Contract, frozen by R3a, extended by R3b, R3c and R5a. What every collector receives. Collectors are created by factories such
  * as views() and run only while consent is granted: start is called on grant, the returned stop
  * on revoke and shutdown.
  */
@@ -102,6 +102,11 @@ export interface RumRuntime {
   settings(): RumSettings;
   /** performance.now(). */
   now(): number;
+  /**
+   * The epoch milliseconds now() counts from (performance.timeOrigin on the web, R5a), so a span
+   * placed at a now() time needs no performance global of its own.
+   */
+  readonly timeOrigin: number;
   /**
    * Emits event name with session.id and o11y.rum.view.id of the current session and view added
    * (attrs win). Dropped while the gate is closed. With body, the record carries it as its body

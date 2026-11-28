@@ -4,12 +4,16 @@
 import type { Platform, RecordingGate } from "@libo11y/core";
 import type { ContextManager } from "@opentelemetry/api";
 import { createContextManager } from "./context.ts";
-import { OTLP_SIGNALS } from "./contracts/otlp.ts";
 import type { Delivery, SendMode } from "./contracts/transport.ts";
+import { randomUuid } from "./ids.ts";
 import type { BrowserExportOptions } from "./options.ts";
 import { detectBrowserResource } from "./resource.ts";
 import type { SignalEndpoints } from "./transport/endpoints.ts";
+import { browserEnv } from "./transport/env.ts";
 import { createExporterSet } from "./transport/exporters.ts";
+
+export { randomUuid, type UuidCrypto } from "./ids.ts";
+export { browserEnv } from "./transport/env.ts";
 
 /** Options for webPlatform. */
 export interface WebPlatformOptions {
@@ -33,44 +37,6 @@ export interface WebPlatformOptions {
 /** What webPlatformWith builds on, so tests can replace the exporter set. Internal. */
 export interface WebPlatformDeps {
   readonly createExporterSet: typeof createExporterSet;
-}
-
-/**
- * The OTEL_* variables the platform reports: envDefaults, then exportOptions.env, then
- * OTEL_EXPORTER_OTLP_PROTOCOL=http/json, then OTEL_<SIGNAL>_EXPORTER=none for each signal whose
- * endpoint is undefined unless env names an exporter for it.
- */
-export function browserEnv(
-  exportOptions: BrowserExportOptions,
-  endpoints: SignalEndpoints,
-  envDefaults?: Readonly<Record<string, string>>,
-): Readonly<Record<string, string>> {
-  const env: Record<string, string> = { ...envDefaults, ...exportOptions.env };
-  env.OTEL_EXPORTER_OTLP_PROTOCOL = "http/json";
-  for (const signal of OTLP_SIGNALS) {
-    const name = `OTEL_${signal.toUpperCase()}_EXPORTER`;
-    if (endpoints[signal] === undefined && (env[name] ?? "").trim() === "") env[name] = "none";
-  }
-  return env;
-}
-
-/** The slice of Web Crypto randomUuid uses. */
-export interface UuidCrypto {
-  randomUUID?(): string;
-  getRandomValues(array: Uint8Array<ArrayBuffer>): Uint8Array<ArrayBuffer>;
-}
-
-/**
- * A random lowercase v4 UUID: crypto.randomUUID where it exists (secure contexts), else one built
- * from crypto.getRandomValues as RFC 9562 section 5.4 lays out. Internal.
- */
-export function randomUuid(c: UuidCrypto = globalThis.crypto): string {
-  if (typeof c.randomUUID === "function") return c.randomUUID();
-  const b = c.getRandomValues(new Uint8Array(16));
-  b[6] = ((b[6] ?? 0) & 0x0f) | 0x40;
-  b[8] = ((b[8] ?? 0) & 0x3f) | 0x80;
-  const h = [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
-  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
 }
 
 /**

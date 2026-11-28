@@ -42,7 +42,7 @@ export function recordInstantAction(
   name: string | undefined,
   at: number = rt.now(),
 ): void {
-  const when = performance.timeOrigin + at;
+  const when = rt.timeOrigin + at;
   const span = rt.tracer.startSpan(
     actionSpanName(type),
     { startTime: when, ...actionSpanStart(rt, type, name) },

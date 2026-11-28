@@ -49,7 +49,7 @@
     "@libo11y/rum errors()": {
       "base": "@libo11y/rum setupRum",
       "code": "import { setupRum, errors } from \"@libo11y/rum\"; (globalThis as Record<string, unknown>).__x = [setupRum, errors()];\n",
-      "budget": 1024
+      "budget": 1280
     },
     "@libo11y/rum vitals()": {
       "base": "@libo11y/rum setupRum",

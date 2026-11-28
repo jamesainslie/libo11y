@@ -216,6 +216,7 @@ function fakeEnv(clock: ManualTimers): FakeEnv {
 
 export interface FakeRuntime extends RumRuntime {
   scope?: RumScope;
+  timeOrigin: number;
   readonly counts: SummaryCountKey[];
   /** The n of each count, in step with counts. */
   readonly countValues: number[];
@@ -343,6 +344,7 @@ export function fakeRuntime(opts: { readonly realViews?: boolean } = {}): FakeRu
     bus,
     settings: () => settings,
     now: () => clock.now(),
+    timeOrigin: performance.timeOrigin,
     emit(name, attrs = {}, ctx, body) {
       if (!gate.open) return;
       events.push({

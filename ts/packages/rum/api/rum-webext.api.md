@@ -232,6 +232,7 @@ export interface RumRuntime {
     readonly summary: SummaryAccumulator;
     // (undocumented)
     readonly telemetry: Telemetry;
+    readonly timeOrigin: number;
     // (undocumented)
     readonly tracer: Tracer;
     // (undocumented)

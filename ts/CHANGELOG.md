@@ -29,6 +29,28 @@ adhere to [Semantic Versioning](https://semver.org/).
 - `conformance/rum-replay/`, the replay scrubbing vectors that the
   collector and the RUM gateway both run.
 
+### Changed
+
+- `@libo11y/web` and `@libo11y/rum` gain internal entry points for the
+  React Native packages to come: `@libo11y/web/portable`, the
+  platform-neutral parts of the browser platform, and `@libo11y/rum/core`,
+  the RUM core with its platform binding and lifecycle. Like `./internal`
+  they are for libo11y packages only, follow the package version, carry no
+  compatibility promise and have no API report. Tests check that neither
+  reaches a browser-only module and that both load with every browser
+  global removed. Browser behavior is unchanged.
+
+### Fixed
+
+- `@libo11y/web` and `@libo11y/rum` make session, view and queue IDs on a
+  runtime without Web Crypto, such as React Native on Hermes, from
+  `Math.random`. These IDs are not secrets. The transport's fallback
+  timeout, used where `AbortSignal.timeout` is missing, no longer needs
+  `DOMException`.
+- `@libo11y/rum`: `RumRuntime` gains `timeOrigin`, the epoch milliseconds
+  `now()` counts from, and `addAction` places its span with it instead of
+  reading `performance.timeOrigin`, which a runtime may lack.
+
 ## [0.3.0] - 2026-11-27
 
 This release adds browser RUM: `@libo11y/rum`, its adapters

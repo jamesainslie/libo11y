@@ -3,7 +3,7 @@
  * (the client's Unix time in milliseconds at send time) and client_token (the app's public token),
  * because sendBeacon cannot set headers. The gateway uses sent_at to correct client clock skew.
  */
-import { type HttpTransportOptions, pristineFetch, pristineSendBeacon } from "@libo11y/web/internal";
+import { type HttpTransportOptions, pristineFetch, pristineSendBeacon } from "@libo11y/web/portable";
 
 /** url with sent_at, and client_token when there is one, appended to its query. */
 export function withWireParams(url: string, clientToken: string | undefined, sentAt: number): string {
