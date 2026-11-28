@@ -65,7 +65,7 @@ module Libo11y
           @docs = []
           @stack = []
           @anchors = {}
-          @aliases = {}
+          @aliases = {}.compare_by_identity
           @doc_explicit = false
           @doc_version = nil
           @doc_root = nil
@@ -77,7 +77,7 @@ module Libo11y
           @doc_version = version && !version.empty? ? version : nil
           @doc_explicit = !implicit
           @anchors = {}
-          @aliases = {}
+          @aliases = {}.compare_by_identity
           @stack = []
           @doc_root = nil
         end
@@ -91,7 +91,7 @@ module Libo11y
           )
         end
 
-        def scalar(value, anchor, tag, plain, quoted, style)
+        def scalar(value, anchor, tag, plain, quoted, style) # rubocop:disable Metrics/ParameterLists -- Psych::Handler's signature
           quoted_or_block = quoted || !plain || (style != Psych::Nodes::Scalar::PLAIN)
           node = ScalarNode.new(tag: tag, value: value, quoted_or_block: quoted_or_block, anchor: anchor)
           @anchors[anchor] = node if anchor
@@ -103,7 +103,7 @@ module Libo11y
           raise SyntaxError, "unknown anchor '#{anchor}' referenced" unless target
 
           node = AliasNode.new(anchor: anchor)
-          @aliases[node.object_id] = target
+          @aliases[node] = target
           attach(node)
         end
 

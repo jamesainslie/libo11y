@@ -18,7 +18,7 @@ module Libo11y
 
     # Sets the route template of the request this thread is serving, such as
     # "/orders/:id", for a router the middleware does not know.
-    def self.set_route(route)
+    def self.set_route(route) # rubocop:disable Naming/AccessorMethodName -- the name every libo11y implementation gives it
       Thread.current[ROUTE_FIBER_KEY] = route.to_s
     end
 

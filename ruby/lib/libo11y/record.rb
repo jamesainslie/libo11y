@@ -13,7 +13,7 @@ module Libo11y
       self
     end
 
-    def set_all(hash)
+    def set_all(hash) # rubocop:disable Naming/AccessorMethodName -- it merges into the record and returns it, as set does
       return self if hash.nil?
 
       @mutex.synchronize do

@@ -15,6 +15,7 @@ require_relative "internal/resource"
 require_relative "internal/propagators"
 require_relative "internal/bridges"
 require_relative "internal/logging_device"
+require_relative "internal/pipeline"
 require_relative "internal/runtime_metrics"
 require_relative "internal/summary"
 
@@ -230,266 +231,84 @@ module Libo11y
         end
       end
 
-      def construct(opts, is_global, built)
-        env_map = Internal::Env.resolve_map(opts.env)
-        hermetic = Internal::Env.hermetic?(opts.env)
-        sdk_disabled = !hermetic && Internal::Env.sdk_disabled?(env_map)
-
-        app_classes = Internal::SensitivityPolicy.load_app_registries(opts.app_registries)
-        violation_recorder = Internal::ViolationRecorder.new
+      def construct(options, is_global, built)
+        env_map = Internal::Env.resolve_map(options.env)
+        violations = Internal::ViolationRecorder.new
         policy = Internal::SensitivityPolicy.new(
-          pii_mode: opts.pii_mode,
-          pii_hash_key: opts.pii_hash_key,
-          app_classes: app_classes,
-          recorder: violation_recorder
+          pii_mode: options.pii_mode,
+          pii_hash_key: options.pii_hash_key,
+          app_classes: Internal::SensitivityPolicy.load_app_registries(options.app_registries),
+          recorder: violations
         )
-
-        res_result = Internal::ResourceBuilder.build(opts, env_map, policy, violation_recorder)
-        resource = res_result.resource
-        propagator = Internal::Propagators.build(opts.propagators, opts.baggage_egress_allow)
-        failures = %i[traces metrics logs].to_h { |signal| [signal, Internal::Bridges::ExportFailures.new] }
-        observe = ->(exporter, signal) { Internal::Bridges::ObservedExporter.new(exporter, failures.fetch(signal), signal) }
-
-        # Build TracerProvider
-        sampler = Internal::Bridges.build_sampler(opts.sampler, env_map)
-        tracer_provider = if sdk_disabled
-                            Internal::Bridges::NoopTracerProvider.new
-                          else
-                            OpenTelemetry::SDK::Trace::TracerProvider.new(
-                              sampler: sampler, resource: resource, span_limits: Internal::Env.span_limits(env_map)
-                            )
-                          end
-        built << tracer_provider
-
-        # An injected processor owns the export path, as an injected exporter
-        # does, so no exporter is built from the environment beside it.
-        span_processors = Array(opts.span_processors)
-        trace_exporter_mode = if !sdk_disabled && (opts.span_exporter || !span_processors.empty?)
-                                "injected"
-                              elsif sdk_disabled || hermetic
-                                "none"
-                              else
-                                Internal::Env.parse_exporter_choice(env_map, "OTEL_TRACES_EXPORTER", default: "otlp")
-                              end
-
-        unless sdk_disabled
-          if opts.span_exporter
-            wrapped = Internal::Bridges::PolicySpanExporter.new(observe.call(opts.span_exporter, :traces), policy)
-            tracer_provider.add_span_processor(
-              OpenTelemetry::SDK::Trace::Export::SimpleSpanProcessor.new(wrapped)
-            )
-          elsif trace_exporter_mode == "otlp"
-            otlp_exp = Internal::Bridges.build_otlp_trace_exporter(env_map)
-            wrapped = Internal::Bridges::PolicySpanExporter.new(observe.call(otlp_exp, :traces), policy)
-            tracer_provider.add_span_processor(
-              OpenTelemetry::SDK::Trace::Export::BatchSpanProcessor.new(
-                wrapped,
-                schedule_delay: Internal::Env.parse_int(env_map, "OTEL_BSP_SCHEDULE_DELAY", 5000),
-                max_queue_size: Internal::Env.parse_int(env_map, "OTEL_BSP_MAX_QUEUE_SIZE", 2048),
-                max_export_batch_size: Internal::Env.parse_int(env_map, "OTEL_BSP_MAX_EXPORT_BATCH_SIZE", 512),
-                exporter_timeout: Internal::Env.parse_int(env_map, "OTEL_BSP_EXPORT_TIMEOUT", 30_000),
-                start_thread_on_boot: Internal::Env.start_thread_on_boot?(env_map, "OTEL_RUBY_BSP_START_THREAD_ON_BOOT")
-              )
-            )
-          elsif trace_exporter_mode == "console"
-            wrapped = Internal::Bridges::PolicySpanExporter.new(
-              observe.call(OpenTelemetry::SDK::Trace::Export::ConsoleSpanExporter.new, :traces), policy
-            )
-            tracer_provider.add_span_processor(
-              OpenTelemetry::SDK::Trace::Export::SimpleSpanProcessor.new(wrapped)
-            )
-          end
-
-          # An injected processor gets a redacted view of the finished span.
-          # A span's violations are counted once: by the exporter path when
-          # there is one, else by the first injected processor.
-          exporter_counts = !opts.span_exporter.nil? || %w[otlp console].include?(trace_exporter_mode)
-          span_processors.each_with_index do |sp, idx|
-            proc_policy = !exporter_counts && idx.zero? ? policy : policy.silent
-            tracer_provider.add_span_processor(Internal::Bridges::PolicySpanProcessor.new(sp, proc_policy))
-          end
-        end
-
-        # Build MeterProvider
-        raw_meter_provider = OpenTelemetry::SDK::Metrics::MeterProvider.new(resource: resource)
-        built << raw_meter_provider
-        exemplar_filter = if sdk_disabled
-                            ExemplarFilter::ALWAYS_OFF
-                          else
-                            Internal::Env.parse_exemplar_filter(opts.exemplar_filter, env_map)
-                          end
-        Internal::Bridges.configure_exemplar_filter(raw_meter_provider, exemplar_filter)
-
-        metric_exporter_mode = if sdk_disabled || (opts.metric_reader.nil? && hermetic)
-                                 "none"
-                               elsif opts.metric_reader
-                                 "injected"
-                               else
-                                 Internal::Env.parse_exporter_choice(env_map, "OTEL_METRICS_EXPORTER", default: "otlp")
-                               end
-
-        unless sdk_disabled
-          if opts.metric_reader
-            raw_meter_provider.add_metric_reader(opts.metric_reader)
-          elsif metric_exporter_mode == "otlp"
-            otlp_mexp = Internal::Bridges.build_otlp_metric_exporter(env_map)
-            reader = OpenTelemetry::SDK::Metrics::Export::PeriodicMetricReader.new(
-              exporter: observe.call(otlp_mexp, :metrics),
-              export_interval_millis: Internal::Env.parse_int(env_map, "OTEL_METRIC_EXPORT_INTERVAL", 60_000),
-              export_timeout_millis: Internal::Env.parse_int(env_map, "OTEL_METRIC_EXPORT_TIMEOUT", 30_000)
-            )
-            raw_meter_provider.add_metric_reader(reader)
-          elsif metric_exporter_mode == "console"
-            reader = OpenTelemetry::SDK::Metrics::Export::PeriodicMetricReader.new(
-              exporter: OpenTelemetry::SDK::Metrics::Export::ConsoleMetricPullExporter.new,
-              export_interval_millis: Internal::Env.parse_int(env_map, "OTEL_METRIC_EXPORT_INTERVAL", 60_000),
-              export_timeout_millis: Internal::Env.parse_int(env_map, "OTEL_METRIC_EXPORT_TIMEOUT", 30_000)
-            )
-            raw_meter_provider.add_metric_reader(reader)
-          end
-
-          # One view per histogram with boundaries: libo11y's own duration
-          # histograms, then the histogram_buckets option, which wins for a
-          # name both give.
-          buckets = Internal::HistogramBuckets::DEFAULTS.merge((opts.histogram_buckets || {}).to_h.transform_keys(&:to_s))
-          buckets.each do |name, boundaries|
-            aggregation = OpenTelemetry::SDK::Metrics::Aggregation::ExplicitBucketHistogram.new(boundaries: Array(boundaries))
-            raw_meter_provider.add_view(name, type: :histogram, aggregation: aggregation)
-          end
-          Array(opts.views).each do |view|
-            unless view.is_a?(Hash) && view.transform_keys(&:to_sym)[:name]
-              raise ArgumentError, "libo11y: views takes Hashes of MeterProvider#add_view arguments with a :name, got #{view.inspect}"
-            end
-
-            arguments = view.transform_keys(&:to_sym)
-            raw_meter_provider.add_view(arguments[:name].to_s, **arguments.except(:name))
-          end
-        end
-
-        meter_provider = Internal::Bridges::PolicyMeterProvider.new(raw_meter_provider, policy)
-
-        # Wire o11y.schema.violations counter and flush buffered resource violations
-        violations_counter = raw_meter_provider.meter("libo11y", version: Libo11y::VERSION).create_counter(
-          Spec::METRIC_SCHEMA_VIOLATIONS,
-          unit: "{violation}",
-          description: "Specification and sensitivity policy violations."
-        )
-        violation_recorder.attach(lambda do |sig, rule|
-          violations_counter.add(1, attributes: { Spec::ATTR_SIGNAL => sig.to_s, Spec::ATTR_RULE => rule.to_s })
-        end)
-
-        Internal::RuntimeMetrics.register(meter_provider) if opts.runtime_metrics && !sdk_disabled
-
-        # Build LoggerProvider
-        logger_provider = OpenTelemetry::SDK::Logs::LoggerProvider.new(
-          resource: resource, log_record_limits: Internal::Env.log_record_limits(env_map)
-        )
-        built << logger_provider
-        log_exporter_mode = if sdk_disabled || (opts.log_exporter.nil? && hermetic)
-                              "none"
-                            elsif opts.log_exporter
-                              "injected"
-                            else
-                              Internal::Env.parse_exporter_choice(env_map, "OTEL_LOGS_EXPORTER", default: "otlp")
-                            end
-
-        unless sdk_disabled
-          # First, so every later processor sees the classified record.
-          logger_provider.add_log_record_processor(Internal::Bridges::PolicyLogRecordProcessor.new(policy))
-          if opts.log_exporter
-            proc = OpenTelemetry::SDK::Logs::Export::SimpleLogRecordProcessor.new(observe.call(opts.log_exporter, :logs))
-            logger_provider.add_log_record_processor(proc)
-          elsif log_exporter_mode == "otlp"
-            otlp_lexp = Internal::Bridges.build_otlp_log_exporter(env_map)
-            proc = OpenTelemetry::SDK::Logs::Export::BatchLogRecordProcessor.new(
-              observe.call(otlp_lexp, :logs),
-              schedule_delay: Internal::Env.parse_int(env_map, "OTEL_BLRP_SCHEDULE_DELAY", 1000),
-              max_queue_size: Internal::Env.parse_int(env_map, "OTEL_BLRP_MAX_QUEUE_SIZE", 2048),
-              max_export_batch_size: Internal::Env.parse_int(env_map, "OTEL_BLRP_MAX_EXPORT_BATCH_SIZE", 512),
-              exporter_timeout: Internal::Env.parse_int(env_map, "OTEL_BLRP_EXPORT_TIMEOUT", 30_000),
-              start_thread_on_boot: Internal::Env.start_thread_on_boot?(env_map, "OTEL_RUBY_BLRP_START_THREAD_ON_BOOT")
-            )
-            logger_provider.add_log_record_processor(proc)
-          elsif log_exporter_mode == "console"
-            proc = OpenTelemetry::SDK::Logs::Export::SimpleLogRecordProcessor.new(
-              observe.call(OpenTelemetry::SDK::Logs::Export::ConsoleLogRecordExporter.new, :logs)
-            )
-            logger_provider.add_log_record_processor(proc)
-          end
-
-          Array(opts.log_processors).each do |lp|
-            logger_provider.add_log_record_processor(lp)
-          end
-        end
-
-        otel_logger = logger_provider.logger(name: "libo11y", version: Libo11y::VERSION)
-        structured_logger = Internal::StructuredLogger.new(
-          policy: policy,
-          otel_logger: otel_logger,
-          console_writer: opts.console_writer.nil? ? $stdout : opts.console_writer,
-          console_enabled: opts.console_enabled,
-          log_level: opts.log_level,
-          attr_replacer: opts.attr_replacer,
-          extra_sinks: opts.extra_log_sinks
-        )
+        identity = Internal::ResourceBuilder.build(options, env_map, policy, violations)
+        propagator = Internal::Propagators.build(options.propagators, options.baggage_egress_allow)
+        pipeline = Internal::Pipeline.new(
+          options: options, env_map: env_map, hermetic: Internal::Env.hermetic?(options.env),
+          policy: policy, resource: identity.resource, violations: violations, built: built
+        ).build
+        logger = build_logger(options, policy, pipeline)
 
         summary_attrs, summary_line = Internal::Summary.build(
-          options: opts,
-          env_map: env_map,
-          identity: res_result,
-          level: structured_logger.level,
-          exporters: {
-            traces: trace_exporter_mode,
-            metrics: metric_exporter_mode,
-            logs: log_exporter_mode,
-            runtime_metrics: opts.runtime_metrics && !sdk_disabled ? true : false
-          },
-          propagator: propagator
+          options: options, env_map: env_map, identity: identity, level: logger.level,
+          exporters: pipeline.exporters.merge(runtime_metrics: pipeline.runtime_metrics?), propagator: propagator
         )
-
-        # The startup canary, on global setup only and before any global is
-        # installed. A sink that raises, or a log exporter that answers the
-        # record with a failure, fails setup.
         if is_global
-          begin
-            _, rejected = failures.fetch(:logs).during do
-              structured_logger.log_with_attrs(
-                ::Logger::INFO,
-                "telemetry configured",
-                summary_attrs,
-                event_name: Spec::EVENT_TELEMETRY_CONFIGURED,
-                force: true,
-                raise_on_sink_error: true
-              )
-            end
-          rescue StandardError => e
-            raise CanaryRejected, "o11y: startup canary rejected by log pipeline: #{e.message}"
-          end
-          raise CanaryRejected, "o11y: startup canary rejected by log pipeline: #{rejected.first.message}" unless rejected.empty?
-
-          @global_mutex.synchronize do
-            @global_state = :active
-            OpenTelemetry.tracer_provider = tracer_provider
-            OpenTelemetry.meter_provider = meter_provider if OpenTelemetry.respond_to?(:meter_provider=)
-            OpenTelemetry.logger_provider = logger_provider if OpenTelemetry.respond_to?(:logger_provider=)
-            OpenTelemetry.propagation = propagator
-          end
+          run_canary(logger, summary_attrs, pipeline.failures.fetch(:logs))
+          install_globals(pipeline, propagator)
         end
 
         Telemetry.new(
-          tracer_provider: tracer_provider,
-          meter_provider: meter_provider,
-          logger_provider: logger_provider,
+          tracer_provider: pipeline.tracer_provider,
+          meter_provider: pipeline.meter_provider,
+          logger_provider: pipeline.logger_provider,
           propagator: propagator,
-          logger: structured_logger,
-          resource: resource,
+          logger: logger,
+          resource: identity.resource,
           policy: policy,
           effective_config: summary_line,
-          shutdown_timeout: opts.shutdown_timeout,
+          shutdown_timeout: options.shutdown_timeout,
           is_global: is_global,
-          failures: failures,
+          failures: pipeline.failures,
           on_global_shutdown: method(:reset_global!)
         )
+      end
+
+      def build_logger(options, policy, pipeline)
+        Internal::StructuredLogger.new(
+          policy: policy,
+          otel_logger: pipeline.logger_provider.logger(name: "libo11y", version: Libo11y::VERSION),
+          console_writer: options.console_writer.nil? ? $stdout : options.console_writer,
+          console_enabled: options.console_enabled,
+          log_level: options.log_level,
+          attr_replacer: options.attr_replacer,
+          extra_sinks: options.extra_log_sinks
+        )
+      end
+
+      # The startup canary: the o11y.telemetry.configured event, forced
+      # through the log pipeline before any global is installed. A sink that
+      # raises, or a log exporter that answers the record with a failure,
+      # fails setup.
+      def run_canary(logger, summary_attrs, log_failures)
+        _, rejected = log_failures.during do
+          logger.log_with_attrs(
+            ::Logger::INFO, "telemetry configured", summary_attrs,
+            event_name: Spec::EVENT_TELEMETRY_CONFIGURED, force: true, raise_on_sink_error: true
+          )
+        end
+        raise rejected.first unless rejected.empty?
+      rescue StandardError => e
+        raise CanaryRejected, "o11y: startup canary rejected by log pipeline: #{e.message}"
+      end
+
+      def install_globals(pipeline, propagator)
+        @global_mutex.synchronize do
+          @global_state = :active
+          OpenTelemetry.tracer_provider = pipeline.tracer_provider
+          OpenTelemetry.meter_provider = pipeline.meter_provider if OpenTelemetry.respond_to?(:meter_provider=)
+          OpenTelemetry.logger_provider = pipeline.logger_provider if OpenTelemetry.respond_to?(:logger_provider=)
+          OpenTelemetry.propagation = propagator
+        end
       end
     end
   end

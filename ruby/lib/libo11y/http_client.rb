@@ -46,7 +46,7 @@ module Libo11y
       span = tracer.start_span(Internal::HttpCommon.span_name(normalized), attributes: attrs, kind: :client)
       begin
         OpenTelemetry::Trace.with_span(span) do
-          response = send_request(uri, verb, outbound_headers(headers, uri), body, open_timeout, read_timeout)
+          response = send_request(uri, verb, outbound_headers(headers, uri), body, open_timeout: open_timeout, read_timeout: read_timeout)
           status = response.code.to_i
           span.set_attribute("http.response.status_code", status)
           metric_attrs["http.response.status_code"] = status
@@ -83,7 +83,7 @@ module Libo11y
       out.reject { |key, _| injected.keys.any? { |name| name.casecmp?(key) } }.merge(injected)
     end
 
-    def send_request(uri, verb, headers, body, open_timeout, read_timeout)
+    def send_request(uri, verb, headers, body, open_timeout:, read_timeout:)
       http = Net::HTTP.new(uri.host, uri.port)
       http.use_ssl = uri.scheme == "https"
       http.open_timeout = open_timeout

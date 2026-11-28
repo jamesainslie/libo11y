@@ -148,73 +148,59 @@ module Libo11y
 
         Thread.current[REENTRY_FIBER_KEY] = true
         begin
-          now = Time.now.utc
-          sev_num, sev_text = SEVERITY_TO_OTEL.fetch(severity, [9, "INFO"])
-
-          span_ctx = OpenTelemetry::Trace.current_span.context
-          trace_id = span_ctx.valid? ? span_ctx.hex_trace_id : nil
-          span_id = span_ctx.valid? ? span_ctx.hex_span_id : nil
-
-          full_attrs = {}
-          attrs&.each { |k, v| full_attrs[k.to_s] = v }
-          full_attrs[Spec::EVENT_NAME_KEY] = event_name if event_name && !event_name.empty?
-
-          classified = @policy.classify_log_attributes(full_attrs, replacer: @attr_replacer)
-          # trace_id and span_id are reserved: they come from the active span
-          # only. Removed after the replacer, which could bring them back.
-          classified.delete("trace_id")
-          classified.delete("span_id")
-
-          # Console leg
-          if @console_enabled && @console_writer
-            write_console(raise_on_sink_error: raise_on_sink_error) do
-              build_console_line(now, sev_text, body, trace_id, span_id, classified)
-            end
-          end
-
-          # OTLP leg
-          emit_otel(now, sev_num, sev_text, body, event_name, classified, raise_on_sink_error: raise_on_sink_error) if @otel_logger
-
-          # Extra sinks
-          @extra_sinks.each do |sink|
-            record_hash = {
-              timestamp: now,
-              observed_timestamp: now,
-              severity_number: sev_num,
-              severity_text: sev_text,
-              body: body,
-              event_name: event_name,
-              trace_id: trace_id,
-              span_id: span_id,
-              attributes: classified
-            }
-            begin
-              if sink.respond_to?(:call)
-                sink.call(record_hash)
-              elsif sink.respond_to?(:emit)
-                sink.emit(record_hash)
-              end
-            rescue StandardError
-              raise if raise_on_sink_error
-            end
-          end
+          record = build_record(severity, body, attrs, event_name)
+          write_console(raise_on_sink_error: raise_on_sink_error) { console_line(record) } if @console_enabled && @console_writer
+          emit_otel(record, raise_on_sink_error: raise_on_sink_error) if @otel_logger
+          @extra_sinks.each { |sink| emit_extra(sink, record, raise_on_sink_error: raise_on_sink_error) }
         ensure
           Thread.current[REENTRY_FIBER_KEY] = false
         end
       end
 
-      def build_console_line(now, sev_text, body, trace_id, span_id, attrs)
-        payload = {
-          "time" => now.iso8601(6),
-          "level" => sev_text,
-          "msg" => body
-        }
-        payload["trace_id"] = trace_id if trace_id
-        payload["span_id"] = span_id if span_id
-        attrs.each do |k, v|
-          next if %w[time level msg trace_id span_id].include?(k)
+      # The record every sink gets: the trace identity of the active span,
+      # and the attributes after the replacer and the policy, classified once.
+      def build_record(severity, body, attrs, event_name)
+        now = Time.now.utc
+        severity_number, severity_text = SEVERITY_TO_OTEL.fetch(severity, [9, "INFO"])
+        span_context = OpenTelemetry::Trace.current_span.context
 
-          payload[k] = json_safe(v)
+        attributes = attrs.to_h { |key, value| [key.to_s, value] }
+        attributes[Spec::EVENT_NAME_KEY] = event_name if event_name && !event_name.empty?
+        classified = @policy.classify_log_attributes(attributes, replacer: @attr_replacer)
+        # trace_id and span_id are reserved: they come from the active span
+        # only. Removed after the replacer, which could bring them back.
+        classified.delete("trace_id")
+        classified.delete("span_id")
+
+        {
+          timestamp: now,
+          observed_timestamp: now,
+          severity_number: severity_number,
+          severity_text: severity_text,
+          body: body,
+          event_name: event_name,
+          trace_id: span_context.valid? ? span_context.hex_trace_id : nil,
+          span_id: span_context.valid? ? span_context.hex_span_id : nil,
+          attributes: classified
+        }
+      end
+
+      def emit_extra(sink, record, raise_on_sink_error:)
+        if sink.respond_to?(:call)
+          sink.call(record)
+        elsif sink.respond_to?(:emit)
+          sink.emit(record)
+        end
+      rescue StandardError
+        raise if raise_on_sink_error
+      end
+
+      def console_line(record)
+        payload = { "time" => record[:timestamp].iso8601(6), "level" => record[:severity_text], "msg" => record[:body] }
+        payload["trace_id"] = record[:trace_id] if record[:trace_id]
+        payload["span_id"] = record[:span_id] if record[:span_id]
+        record[:attributes].each do |key, value|
+          payload[key] = json_safe(value) unless %w[time level msg trace_id span_id].include?(key)
         end
         "#{JSON.generate(payload)}\n"
       end
@@ -241,16 +227,10 @@ module Libo11y
         raise if raise_on_sink_error
       end
 
-      def emit_otel(now, sev_num, sev_text, body, event_name, classified, raise_on_sink_error:)
-        flat = flatten_for_otel(classified)
+      def emit_otel(record, raise_on_sink_error:)
         @otel_logger.on_emit(
-          timestamp: now,
-          observed_timestamp: now,
-          severity_number: sev_num,
-          severity_text: sev_text,
-          body: body,
-          attributes: flat,
-          event_name: event_name,
+          **record.slice(:timestamp, :observed_timestamp, :severity_number, :severity_text, :body, :event_name),
+          attributes: flatten_for_otel(record[:attributes]),
           context: Bridges::PolicyLogRecordProcessor.mark_classified(OpenTelemetry::Context.current)
         )
       rescue StandardError
