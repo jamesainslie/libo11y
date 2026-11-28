@@ -179,9 +179,9 @@ public static class O11y
             else if (traceMode == "otlp")
             {
                 var proto = O11yEnvParser.ParseProtocol(envMap, "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL");
-                string endpoint = O11yEnvParser.SignalEndpoint(envMap, "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", proto, "/v1/traces");
-                cfg["traces.endpoint"] = EndpointSanitizer.Sanitize(endpoint);
-                string? headers = O11yEnvParser.SignalHeaders(envMap, "OTEL_EXPORTER_OTLP_TRACES_HEADERS");
+                Uri endpoint = O11yEnvParser.SignalEndpoint(envMap, "TRACES", proto);
+                cfg["traces.endpoint"] = EndpointSanitizer.Sanitize(endpoint.AbsoluteUri);
+                string headers = O11yEnvParser.SignalHeaders(envMap, "OTEL_EXPORTER_OTLP_TRACES_HEADERS");
                 int timeoutMs = O11yEnvParser.SignalTimeoutMs(envMap, "OTEL_EXPORTER_OTLP_TRACES_TIMEOUT");
                 int delayMs = O11yEnvParser.ParseInt(envMap, "OTEL_BSP_SCHEDULE_DELAY", 5000);
                 int maxQueue = O11yEnvParser.ParseInt(envMap, "OTEL_BSP_MAX_QUEUE_SIZE", 2048);
@@ -191,8 +191,8 @@ public static class O11y
                 tb.AddOtlpExporter(o =>
                 {
                     o.Protocol = proto;
-                    o.Endpoint = new Uri(endpoint);
-                    if (headers is not null) o.Headers = headers;
+                    o.Endpoint = endpoint;
+                    o.Headers = headers;
                     o.TimeoutMilliseconds = timeoutMs;
                     o.ExportProcessorType = ExportProcessorType.Batch;
                     o.BatchExportProcessorOptions = new BatchExportActivityProcessorOptions
@@ -267,9 +267,9 @@ public static class O11y
             else if (metricMode == "otlp")
             {
                 var proto = O11yEnvParser.ParseProtocol(envMap, "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL");
-                string endpoint = O11yEnvParser.SignalEndpoint(envMap, "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", proto, "/v1/metrics");
-                cfg["metrics.endpoint"] = EndpointSanitizer.Sanitize(endpoint);
-                string? headers = O11yEnvParser.SignalHeaders(envMap, "OTEL_EXPORTER_OTLP_METRICS_HEADERS");
+                Uri endpoint = O11yEnvParser.SignalEndpoint(envMap, "METRICS", proto);
+                cfg["metrics.endpoint"] = EndpointSanitizer.Sanitize(endpoint.AbsoluteUri);
+                string headers = O11yEnvParser.SignalHeaders(envMap, "OTEL_EXPORTER_OTLP_METRICS_HEADERS");
                 int timeoutMs = O11yEnvParser.SignalTimeoutMs(envMap, "OTEL_EXPORTER_OTLP_METRICS_TIMEOUT");
                 int intervalMs = O11yEnvParser.ParseInt(envMap, "OTEL_METRIC_EXPORT_INTERVAL", 60_000);
                 int exportTimeout = O11yEnvParser.ParseInt(envMap, "OTEL_METRIC_EXPORT_TIMEOUT", 30_000);
@@ -277,8 +277,8 @@ public static class O11y
                 mb.AddOtlpExporter((o, readerOpts) =>
                 {
                     o.Protocol = proto;
-                    o.Endpoint = new Uri(endpoint);
-                    if (headers is not null) o.Headers = headers;
+                    o.Endpoint = endpoint;
+                    o.Headers = headers;
                     o.TimeoutMilliseconds = timeoutMs;
                     readerOpts.PeriodicExportingMetricReaderOptions.ExportIntervalMilliseconds = intervalMs;
                     readerOpts.PeriodicExportingMetricReaderOptions.ExportTimeoutMilliseconds = exportTimeout;
@@ -329,16 +329,16 @@ public static class O11y
                 processors.Add(injectedProc);
             }
 
-            string? otlpEndpoint = null;
+            Uri? otlpEndpoint = null;
             OtlpExportProtocol otlpProto = OtlpExportProtocol.HttpProtobuf;
-            string? otlpHeaders = null;
+            string otlpHeaders = "";
             int otlpTimeoutMs = 10_000;
             int delayMs = 1000, maxQueue = 2048, maxBatch = 512, exportTimeout = 30_000;
             if (options.LogExporter is null && logMode == "otlp")
             {
                 otlpProto = O11yEnvParser.ParseProtocol(envMap, "OTEL_EXPORTER_OTLP_LOGS_PROTOCOL");
-                otlpEndpoint = O11yEnvParser.SignalEndpoint(envMap, "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", otlpProto, "/v1/logs");
-                cfg["logs.endpoint"] = EndpointSanitizer.Sanitize(otlpEndpoint);
+                otlpEndpoint = O11yEnvParser.SignalEndpoint(envMap, "LOGS", otlpProto);
+                cfg["logs.endpoint"] = EndpointSanitizer.Sanitize(otlpEndpoint.AbsoluteUri);
                 otlpHeaders = O11yEnvParser.SignalHeaders(envMap, "OTEL_EXPORTER_OTLP_LOGS_HEADERS");
                 otlpTimeoutMs = O11yEnvParser.SignalTimeoutMs(envMap, "OTEL_EXPORTER_OTLP_LOGS_TIMEOUT");
                 delayMs = O11yEnvParser.ParseInt(envMap, "OTEL_BLRP_SCHEDULE_DELAY", 1000);
@@ -370,8 +370,8 @@ public static class O11y
                         o.AddOtlpExporter(e =>
                         {
                             e.Protocol = otlpProto;
-                            e.Endpoint = new Uri(otlpEndpoint);
-                            if (otlpHeaders is not null) e.Headers = otlpHeaders;
+                            e.Endpoint = otlpEndpoint;
+                            e.Headers = otlpHeaders;
                             e.TimeoutMilliseconds = otlpTimeoutMs;
                             e.ExportProcessorType = ExportProcessorType.Batch;
                             e.BatchExportProcessorOptions = new BatchExportActivityProcessorOptions

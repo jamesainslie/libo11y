@@ -34,6 +34,9 @@ public sealed class CanaryRejectedException(string message, Exception? inner = n
 public sealed class UnsupportedProtocolException(string message)
     : O11yException(message);
 
+public sealed class InvalidOptionException(string message, Exception? inner = null)
+    : O11yException(message, inner);
+
 public sealed class ExporterException(string message, Exception? inner = null)
     : O11yException(message, inner);
 
