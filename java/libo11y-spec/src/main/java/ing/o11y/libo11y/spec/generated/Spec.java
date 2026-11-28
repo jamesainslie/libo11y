@@ -2,452 +2,1664 @@
 
 package ing.o11y.libo11y.spec.generated;
 
+import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 
-/** Generated libo11y specification constants, attribute keys, events, metrics, and closed enums. */
+/** Generated libo11y specification constants, typed attribute keys, events, metrics, and closed enums. */
 public final class Spec {
     private Spec() {}
 
+    /** The schema URL stamped on every resource libo11y builds. */
     public static final String SCHEMA_URL = "https://schemas.o11y.ing/libo11y/1.3.0";
+    /** The libo11y specification version this library implements. */
     public static final String SPEC_VERSION = "1.3.0";
+    /** The pinned OpenTelemetry semantic conventions version. */
     public static final String SEMCONV_VERSION = "1.41.0";
+    /** The log attribute that carries an event's name. */
     public static final String EVENT_NAME_KEY = "event.name";
 
-    public static final class Outcome {
-        private Outcome() {}
+    /** The type an attribute value has on the wire. */
+    public enum ValueType {
+        /** A string; a closed enum travels as its wire string. */
+        STRING,
+        /** A boolean. */
+        BOOLEAN,
+        /** A 64-bit integer. */
+        LONG,
+        /** A 64-bit floating-point number. */
+        DOUBLE
+    }
 
-        public static final String SUCCESS = "success";
-        public static final String FAILURE = "failure";
-        public static final String UNKNOWN = "unknown";
+    /** A registry value that travels on the wire as a string. Every closed enum in this class implements it. */
+    public interface WireValue {
+        /**
+         * Returns the value as the registry spells it on the wire.
+         *
+         * @return the wire value
+         */
+        String value();
+    }
 
-        public static final Set<String> ALL = Set.of(SUCCESS, FAILURE, UNKNOWN);
+    /**
+     * An attribute key typed by the value its registry entry allows. A key of a closed value set is
+     * typed by that set's enum. libo11y's own API accepts these keys, so a value of the wrong type
+     * does not compile.
+     *
+     * @param <T> the Java type of the attribute's value
+     */
+    public static final class Key<T> {
+        private final String key;
+        private final ValueType type;
+        private final Class<T> valueClass;
 
-        public static boolean isValid(String value) {
-            return value != null && ALL.contains(value);
+        private Key(String key, ValueType type, Class<T> valueClass) {
+            this.key = key;
+            this.type = type;
+            this.valueClass = valueClass;
+        }
+
+        /**
+         * Returns the attribute name.
+         *
+         * @return the attribute name, as it appears on the wire
+         */
+        public String getKey() {
+            return key;
+        }
+
+        /**
+         * Returns the type the value has on the wire.
+         *
+         * @return the wire type
+         */
+        public ValueType getType() {
+            return type;
+        }
+
+        /**
+         * Returns the Java type of the value.
+         *
+         * @return the value class
+         */
+        public Class<T> getValueClass() {
+            return valueClass;
+        }
+
+        /**
+         * Returns {@code value} as it goes on the wire: a closed enum constant becomes its wire
+         * string, and any other value is returned unchanged.
+         *
+         * @param value the value, or {@code null}
+         * @return the wire value, or {@code null} when {@code value} is {@code null}
+         */
+        public Object wireValue(T value) {
+            return value instanceof WireValue w ? w.value() : value;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            return o instanceof Key<?> other
+                    && key.equals(other.key)
+                    && type == other.type
+                    && valueClass.equals(other.valueClass);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(key, type, valueClass);
+        }
+
+        /** Returns the attribute name. */
+        @Override
+        public String toString() {
+            return key;
         }
     }
 
-    public static final class RecordClass {
-        private RecordClass() {}
+    /**
+     * A registered attribute prefix whose full key the caller completes with a suffix, as in
+     * {@code o11y.label.<name>}. {@link #of(String)} builds the typed key.
+     *
+     * @param <T> the Java type of every completed key's value
+     */
+    public static final class TemplateKey<T> {
+        private final String key;
+        private final ValueType type;
+        private final Class<T> valueClass;
 
-        public static final String AUDIT = "audit";
+        private TemplateKey(String key, ValueType type, Class<T> valueClass) {
+            this.key = key;
+            this.type = type;
+            this.valueClass = valueClass;
+        }
 
-        public static final Set<String> ALL = Set.of(AUDIT);
+        /**
+         * Returns the registered prefix, without the trailing dot.
+         *
+         * @return the template's attribute name
+         */
+        public String getKey() {
+            return key;
+        }
 
-        public static boolean isValid(String value) {
-            return value != null && ALL.contains(value);
+        /**
+         * Returns the type every completed key's value has on the wire.
+         *
+         * @return the wire type
+         */
+        public ValueType getType() {
+            return type;
+        }
+
+        /**
+         * Returns the Java type of every completed key's value.
+         *
+         * @return the value class
+         */
+        public Class<T> getValueClass() {
+            return valueClass;
+        }
+
+        /**
+         * Returns the key {@code <prefix>.<suffix>}.
+         *
+         * @param suffix the caller-chosen part of the key; not null or empty
+         * @return the typed key
+         * @throws NullPointerException if {@code suffix} is null
+         * @throws IllegalArgumentException if {@code suffix} is empty
+         */
+        public Key<T> of(String suffix) {
+            Objects.requireNonNull(suffix, "suffix");
+            if (suffix.isEmpty()) {
+                throw new IllegalArgumentException("template key " + key + " needs a non-empty suffix");
+            }
+            return new Key<>(key + "." + suffix, type, valueClass);
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            return o instanceof TemplateKey<?> other
+                    && key.equals(other.key)
+                    && type == other.type
+                    && valueClass.equals(other.valueClass);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(key, type, valueClass);
+        }
+
+        /** Returns the registered prefix. */
+        @Override
+        public String toString() {
+            return key;
         }
     }
 
-    public static final class DataClassification {
-        private DataClassification() {}
+    private static <T> Key<T> key(String key, ValueType type, Class<T> valueClass) {
+        return new Key<>(key, type, valueClass);
+    }
 
-        public static final String PUBLIC = "public";
-        public static final String INTERNAL = "internal";
-        public static final String CONFIDENTIAL = "confidential";
-        public static final String PII = "pii";
+    private static <T> TemplateKey<T> templateKey(String key, ValueType type, Class<T> valueClass) {
+        return new TemplateKey<>(key, type, valueClass);
+    }
 
-        public static final Set<String> ALL = Set.of(PUBLIC, INTERNAL, CONFIDENTIAL, PII);
+    /** The closed value set for {@code o11y.outcome}. Outcome of the operation the record describes. Required on wide events and audit records. */
+    public enum Outcome implements WireValue {
+        /** The operation completed as intended. */
+        SUCCESS("success"),
+        /** The operation failed. */
+        FAILURE("failure"),
+        /** The outcome could not be determined. */
+        UNKNOWN("unknown");
 
+        /** Every wire value of {@code o11y.outcome}. */
+        public static final Set<String> WIRE_VALUES = Set.of("success", "failure", "unknown");
+
+        private final String value;
+
+        Outcome(String value) {
+            this.value = value;
+        }
+
+        @Override
+        public String value() {
+            return value;
+        }
+
+        /** Returns the wire value, so string conversion never emits the constant's name. */
+        @Override
+        public String toString() {
+            return value;
+        }
+
+        /**
+         * Returns the constant whose wire value is {@code value}.
+         *
+         * @param value an untrusted wire value, or {@code null}
+         * @return the constant, or an empty {@code Optional} for {@code null} or a value the registry does not list
+         */
+        public static Optional<Outcome> fromValue(String value) {
+            if (value == null) {
+                return Optional.empty();
+            }
+            return switch (value) {
+                case "success" -> Optional.of(SUCCESS);
+                case "failure" -> Optional.of(FAILURE);
+                case "unknown" -> Optional.of(UNKNOWN);
+                default -> Optional.empty();
+            };
+        }
+
+        /**
+         * Reports whether {@code value} is one of these wire values.
+         *
+         * @param value an untrusted wire value, or {@code null}
+         * @return whether {@link #fromValue(String)} finds a constant for it
+         */
         public static boolean isValid(String value) {
-            return value != null && ALL.contains(value);
+            return value != null && WIRE_VALUES.contains(value);
         }
     }
 
-    public static final class Signal {
-        private Signal() {}
+    /** The closed value set for {@code o11y.record.class}. Structural marking for special record classes. */
+    public enum RecordClass implements WireValue {
+        /** Always-emit record: exempt from sampling, level gates, and trace-based dropping. */
+        AUDIT("audit");
 
-        public static final String TRACES = "traces";
-        public static final String METRICS = "metrics";
-        public static final String LOGS = "logs";
-        public static final String RESOURCE = "resource";
+        /** Every wire value of {@code o11y.record.class}. */
+        public static final Set<String> WIRE_VALUES = Set.of("audit");
 
-        public static final Set<String> ALL = Set.of(TRACES, METRICS, LOGS, RESOURCE);
+        private final String value;
 
+        RecordClass(String value) {
+            this.value = value;
+        }
+
+        @Override
+        public String value() {
+            return value;
+        }
+
+        /** Returns the wire value, so string conversion never emits the constant's name. */
+        @Override
+        public String toString() {
+            return value;
+        }
+
+        /**
+         * Returns the constant whose wire value is {@code value}.
+         *
+         * @param value an untrusted wire value, or {@code null}
+         * @return the constant, or an empty {@code Optional} for {@code null} or a value the registry does not list
+         */
+        public static Optional<RecordClass> fromValue(String value) {
+            if (value == null) {
+                return Optional.empty();
+            }
+            return switch (value) {
+                case "audit" -> Optional.of(AUDIT);
+                default -> Optional.empty();
+            };
+        }
+
+        /**
+         * Reports whether {@code value} is one of these wire values.
+         *
+         * @param value an untrusted wire value, or {@code null}
+         * @return whether {@link #fromValue(String)} finds a constant for it
+         */
         public static boolean isValid(String value) {
-            return value != null && ALL.contains(value);
+            return value != null && WIRE_VALUES.contains(value);
         }
     }
 
-    public static final class LogSource {
-        private LogSource() {}
+    /** The closed value set for {@code o11y.data.classification}. Classification of the data the workload processes, used by collector redaction pipelines. */
+    public enum DataClassification implements WireValue {
+        /** Public data. */
+        PUBLIC("public"),
+        /** Internal data. */
+        INTERNAL("internal"),
+        /** Confidential data. */
+        CONFIDENTIAL("confidential"),
+        /** Personally identifiable information. */
+        PII("pii");
 
-        public static final String LOGGER = "logger";
-        public static final String CONSOLE = "console";
+        /** Every wire value of {@code o11y.data.classification}. */
+        public static final Set<String> WIRE_VALUES = Set.of("public", "internal", "confidential", "pii");
 
-        public static final Set<String> ALL = Set.of(LOGGER, CONSOLE);
+        private final String value;
 
+        DataClassification(String value) {
+            this.value = value;
+        }
+
+        @Override
+        public String value() {
+            return value;
+        }
+
+        /** Returns the wire value, so string conversion never emits the constant's name. */
+        @Override
+        public String toString() {
+            return value;
+        }
+
+        /**
+         * Returns the constant whose wire value is {@code value}.
+         *
+         * @param value an untrusted wire value, or {@code null}
+         * @return the constant, or an empty {@code Optional} for {@code null} or a value the registry does not list
+         */
+        public static Optional<DataClassification> fromValue(String value) {
+            if (value == null) {
+                return Optional.empty();
+            }
+            return switch (value) {
+                case "public" -> Optional.of(PUBLIC);
+                case "internal" -> Optional.of(INTERNAL);
+                case "confidential" -> Optional.of(CONFIDENTIAL);
+                case "pii" -> Optional.of(PII);
+                default -> Optional.empty();
+            };
+        }
+
+        /**
+         * Reports whether {@code value} is one of these wire values.
+         *
+         * @param value an untrusted wire value, or {@code null}
+         * @return whether {@link #fromValue(String)} finds a constant for it
+         */
         public static boolean isValid(String value) {
-            return value != null && ALL.contains(value);
+            return value != null && WIRE_VALUES.contains(value);
         }
     }
 
-    public static final class RumVitalAttributionInteractionType {
-        private RumVitalAttributionInteractionType() {}
+    /** The closed value set for {@code o11y.signal}. The telemetry signal a record refers to. */
+    public enum Signal implements WireValue {
+        /** The trace signal. */
+        TRACES("traces"),
+        /** The metric signal. */
+        METRICS("metrics"),
+        /** The log signal. */
+        LOGS("logs"),
+        /** The telemetry resource shared by every signal. */
+        RESOURCE("resource");
 
-        public static final String POINTER = "pointer";
-        public static final String KEYBOARD = "keyboard";
+        /** Every wire value of {@code o11y.signal}. */
+        public static final Set<String> WIRE_VALUES = Set.of("traces", "metrics", "logs", "resource");
 
-        public static final Set<String> ALL = Set.of(POINTER, KEYBOARD);
+        private final String value;
 
+        Signal(String value) {
+            this.value = value;
+        }
+
+        @Override
+        public String value() {
+            return value;
+        }
+
+        /** Returns the wire value, so string conversion never emits the constant's name. */
+        @Override
+        public String toString() {
+            return value;
+        }
+
+        /**
+         * Returns the constant whose wire value is {@code value}.
+         *
+         * @param value an untrusted wire value, or {@code null}
+         * @return the constant, or an empty {@code Optional} for {@code null} or a value the registry does not list
+         */
+        public static Optional<Signal> fromValue(String value) {
+            if (value == null) {
+                return Optional.empty();
+            }
+            return switch (value) {
+                case "traces" -> Optional.of(TRACES);
+                case "metrics" -> Optional.of(METRICS);
+                case "logs" -> Optional.of(LOGS);
+                case "resource" -> Optional.of(RESOURCE);
+                default -> Optional.empty();
+            };
+        }
+
+        /**
+         * Reports whether {@code value} is one of these wire values.
+         *
+         * @param value an untrusted wire value, or {@code null}
+         * @return whether {@link #fromValue(String)} finds a constant for it
+         */
         public static boolean isValid(String value) {
-            return value != null && ALL.contains(value);
+            return value != null && WIRE_VALUES.contains(value);
         }
     }
 
-    public static final class RumVitalAttributionLoadState {
-        private RumVitalAttributionLoadState() {}
+    /** The closed value set for {@code o11y.log.source}. Where a log record entered the pipeline. Implementations that capture console output mark those records console. */
+    public enum LogSource implements WireValue {
+        /** The record came through the libo11y logger or a log bridge. */
+        LOGGER("logger"),
+        /** The record came from a captured console call. */
+        CONSOLE("console");
 
-        public static final String LOADING = "loading";
-        public static final String DOM_INTERACTIVE = "dom-interactive";
-        public static final String DOM_CONTENT_LOADED = "dom-content-loaded";
-        public static final String COMPLETE = "complete";
+        /** Every wire value of {@code o11y.log.source}. */
+        public static final Set<String> WIRE_VALUES = Set.of("logger", "console");
 
-        public static final Set<String> ALL = Set.of(LOADING, DOM_INTERACTIVE, DOM_CONTENT_LOADED, COMPLETE);
+        private final String value;
 
+        LogSource(String value) {
+            this.value = value;
+        }
+
+        @Override
+        public String value() {
+            return value;
+        }
+
+        /** Returns the wire value, so string conversion never emits the constant's name. */
+        @Override
+        public String toString() {
+            return value;
+        }
+
+        /**
+         * Returns the constant whose wire value is {@code value}.
+         *
+         * @param value an untrusted wire value, or {@code null}
+         * @return the constant, or an empty {@code Optional} for {@code null} or a value the registry does not list
+         */
+        public static Optional<LogSource> fromValue(String value) {
+            if (value == null) {
+                return Optional.empty();
+            }
+            return switch (value) {
+                case "logger" -> Optional.of(LOGGER);
+                case "console" -> Optional.of(CONSOLE);
+                default -> Optional.empty();
+            };
+        }
+
+        /**
+         * Reports whether {@code value} is one of these wire values.
+         *
+         * @param value an untrusted wire value, or {@code null}
+         * @return whether {@link #fromValue(String)} finds a constant for it
+         */
         public static boolean isValid(String value) {
-            return value != null && ALL.contains(value);
+            return value != null && WIRE_VALUES.contains(value);
         }
     }
 
-    public static final class RumResourceType {
-        private RumResourceType() {}
+    /** The closed value set for {@code o11y.rum.vital.attribution.interaction_type}. INP attribution. The kind of the slowest interaction. */
+    public enum RumVitalAttributionInteractionType implements WireValue {
+        /** A pointer or touch interaction. */
+        POINTER("pointer"),
+        /** A keyboard interaction. */
+        KEYBOARD("keyboard");
 
-        public static final String SCRIPT = "script";
-        public static final String STYLESHEET = "stylesheet";
-        public static final String IMAGE = "image";
-        public static final String FONT = "font";
-        public static final String MEDIA = "media";
-        public static final String DOCUMENT = "document";
-        public static final String OTHER = "other";
+        /** Every wire value of {@code o11y.rum.vital.attribution.interaction_type}. */
+        public static final Set<String> WIRE_VALUES = Set.of("pointer", "keyboard");
 
-        public static final Set<String> ALL = Set.of(SCRIPT, STYLESHEET, IMAGE, FONT, MEDIA, DOCUMENT, OTHER);
+        private final String value;
 
+        RumVitalAttributionInteractionType(String value) {
+            this.value = value;
+        }
+
+        @Override
+        public String value() {
+            return value;
+        }
+
+        /** Returns the wire value, so string conversion never emits the constant's name. */
+        @Override
+        public String toString() {
+            return value;
+        }
+
+        /**
+         * Returns the constant whose wire value is {@code value}.
+         *
+         * @param value an untrusted wire value, or {@code null}
+         * @return the constant, or an empty {@code Optional} for {@code null} or a value the registry does not list
+         */
+        public static Optional<RumVitalAttributionInteractionType> fromValue(String value) {
+            if (value == null) {
+                return Optional.empty();
+            }
+            return switch (value) {
+                case "pointer" -> Optional.of(POINTER);
+                case "keyboard" -> Optional.of(KEYBOARD);
+                default -> Optional.empty();
+            };
+        }
+
+        /**
+         * Reports whether {@code value} is one of these wire values.
+         *
+         * @param value an untrusted wire value, or {@code null}
+         * @return whether {@link #fromValue(String)} finds a constant for it
+         */
         public static boolean isValid(String value) {
-            return value != null && ALL.contains(value);
+            return value != null && WIRE_VALUES.contains(value);
         }
     }
 
-    public static final class RumPlatform {
-        private RumPlatform() {}
+    /** The closed value set for {@code o11y.rum.vital.attribution.load_state}. INP and CLS attribution. The document's load state when the interaction or shift happened. */
+    public enum RumVitalAttributionLoadState implements WireValue {
+        /** The document was loading. */
+        LOADING("loading"),
+        /** The DOM was interactive. */
+        DOM_INTERACTIVE("dom-interactive"),
+        /** The DOM content loaded event had fired. */
+        DOM_CONTENT_LOADED("dom-content-loaded"),
+        /** The document had loaded. */
+        COMPLETE("complete");
 
-        public static final String WEB = "web";
-        public static final String WEBEXT = "webext";
-        public static final String REACT_NATIVE = "react_native";
-        public static final String IOS = "ios";
-        public static final String ANDROID = "android";
+        /** Every wire value of {@code o11y.rum.vital.attribution.load_state}. */
+        public static final Set<String> WIRE_VALUES = Set.of("loading", "dom-interactive", "dom-content-loaded", "complete");
 
-        public static final Set<String> ALL = Set.of(WEB, WEBEXT, REACT_NATIVE, IOS, ANDROID);
+        private final String value;
 
+        RumVitalAttributionLoadState(String value) {
+            this.value = value;
+        }
+
+        @Override
+        public String value() {
+            return value;
+        }
+
+        /** Returns the wire value, so string conversion never emits the constant's name. */
+        @Override
+        public String toString() {
+            return value;
+        }
+
+        /**
+         * Returns the constant whose wire value is {@code value}.
+         *
+         * @param value an untrusted wire value, or {@code null}
+         * @return the constant, or an empty {@code Optional} for {@code null} or a value the registry does not list
+         */
+        public static Optional<RumVitalAttributionLoadState> fromValue(String value) {
+            if (value == null) {
+                return Optional.empty();
+            }
+            return switch (value) {
+                case "loading" -> Optional.of(LOADING);
+                case "dom-interactive" -> Optional.of(DOM_INTERACTIVE);
+                case "dom-content-loaded" -> Optional.of(DOM_CONTENT_LOADED);
+                case "complete" -> Optional.of(COMPLETE);
+                default -> Optional.empty();
+            };
+        }
+
+        /**
+         * Reports whether {@code value} is one of these wire values.
+         *
+         * @param value an untrusted wire value, or {@code null}
+         * @return whether {@link #fromValue(String)} finds a constant for it
+         */
         public static boolean isValid(String value) {
-            return value != null && ALL.contains(value);
+            return value != null && WIRE_VALUES.contains(value);
         }
     }
 
-    public static final class RumSpanShape {
-        private RumSpanShape() {}
+    /** The closed value set for {@code o11y.rum.resource.type}. The kind of a resource the view loaded, from its initiator type. */
+    public enum RumResourceType implements WireValue {
+        /** A script. */
+        SCRIPT("script"),
+        /** A stylesheet. */
+        STYLESHEET("stylesheet"),
+        /** An image. */
+        IMAGE("image"),
+        /** A font. */
+        FONT("font"),
+        /** Audio or video. */
+        MEDIA("media"),
+        /** A frame's document. */
+        DOCUMENT("document"),
+        /** Any other resource. */
+        OTHER("other");
 
-        public static final String VIEW = "view";
-        public static final String ACTION = "action";
-        public static final String APP_LOAD = "app_load";
+        /** Every wire value of {@code o11y.rum.resource.type}. */
+        public static final Set<String> WIRE_VALUES = Set.of("script", "stylesheet", "image", "font", "media", "document", "other");
 
-        public static final Set<String> ALL = Set.of(VIEW, ACTION, APP_LOAD);
+        private final String value;
 
+        RumResourceType(String value) {
+            this.value = value;
+        }
+
+        @Override
+        public String value() {
+            return value;
+        }
+
+        /** Returns the wire value, so string conversion never emits the constant's name. */
+        @Override
+        public String toString() {
+            return value;
+        }
+
+        /**
+         * Returns the constant whose wire value is {@code value}.
+         *
+         * @param value an untrusted wire value, or {@code null}
+         * @return the constant, or an empty {@code Optional} for {@code null} or a value the registry does not list
+         */
+        public static Optional<RumResourceType> fromValue(String value) {
+            if (value == null) {
+                return Optional.empty();
+            }
+            return switch (value) {
+                case "script" -> Optional.of(SCRIPT);
+                case "stylesheet" -> Optional.of(STYLESHEET);
+                case "image" -> Optional.of(IMAGE);
+                case "font" -> Optional.of(FONT);
+                case "media" -> Optional.of(MEDIA);
+                case "document" -> Optional.of(DOCUMENT);
+                case "other" -> Optional.of(OTHER);
+                default -> Optional.empty();
+            };
+        }
+
+        /**
+         * Reports whether {@code value} is one of these wire values.
+         *
+         * @param value an untrusted wire value, or {@code null}
+         * @return whether {@link #fromValue(String)} finds a constant for it
+         */
         public static boolean isValid(String value) {
-            return value != null && ALL.contains(value);
+            return value != null && WIRE_VALUES.contains(value);
         }
     }
 
-    public static final class RumViewKind {
-        private RumViewKind() {}
+    /** The closed value set for {@code o11y.rum.platform}. The RUM platform that recorded the telemetry. */
+    public enum RumPlatform implements WireValue {
+        /** A web page. */
+        WEB("web"),
+        /** A browser extension. */
+        WEBEXT("webext"),
+        /** A React Native app. */
+        REACT_NATIVE("react_native"),
+        /** A native iOS app. */
+        IOS("ios"),
+        /** A native Android app. */
+        ANDROID("android");
 
-        public static final String INITIAL = "initial";
-        public static final String SOFT = "soft";
-        public static final String BFCACHE_RESTORE = "bfcache_restore";
-        public static final String PRERENDER = "prerender";
-        public static final String SCREEN = "screen";
+        /** Every wire value of {@code o11y.rum.platform}. */
+        public static final Set<String> WIRE_VALUES = Set.of("web", "webext", "react_native", "ios", "android");
 
-        public static final Set<String> ALL = Set.of(INITIAL, SOFT, BFCACHE_RESTORE, PRERENDER, SCREEN);
+        private final String value;
 
+        RumPlatform(String value) {
+            this.value = value;
+        }
+
+        @Override
+        public String value() {
+            return value;
+        }
+
+        /** Returns the wire value, so string conversion never emits the constant's name. */
+        @Override
+        public String toString() {
+            return value;
+        }
+
+        /**
+         * Returns the constant whose wire value is {@code value}.
+         *
+         * @param value an untrusted wire value, or {@code null}
+         * @return the constant, or an empty {@code Optional} for {@code null} or a value the registry does not list
+         */
+        public static Optional<RumPlatform> fromValue(String value) {
+            if (value == null) {
+                return Optional.empty();
+            }
+            return switch (value) {
+                case "web" -> Optional.of(WEB);
+                case "webext" -> Optional.of(WEBEXT);
+                case "react_native" -> Optional.of(REACT_NATIVE);
+                case "ios" -> Optional.of(IOS);
+                case "android" -> Optional.of(ANDROID);
+                default -> Optional.empty();
+            };
+        }
+
+        /**
+         * Reports whether {@code value} is one of these wire values.
+         *
+         * @param value an untrusted wire value, or {@code null}
+         * @return whether {@link #fromValue(String)} finds a constant for it
+         */
         public static boolean isValid(String value) {
-            return value != null && ALL.contains(value);
+            return value != null && WIRE_VALUES.contains(value);
         }
     }
 
-    public static final class RumActionType {
-        private RumActionType() {}
+    /** The closed value set for {@code o11y.rum.span.shape}. Which RUM span shape a span follows. Every view, action and app_load span carries it, so a gateway or a query can tell the shapes apart without inferring them from other attributes. */
+    public enum RumSpanShape implements WireValue {
+        /** A view span. */
+        VIEW("view"),
+        /** An action span. */
+        ACTION("action"),
+        /** A document load or app start span. */
+        APP_LOAD("app_load");
 
-        public static final String CLICK = "click";
-        public static final String TAP = "tap";
-        public static final String LONG_PRESS = "long_press";
-        public static final String SWIPE = "swipe";
-        public static final String SCROLL = "scroll";
-        public static final String SUBMIT = "submit";
-        public static final String KEY_PRESS = "key_press";
-        public static final String CUSTOM = "custom";
+        /** Every wire value of {@code o11y.rum.span.shape}. */
+        public static final Set<String> WIRE_VALUES = Set.of("view", "action", "app_load");
 
-        public static final Set<String> ALL = Set.of(CLICK, TAP, LONG_PRESS, SWIPE, SCROLL, SUBMIT, KEY_PRESS, CUSTOM);
+        private final String value;
 
+        RumSpanShape(String value) {
+            this.value = value;
+        }
+
+        @Override
+        public String value() {
+            return value;
+        }
+
+        /** Returns the wire value, so string conversion never emits the constant's name. */
+        @Override
+        public String toString() {
+            return value;
+        }
+
+        /**
+         * Returns the constant whose wire value is {@code value}.
+         *
+         * @param value an untrusted wire value, or {@code null}
+         * @return the constant, or an empty {@code Optional} for {@code null} or a value the registry does not list
+         */
+        public static Optional<RumSpanShape> fromValue(String value) {
+            if (value == null) {
+                return Optional.empty();
+            }
+            return switch (value) {
+                case "view" -> Optional.of(VIEW);
+                case "action" -> Optional.of(ACTION);
+                case "app_load" -> Optional.of(APP_LOAD);
+                default -> Optional.empty();
+            };
+        }
+
+        /**
+         * Reports whether {@code value} is one of these wire values.
+         *
+         * @param value an untrusted wire value, or {@code null}
+         * @return whether {@link #fromValue(String)} finds a constant for it
+         */
         public static boolean isValid(String value) {
-            return value != null && ALL.contains(value);
+            return value != null && WIRE_VALUES.contains(value);
         }
     }
 
-    public static final class RumFrustrationType {
-        private RumFrustrationType() {}
+    /** The closed value set for {@code o11y.rum.view.kind}. How the view started. */
+    public enum RumViewKind implements WireValue {
+        /** The first view of a page load. */
+        INITIAL("initial"),
+        /** A client-side navigation in a single-page app. */
+        SOFT("soft"),
+        /** A page restored from the back/forward cache. */
+        BFCACHE_RESTORE("bfcache_restore"),
+        /** A prerendered page that was activated. */
+        PRERENDER("prerender"),
+        /** A screen in a native or React Native app. */
+        SCREEN("screen");
 
-        public static final String RAGE = "rage";
-        public static final String DEAD = "dead";
-        public static final String ERROR = "error";
+        /** Every wire value of {@code o11y.rum.view.kind}. */
+        public static final Set<String> WIRE_VALUES = Set.of("initial", "soft", "bfcache_restore", "prerender", "screen");
 
-        public static final Set<String> ALL = Set.of(RAGE, DEAD, ERROR);
+        private final String value;
 
+        RumViewKind(String value) {
+            this.value = value;
+        }
+
+        @Override
+        public String value() {
+            return value;
+        }
+
+        /** Returns the wire value, so string conversion never emits the constant's name. */
+        @Override
+        public String toString() {
+            return value;
+        }
+
+        /**
+         * Returns the constant whose wire value is {@code value}.
+         *
+         * @param value an untrusted wire value, or {@code null}
+         * @return the constant, or an empty {@code Optional} for {@code null} or a value the registry does not list
+         */
+        public static Optional<RumViewKind> fromValue(String value) {
+            if (value == null) {
+                return Optional.empty();
+            }
+            return switch (value) {
+                case "initial" -> Optional.of(INITIAL);
+                case "soft" -> Optional.of(SOFT);
+                case "bfcache_restore" -> Optional.of(BFCACHE_RESTORE);
+                case "prerender" -> Optional.of(PRERENDER);
+                case "screen" -> Optional.of(SCREEN);
+                default -> Optional.empty();
+            };
+        }
+
+        /**
+         * Reports whether {@code value} is one of these wire values.
+         *
+         * @param value an untrusted wire value, or {@code null}
+         * @return whether {@link #fromValue(String)} finds a constant for it
+         */
         public static boolean isValid(String value) {
-            return value != null && ALL.contains(value);
+            return value != null && WIRE_VALUES.contains(value);
         }
     }
 
-    public static final class RumErrorSource {
-        private RumErrorSource() {}
+    /** The closed value set for {@code o11y.rum.action.type}. The kind of user interaction. */
+    public enum RumActionType implements WireValue {
+        /** A pointer click. */
+        CLICK("click"),
+        /** A touch tap. */
+        TAP("tap"),
+        /** A touch long press. */
+        LONG_PRESS("long_press"),
+        /** A touch swipe. */
+        SWIPE("swipe"),
+        /** A deliberate scroll. */
+        SCROLL("scroll"),
+        /** A form submission. */
+        SUBMIT("submit"),
+        /** A key press that triggers behaviour. */
+        KEY_PRESS("key_press"),
+        /** An action the application recorded itself. */
+        CUSTOM("custom");
 
-        public static final String UNCAUGHT = "uncaught";
-        public static final String UNHANDLED_REJECTION = "unhandled_rejection";
-        public static final String CONSOLE = "console";
-        public static final String BOUNDARY = "boundary";
-        public static final String RESOURCE = "resource";
-        public static final String CSP = "csp";
-        public static final String NETWORK = "network";
-        public static final String CRASH = "crash";
-        public static final String ANR = "anr";
-        public static final String HANG = "hang";
-        public static final String CUSTOM = "custom";
+        /** Every wire value of {@code o11y.rum.action.type}. */
+        public static final Set<String> WIRE_VALUES = Set.of("click", "tap", "long_press", "swipe", "scroll", "submit", "key_press", "custom");
 
-        public static final Set<String> ALL = Set.of(UNCAUGHT, UNHANDLED_REJECTION, CONSOLE, BOUNDARY, RESOURCE, CSP, NETWORK, CRASH, ANR, HANG, CUSTOM);
+        private final String value;
 
+        RumActionType(String value) {
+            this.value = value;
+        }
+
+        @Override
+        public String value() {
+            return value;
+        }
+
+        /** Returns the wire value, so string conversion never emits the constant's name. */
+        @Override
+        public String toString() {
+            return value;
+        }
+
+        /**
+         * Returns the constant whose wire value is {@code value}.
+         *
+         * @param value an untrusted wire value, or {@code null}
+         * @return the constant, or an empty {@code Optional} for {@code null} or a value the registry does not list
+         */
+        public static Optional<RumActionType> fromValue(String value) {
+            if (value == null) {
+                return Optional.empty();
+            }
+            return switch (value) {
+                case "click" -> Optional.of(CLICK);
+                case "tap" -> Optional.of(TAP);
+                case "long_press" -> Optional.of(LONG_PRESS);
+                case "swipe" -> Optional.of(SWIPE);
+                case "scroll" -> Optional.of(SCROLL);
+                case "submit" -> Optional.of(SUBMIT);
+                case "key_press" -> Optional.of(KEY_PRESS);
+                case "custom" -> Optional.of(CUSTOM);
+                default -> Optional.empty();
+            };
+        }
+
+        /**
+         * Reports whether {@code value} is one of these wire values.
+         *
+         * @param value an untrusted wire value, or {@code null}
+         * @return whether {@link #fromValue(String)} finds a constant for it
+         */
         public static boolean isValid(String value) {
-            return value != null && ALL.contains(value);
+            return value != null && WIRE_VALUES.contains(value);
         }
     }
 
-    public static final class RumDeviceClass {
-        private RumDeviceClass() {}
+    /** The closed value set for {@code o11y.rum.frustration.type}. The kind of frustration signal. */
+    public enum RumFrustrationType implements WireValue {
+        /** Repeated rapid interactions on one element. */
+        RAGE("rage"),
+        /** An interaction that produced no response. */
+        DEAD("dead"),
+        /** An interaction followed by an error. */
+        ERROR("error");
 
-        public static final String DESKTOP = "desktop";
-        public static final String MOBILE = "mobile";
-        public static final String TABLET = "tablet";
-        public static final String TV = "tv";
-        public static final String BOT = "bot";
-        public static final String UNKNOWN = "unknown";
+        /** Every wire value of {@code o11y.rum.frustration.type}. */
+        public static final Set<String> WIRE_VALUES = Set.of("rage", "dead", "error");
 
-        public static final Set<String> ALL = Set.of(DESKTOP, MOBILE, TABLET, TV, BOT, UNKNOWN);
+        private final String value;
 
+        RumFrustrationType(String value) {
+            this.value = value;
+        }
+
+        @Override
+        public String value() {
+            return value;
+        }
+
+        /** Returns the wire value, so string conversion never emits the constant's name. */
+        @Override
+        public String toString() {
+            return value;
+        }
+
+        /**
+         * Returns the constant whose wire value is {@code value}.
+         *
+         * @param value an untrusted wire value, or {@code null}
+         * @return the constant, or an empty {@code Optional} for {@code null} or a value the registry does not list
+         */
+        public static Optional<RumFrustrationType> fromValue(String value) {
+            if (value == null) {
+                return Optional.empty();
+            }
+            return switch (value) {
+                case "rage" -> Optional.of(RAGE);
+                case "dead" -> Optional.of(DEAD);
+                case "error" -> Optional.of(ERROR);
+                default -> Optional.empty();
+            };
+        }
+
+        /**
+         * Reports whether {@code value} is one of these wire values.
+         *
+         * @param value an untrusted wire value, or {@code null}
+         * @return whether {@link #fromValue(String)} finds a constant for it
+         */
         public static boolean isValid(String value) {
-            return value != null && ALL.contains(value);
+            return value != null && WIRE_VALUES.contains(value);
         }
     }
 
-    public static final class RumConnectionType {
-        private RumConnectionType() {}
+    /** The closed value set for {@code o11y.rum.error.source}. Where an error RUM recorded came from. */
+    public enum RumErrorSource implements WireValue {
+        /** An uncaught exception. */
+        UNCAUGHT("uncaught"),
+        /** An unhandled promise rejection. */
+        UNHANDLED_REJECTION("unhandled_rejection"),
+        /** A captured console error. */
+        CONSOLE("console"),
+        /** An error a UI framework boundary caught. */
+        BOUNDARY("boundary"),
+        /** A resource that failed to load. */
+        RESOURCE("resource"),
+        /** A Content Security Policy violation. */
+        CSP("csp"),
+        /** A failed network request. */
+        NETWORK("network"),
+        /** A native crash. */
+        CRASH("crash"),
+        /** An Android application-not-responding event. */
+        ANR("anr"),
+        /** A main-thread hang. */
+        HANG("hang"),
+        /** An error the application reported itself. */
+        CUSTOM("custom");
 
-        public static final String WIFI = "wifi";
-        public static final String CELLULAR = "cellular";
-        public static final String ETHERNET = "ethernet";
-        public static final String OFFLINE = "offline";
-        public static final String UNKNOWN = "unknown";
+        /** Every wire value of {@code o11y.rum.error.source}. */
+        public static final Set<String> WIRE_VALUES = Set.of("uncaught", "unhandled_rejection", "console", "boundary", "resource", "csp", "network", "crash", "anr", "hang", "custom");
 
-        public static final Set<String> ALL = Set.of(WIFI, CELLULAR, ETHERNET, OFFLINE, UNKNOWN);
+        private final String value;
 
+        RumErrorSource(String value) {
+            this.value = value;
+        }
+
+        @Override
+        public String value() {
+            return value;
+        }
+
+        /** Returns the wire value, so string conversion never emits the constant's name. */
+        @Override
+        public String toString() {
+            return value;
+        }
+
+        /**
+         * Returns the constant whose wire value is {@code value}.
+         *
+         * @param value an untrusted wire value, or {@code null}
+         * @return the constant, or an empty {@code Optional} for {@code null} or a value the registry does not list
+         */
+        public static Optional<RumErrorSource> fromValue(String value) {
+            if (value == null) {
+                return Optional.empty();
+            }
+            return switch (value) {
+                case "uncaught" -> Optional.of(UNCAUGHT);
+                case "unhandled_rejection" -> Optional.of(UNHANDLED_REJECTION);
+                case "console" -> Optional.of(CONSOLE);
+                case "boundary" -> Optional.of(BOUNDARY);
+                case "resource" -> Optional.of(RESOURCE);
+                case "csp" -> Optional.of(CSP);
+                case "network" -> Optional.of(NETWORK);
+                case "crash" -> Optional.of(CRASH);
+                case "anr" -> Optional.of(ANR);
+                case "hang" -> Optional.of(HANG);
+                case "custom" -> Optional.of(CUSTOM);
+                default -> Optional.empty();
+            };
+        }
+
+        /**
+         * Reports whether {@code value} is one of these wire values.
+         *
+         * @param value an untrusted wire value, or {@code null}
+         * @return whether {@link #fromValue(String)} finds a constant for it
+         */
         public static boolean isValid(String value) {
-            return value != null && ALL.contains(value);
+            return value != null && WIRE_VALUES.contains(value);
         }
     }
 
-    public static final class RumConnectionEffective {
-        private RumConnectionEffective() {}
+    /** The closed value set for {@code o11y.rum.device.class}. Coarse class of the user's device. */
+    public enum RumDeviceClass implements WireValue {
+        /** A desktop or laptop. */
+        DESKTOP("desktop"),
+        /** A phone. */
+        MOBILE("mobile"),
+        /** A tablet. */
+        TABLET("tablet"),
+        /** A television or set-top device. */
+        TV("tv"),
+        /** An automated client. */
+        BOT("bot"),
+        /** The class could not be determined. */
+        UNKNOWN("unknown");
 
-        public static final String SLOW_2G = "slow-2g";
-        public static final String TYPE_2G = "2g";
-        public static final String TYPE_3G = "3g";
-        public static final String TYPE_4G = "4g";
+        /** Every wire value of {@code o11y.rum.device.class}. */
+        public static final Set<String> WIRE_VALUES = Set.of("desktop", "mobile", "tablet", "tv", "bot", "unknown");
 
-        public static final Set<String> ALL = Set.of(SLOW_2G, TYPE_2G, TYPE_3G, TYPE_4G);
+        private final String value;
 
+        RumDeviceClass(String value) {
+            this.value = value;
+        }
+
+        @Override
+        public String value() {
+            return value;
+        }
+
+        /** Returns the wire value, so string conversion never emits the constant's name. */
+        @Override
+        public String toString() {
+            return value;
+        }
+
+        /**
+         * Returns the constant whose wire value is {@code value}.
+         *
+         * @param value an untrusted wire value, or {@code null}
+         * @return the constant, or an empty {@code Optional} for {@code null} or a value the registry does not list
+         */
+        public static Optional<RumDeviceClass> fromValue(String value) {
+            if (value == null) {
+                return Optional.empty();
+            }
+            return switch (value) {
+                case "desktop" -> Optional.of(DESKTOP);
+                case "mobile" -> Optional.of(MOBILE);
+                case "tablet" -> Optional.of(TABLET);
+                case "tv" -> Optional.of(TV);
+                case "bot" -> Optional.of(BOT);
+                case "unknown" -> Optional.of(UNKNOWN);
+                default -> Optional.empty();
+            };
+        }
+
+        /**
+         * Reports whether {@code value} is one of these wire values.
+         *
+         * @param value an untrusted wire value, or {@code null}
+         * @return whether {@link #fromValue(String)} finds a constant for it
+         */
         public static boolean isValid(String value) {
-            return value != null && ALL.contains(value);
+            return value != null && WIRE_VALUES.contains(value);
         }
     }
 
-    public static final class RumVitalRating {
-        private RumVitalRating() {}
+    /** The closed value set for {@code o11y.rum.connection.type}. The physical network the device used. */
+    public enum RumConnectionType implements WireValue {
+        /** Wi-Fi. */
+        WIFI("wifi"),
+        /** A cellular network. */
+        CELLULAR("cellular"),
+        /** A wired network. */
+        ETHERNET("ethernet"),
+        /** No network. */
+        OFFLINE("offline"),
+        /** The type could not be determined. */
+        UNKNOWN("unknown");
 
-        public static final String GOOD = "good";
-        public static final String NEEDS_IMPROVEMENT = "needs-improvement";
-        public static final String POOR = "poor";
+        /** Every wire value of {@code o11y.rum.connection.type}. */
+        public static final Set<String> WIRE_VALUES = Set.of("wifi", "cellular", "ethernet", "offline", "unknown");
 
-        public static final Set<String> ALL = Set.of(GOOD, NEEDS_IMPROVEMENT, POOR);
+        private final String value;
 
+        RumConnectionType(String value) {
+            this.value = value;
+        }
+
+        @Override
+        public String value() {
+            return value;
+        }
+
+        /** Returns the wire value, so string conversion never emits the constant's name. */
+        @Override
+        public String toString() {
+            return value;
+        }
+
+        /**
+         * Returns the constant whose wire value is {@code value}.
+         *
+         * @param value an untrusted wire value, or {@code null}
+         * @return the constant, or an empty {@code Optional} for {@code null} or a value the registry does not list
+         */
+        public static Optional<RumConnectionType> fromValue(String value) {
+            if (value == null) {
+                return Optional.empty();
+            }
+            return switch (value) {
+                case "wifi" -> Optional.of(WIFI);
+                case "cellular" -> Optional.of(CELLULAR);
+                case "ethernet" -> Optional.of(ETHERNET);
+                case "offline" -> Optional.of(OFFLINE);
+                case "unknown" -> Optional.of(UNKNOWN);
+                default -> Optional.empty();
+            };
+        }
+
+        /**
+         * Reports whether {@code value} is one of these wire values.
+         *
+         * @param value an untrusted wire value, or {@code null}
+         * @return whether {@link #fromValue(String)} finds a constant for it
+         */
         public static boolean isValid(String value) {
-            return value != null && ALL.contains(value);
+            return value != null && WIRE_VALUES.contains(value);
         }
     }
 
-    public static final class RumSessionRetained {
-        private RumSessionRetained() {}
+    /** The closed value set for {@code o11y.rum.connection.effective}. The effective connection speed the platform estimated. */
+    public enum RumConnectionEffective implements WireValue {
+        /** Effective speed of slow 2G. */
+        SLOW_2G("slow-2g"),
+        /** Effective speed of 2G. */
+        TYPE_2G("2g"),
+        /** Effective speed of 3G. */
+        TYPE_3G("3g"),
+        /** Effective speed of 4G or better. */
+        TYPE_4G("4g");
 
-        public static final String HEAD_SAMPLED = "head_sampled";
-        public static final String ERROR = "error";
-        public static final String FRUSTRATION = "frustration";
+        /** Every wire value of {@code o11y.rum.connection.effective}. */
+        public static final Set<String> WIRE_VALUES = Set.of("slow-2g", "2g", "3g", "4g");
 
-        public static final Set<String> ALL = Set.of(HEAD_SAMPLED, ERROR, FRUSTRATION);
+        private final String value;
 
+        RumConnectionEffective(String value) {
+            this.value = value;
+        }
+
+        @Override
+        public String value() {
+            return value;
+        }
+
+        /** Returns the wire value, so string conversion never emits the constant's name. */
+        @Override
+        public String toString() {
+            return value;
+        }
+
+        /**
+         * Returns the constant whose wire value is {@code value}.
+         *
+         * @param value an untrusted wire value, or {@code null}
+         * @return the constant, or an empty {@code Optional} for {@code null} or a value the registry does not list
+         */
+        public static Optional<RumConnectionEffective> fromValue(String value) {
+            if (value == null) {
+                return Optional.empty();
+            }
+            return switch (value) {
+                case "slow-2g" -> Optional.of(SLOW_2G);
+                case "2g" -> Optional.of(TYPE_2G);
+                case "3g" -> Optional.of(TYPE_3G);
+                case "4g" -> Optional.of(TYPE_4G);
+                default -> Optional.empty();
+            };
+        }
+
+        /**
+         * Reports whether {@code value} is one of these wire values.
+         *
+         * @param value an untrusted wire value, or {@code null}
+         * @return whether {@link #fromValue(String)} finds a constant for it
+         */
         public static boolean isValid(String value) {
-            return value != null && ALL.contains(value);
+            return value != null && WIRE_VALUES.contains(value);
         }
     }
 
+    /** The closed value set for {@code o11y.rum.vital.rating}. The vital's rating against its published thresholds. */
+    public enum RumVitalRating implements WireValue {
+        /** Within the good threshold. */
+        GOOD("good"),
+        /** Between the good and poor thresholds. */
+        NEEDS_IMPROVEMENT("needs-improvement"),
+        /** Beyond the poor threshold. */
+        POOR("poor");
+
+        /** Every wire value of {@code o11y.rum.vital.rating}. */
+        public static final Set<String> WIRE_VALUES = Set.of("good", "needs-improvement", "poor");
+
+        private final String value;
+
+        RumVitalRating(String value) {
+            this.value = value;
+        }
+
+        @Override
+        public String value() {
+            return value;
+        }
+
+        /** Returns the wire value, so string conversion never emits the constant's name. */
+        @Override
+        public String toString() {
+            return value;
+        }
+
+        /**
+         * Returns the constant whose wire value is {@code value}.
+         *
+         * @param value an untrusted wire value, or {@code null}
+         * @return the constant, or an empty {@code Optional} for {@code null} or a value the registry does not list
+         */
+        public static Optional<RumVitalRating> fromValue(String value) {
+            if (value == null) {
+                return Optional.empty();
+            }
+            return switch (value) {
+                case "good" -> Optional.of(GOOD);
+                case "needs-improvement" -> Optional.of(NEEDS_IMPROVEMENT);
+                case "poor" -> Optional.of(POOR);
+                default -> Optional.empty();
+            };
+        }
+
+        /**
+         * Reports whether {@code value} is one of these wire values.
+         *
+         * @param value an untrusted wire value, or {@code null}
+         * @return whether {@link #fromValue(String)} finds a constant for it
+         */
+        public static boolean isValid(String value) {
+            return value != null && WIRE_VALUES.contains(value);
+        }
+    }
+
+    /** The closed value set for {@code o11y.rum.session.retained}. Why a session's telemetry was kept. */
+    public enum RumSessionRetained implements WireValue {
+        /** Kept by the per-session head sample. */
+        HEAD_SAMPLED("head_sampled"),
+        /** Kept by retroactive sampling because of an error. */
+        ERROR("error"),
+        /** Kept by retroactive sampling because of a frustration signal. */
+        FRUSTRATION("frustration");
+
+        /** Every wire value of {@code o11y.rum.session.retained}. */
+        public static final Set<String> WIRE_VALUES = Set.of("head_sampled", "error", "frustration");
+
+        private final String value;
+
+        RumSessionRetained(String value) {
+            this.value = value;
+        }
+
+        @Override
+        public String value() {
+            return value;
+        }
+
+        /** Returns the wire value, so string conversion never emits the constant's name. */
+        @Override
+        public String toString() {
+            return value;
+        }
+
+        /**
+         * Returns the constant whose wire value is {@code value}.
+         *
+         * @param value an untrusted wire value, or {@code null}
+         * @return the constant, or an empty {@code Optional} for {@code null} or a value the registry does not list
+         */
+        public static Optional<RumSessionRetained> fromValue(String value) {
+            if (value == null) {
+                return Optional.empty();
+            }
+            return switch (value) {
+                case "head_sampled" -> Optional.of(HEAD_SAMPLED);
+                case "error" -> Optional.of(ERROR);
+                case "frustration" -> Optional.of(FRUSTRATION);
+                default -> Optional.empty();
+            };
+        }
+
+        /**
+         * Reports whether {@code value} is one of these wire values.
+         *
+         * @param value an untrusted wire value, or {@code null}
+         * @return whether {@link #fromValue(String)} finds a constant for it
+         */
+        public static boolean isValid(String value) {
+            return value != null && WIRE_VALUES.contains(value);
+        }
+    }
+
+    /** The registered values of {@code deployment.environment.name}. The set is open: an application registers more at setup, so this is a class of String constants rather than an enum. */
     public static final class DeploymentEnvironment {
         private DeploymentEnvironment() {}
 
+        /** The registered value {@code production}. */
         public static final String PRODUCTION = "production";
+        /** The registered value {@code staging}. */
         public static final String STAGING = "staging";
+        /** The registered value {@code development}. */
         public static final String DEVELOPMENT = "development";
+        /** The registered value {@code test}. */
         public static final String TEST = "test";
 
-        public static final Set<String> ALL = Set.of(PRODUCTION, STAGING, DEVELOPMENT, TEST);
+        /** Every value the registry lists. An application may register more. */
+        public static final Set<String> REGISTERED = Set.of(PRODUCTION, STAGING, DEVELOPMENT, TEST);
 
-        public static boolean isValid(String value) {
-            return value != null && ALL.contains(value);
+        /**
+         * Reports whether the registry lists {@code value}. An unlisted value may still be one the
+         * application registered.
+         *
+         * @param value the value, or {@code null}
+         * @return whether {@link #REGISTERED} holds {@code value}
+         */
+        public static boolean isRegistered(String value) {
+            return value != null && REGISTERED.contains(value);
         }
     }
 
+    /** Attribute keys: the ones the libo11y specification mints, then the upstream ones it copies. */
     public static final class Attributes {
         private Attributes() {}
 
-        public static final String OUTCOME = "o11y.outcome";
-        public static final String RECORD_CLASS = "o11y.record.class";
-        public static final String TEAM_NAME = "o11y.team.name";
-        public static final String TENANT_ID = "o11y.tenant.id";
-        public static final String COST_CENTER = "o11y.cost_center";
-        public static final String DATA_CLASSIFICATION = "o11y.data.classification";
-        public static final String LABEL = "o11y.label";
-        public static final String BUILD_MODIFIED = "o11y.build.modified";
-        public static final String BUILD_TIME = "o11y.build.time";
-        public static final String CONFIG = "o11y.config";
-        public static final String SIGNAL = "o11y.signal";
-        public static final String RULE = "o11y.rule";
-        public static final String DURATION = "o11y.duration";
-        public static final String LOG_SOURCE = "o11y.log.source";
-        public static final String RUM_ERROR_BREADCRUMBS = "o11y.rum.error.breadcrumbs";
-        public static final String RUM_VITAL_ATTRIBUTION_INPUT_DELAY = "o11y.rum.vital.attribution.input_delay";
-        public static final String RUM_VITAL_ATTRIBUTION_PROCESSING_DURATION = "o11y.rum.vital.attribution.processing_duration";
-        public static final String RUM_VITAL_ATTRIBUTION_PRESENTATION_DELAY = "o11y.rum.vital.attribution.presentation_delay";
-        public static final String RUM_VITAL_ATTRIBUTION_INTERACTION_TYPE = "o11y.rum.vital.attribution.interaction_type";
-        public static final String RUM_VITAL_ATTRIBUTION_TIME_TO_FIRST_BYTE = "o11y.rum.vital.attribution.time_to_first_byte";
-        public static final String RUM_VITAL_ATTRIBUTION_RESOURCE_LOAD_DELAY = "o11y.rum.vital.attribution.resource_load_delay";
-        public static final String RUM_VITAL_ATTRIBUTION_RESOURCE_LOAD_DURATION = "o11y.rum.vital.attribution.resource_load_duration";
-        public static final String RUM_VITAL_ATTRIBUTION_ELEMENT_RENDER_DELAY = "o11y.rum.vital.attribution.element_render_delay";
-        public static final String RUM_VITAL_ATTRIBUTION_LARGEST_SHIFT_VALUE = "o11y.rum.vital.attribution.largest_shift_value";
-        public static final String RUM_VITAL_ATTRIBUTION_LARGEST_SHIFT_TIME = "o11y.rum.vital.attribution.largest_shift_time";
-        public static final String RUM_VITAL_ATTRIBUTION_LOAD_STATE = "o11y.rum.vital.attribution.load_state";
-        public static final String RUM_RESOURCE_TYPE = "o11y.rum.resource.type";
-        public static final String RUM_SERVER_TIMING_NAME = "o11y.rum.server_timing.name";
-        public static final String RUM_SERVER_TIMING_DURATION = "o11y.rum.server_timing.duration";
-        public static final String RUM_SUMMARY_SEQ = "o11y.rum.summary.seq";
-        public static final String RUM_SUMMARY_TIME_ON_VIEW = "o11y.rum.summary.time_on_view";
-        public static final String RUM_SUMMARY_REQUESTS = "o11y.rum.summary.requests";
-        public static final String RUM_SUMMARY_LONG_ANIMATION_FRAMES = "o11y.rum.summary.long_animation_frames";
-        public static final String RUM_SUMMARY_ERRORS_UNCAUGHT = "o11y.rum.summary.errors.uncaught";
-        public static final String RUM_SUMMARY_ERRORS_UNHANDLED_REJECTION = "o11y.rum.summary.errors.unhandled_rejection";
-        public static final String RUM_SUMMARY_ERRORS_CONSOLE = "o11y.rum.summary.errors.console";
-        public static final String RUM_SUMMARY_ERRORS_BOUNDARY = "o11y.rum.summary.errors.boundary";
-        public static final String RUM_SUMMARY_ERRORS_RESOURCE = "o11y.rum.summary.errors.resource";
-        public static final String RUM_SUMMARY_ERRORS_CSP = "o11y.rum.summary.errors.csp";
-        public static final String RUM_SUMMARY_ERRORS_NETWORK = "o11y.rum.summary.errors.network";
-        public static final String RUM_SUMMARY_ERRORS_CRASH = "o11y.rum.summary.errors.crash";
-        public static final String RUM_SUMMARY_ERRORS_ANR = "o11y.rum.summary.errors.anr";
-        public static final String RUM_SUMMARY_ERRORS_HANG = "o11y.rum.summary.errors.hang";
-        public static final String RUM_SUMMARY_ERRORS_CUSTOM = "o11y.rum.summary.errors.custom";
-        public static final String RUM_SUMMARY_FRUSTRATIONS_RAGE = "o11y.rum.summary.frustrations.rage";
-        public static final String RUM_SUMMARY_FRUSTRATIONS_DEAD = "o11y.rum.summary.frustrations.dead";
-        public static final String RUM_SUMMARY_FRUSTRATIONS_ERROR = "o11y.rum.summary.frustrations.error";
-        public static final String RUM_SUMMARY_LCP_VALUE = "o11y.rum.summary.lcp.value";
-        public static final String RUM_SUMMARY_INP_VALUE = "o11y.rum.summary.inp.value";
-        public static final String RUM_SUMMARY_CLS_VALUE = "o11y.rum.summary.cls.value";
-        public static final String RUM_SUMMARY_FCP_VALUE = "o11y.rum.summary.fcp.value";
-        public static final String RUM_SUMMARY_TTFB_VALUE = "o11y.rum.summary.ttfb.value";
-        public static final String RUM_PLATFORM = "o11y.rum.platform";
-        public static final String RUM_SPAN_SHAPE = "o11y.rum.span.shape";
-        public static final String RUM_VIEW_NAME = "o11y.rum.view.name";
-        public static final String RUM_VIEW_ID = "o11y.rum.view.id";
-        public static final String RUM_VIEW_KIND = "o11y.rum.view.kind";
-        public static final String RUM_ACTION_TYPE = "o11y.rum.action.type";
-        public static final String RUM_ACTION_NAME = "o11y.rum.action.name";
-        public static final String RUM_FRUSTRATION_TYPE = "o11y.rum.frustration.type";
-        public static final String RUM_ERROR_SOURCE = "o11y.rum.error.source";
-        public static final String RUM_ERROR_FINGERPRINT = "o11y.rum.error.fingerprint";
-        public static final String RUM_ELEMENT_SELECTOR = "o11y.rum.element.selector";
-        public static final String RUM_ELEMENT_TEXT = "o11y.rum.element.text";
-        public static final String RUM_DEVICE_CLASS = "o11y.rum.device.class";
-        public static final String RUM_CONNECTION_TYPE = "o11y.rum.connection.type";
-        public static final String RUM_CONNECTION_EFFECTIVE = "o11y.rum.connection.effective";
-        public static final String RUM_VITAL_RATING = "o11y.rum.vital.rating";
-        public static final String RUM_SESSION_RETAINED = "o11y.rum.session.retained";
-        public static final String RUM_REPLAY_SEGMENT = "o11y.rum.replay.segment";
-        public static final String RUM_CONFIG_VERSION = "o11y.rum.config.version";
-        public static final String RUM_APP_UPDATE_ID = "o11y.rum.app.update_id";
-        public static final String RUM_BROWSER_FAMILY = "o11y.rum.browser.family";
-        public static final String CLOUD_ACCOUNT_ID = "cloud.account.id";
-        public static final String CLOUD_AVAILABILITY_ZONE = "cloud.availability_zone";
-        public static final String CLOUD_PLATFORM = "cloud.platform";
-        public static final String CLOUD_PROVIDER = "cloud.provider";
-        public static final String CLOUD_REGION = "cloud.region";
-        public static final String CONTAINER_ID = "container.id";
-        public static final String FAAS_INSTANCE = "faas.instance";
-        public static final String FAAS_NAME = "faas.name";
-        public static final String FAAS_VERSION = "faas.version";
-        public static final String HOST_ARCH = "host.arch";
-        public static final String HOST_ID = "host.id";
-        public static final String HOST_NAME = "host.name";
-        public static final String K8S_CLUSTER_NAME = "k8s.cluster.name";
-        public static final String K8S_CONTAINER_NAME = "k8s.container.name";
-        public static final String K8S_DEPLOYMENT_NAME = "k8s.deployment.name";
-        public static final String K8S_NAMESPACE_NAME = "k8s.namespace.name";
-        public static final String K8S_NODE_NAME = "k8s.node.name";
-        public static final String K8S_POD_NAME = "k8s.pod.name";
-        public static final String K8S_POD_UID = "k8s.pod.uid";
-        public static final String OS_TYPE = "os.type";
-        public static final String PROCESS_PID = "process.pid";
-        public static final String PROCESS_RUNTIME_NAME = "process.runtime.name";
-        public static final String PROCESS_RUNTIME_VERSION = "process.runtime.version";
-        public static final String VCS_REF_HEAD_NAME = "vcs.ref.head.name";
-        public static final String VCS_REF_HEAD_REVISION = "vcs.ref.head.revision";
+        /** The {@code o11y.outcome} attribute key: Outcome of the operation the record describes. Required on wide events and audit records. */
+        public static final Key<Outcome> OUTCOME = key("o11y.outcome", ValueType.STRING, Outcome.class);
+        /** The {@code o11y.record.class} attribute key: Structural marking for special record classes. */
+        public static final Key<RecordClass> RECORD_CLASS = key("o11y.record.class", ValueType.STRING, RecordClass.class);
+        /** The {@code o11y.team.name} attribute key: Team that owns the emitting service. */
+        public static final Key<String> TEAM_NAME = key("o11y.team.name", ValueType.STRING, String.class);
+        /** The {@code o11y.tenant.id} attribute key: Tenant identity. Resource form is permitted only for single-tenant-per-deployment topologies; in shared services it is a span or log attribute propagated via baggage. Never a metric label. */
+        public static final Key<String> TENANT_ID = key("o11y.tenant.id", ValueType.STRING, String.class);
+        /** The {@code o11y.cost_center} attribute key: Cost attribution identifier, normally injected at deploy time. */
+        public static final Key<String> COST_CENTER = key("o11y.cost_center", ValueType.STRING, String.class);
+        /** The {@code o11y.data.classification} attribute key: Classification of the data the workload processes, used by collector redaction pipelines. */
+        public static final Key<DataClassification> DATA_CLASSIFICATION = key("o11y.data.classification", ValueType.STRING, DataClassification.class);
+        /** The {@code o11y.label} attribute key: Free-form user key-value pairs, the single sanctioned map for tenant-supplied labels. Never metric labels. */
+        public static final TemplateKey<String> LABEL = templateKey("o11y.label", ValueType.STRING, String.class);
+        /** The {@code o11y.build.modified} attribute key: Whether the binary was built from a modified (dirty) source tree. */
+        public static final Key<Boolean> BUILD_MODIFIED = key("o11y.build.modified", ValueType.BOOLEAN, Boolean.class);
+        /** The {@code o11y.build.time} attribute key: VCS commit timestamp of the built revision, RFC 3339. */
+        public static final Key<String> BUILD_TIME = key("o11y.build.time", ValueType.STRING, String.class);
+        /** The {@code o11y.config} attribute key: Resolved configuration keys reported by the startup summary event (o11y.config.traces, o11y.config.metrics, o11y.config.logs, o11y.config.console, o11y.config.level, o11y.config.sampler, o11y.config.propagators, o11y.config.runtime_metrics, o11y.config.service_version_fallback, o11y.config.endpoint, o11y.config.traces_endpoint, o11y.config.metrics_endpoint, o11y.config.logs_endpoint). Endpoint values carry no userinfo, query, or fragment. */
+        public static final TemplateKey<String> CONFIG = templateKey("o11y.config", ValueType.STRING, String.class);
+        /** The {@code o11y.signal} attribute key: The telemetry signal a record refers to. */
+        public static final Key<Signal> SIGNAL = key("o11y.signal", ValueType.STRING, Signal.class);
+        /** The {@code o11y.rule} attribute key: The specification rule a schema violation breached. */
+        public static final Key<String> RULE = key("o11y.rule", ValueType.STRING, String.class);
+        /** The {@code o11y.duration} attribute key: Duration of the operation described by a wide event, in seconds. */
+        public static final Key<Double> DURATION = key("o11y.duration", ValueType.DOUBLE, Double.class);
+        /** The {@code o11y.log.source} attribute key: Where a log record entered the pipeline. Implementations that capture console output mark those records console. */
+        public static final Key<LogSource> LOG_SOURCE = key("o11y.log.source", ValueType.STRING, LogSource.class);
+        /** The {@code o11y.rum.error.breadcrumbs} attribute key: The recent actions, view changes and requests before the error, oldest first, one per line, each as "&lt;kind&gt; &lt;label&gt; -&lt;age&gt;ms". A request label is the method, host and status, never a path. */
+        public static final Key<String> RUM_ERROR_BREADCRUMBS = key("o11y.rum.error.breadcrumbs", ValueType.STRING, String.class);
+        /** The {@code o11y.rum.vital.attribution.input_delay} attribute key: INP attribution. Seconds from the interaction to the start of its event handlers. */
+        public static final Key<Double> RUM_VITAL_ATTRIBUTION_INPUT_DELAY = key("o11y.rum.vital.attribution.input_delay", ValueType.DOUBLE, Double.class);
+        /** The {@code o11y.rum.vital.attribution.processing_duration} attribute key: INP attribution. Seconds the interaction's event handlers ran. */
+        public static final Key<Double> RUM_VITAL_ATTRIBUTION_PROCESSING_DURATION = key("o11y.rum.vital.attribution.processing_duration", ValueType.DOUBLE, Double.class);
+        /** The {@code o11y.rum.vital.attribution.presentation_delay} attribute key: INP attribution. Seconds from the end of the handlers to the next paint. */
+        public static final Key<Double> RUM_VITAL_ATTRIBUTION_PRESENTATION_DELAY = key("o11y.rum.vital.attribution.presentation_delay", ValueType.DOUBLE, Double.class);
+        /** The {@code o11y.rum.vital.attribution.interaction_type} attribute key: INP attribution. The kind of the slowest interaction. */
+        public static final Key<RumVitalAttributionInteractionType> RUM_VITAL_ATTRIBUTION_INTERACTION_TYPE = key("o11y.rum.vital.attribution.interaction_type", ValueType.STRING, RumVitalAttributionInteractionType.class);
+        /** The {@code o11y.rum.vital.attribution.time_to_first_byte} attribute key: LCP attribution. Seconds until the document's first byte. */
+        public static final Key<Double> RUM_VITAL_ATTRIBUTION_TIME_TO_FIRST_BYTE = key("o11y.rum.vital.attribution.time_to_first_byte", ValueType.DOUBLE, Double.class);
+        /** The {@code o11y.rum.vital.attribution.resource_load_delay} attribute key: LCP attribution. Seconds from the first byte until the LCP resource started loading. */
+        public static final Key<Double> RUM_VITAL_ATTRIBUTION_RESOURCE_LOAD_DELAY = key("o11y.rum.vital.attribution.resource_load_delay", ValueType.DOUBLE, Double.class);
+        /** The {@code o11y.rum.vital.attribution.resource_load_duration} attribute key: LCP attribution. Seconds the LCP resource took to load. */
+        public static final Key<Double> RUM_VITAL_ATTRIBUTION_RESOURCE_LOAD_DURATION = key("o11y.rum.vital.attribution.resource_load_duration", ValueType.DOUBLE, Double.class);
+        /** The {@code o11y.rum.vital.attribution.element_render_delay} attribute key: LCP attribution. Seconds from the end of the resource load until the LCP element rendered. */
+        public static final Key<Double> RUM_VITAL_ATTRIBUTION_ELEMENT_RENDER_DELAY = key("o11y.rum.vital.attribution.element_render_delay", ValueType.DOUBLE, Double.class);
+        /** The {@code o11y.rum.vital.attribution.largest_shift_value} attribute key: CLS attribution. The score of the largest single layout shift. */
+        public static final Key<Double> RUM_VITAL_ATTRIBUTION_LARGEST_SHIFT_VALUE = key("o11y.rum.vital.attribution.largest_shift_value", ValueType.DOUBLE, Double.class);
+        /** The {@code o11y.rum.vital.attribution.largest_shift_time} attribute key: CLS attribution. Seconds from the time origin to the largest layout shift. */
+        public static final Key<Double> RUM_VITAL_ATTRIBUTION_LARGEST_SHIFT_TIME = key("o11y.rum.vital.attribution.largest_shift_time", ValueType.DOUBLE, Double.class);
+        /** The {@code o11y.rum.vital.attribution.load_state} attribute key: INP and CLS attribution. The document's load state when the interaction or shift happened. */
+        public static final Key<RumVitalAttributionLoadState> RUM_VITAL_ATTRIBUTION_LOAD_STATE = key("o11y.rum.vital.attribution.load_state", ValueType.STRING, RumVitalAttributionLoadState.class);
+        /** The {@code o11y.rum.resource.type} attribute key: The kind of a resource the view loaded, from its initiator type. */
+        public static final Key<RumResourceType> RUM_RESOURCE_TYPE = key("o11y.rum.resource.type", ValueType.STRING, RumResourceType.class);
+        /** The {@code o11y.rum.server_timing.name} attribute key: The metric name of one Server-Timing entry on a resource's response. */
+        public static final Key<String> RUM_SERVER_TIMING_NAME = key("o11y.rum.server_timing.name", ValueType.STRING, String.class);
+        /** The {@code o11y.rum.server_timing.duration} attribute key: The duration of one Server-Timing entry, in seconds. */
+        public static final Key<Double> RUM_SERVER_TIMING_DURATION = key("o11y.rum.server_timing.duration", ValueType.DOUBLE, Double.class);
+        /** The {@code o11y.rum.summary.seq} attribute key: 0-based index of this summary within its view. The gateway counts a view once, at index 0. */
+        public static final Key<Long> RUM_SUMMARY_SEQ = key("o11y.rum.summary.seq", ValueType.LONG, Long.class);
+        /** The {@code o11y.rum.summary.time_on_view} attribute key: Seconds the view was visible since the previous summary of the same view. */
+        public static final Key<Double> RUM_SUMMARY_TIME_ON_VIEW = key("o11y.rum.summary.time_on_view", ValueType.DOUBLE, Double.class);
+        /** The {@code o11y.rum.summary.requests} attribute key: Requests the view started since the previous summary. */
+        public static final Key<Long> RUM_SUMMARY_REQUESTS = key("o11y.rum.summary.requests", ValueType.LONG, Long.class);
+        /** The {@code o11y.rum.summary.long_animation_frames} attribute key: Long animation frames on the view since the previous summary. */
+        public static final Key<Long> RUM_SUMMARY_LONG_ANIMATION_FRAMES = key("o11y.rum.summary.long_animation_frames", ValueType.LONG, Long.class);
+        /** The {@code o11y.rum.summary.errors.uncaught} attribute key: Uncaught exceptions since the previous summary. */
+        public static final Key<Long> RUM_SUMMARY_ERRORS_UNCAUGHT = key("o11y.rum.summary.errors.uncaught", ValueType.LONG, Long.class);
+        /** The {@code o11y.rum.summary.errors.unhandled_rejection} attribute key: Unhandled promise rejections since the previous summary. */
+        public static final Key<Long> RUM_SUMMARY_ERRORS_UNHANDLED_REJECTION = key("o11y.rum.summary.errors.unhandled_rejection", ValueType.LONG, Long.class);
+        /** The {@code o11y.rum.summary.errors.console} attribute key: Captured console errors since the previous summary. */
+        public static final Key<Long> RUM_SUMMARY_ERRORS_CONSOLE = key("o11y.rum.summary.errors.console", ValueType.LONG, Long.class);
+        /** The {@code o11y.rum.summary.errors.boundary} attribute key: Errors a UI framework boundary caught since the previous summary. */
+        public static final Key<Long> RUM_SUMMARY_ERRORS_BOUNDARY = key("o11y.rum.summary.errors.boundary", ValueType.LONG, Long.class);
+        /** The {@code o11y.rum.summary.errors.resource} attribute key: Resources that failed to load since the previous summary. */
+        public static final Key<Long> RUM_SUMMARY_ERRORS_RESOURCE = key("o11y.rum.summary.errors.resource", ValueType.LONG, Long.class);
+        /** The {@code o11y.rum.summary.errors.csp} attribute key: Content Security Policy violations since the previous summary. */
+        public static final Key<Long> RUM_SUMMARY_ERRORS_CSP = key("o11y.rum.summary.errors.csp", ValueType.LONG, Long.class);
+        /** The {@code o11y.rum.summary.errors.network} attribute key: Failed network requests since the previous summary. */
+        public static final Key<Long> RUM_SUMMARY_ERRORS_NETWORK = key("o11y.rum.summary.errors.network", ValueType.LONG, Long.class);
+        /** The {@code o11y.rum.summary.errors.crash} attribute key: Native crashes since the previous summary. */
+        public static final Key<Long> RUM_SUMMARY_ERRORS_CRASH = key("o11y.rum.summary.errors.crash", ValueType.LONG, Long.class);
+        /** The {@code o11y.rum.summary.errors.anr} attribute key: Application-not-responding events since the previous summary. */
+        public static final Key<Long> RUM_SUMMARY_ERRORS_ANR = key("o11y.rum.summary.errors.anr", ValueType.LONG, Long.class);
+        /** The {@code o11y.rum.summary.errors.hang} attribute key: Main-thread hangs since the previous summary. */
+        public static final Key<Long> RUM_SUMMARY_ERRORS_HANG = key("o11y.rum.summary.errors.hang", ValueType.LONG, Long.class);
+        /** The {@code o11y.rum.summary.errors.custom} attribute key: Errors the application reported itself since the previous summary. */
+        public static final Key<Long> RUM_SUMMARY_ERRORS_CUSTOM = key("o11y.rum.summary.errors.custom", ValueType.LONG, Long.class);
+        /** The {@code o11y.rum.summary.frustrations.rage} attribute key: Rage interactions since the previous summary. */
+        public static final Key<Long> RUM_SUMMARY_FRUSTRATIONS_RAGE = key("o11y.rum.summary.frustrations.rage", ValueType.LONG, Long.class);
+        /** The {@code o11y.rum.summary.frustrations.dead} attribute key: Dead interactions since the previous summary. */
+        public static final Key<Long> RUM_SUMMARY_FRUSTRATIONS_DEAD = key("o11y.rum.summary.frustrations.dead", ValueType.LONG, Long.class);
+        /** The {@code o11y.rum.summary.frustrations.error} attribute key: Interactions followed by an error since the previous summary. */
+        public static final Key<Long> RUM_SUMMARY_FRUSTRATIONS_ERROR = key("o11y.rum.summary.frustrations.error", ValueType.LONG, Long.class);
+        /** The {@code o11y.rum.summary.lcp.value} attribute key: Largest Contentful Paint of the view in seconds. */
+        public static final Key<Double> RUM_SUMMARY_LCP_VALUE = key("o11y.rum.summary.lcp.value", ValueType.DOUBLE, Double.class);
+        /** The {@code o11y.rum.summary.inp.value} attribute key: Interaction to Next Paint of the view in seconds. */
+        public static final Key<Double> RUM_SUMMARY_INP_VALUE = key("o11y.rum.summary.inp.value", ValueType.DOUBLE, Double.class);
+        /** The {@code o11y.rum.summary.cls.value} attribute key: Cumulative Layout Shift of the view, which has no unit. */
+        public static final Key<Double> RUM_SUMMARY_CLS_VALUE = key("o11y.rum.summary.cls.value", ValueType.DOUBLE, Double.class);
+        /** The {@code o11y.rum.summary.fcp.value} attribute key: First Contentful Paint of the view in seconds. */
+        public static final Key<Double> RUM_SUMMARY_FCP_VALUE = key("o11y.rum.summary.fcp.value", ValueType.DOUBLE, Double.class);
+        /** The {@code o11y.rum.summary.ttfb.value} attribute key: Time to First Byte of the view's document in seconds. */
+        public static final Key<Double> RUM_SUMMARY_TTFB_VALUE = key("o11y.rum.summary.ttfb.value", ValueType.DOUBLE, Double.class);
+        /** The {@code o11y.rum.platform} attribute key: The RUM platform that recorded the telemetry. */
+        public static final Key<RumPlatform> RUM_PLATFORM = key("o11y.rum.platform", ValueType.STRING, RumPlatform.class);
+        /** The {@code o11y.rum.span.shape} attribute key: Which RUM span shape a span follows. Every view, action and app_load span carries it, so a gateway or a query can tell the shapes apart without inferring them from other attributes. */
+        public static final Key<RumSpanShape> RUM_SPAN_SHAPE = key("o11y.rum.span.shape", ValueType.STRING, RumSpanShape.class);
+        /** The {@code o11y.rum.view.name} attribute key: Name of the view: the route template on the web (never the raw URL) or the screen name on mobile. */
+        public static final Key<String> RUM_VIEW_NAME = key("o11y.rum.view.name", ValueType.STRING, String.class);
+        /** The {@code o11y.rum.view.id} attribute key: Random identifier of one view instance within a session. */
+        public static final Key<String> RUM_VIEW_ID = key("o11y.rum.view.id", ValueType.STRING, String.class);
+        /** The {@code o11y.rum.view.kind} attribute key: How the view started. */
+        public static final Key<RumViewKind> RUM_VIEW_KIND = key("o11y.rum.view.kind", ValueType.STRING, RumViewKind.class);
+        /** The {@code o11y.rum.action.type} attribute key: The kind of user interaction. */
+        public static final Key<RumActionType> RUM_ACTION_TYPE = key("o11y.rum.action.type", ValueType.STRING, RumActionType.class);
+        /** The {@code o11y.rum.action.name} attribute key: Name of the action: the element's data-o11y label (or the platform's equivalent), or a privacy-safe accessible name. Never free text the user typed. */
+        public static final Key<String> RUM_ACTION_NAME = key("o11y.rum.action.name", ValueType.STRING, String.class);
+        /** The {@code o11y.rum.frustration.type} attribute key: The kind of frustration signal. */
+        public static final Key<RumFrustrationType> RUM_FRUSTRATION_TYPE = key("o11y.rum.frustration.type", ValueType.STRING, RumFrustrationType.class);
+        /** The {@code o11y.rum.error.source} attribute key: Where an error RUM recorded came from. */
+        public static final Key<RumErrorSource> RUM_ERROR_SOURCE = key("o11y.rum.error.source", ValueType.STRING, RumErrorSource.class);
+        /** The {@code o11y.rum.error.fingerprint} attribute key: Stable grouping key for an error, computed after symbolication. */
+        public static final Key<String> RUM_ERROR_FINGERPRINT = key("o11y.rum.error.fingerprint", ValueType.STRING, String.class);
+        /** The {@code o11y.rum.element.selector} attribute key: Selector or view identifier of the UI element an action, vital, or frustration signal refers to. */
+        public static final Key<String> RUM_ELEMENT_SELECTOR = key("o11y.rum.element.selector", ValueType.STRING, String.class);
+        /** The {@code o11y.rum.element.text} attribute key: Visible text of a UI element. PII by default, because UI text can show names, addresses and other personal data. */
+        public static final Key<String> RUM_ELEMENT_TEXT = key("o11y.rum.element.text", ValueType.STRING, String.class);
+        /** The {@code o11y.rum.device.class} attribute key: Coarse class of the user's device. */
+        public static final Key<RumDeviceClass> RUM_DEVICE_CLASS = key("o11y.rum.device.class", ValueType.STRING, RumDeviceClass.class);
+        /** The {@code o11y.rum.connection.type} attribute key: The physical network the device used. */
+        public static final Key<RumConnectionType> RUM_CONNECTION_TYPE = key("o11y.rum.connection.type", ValueType.STRING, RumConnectionType.class);
+        /** The {@code o11y.rum.connection.effective} attribute key: The effective connection speed the platform estimated. */
+        public static final Key<RumConnectionEffective> RUM_CONNECTION_EFFECTIVE = key("o11y.rum.connection.effective", ValueType.STRING, RumConnectionEffective.class);
+        /** The {@code o11y.rum.vital.rating} attribute key: The vital's rating against its published thresholds. */
+        public static final Key<RumVitalRating> RUM_VITAL_RATING = key("o11y.rum.vital.rating", ValueType.STRING, RumVitalRating.class);
+        /** The {@code o11y.rum.session.retained} attribute key: Why a session's telemetry was kept. */
+        public static final Key<RumSessionRetained> RUM_SESSION_RETAINED = key("o11y.rum.session.retained", ValueType.STRING, RumSessionRetained.class);
+        /** The {@code o11y.rum.replay.segment} attribute key: Index of the replay segment within the session. */
+        public static final Key<Long> RUM_REPLAY_SEGMENT = key("o11y.rum.replay.segment", ValueType.LONG, Long.class);
+        /** The {@code o11y.rum.config.version} attribute key: Version of the remote configuration the session ran under. */
+        public static final Key<String> RUM_CONFIG_VERSION = key("o11y.rum.config.version", ValueType.STRING, String.class);
+        /** The {@code o11y.rum.app.update_id} attribute key: Identifier of the over-the-air update a mobile app runs, such as an Expo Updates update ID. Absent when the app runs its embedded bundle. Source maps for the update are looked up by service.version and this ID. */
+        public static final Key<String> RUM_APP_UPDATE_ID = key("o11y.rum.app.update_id", ValueType.STRING, String.class);
+        /** The {@code o11y.rum.browser.family} attribute key: Browser family parsed from the user agent by the gateway. */
+        public static final Key<String> RUM_BROWSER_FAMILY = key("o11y.rum.browser.family", ValueType.STRING, String.class);
+        /** The upstream {@code cloud.account.id} attribute key. */
+        public static final Key<String> CLOUD_ACCOUNT_ID = key("cloud.account.id", ValueType.STRING, String.class);
+        /** The upstream {@code cloud.availability_zone} attribute key. */
+        public static final Key<String> CLOUD_AVAILABILITY_ZONE = key("cloud.availability_zone", ValueType.STRING, String.class);
+        /** The upstream {@code cloud.platform} attribute key. */
+        public static final Key<String> CLOUD_PLATFORM = key("cloud.platform", ValueType.STRING, String.class);
+        /** The upstream {@code cloud.provider} attribute key. */
+        public static final Key<String> CLOUD_PROVIDER = key("cloud.provider", ValueType.STRING, String.class);
+        /** The upstream {@code cloud.region} attribute key. */
+        public static final Key<String> CLOUD_REGION = key("cloud.region", ValueType.STRING, String.class);
+        /** The upstream {@code container.id} attribute key. */
+        public static final Key<String> CONTAINER_ID = key("container.id", ValueType.STRING, String.class);
+        /** The upstream {@code faas.instance} attribute key. */
+        public static final Key<String> FAAS_INSTANCE = key("faas.instance", ValueType.STRING, String.class);
+        /** The upstream {@code faas.name} attribute key. */
+        public static final Key<String> FAAS_NAME = key("faas.name", ValueType.STRING, String.class);
+        /** The upstream {@code faas.version} attribute key. */
+        public static final Key<String> FAAS_VERSION = key("faas.version", ValueType.STRING, String.class);
+        /** The upstream {@code host.arch} attribute key. */
+        public static final Key<String> HOST_ARCH = key("host.arch", ValueType.STRING, String.class);
+        /** The upstream {@code host.id} attribute key. */
+        public static final Key<String> HOST_ID = key("host.id", ValueType.STRING, String.class);
+        /** The upstream {@code host.name} attribute key. */
+        public static final Key<String> HOST_NAME = key("host.name", ValueType.STRING, String.class);
+        /** The upstream {@code k8s.cluster.name} attribute key. */
+        public static final Key<String> K8S_CLUSTER_NAME = key("k8s.cluster.name", ValueType.STRING, String.class);
+        /** The upstream {@code k8s.container.name} attribute key. */
+        public static final Key<String> K8S_CONTAINER_NAME = key("k8s.container.name", ValueType.STRING, String.class);
+        /** The upstream {@code k8s.deployment.name} attribute key. */
+        public static final Key<String> K8S_DEPLOYMENT_NAME = key("k8s.deployment.name", ValueType.STRING, String.class);
+        /** The upstream {@code k8s.namespace.name} attribute key. */
+        public static final Key<String> K8S_NAMESPACE_NAME = key("k8s.namespace.name", ValueType.STRING, String.class);
+        /** The upstream {@code k8s.node.name} attribute key. */
+        public static final Key<String> K8S_NODE_NAME = key("k8s.node.name", ValueType.STRING, String.class);
+        /** The upstream {@code k8s.pod.name} attribute key. */
+        public static final Key<String> K8S_POD_NAME = key("k8s.pod.name", ValueType.STRING, String.class);
+        /** The upstream {@code k8s.pod.uid} attribute key. */
+        public static final Key<String> K8S_POD_UID = key("k8s.pod.uid", ValueType.STRING, String.class);
+        /** The upstream {@code os.type} attribute key. */
+        public static final Key<String> OS_TYPE = key("os.type", ValueType.STRING, String.class);
+        /** The upstream {@code process.pid} attribute key. */
+        public static final Key<Long> PROCESS_PID = key("process.pid", ValueType.LONG, Long.class);
+        /** The upstream {@code process.runtime.name} attribute key. */
+        public static final Key<String> PROCESS_RUNTIME_NAME = key("process.runtime.name", ValueType.STRING, String.class);
+        /** The upstream {@code process.runtime.version} attribute key. */
+        public static final Key<String> PROCESS_RUNTIME_VERSION = key("process.runtime.version", ValueType.STRING, String.class);
+        /** The upstream {@code vcs.ref.head.name} attribute key. */
+        public static final Key<String> VCS_REF_HEAD_NAME = key("vcs.ref.head.name", ValueType.STRING, String.class);
+        /** The upstream {@code vcs.ref.head.revision} attribute key. */
+        public static final Key<String> VCS_REF_HEAD_REVISION = key("vcs.ref.head.revision", ValueType.STRING, String.class);
     }
 
+    /** Registered event names. */
     public static final class Events {
         private Events() {}
 
+        /** The {@code o11y.telemetry.configured} name. */
         public static final String TELEMETRY_CONFIGURED = "o11y.telemetry.configured";
+        /** The {@code o11y.request.summary} name. */
         public static final String REQUEST_SUMMARY = "o11y.request.summary";
+        /** The {@code o11y.telemetry.dropped} name. */
         public static final String TELEMETRY_DROPPED = "o11y.telemetry.dropped";
+        /** The {@code o11y.rum.error} name. */
         public static final String RUM_ERROR = "o11y.rum.error";
+        /** The {@code o11y.rum.frustration} name. */
         public static final String RUM_FRUSTRATION = "o11y.rum.frustration";
+        /** The {@code o11y.rum.session.start} name. */
         public static final String RUM_SESSION_START = "o11y.rum.session.start";
+        /** The {@code o11y.rum.session.end} name. */
         public static final String RUM_SESSION_END = "o11y.rum.session.end";
+        /** The {@code o11y.rum.view.summary} name. */
         public static final String RUM_VIEW_SUMMARY = "o11y.rum.view.summary";
     }
 
+    /** Registered metric names. */
     public static final class Metrics {
         private Metrics() {}
 
+        /** The {@code o11y.schema.violations} name. */
         public static final String SCHEMA_VIOLATIONS = "o11y.schema.violations";
+        /** The {@code o11y.rum.vital.lcp} name. */
         public static final String RUM_VITAL_LCP = "o11y.rum.vital.lcp";
+        /** The {@code o11y.rum.vital.inp} name. */
         public static final String RUM_VITAL_INP = "o11y.rum.vital.inp";
+        /** The {@code o11y.rum.vital.cls} name. */
         public static final String RUM_VITAL_CLS = "o11y.rum.vital.cls";
+        /** The {@code o11y.rum.vital.fcp} name. */
         public static final String RUM_VITAL_FCP = "o11y.rum.vital.fcp";
+        /** The {@code o11y.rum.vital.ttfb} name. */
         public static final String RUM_VITAL_TTFB = "o11y.rum.vital.ttfb";
+        /** The {@code o11y.rum.browser.long_animation_frames} name. */
         public static final String RUM_BROWSER_LONG_ANIMATION_FRAMES = "o11y.rum.browser.long_animation_frames";
+        /** The {@code o11y.rum.views} name. */
         public static final String RUM_VIEWS = "o11y.rum.views";
+        /** The {@code o11y.rum.errors} name. */
         public static final String RUM_ERRORS = "o11y.rum.errors";
+        /** The {@code o11y.rum.frustrations} name. */
         public static final String RUM_FRUSTRATIONS = "o11y.rum.frustrations";
     }
 }
