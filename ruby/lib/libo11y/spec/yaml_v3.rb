@@ -269,6 +269,8 @@ module Libo11y
       # thing in a value, a sequence entry or a flow collection.
       def scalar_start?(line, i)
         before = line[0, i].rstrip
+        # A tag or an anchor may stand between the indicator and the scalar.
+        before = before.sub(/\s[!&]\S*\z/, "").rstrip while before.match?(/\s[!&]\S*\z/)
         return true if before.empty? || before.end_with?("[", "{", ",")
 
         before.end_with?(":", "-", "?") && before.length < i

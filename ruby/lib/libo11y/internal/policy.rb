@@ -102,6 +102,15 @@ module Libo11y
         @recorder = recorder
       end
 
+      # The hash key is a secret, so inspecting the policy does not show it.
+      def inspect
+        "#<#{self.class.name} pii_mode=#{@pii_mode.inspect} app_keys=#{@app.size}>"
+      end
+
+      def pretty_print(printer)
+        printer.text(inspect)
+      end
+
       def silent
         SensitivityPolicy.new(pii_mode: @pii_mode, pii_hash_key: @key, app_classes: @app, recorder: nil)
       end

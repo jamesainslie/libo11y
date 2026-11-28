@@ -247,7 +247,7 @@ Shared cases and vectors live under `conformance/` today. They fix the
 outputs every implementation must reproduce exactly: the application
 registry check, the instance ID derivation, the PII token and endpoint
 sanitizing. The registry cases are hand-written, and Go generates the JSON
-vectors. The Go, TypeScript, Zig, Python, C, and Rust suites all test against them.
+vectors. The Go, TypeScript, Zig, Python, C, Rust, and Ruby suites all test against them.
 
 The OTLP payload corpus is future work. It will run each implementation's
 example app against a shared OTLP capture harness and diff normalized

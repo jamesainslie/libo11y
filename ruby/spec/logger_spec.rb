@@ -81,4 +81,22 @@ RSpec.describe "The libo11y logger" do
     expect(extra).to eq(["x"])
     tel.shutdown
   end
+
+  it "logs through Logger#log, which is how some libraries call a logger" do
+    Libo11y::Testing.start_recorder do |rec|
+      rec.telemetry.logger.log(Logger::WARN, "via log")
+      rec.telemetry.logger.log(Logger::DEBUG, "hidden")
+
+      expect(bodies(rec)).to eq(console: ["via log"], otlp: ["via log"])
+    end
+  end
+
+  it "keeps a record on OTLP when a float JSON cannot hold sits inside a list of hashes" do
+    Libo11y::Testing.start_recorder do |rec|
+      rec.telemetry.logger.info("nested", { "items" => [{ "ratio" => Float::NAN }, [Float::INFINITY]] })
+
+      expect(rec.logs.map(&:body)).to eq(["nested"])
+      expect(rec.logs.first.attributes["items"]).to eq(['{"ratio":"NaN"}', '["+Inf"]'])
+    end
+  end
 end

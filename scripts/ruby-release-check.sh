@@ -29,8 +29,10 @@
 # correlated log through Libo11y::Testing::Recorder, and asserts that they
 # conform and share one trace. Then it installs
 # webrick, which only the in-process OTLP receiver needs, and exports all
-# three signals over OTLP/HTTP to Libo11y::Testing::OtlpHttpReceiver. Last
-# it runs the installed `libo11y registry check`. Needs ruby and gem.
+# three signals over OTLP/HTTP to Libo11y::Testing::OtlpHttpReceiver. There
+# it asserts the specification's schema URL on the resource of each signal,
+# the log record's trace and span ids, and a metric exemplar that names the
+# span. Last it runs the installed `libo11y registry check`. Needs ruby and gem.
 set -euo pipefail
 
 version="v0.2.0"
@@ -235,12 +237,28 @@ begin
   abort "missing smoke-op span: #{spans.map(&:name)}" unless spans.map(&:name).include?("smoke-op")
 
   metrics = receiver.metric_requests.flat_map(&:resource_metrics).flat_map(&:scope_metrics).flat_map(&:metrics)
-  abort "missing smoke.requests metric: #{metrics.map(&:name)}" unless metrics.map(&:name).include?("smoke.requests")
+  metric = metrics.find { |m| m.name == "smoke.requests" }
+  abort "missing smoke.requests metric: #{metrics.map(&:name)}" if metric.nil?
+  exemplars = metric.sum.data_points.flat_map(&:exemplars)
+  unless exemplars.any? { |ex| ex.trace_id == trace_id && ex.span_id == span_id }
+    abort "the smoke.requests metric has no exemplar naming the smoke-op span"
+  end
 
   logs = receiver.log_requests.flat_map(&:resource_logs).flat_map(&:scope_logs).flat_map(&:log_records)
   record = logs.find { |lr| lr.body.string_value == "smoke-log" }
   abort "missing smoke-log record: #{logs.map { |lr| lr.body.string_value }}" if record.nil?
   abort "log record trace and span correlation mismatch" unless record.trace_id == trace_id && record.span_id == span_id
+
+  schema_urls = {
+    "traces" => receiver.trace_requests.flat_map(&:resource_spans).map(&:schema_url),
+    "metrics" => receiver.metric_requests.flat_map(&:resource_metrics).map(&:schema_url),
+    "logs" => receiver.log_requests.flat_map(&:resource_logs).map(&:schema_url)
+  }
+  schema_urls.each do |signal, urls|
+    next if !urls.empty? && urls.uniq == [Libo11y::Spec::SCHEMA_URL]
+
+    abort "#{signal} resources carry schema URLs #{urls.uniq.inspect}, want #{Libo11y::Spec::SCHEMA_URL.inspect}"
+  end
 ensure
   receiver.stop
 end
@@ -264,4 +282,4 @@ run_consumer "$gems/bin/libo11y" registry check "$tmp/registry.yaml" >"$tmp/regi
 }
 grep -qF "ok (1 attribute in namespace smoke)" "$tmp/registry.out" || fail "libo11y registry check printed: $(cat "$tmp/registry.out")"
 
-echo "ruby-release-check: OK, libo11y $gem_version installs, exports a span, a metric and a correlated log, and runs its CLI"
+echo "ruby-release-check: OK, libo11y $gem_version installs, exports a span, a metric with its exemplar and a correlated log under the schema URL, and runs its CLI"

@@ -102,13 +102,13 @@ module Libo11y
 
         exporting = span_export_processor(mode)
         @tracer_provider.add_span_processor(exporting) if exporting
-        # An injected processor gets a redacted view of the finished span. A
-        # span's violations are counted once: by the exporter path when there
-        # is one, else by the first injected processor.
-        processors.each_with_index do |processor, index|
-          policy = exporting.nil? && index.zero? ? @policy : @policy.silent
-          @tracer_provider.add_span_processor(Bridges::PolicySpanProcessor.new(processor, policy))
-        end
+        return if processors.empty?
+
+        # The injected processors get a redacted snapshot of each finished
+        # span. A span's violations are counted once: by the exporter path
+        # when there is one, else here.
+        policy = exporting ? @policy.silent : @policy
+        @tracer_provider.add_span_processor(Bridges::PolicySpanProcessor.new(processors, policy))
       end
 
       def span_export_processor(mode)

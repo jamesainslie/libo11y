@@ -195,4 +195,35 @@ RSpec.describe "HTTP instrumentation" do
       end
     end
   end
+
+  describe "the client's duration measurement" do
+    it "is recorded inside the client span, so its exemplar names that span" do
+      server = WEBrick::HTTPServer.new(BindAddress: "127.0.0.1", Port: 0, Logger: WEBrick::Log.new(File::NULL), AccessLog: [])
+      server.mount_proc("/") { |_req, res| res.status = 200 }
+      thread = Thread.new { server.start }
+      Libo11y::Testing.start_recorder do |rec|
+        Libo11y::HttpClient.new(telemetry: rec.telemetry).request(:get, "http://127.0.0.1:#{server.config[:Port]}/")
+
+        span = rec.spans.first
+        exemplars = rec.exemplars("http.client.request.duration").map { |entry| entry[:exemplar] }
+        expect(exemplars.map { |exemplar| exemplar.span_id.unpack1("H*") }).to eq([span.hex_span_id])
+      end
+    ensure
+      server&.shutdown
+      thread&.join(2)
+    end
+  end
+
+  describe "the Server-Timing media type check" do
+    it "takes text/html with any parameters and nothing that only starts with it" do
+      Libo11y::Testing.start_recorder do |rec|
+        types = { "/a" => "text/html", "/b" => "Text/HTML ; charset=utf-8", "/c" => "text/html5", "/d" => "text/htmlx; q=1" }
+        app = Libo11y::Rack::Middleware.new(->(e) { [200, { "content-type" => types.fetch(e["PATH_INFO"]) }, []] },
+                                            telemetry: rec.telemetry, server_timing: true)
+        timed = types.keys.select { |path| app.call(env(path: path))[1].key?("server-timing") }
+
+        expect(timed).to eq(%w[/a /b])
+      end
+    end
+  end
 end

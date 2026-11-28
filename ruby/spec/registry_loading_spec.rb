@@ -93,6 +93,15 @@ RSpec.describe "Application registries at setup" do
       expect(brief(reg, "acme.other")).to eq("it's")
     end
 
+    it "are read in a quoted scalar that follows a tag or an anchor" do
+      tagged = parse(registry("    brief: !!str \"it\\'s tagged\"\n", '&note "it\\\'s anchored"'))
+
+      expect(brief(tagged, "acme.id")).to eq("it's tagged")
+      expect(brief(tagged, "acme.other")).to eq("it's anchored")
+      expect { parse(registry("    brief: !!str \"a \\/ b\"\n")) }
+        .to raise_error(Libo11y::Spec::AppRegistry::ParseError, /unknown escape character/)
+    end
+
     it "are checked in a flow mapping and after a comment that holds a quote" do
       flow = "schema: libo11y.app-registry/v1\nnamespace: acme\nattributes:\n  # the caller's id\n  " \
              "acme.id: {type: string, sensitivity: internal, cardinality: unbounded, brief: \"a \\/ b\"}\n"

@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `Telemetry#shutdown(timeout:)` holds to its deadline in every case. A caller that waits on a shutdown another thread started gets a report at its own deadline, with the error "shutdown is still in progress". Writing the `o11y.telemetry.dropped` events is bounded too, so a console or extra sink that blocks no longer holds shutdown open.
+- `Libo11y.shutdown_on_signals` gives `before_shutdown` and the shutdown one shared deadline. A callback that outlives it is left behind, and a callback that raises still gets the shutdown, then its error.
+- An OTLP endpoint that is not an absolute `http` or `https` URL with a host fails `setup` and `init` with `Libo11y::ExporterError`. The message names the variable and never the value. 0.2.0 let `URI::InvalidURIError` or an exporter's own error through.
+- `Testing::Recorder` raises `ArgumentError` for `env`, `span_exporter`, `metric_reader`, `log_exporter` and `console_writer`, which it sets itself. 0.2.0 accepted them, and the recorder then read sinks that held nothing.
+- `Rack::Middleware` matches `ignore_paths` as Go's `path.Match` does: `*` and `?` stop at a slash, `**` has no recursive meaning, and a malformed pattern matches nothing. 0.2.0 used `File.fnmatch`, whose `**` and escapes differ.
+
+### Fixed
+
+- `Telemetry#inspect`, `Options#inspect` and the sensitivity policy's `inspect` printed the `pii_hash_key`. They now print the effective-config line, the options with the key filtered, and the PII mode.
+- An injected span processor could read the unredacted span: 0.2.0 handed it a view that kept the SDK span reachable. It now gets a finished span that holds the classified data only. With several injected processors each violation is counted once, where 0.2.0 counted it once per processor.
+- A meter taken from `OpenTelemetry.meter_provider` before `Libo11y.setup` raised `ArgumentError` on its first instrument after setup, because the wrapped meter did not take the options the OpenTelemetry API passes on. A `setup` that fails while it installs the globals now puts back the ones it had replaced.
+- `HttpClient` recorded `http.client.request.duration` after the client span had left the context, so the measurement's exemplar named the caller's span. It is recorded inside the client span.
+- `Telemetry#logger` did not answer `Logger#log`, which Ruby defines as an alias of `add`, so `logger.log(Logger::INFO, "x")` wrote to the base logger's nil device and nothing reached a sink.
+- A log attribute holding a list of hashes or lists with a `NaN` or infinite float raised inside the logger on its way to OTLP, and the record was lost. Such a float is written as `"NaN"`, `"+Inf"` or `"-Inf"`, as it already was on the console.
+- The registry YAML reader read a quoted scalar that follows a tag or an anchor, such as `!!str "a\x41"`, as a plain scalar, so an escape `yaml.v3` rejects was accepted.
+- `Rack::Middleware` added `Server-Timing` to any response whose content type began with `text/html`, such as `text/html5`. The media type must be `text/html`.
+
+### Added
+
+- The release check asserts the specification's schema URL on the resource of each signal and a metric exemplar that names the span, on the installed gem over OTLP.
+
 ## [0.2.0] - 2026-11-28
 
 This release fixes most of what the first review of 0.1.0 found. It changes an option name, a return type and the text form of a carrier, so read the "Changed" list before upgrading.

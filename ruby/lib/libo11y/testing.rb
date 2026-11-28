@@ -20,12 +20,19 @@ module Libo11y
     class Recorder
       attr_reader :telemetry, :span_exporter, :metric_reader, :log_exporter, :console_io
 
+      # The options the recorder sets itself. Its queries and assertions read
+      # the sinks it created, and it is hermetic by contract.
+      RESERVED_OPTIONS = %i[env span_exporter metric_reader log_exporter console_writer].freeze
+
       def initialize(
         service_name: "test-service",
         environment: Spec::Environment::TEST,
         version: "1.0.0",
         **extra_opts
       )
+        reserved = extra_opts.keys & RESERVED_OPTIONS
+        raise ArgumentError, "libo11y: the recorder sets #{reserved.join(", ")} itself" unless reserved.empty?
+
         @span_exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
         @metric_reader = OpenTelemetry::SDK::Metrics::Export::InMemoryMetricPullExporter.new
         @metric_reader.define_singleton_method(:shutdown) do |timeout: nil|

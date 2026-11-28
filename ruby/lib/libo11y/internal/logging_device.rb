@@ -87,6 +87,10 @@ module Libo11y
         true
       end
 
+      # Logger#log is an alias of Logger#add, bound to Logger's own method,
+      # so it is aliased again here.
+      alias log add
+
       def log_with_attrs(severity, body, attrs = {}, event_name: nil, force: nil, raise_on_sink_error: false)
         forced = force.nil? ? Libo11y.force_emit? : force
         emit_record(
@@ -243,7 +247,7 @@ module Libo11y
           if v.is_a?(Hash)
             flatten_for_otel(v, full, out)
           elsif v.is_a?(Array)
-            out[full] = v.map { |el| el.is_a?(Hash) || el.is_a?(Array) ? JSON.generate(el) : el }
+            out[full] = v.map { |el| el.is_a?(Hash) || el.is_a?(Array) ? JSON.generate(json_safe(el)) : el }
           elsif v.is_a?(String) || v.is_a?(Integer) || v.is_a?(Float) || v.is_a?(TrueClass) || v.is_a?(FalseClass)
             out[full] = v
           elsif !v.nil?
