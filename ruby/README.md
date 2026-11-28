@@ -53,7 +53,7 @@ bundle exec libo11y registry check o11y-registry.yaml
 | `Libo11y::Detached` | 32 KiB text `Carrier`, egress-filtered baggage, `capture`, `restore_baggage`, `start_linked` |
 | `Libo11y::Proc` | `TRACEPARENT`/`TRACESTATE` env carriers (never baggage) and framed map `inject_frame`/`extract_frame` |
 | `Libo11y::Redact` | `Secret`, `Masked`, and `Fields` mixin (`mask`, `redact`, `omit`, `confidential`, `secret`) |
-| `Libo11y::Testing` | Hermetic `Recorder` (`assert_conforms!`, `assert_correlated!`, `assert_triangle!`) and in-process `OtlpHttpReceiver` |
+| `Libo11y::Testing` | Hermetic `Recorder` (`assert_conforms!`, `assert_correlated!`, `assert_triangle!`) and in-process `OtlpHttpReceiver`. The receiver serves through WEBrick, which the gem does not depend on, so add `gem "webrick"` to your test group to use it |
 
 ## Per-signal guarantees and caveats
 

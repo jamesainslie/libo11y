@@ -15,12 +15,13 @@
 #   rust/vX.Y.Z                  every libo11y Rust crate, at one version
 #   c/vX.Y.Z                     the libo11y C11 library (libo11y-c)
 #   dotnet/vX.Y.Z                every Libo11y.* NuGet package, at one version
+#   ruby/vX.Y.Z                  the libo11y Ruby gem on RubyGems.org
 #   ops/vX.Y.Z                   the libo11y RUM ops pack (libo11y-ops), a GitHub Release archive
 #
 # Prints one key=value line each, for $GITHUB_OUTPUT:
-#   kind        go, ts, zig, python, rust, c, dotnet or ops
-#   dir         the released directory: go, go/<sub>, go/o11yrum, ts, zig, python, rust, c, dotnet or ops
-#   module      the Go module path, @libo11y for TypeScript, libo11y-zig for Zig, libo11y for Python, libo11y-rust for Rust, libo11y-c for C, libo11y-dotnet for .NET, or libo11y-ops for the ops pack
+#   kind        go, ts, zig, python, rust, c, dotnet, ruby or ops
+#   dir         the released directory: go, go/<sub>, go/o11yrum, ts, zig, python, rust, c, dotnet, ruby or ops
+#   module      the Go module path, @libo11y for TypeScript, libo11y-zig for Zig, libo11y for Python, libo11y-rust for Rust, libo11y-c for C, libo11y-dotnet for .NET, libo11y for Ruby, or libo11y-ops for the ops pack
 #   version     X.Y.Z[-prerelease], without the v
 #   prerelease  true when the version has a -prerelease suffix
 #   lockstep    true for the Go modules released together at one version on
@@ -77,12 +78,16 @@ dotnet/v*)
 	kind=dotnet
 	dir=dotnet
 	;;
+ruby/v*)
+	kind=ruby
+	dir=ruby
+	;;
 ops/v*)
 	kind=ops
 	dir=ops
 	;;
 *)
-	echo "release-tag: $tag is not a release tag (go/vX.Y.Z, go/<submodule>/vX.Y.Z, go/o11yrum/vX.Y.Z, ts/vX.Y.Z, zig/vX.Y.Z, python/vX.Y.Z, rust/vX.Y.Z, c/vX.Y.Z, dotnet/vX.Y.Z or ops/vX.Y.Z)" >&2
+	echo "release-tag: $tag is not a release tag (go/vX.Y.Z, go/<submodule>/vX.Y.Z, go/o11yrum/vX.Y.Z, ts/vX.Y.Z, zig/vX.Y.Z, python/vX.Y.Z, rust/vX.Y.Z, c/vX.Y.Z, dotnet/vX.Y.Z, ruby/vX.Y.Z or ops/vX.Y.Z)" >&2
 	exit 1
 	;;
 esac
@@ -121,6 +126,9 @@ c)
 	;;
 dotnet)
 	module="libo11y-dotnet"
+	;;
+ruby)
+	module="libo11y"
 	;;
 ops)
 	module="libo11y-ops"
