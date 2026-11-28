@@ -1,0 +1,33 @@
+{
+  "name": "@libo11y/rum-expo-router",
+  "version": "0.4.0",
+  "private": true,
+  "description": "Expo Router adapter for @libo11y/rum-react-native: names screens by route template, such as /(studio)/projects/[projectId], never by the path, and marks each screen rendered so its view span and the first screen's app_load end at the next frame.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jamesainslie/libo11y.git",
+    "directory": "ts/packages/rum-expo-router"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "api": "api-extractor run --local",
+    "api:check": "api-extractor run"
+  },
+  "peerDependencies": {
+    "@libo11y/rum": "workspace:*",
+    "expo-router": ">=58.0.0",
+    "react": ">=19.0.0"
+  },
+  "devDependencies": {
+    "@libo11y/rum": "workspace:*",
+    "@types/react": "19.3.0",
+    "expo-router": "58.0.33",
+    "react": "19.3.1"
+  }
+}
