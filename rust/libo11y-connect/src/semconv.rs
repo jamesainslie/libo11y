@@ -124,19 +124,39 @@ pub(crate) fn http_status_for_code(code: ErrorCode) -> u16 {
 }
 
 /// Maps an HTTP status code from a Connect unary error response to a fallback
-/// [`ErrorCode`] when the JSON body does not specify one.
+/// [`ErrorCode`] when the JSON body does not specify one, per the Connect
+/// protocol's HTTP-to-error-code table: every status it does not list, such
+/// as 409, 499 or 501, reads `Unknown`.
 pub(crate) const fn error_code_from_http_status(status: StatusCode) -> Option<ErrorCode> {
     match status.as_u16() {
         200 | 304 => None,
         400 => Some(ErrorCode::Internal),
         401 => Some(ErrorCode::Unauthenticated),
         403 => Some(ErrorCode::PermissionDenied),
-        404 | 501 => Some(ErrorCode::Unimplemented),
-        409 => Some(ErrorCode::Aborted),
+        404 => Some(ErrorCode::Unimplemented),
         429 | 502 | 503 | 504 => Some(ErrorCode::Unavailable),
-        499 => Some(ErrorCode::Canceled),
         _ => Some(ErrorCode::Unknown),
     }
+}
+
+/// The value for `rpc.method`, and the server span name, of a procedure the
+/// server does not implement, so unrouted paths cannot create unbounded
+/// series.
+pub(crate) const RPC_METHOD_OTHER: &str = "_OTHER";
+
+/// HTTP methods the semantic conventions name; any other reads `_OTHER`.
+const KNOWN_HTTP_METHODS: &[&str] = &[
+    "CONNECT", "DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT", "TRACE",
+];
+
+/// Normalizes an HTTP request method for `http.request.method`: a known
+/// method in any case reads in uppercase, and any other reads `_OTHER`.
+pub(crate) fn normalize_http_method(method: &str) -> &'static str {
+    KNOWN_HTTP_METHODS
+        .iter()
+        .find(|known| method.eq_ignore_ascii_case(known))
+        .copied()
+        .unwrap_or("_OTHER")
 }
 
 /// Parses a gRPC status code and percent-decoded `grpc-message` from HTTP
@@ -514,6 +534,45 @@ mod tests {
             assert_eq!(http_status_for_code(code), status, "{code:?}");
             assert_eq!(canonical_code(code), name, "{code:?}");
             assert_eq!(is_server_fault(code), fault, "{code:?}");
+        }
+    }
+
+    #[test]
+    fn http_status_fallback_follows_the_connect_protocol_table() {
+        let cases = [
+            (200, None),
+            (304, None),
+            (400, Some(ErrorCode::Internal)),
+            (401, Some(ErrorCode::Unauthenticated)),
+            (403, Some(ErrorCode::PermissionDenied)),
+            (404, Some(ErrorCode::Unimplemented)),
+            (409, Some(ErrorCode::Unknown)),
+            (429, Some(ErrorCode::Unavailable)),
+            (499, Some(ErrorCode::Unknown)),
+            (500, Some(ErrorCode::Unknown)),
+            (501, Some(ErrorCode::Unknown)),
+            (502, Some(ErrorCode::Unavailable)),
+            (503, Some(ErrorCode::Unavailable)),
+            (504, Some(ErrorCode::Unavailable)),
+            (418, Some(ErrorCode::Unknown)),
+        ];
+        for (status, want) in cases {
+            let status = StatusCode::from_u16(status).expect("status");
+            assert_eq!(error_code_from_http_status(status), want, "{status}");
+        }
+    }
+
+    #[test]
+    fn http_methods_normalize_to_the_bounded_set() {
+        for (raw, want) in [
+            ("GET", "GET"),
+            ("post", "POST"),
+            ("Patch", "PATCH"),
+            ("PURGE", "_OTHER"),
+            ("", "_OTHER"),
+            ("x-random-1", "_OTHER"),
+        ] {
+            assert_eq!(normalize_http_method(raw), want, "{raw:?}");
         }
     }
 

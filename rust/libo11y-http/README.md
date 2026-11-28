@@ -19,4 +19,18 @@ contract.
   W3C propagation injection, `SpanKind::Client` spans, userinfo stripping on
   `url.full`, and `http.client.request.duration` histograms with exemplars.
 
+## Error and cancellation attributes
+
+- `url.scheme` is clamped to `http` or `https`, so a request target with an
+  arbitrary scheme cannot create a new metric series.
+- A service or body error records `error.type` as the error's type name
+  without its module path, such as `DownstreamErr`. A boxed or trait-object
+  error, such as `Box<dyn Error + Send + Sync>`, records `_OTHER`, since its
+  type name says nothing about the error inside it.
+- A request whose future is dropped before the response head is ready, on
+  either layer, ends its span with `error.type` `canceled` and an error
+  status, and records the duration with `error.type` `canceled` and no
+  `http.response.status_code`. On the server, the canonical line reports
+  status `499` (nginx's Client Closed Request) for such a request.
+
 Licensed under the Apache License, Version 2.0.

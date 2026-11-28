@@ -1,6 +1,7 @@
 //! Tower HTTP client instrumentation layer ([`ClientLayer`]) and service
 //! ([`ClientService`]).
 
+use std::borrow::Cow;
 use std::fmt;
 use std::future::Future;
 use std::marker::PhantomData;
@@ -22,6 +23,7 @@ use tower_layer::Layer;
 use tower_service::Service;
 
 use crate::carrier::HeaderInjector;
+use crate::error_type::short_error_type;
 use crate::method::{normalize_method, span_method};
 use crate::path_match::path_match;
 use crate::url::{
@@ -256,20 +258,20 @@ impl ClientState {
         span.end();
     }
 
-    fn finish_error(&mut self, error_type: &'static str) {
+    fn finish_error(&mut self, error_type: Cow<'static, str>) {
         if self.finished {
             return;
         }
         self.finished = true;
         let span = self.cx.span();
-        span.set_attribute(KeyValue::new("error.type", error_type));
-        span.set_status(Status::error(error_type));
+        span.set_attribute(KeyValue::new("error.type", error_type.clone()));
 
         let elapsed = self.start.elapsed().as_secs_f64();
         {
             let _guard = self.cx.clone().attach();
-            self.record_duration(elapsed, None, Some(error_type));
+            self.record_duration(elapsed, None, Some(&error_type));
         }
+        span.set_status(Status::error(error_type));
         span.end();
     }
 
@@ -309,14 +311,17 @@ impl ClientState {
     }
 }
 
+/// `error.type` for an outbound request whose future was dropped before the
+/// response head, as the server layer records a canceled request.
+const CANCELED: &str = "canceled";
+
 impl Drop for ClientState {
     fn drop(&mut self) {
         if !self.finished {
             if std::thread::panicking() {
                 self.finish_panic();
             } else {
-                self.finished = true;
-                self.cx.span().end();
+                self.finish_error(Cow::Borrowed(CANCELED));
             }
         }
     }
@@ -324,6 +329,9 @@ impl Drop for ClientState {
 
 pin_project! {
     /// Response future returned by [`ClientService`].
+    ///
+    /// Dropping it before the response head is ready ends the client span
+    /// with `error.type` `canceled` and records the duration with it.
     pub struct ClientFuture<F, ResBody, E> {
         #[pin]
         inner: ClientFutureInner<F>,
@@ -392,7 +400,7 @@ where
                     }
                     Ok(Poll::Ready(Err(err))) => {
                         if let Some(mut st) = state.take() {
-                            st.finish_error(std::any::type_name::<E>());
+                            st.finish_error(short_error_type::<E>());
                         }
                         Poll::Ready(Err(err))
                     }

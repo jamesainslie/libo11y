@@ -20,6 +20,9 @@ fn is_sensitive_query_key(key: &str) -> bool {
             | "signature"
             | "sig"
             | "x-goog-signature"
+            | "x-amz-signature"
+            | "x-amz-credential"
+            | "x-amz-security-token"
             | "access_token"
             | "api_key"
             | "apikey"
@@ -131,14 +134,20 @@ pub fn sanitize_url_full(uri: &Uri) -> String {
     out
 }
 
-/// Determines `url.scheme` from request parts, defaulting to `"http"` when the
-/// request target is in origin form without a scheme.
+/// Determines `url.scheme` from request parts: `"https"` when the request
+/// target names `https` in any case, and `"http"` otherwise.
+///
+/// The value lands on the `http.server.request.duration` metric, so it is
+/// clamped to the two schemes an HTTP server serves. A client sending an
+/// absolute-form target with an arbitrary scheme, such as `x1://a/ok`,
+/// cannot mint a new series per scheme. An origin-form target with no
+/// scheme reads as `"http"`.
 #[must_use]
 pub fn extract_scheme(parts: &Parts) -> String {
-    parts
-        .uri
-        .scheme_str()
-        .map_or_else(|| "http".to_owned(), str::to_ascii_lowercase)
+    match parts.uri.scheme_str() {
+        Some(scheme) if scheme.eq_ignore_ascii_case("https") => "https".to_owned(),
+        _ => "http".to_owned(),
+    }
 }
 
 /// Extracts `(server.address, server.port)` from request URI authority or the
@@ -226,6 +235,43 @@ mod tests {
             "page=1&api_key=REDACTED&AWSAccessKeyId=REDACTED&sig=REDACTED&ok=yes"
         );
         assert_eq!(redact_query("flag&token=xyz"), "flag&token=REDACTED");
+    }
+
+    #[test]
+    fn redact_query_masks_aws_sigv4_presigned_params() {
+        assert_eq!(
+            redact_query(
+                "X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIA%2F20261128&\
+                 X-Amz-Signature=deadbeef&X-Amz-Security-Token=FwoG&X-Amz-Expires=60"
+            ),
+            "X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=REDACTED&\
+             X-Amz-Signature=REDACTED&X-Amz-Security-Token=REDACTED&X-Amz-Expires=60"
+        );
+        assert_eq!(
+            redact_query("x-amz-signature=abc"),
+            "x-amz-signature=REDACTED"
+        );
+    }
+
+    fn scheme_of(uri: &str) -> String {
+        let (parts, ()) = Request::builder()
+            .uri(uri)
+            .body(())
+            .expect("req")
+            .into_parts();
+        extract_scheme(&parts)
+    }
+
+    #[test]
+    fn extract_scheme_clamps_to_http_or_https() {
+        assert_eq!(scheme_of("/ok"), "http");
+        assert_eq!(scheme_of("http://a/ok"), "http");
+        assert_eq!(scheme_of("HTTP://a/ok"), "http");
+        assert_eq!(scheme_of("https://a/ok"), "https");
+        assert_eq!(scheme_of("HtTpS://a/ok"), "https");
+        assert_eq!(scheme_of("x1://a/ok"), "http");
+        assert_eq!(scheme_of("x2://a/ok"), "http");
+        assert_eq!(scheme_of("ftp://a/ok"), "http");
     }
 
     #[test]

@@ -887,7 +887,8 @@ async fn tower_service_handles_trailers_and_custom_filters() {
 async fn tower_service_handles_transport_errors_and_panics() {
     let rec = Recorder::start("tonic-tower-errors");
 
-    // Transport error on client side records UNKNOWN and Error status.
+    // A refused connection on the client side records UNAVAILABLE, as
+    // tonic's own client maps it, and an Error status.
     let err_client = ServiceBuilder::new()
         .layer(ClientLayer::new(rec.sdk()).with_server_address("rpc.internal", Some(50051)))
         .service_fn(|_req: Request<()>| async move {
@@ -911,7 +912,7 @@ async fn tower_service_handles_transport_errors_and_panics() {
     assert!(matches!(down_span.status, SpanStatus::Error { .. }));
     assert_eq!(
         span_attr(&down_span, "rpc.response.status_code").as_deref(),
-        Some("UNKNOWN")
+        Some("UNAVAILABLE")
     );
     assert_eq!(
         span_attr(&down_span, "server.address").as_deref(),
@@ -1024,4 +1025,319 @@ fn outer_catch_unwind_still_records_panic_and_fallback_port_does_not_mix_with_re
         Some("explicit.host")
     );
     assert_eq!(span_attr(&ping, "server.port"), None);
+}
+
+/// Returns `(rpc.method, rpc.response.status_code)` for every latest data
+/// point of the histogram `name`.
+fn metric_points(rec: &Recorder, name: &str) -> Vec<(Option<String>, Option<String>)> {
+    use libo11y::opentelemetry_proto::tonic::common::v1::any_value::Value as ProtoValue;
+    use libo11y::opentelemetry_proto::tonic::metrics::v1::metric::Data;
+
+    let mut latest = Vec::new();
+    for batch in rec.metrics() {
+        for rm in batch.resource_metrics {
+            for sm in rm.scope_metrics {
+                for m in sm.metrics {
+                    if m.name != name {
+                        continue;
+                    }
+                    let Some(Data::Histogram(hist)) = m.data else {
+                        continue;
+                    };
+                    latest = hist
+                        .data_points
+                        .into_iter()
+                        .map(|dp| {
+                            let get = |key: &str| {
+                                dp.attributes.iter().find_map(|kv| {
+                                    match (
+                                        kv.key.as_str(),
+                                        kv.value.as_ref().and_then(|v| v.value.as_ref()),
+                                    ) {
+                                        (k, Some(ProtoValue::StringValue(s))) if k == key => {
+                                            Some(s.clone())
+                                        }
+                                        _ => None,
+                                    }
+                                })
+                            };
+                            (get("rpc.method"), get("rpc.response.status_code"))
+                        })
+                        .collect();
+                }
+            }
+        }
+    }
+    latest
+}
+
+#[tokio::test]
+async fn truncated_http_200_without_grpc_status_reads_unknown() {
+    let rec = Recorder::start("tonic-truncated");
+
+    // A body that ends with data and no trailers: the stream was cut before
+    // grpc-status arrived.
+    let server = ServiceBuilder::new()
+        .layer(ServerLayer::new(rec.sdk()))
+        .service_fn(|_req: Request<()>| async move {
+            Ok::<_, Infallible>(Response::new(TrailerBody {
+                data: Some(Bytes::from_static(b"partial")),
+                trailers: None,
+            }))
+        });
+    let resp = server
+        .oneshot(
+            Request::builder()
+                .uri("/pkg.Svc/Cut")
+                .body(())
+                .expect("req"),
+        )
+        .await
+        .expect("ok");
+    let _ = resp.into_body().collect().await.expect("collect");
+
+    let client = ServiceBuilder::new()
+        .layer(ClientLayer::new(rec.sdk()))
+        .service_fn(|_req: Request<()>| async move {
+            Ok::<_, Infallible>(Response::new(http_body_util::Empty::<Bytes>::new()))
+        });
+    let resp = client
+        .oneshot(
+            Request::builder()
+                .uri("http://rpc.local/pkg.Svc/Empty")
+                .body(())
+                .expect("req"),
+        )
+        .await
+        .expect("ok");
+    let _ = resp.into_body().collect().await.expect("collect");
+
+    // An explicit grpc-status: 0 in the trailers still reads OK.
+    let ok = ServiceBuilder::new()
+        .layer(ServerLayer::new(rec.sdk()))
+        .service_fn(|_req: Request<()>| async move {
+            let mut trailers = HeaderMap::new();
+            trailers.insert("grpc-status", HeaderValue::from_static("0"));
+            Ok::<_, Infallible>(Response::new(TrailerBody {
+                data: Some(Bytes::from_static(b"full")),
+                trailers: Some(trailers),
+            }))
+        });
+    let resp = ok
+        .oneshot(
+            Request::builder()
+                .uri("/pkg.Svc/Whole")
+                .body(())
+                .expect("req"),
+        )
+        .await
+        .expect("ok");
+    let _ = resp.into_body().collect().await.expect("collect");
+
+    let spans = rec.spans();
+    for (kind, name) in [
+        (SpanKind::Server, "pkg.Svc/Cut"),
+        (SpanKind::Client, "pkg.Svc/Empty"),
+    ] {
+        let span = find_span(&spans, &kind, name).expect("span");
+        assert_eq!(
+            span_attr(&span, "rpc.response.status_code").as_deref(),
+            Some("UNKNOWN"),
+            "{name}"
+        );
+        assert_eq!(
+            span_attr(&span, "error.type").as_deref(),
+            Some("UNKNOWN"),
+            "{name}"
+        );
+        assert_eq!(
+            span.status,
+            SpanStatus::error("missing grpc-status trailer"),
+            "{name}"
+        );
+    }
+    let whole = find_span(&spans, &SpanKind::Server, "pkg.Svc/Whole").expect("whole");
+    assert_eq!(
+        span_attr(&whole, "rpc.response.status_code").as_deref(),
+        Some("OK")
+    );
+    assert_eq!(whole.status, SpanStatus::Unset);
+    rec.assert_conforms();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unrouted_paths_collapse_to_other_on_unimplemented() {
+    let rec = Recorder::start("tonic-unimplemented");
+    let mut srv = LoopbackServer::start(&rec, ServerLayer::new(rec.sdk())).await;
+
+    let channel = srv.channel().await;
+    let mut client = Grpc::with_origin(channel, srv.origin());
+    for path in ["/scan.a1/X", "/scan.b2/Y", "/scan.c3/Z"] {
+        client.ready().await.expect("ready");
+        let err = client
+            .unary(
+                TonicRequest::new("probe".to_owned()),
+                PathAndQuery::from_static(path),
+                StringCodec,
+            )
+            .await
+            .expect_err("unimplemented");
+        assert_eq!(err.code(), Code::Unimplemented);
+    }
+    client.ready().await.expect("ready");
+    client
+        .unary(
+            TonicRequest::new("hi".to_owned()),
+            PathAndQuery::from_static(ECHO_PATH),
+            StringCodec,
+        )
+        .await
+        .expect("echo ok");
+    srv.stop().await;
+
+    let spans = rec.spans();
+    let servers: Vec<_> = spans
+        .iter()
+        .filter(|s| s.span_kind == SpanKind::Server)
+        .collect();
+    assert_eq!(servers.len(), 4);
+    let others: Vec<_> = servers
+        .iter()
+        .filter(|s| s.name.as_ref() == "_OTHER")
+        .collect();
+    assert_eq!(
+        others.len(),
+        3,
+        "{:?}",
+        servers.iter().map(|s| &s.name).collect::<Vec<_>>()
+    );
+    for span in &others {
+        assert_eq!(span_attr(span, "rpc.method").as_deref(), Some("_OTHER"));
+        assert_eq!(
+            span_attr(span, "rpc.response.status_code").as_deref(),
+            Some("UNIMPLEMENTED")
+        );
+    }
+    assert!(find_span(&spans, &SpanKind::Server, ECHO_METHOD).is_some());
+
+    let mut points = metric_points(&rec, "rpc.server.call.duration");
+    points.sort();
+    assert_eq!(
+        points,
+        [
+            (Some("_OTHER".to_owned()), Some("UNIMPLEMENTED".to_owned())),
+            (Some(ECHO_METHOD.to_owned()), Some("OK".to_owned())),
+        ]
+    );
+    rec.assert_conforms();
+}
+
+#[tokio::test]
+async fn client_unimplemented_keeps_the_called_method() {
+    let rec = Recorder::start("tonic-client-unimplemented");
+    let client = ServiceBuilder::new()
+        .layer(ClientLayer::new(rec.sdk()))
+        .service_fn(|_req: Request<()>| async move {
+            let mut resp = Response::new(http_body_util::Empty::<Bytes>::new());
+            resp.headers_mut()
+                .insert("grpc-status", HeaderValue::from_static("12"));
+            Ok::<_, Infallible>(resp)
+        });
+    let _ = client
+        .oneshot(
+            Request::builder()
+                .uri("http://rpc.local/pkg.Svc/Missing")
+                .body(())
+                .expect("req"),
+        )
+        .await
+        .expect("ok");
+    let span = find_span(&rec.spans(), &SpanKind::Client, "pkg.Svc/Missing").expect("client span");
+    assert_eq!(
+        span_attr(&span, "rpc.method").as_deref(),
+        Some("pkg.Svc/Missing")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn channel_connection_refused_reads_unavailable() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    drop(listener);
+
+    let rec = Recorder::start("tonic-refused");
+    let channel = Endpoint::from_shared(format!("http://127.0.0.1:{port}"))
+        .expect("endpoint")
+        .connect_lazy();
+    let svc = ServiceBuilder::new()
+        .layer(ClientLayer::new(rec.sdk()))
+        .service(channel);
+    let mut client = Grpc::with_origin(
+        svc,
+        format!("http://127.0.0.1:{port}").parse().expect("origin"),
+    );
+    let _ = client.ready().await;
+    let err = client
+        .unary(
+            TonicRequest::new("hello".to_owned()),
+            PathAndQuery::from_static(ECHO_PATH),
+            StringCodec,
+        )
+        .await
+        .expect_err("refused");
+    assert_eq!(err.code(), Code::Unavailable);
+
+    let span = find_span(&rec.spans(), &SpanKind::Client, ECHO_METHOD).expect("client span");
+    assert_eq!(
+        span_attr(&span, "rpc.response.status_code").as_deref(),
+        Some("UNAVAILABLE")
+    );
+    assert_eq!(
+        span_attr(&span, "error.type").as_deref(),
+        Some("UNAVAILABLE")
+    );
+    assert!(matches!(span.status, SpanStatus::Error { .. }));
+}
+
+/// A body whose stream fails with a `tonic::Status`, as tonic's own body
+/// does when the peer resets the stream.
+struct FailingBody(Option<Status>);
+
+impl HttpBody for FailingBody {
+    type Data = Bytes;
+    type Error = Status;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        _cx: &mut TaskContext<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        Poll::Ready(self.0.take().map(Err))
+    }
+}
+
+#[tokio::test]
+async fn body_errors_keep_the_status_they_carry() {
+    let rec = Recorder::start("tonic-body-status");
+    let client = ServiceBuilder::new()
+        .layer(ClientLayer::new(rec.sdk()))
+        .service_fn(|_req: Request<()>| async move {
+            Ok::<_, Infallible>(Response::new(FailingBody(Some(Status::cancelled(
+                "stream reset",
+            )))))
+        });
+    let resp = client
+        .oneshot(
+            Request::builder()
+                .uri("http://rpc.local/pkg.Svc/Stream")
+                .body(())
+                .expect("req"),
+        )
+        .await
+        .expect("ok");
+    let _ = resp.into_body().collect().await.expect_err("body error");
+    let span = find_span(&rec.spans(), &SpanKind::Client, "pkg.Svc/Stream").expect("span");
+    assert_eq!(
+        span_attr(&span, "rpc.response.status_code").as_deref(),
+        Some("CANCELLED")
+    );
 }

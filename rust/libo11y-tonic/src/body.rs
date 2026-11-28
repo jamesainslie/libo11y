@@ -15,9 +15,10 @@ use opentelemetry::trace::{Status as SpanStatus, TraceContextExt as _};
 use opentelemetry::{Context, KeyValue};
 use pin_project_lite::pin_project;
 
+use crate::error::status_from_error;
 use crate::semconv::{
-    CODE_CANCELLED, CODE_INTERNAL, CODE_OK, CODE_UNKNOWN, ERROR_TYPE, GrpcStatus,
-    RPC_RESPONSE_STATUS_CODE, is_client_error, is_server_error,
+    CODE_CANCELLED, CODE_INTERNAL, CODE_UNIMPLEMENTED, ERROR_TYPE, GrpcStatus, RPC_METHOD,
+    RPC_METHOD_OTHER, RPC_RESPONSE_STATUS_CODE, is_client_error, is_server_error,
 };
 
 /// Which side of the RPC this call represents.
@@ -48,18 +49,39 @@ struct RpcStateInner {
 }
 
 impl RpcStateInner {
-    fn finish(mut self, status: GrpcStatus, transport_error: Option<String>) {
+    fn finish(mut self, status: GrpcStatus) {
         let code_str = status.canonical_name();
-        let is_err = transport_error.is_some() || self.role.is_error(status.code);
+        let is_err = self.role.is_error(status.code);
 
         let status_kv = KeyValue::new(RPC_RESPONSE_STATUS_CODE, code_str.clone());
         let span = self.cx.span();
+        if self.role == CallRole::Server {
+            if status.code == CODE_UNIMPLEMENTED {
+                // The path named no method the server routes, so it is the
+                // caller's text: a scanner's random paths must not each
+                // become a span name and a metric series.
+                span.update_name(RPC_METHOD_OTHER);
+                self.metric_attrs.retain(|kv| kv.key.as_str() != RPC_METHOD);
+                self.metric_attrs
+                    .push(KeyValue::new(RPC_METHOD, RPC_METHOD_OTHER));
+            }
+            // A server span gets `rpc.method` only now, once the status says
+            // whether the method exists: the SDK appends a repeated key
+            // rather than replacing it.
+            if let Some(method) = self
+                .metric_attrs
+                .iter()
+                .find(|kv| kv.key.as_str() == RPC_METHOD)
+            {
+                span.set_attribute(method.clone());
+            }
+        }
         span.set_attribute(status_kv.clone());
         self.metric_attrs.push(status_kv);
 
         if is_err {
-            let err_desc = transport_error
-                .or(status.message)
+            let err_desc = status
+                .message
                 .unwrap_or_else(|| code_str.clone().into_owned());
             span.set_status(SpanStatus::error(err_desc));
             let err_kv = KeyValue::new(ERROR_TYPE, code_str);
@@ -78,10 +100,7 @@ impl RpcStateInner {
     }
 
     fn finish_panic(self) {
-        self.finish(
-            GrpcStatus::with_message(CODE_INTERNAL, "panic"),
-            Some("panic".to_owned()),
-        );
+        self.finish(GrpcStatus::with_message(CODE_INTERNAL, "panic"));
     }
 
     fn finish_on_drop(mut self) {
@@ -90,18 +109,24 @@ impl RpcStateInner {
             return;
         }
         if let Some(status) = self.observed_status.take() {
-            self.finish(status, None);
+            self.finish(status);
             return;
         }
         if self.seen_end_stream {
             let status = self
                 .http_status
-                .map_or_else(|| GrpcStatus::new(CODE_OK), GrpcStatus::from_http_status);
-            self.finish(status, None);
+                .map_or_else(missing_status, GrpcStatus::from_http_status);
+            self.finish(status);
             return;
         }
-        self.finish(GrpcStatus::new(CODE_CANCELLED), None);
+        self.finish(GrpcStatus::new(CODE_CANCELLED));
     }
+}
+
+/// The status of a call whose stream ended with no `grpc-status` and no
+/// response head to map: nothing says it succeeded.
+fn missing_status() -> GrpcStatus {
+    GrpcStatus::from_http_status(StatusCode::OK)
 }
 
 /// Per-RPC telemetry state carried from request start through response body
@@ -157,17 +182,15 @@ impl RpcState {
                 .observed_status
                 .take()
                 .or_else(|| inner.http_status.map(GrpcStatus::from_http_status))
-                .unwrap_or_else(|| GrpcStatus::new(CODE_OK));
-            inner.finish(status, None);
+                .unwrap_or_else(missing_status);
+            inner.finish(status);
         }
     }
 
-    fn finish_error(&mut self, msg: String) {
+    /// Finishes the call as failed by `err`, with the status it stands for.
+    fn finish_error<E: fmt::Display + 'static>(&mut self, err: &E) {
         if let Some(inner) = self.inner.take() {
-            inner.finish(
-                GrpcStatus::with_message(CODE_UNKNOWN, msg.clone()),
-                Some(msg),
-            );
+            inner.finish(status_from_error(err));
         }
     }
 
@@ -257,7 +280,7 @@ impl<B> InstrumentedBody<B> {
 impl<B> Body for InstrumentedBody<B>
 where
     B: Body,
-    B::Error: fmt::Display,
+    B::Error: fmt::Display + 'static,
 {
     type Data = B::Data;
     type Error = B::Error;
@@ -300,7 +323,7 @@ where
             }
             Some(Err(err)) => {
                 if let Some(mut state) = this.state.take() {
-                    state.finish_error(err.to_string());
+                    state.finish_error(err);
                 }
             }
             None => {
@@ -365,7 +388,7 @@ impl<F, ResBody, E> Future for ResponseFuture<F>
 where
     F: Future<Output = Result<Response<ResBody>, E>>,
     ResBody: Body,
-    E: fmt::Display,
+    E: fmt::Display + 'static,
 {
     type Output = Result<Response<InstrumentedBody<ResBody>>, E>;
 
@@ -419,7 +442,7 @@ where
                 }
                 Err(err) => {
                     if let Some(mut state) = slot.take() {
-                        state.finish_error(err.to_string());
+                        state.finish_error(&err);
                     }
                     Poll::Ready(Err(err))
                 }

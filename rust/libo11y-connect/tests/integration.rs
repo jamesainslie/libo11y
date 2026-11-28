@@ -1139,3 +1139,338 @@ fn outer_catch_unwind_records_panic_for_both_server_layer_and_interceptor() {
         );
     }
 }
+
+/// Returns `(rpc.method, rpc.response.status_code)` for every latest data
+/// point of the histogram `name`.
+fn metric_points(rec: &Recorder, name: &str) -> Vec<(Option<String>, Option<String>)> {
+    use libo11y::opentelemetry_proto::tonic::common::v1::any_value::Value as ProtoValue;
+    use libo11y::opentelemetry_proto::tonic::metrics::v1::metric::Data;
+
+    let mut latest = Vec::new();
+    for batch in rec.metrics() {
+        for rm in batch.resource_metrics {
+            for sm in rm.scope_metrics {
+                for m in sm.metrics {
+                    if m.name != name {
+                        continue;
+                    }
+                    let Some(Data::Histogram(hist)) = m.data else {
+                        continue;
+                    };
+                    latest = hist
+                        .data_points
+                        .into_iter()
+                        .map(|dp| {
+                            let get = |key: &str| {
+                                dp.attributes.iter().find_map(|kv| {
+                                    match (
+                                        kv.key.as_str(),
+                                        kv.value.as_ref().and_then(|v| v.value.as_ref()),
+                                    ) {
+                                        (k, Some(ProtoValue::StringValue(s))) if k == key => {
+                                            Some(s.clone())
+                                        }
+                                        _ => None,
+                                    }
+                                })
+                            };
+                            (get("rpc.method"), get("rpc.response.status_code"))
+                        })
+                        .collect();
+                }
+            }
+        }
+    }
+    latest
+}
+
+/// A body yielding one data frame and then, optionally, trailers.
+struct GrpcBody {
+    data: Option<bytes::Bytes>,
+    trailers: Option<http::HeaderMap>,
+}
+
+impl http_body::Body for GrpcBody {
+    type Data = bytes::Bytes;
+    type Error = std::convert::Infallible;
+
+    fn poll_frame(
+        mut self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+        if let Some(data) = self.data.take() {
+            return std::task::Poll::Ready(Some(Ok(http_body::Frame::data(data))));
+        }
+        std::task::Poll::Ready(
+            self.trailers
+                .take()
+                .map(|t| Ok(http_body::Frame::trailers(t))),
+        )
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.data.is_none() && self.trailers.is_none()
+    }
+}
+
+fn grpc_request(uri: &str) -> http::Request<()> {
+    http::Request::builder()
+        .method(http::Method::POST)
+        .uri(uri)
+        .header(http::header::CONTENT_TYPE, "application/grpc")
+        .body(())
+        .expect("req")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn truncated_grpc_http_200_without_grpc_status_reads_unknown() {
+    use std::convert::Infallible;
+
+    use http_body_util::BodyExt as _;
+    use tower::ServiceExt as _;
+
+    let rec = Recorder::start("connect-grpc-truncated");
+    for (layered_as_server, path, trailers) in [
+        (true, "/test.v1.EchoService/Cut", None),
+        (false, "/test.v1.EchoService/ClientCut", None),
+        (true, "/test.v1.EchoService/Whole", Some("0")),
+    ] {
+        let respond = move |_req: http::Request<()>| async move {
+            let trailers = trailers.map(|code| {
+                let mut map = http::HeaderMap::new();
+                map.insert("grpc-status", http::HeaderValue::from_static(code));
+                map
+            });
+            Ok::<_, Infallible>(http::Response::new(GrpcBody {
+                data: Some(bytes::Bytes::from_static(b"\0\0\0\0\0")),
+                trailers,
+            }))
+        };
+        let resp = if layered_as_server {
+            ServiceBuilder::new()
+                .layer(ServerLayer::new(rec.sdk()))
+                .service_fn(respond)
+                .oneshot(grpc_request(path))
+                .await
+                .expect("ok")
+        } else {
+            ServiceBuilder::new()
+                .layer(ClientLayer::new(rec.sdk()))
+                .service_fn(respond)
+                .oneshot(grpc_request(&format!("http://rpc.local{path}")))
+                .await
+                .expect("ok")
+        };
+        let _ = resp.into_body().collect().await.expect("collect");
+    }
+
+    let spans = rec.spans();
+    for (kind, name) in [
+        (SpanKind::Server, "test.v1.EchoService/Cut"),
+        (SpanKind::Client, "test.v1.EchoService/ClientCut"),
+    ] {
+        let span = find_span(&spans, &kind, name).expect("span");
+        assert_eq!(
+            span_attr(&span, "rpc.response.status_code").as_deref(),
+            Some("UNKNOWN"),
+            "{name}"
+        );
+        assert_eq!(
+            span_attr(&span, "error.type").as_deref(),
+            Some("UNKNOWN"),
+            "{name}"
+        );
+        assert_eq!(
+            span.status,
+            SpanStatus::error("missing grpc-status trailer"),
+            "{name}"
+        );
+    }
+    let whole = find_span(&spans, &SpanKind::Server, "test.v1.EchoService/Whole").expect("whole");
+    assert_eq!(
+        span_attr(&whole, "rpc.response.status_code").as_deref(),
+        Some("OK")
+    );
+    assert_eq!(whole.status, SpanStatus::Unset);
+    rec.assert_conforms();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unrouted_procedures_collapse_to_other_on_unimplemented() {
+    const SCAN_SPECS: [Spec; 3] = [
+        Spec::client("/scan.a1/X", StreamType::Unary),
+        Spec::client("/scan.b2/Y", StreamType::Unary),
+        Spec::client("/scan.c3/Z", StreamType::Unary),
+    ];
+
+    let rec = Recorder::start("connect-unimplemented");
+    let router = build_router(&rec, CapturedContexts::default());
+    let svc = ServiceBuilder::new()
+        .layer(ServerLayer::new(rec.sdk()).with_canonical_line())
+        .service(ConnectRpcService::new(router));
+    let transport = ServiceTransport::new(svc);
+    let config = ClientConfig::new("http://localhost:8080".parse().expect("uri")).json();
+
+    for spec in SCAN_SPECS {
+        let err = call_unary::<_, StringValue, StringValueView>(
+            &transport,
+            &config,
+            spec,
+            StringValue::from("probe"),
+            CallOptions::default(),
+        )
+        .await
+        .expect_err("unimplemented");
+        assert_eq!(err.code, ErrorCode::Unimplemented);
+    }
+    call_unary::<_, StringValue, StringValueView>(
+        &transport,
+        &config,
+        ECHO_CLIENT_SPEC,
+        StringValue::from("hi"),
+        CallOptions::default(),
+    )
+    .await
+    .expect("echo ok");
+
+    let spans = rec.spans();
+    let others: Vec<_> = spans
+        .iter()
+        .filter(|s| s.span_kind == SpanKind::Server && s.name.as_ref() == "_OTHER")
+        .collect();
+    assert_eq!(
+        others.len(),
+        3,
+        "{:?}",
+        spans.iter().map(|s| &s.name).collect::<Vec<_>>()
+    );
+    for span in &others {
+        assert_eq!(span_attr(span, "rpc.method").as_deref(), Some("_OTHER"));
+        assert_eq!(
+            span_attr(span, "rpc.response.status_code").as_deref(),
+            Some("UNIMPLEMENTED")
+        );
+        let methods = span
+            .attributes
+            .iter()
+            .filter(|kv| kv.key.as_str() == "rpc.method")
+            .count();
+        assert_eq!(methods, 1, "rpc.method recorded once");
+    }
+    let echo = find_span(&spans, &SpanKind::Server, ECHO_METHOD).expect("echo");
+    assert_eq!(span_attr(&echo, "rpc.method").as_deref(), Some(ECHO_METHOD));
+
+    let mut points = metric_points(&rec, "rpc.server.call.duration");
+    points.sort();
+    assert_eq!(
+        points,
+        [
+            (Some("_OTHER".to_owned()), Some("UNIMPLEMENTED".to_owned())),
+            (Some(ECHO_METHOD.to_owned()), Some("OK".to_owned())),
+        ]
+    );
+    let mut canonical_methods: Vec<String> = summaries(&rec)
+        .iter()
+        .map(|l| l.attr_str("rpc.method").expect("rpc.method"))
+        .collect();
+    canonical_methods.sort();
+    assert_eq!(
+        canonical_methods,
+        ["_OTHER", "_OTHER", "_OTHER", ECHO_METHOD]
+    );
+    rec.assert_conforms();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn transport_errors_keep_the_code_they_carry() {
+    use bytes::Bytes;
+    use tower::ServiceExt as _;
+
+    type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
+    let rec = Recorder::start("connect-transport-codes");
+    let denied = ServiceBuilder::new()
+        .layer(ClientLayer::new(rec.sdk()))
+        .service_fn(|_req: http::Request<()>| async move {
+            Err::<http::Response<http_body_util::Empty<Bytes>>, _>(ConnectError::new(
+                ErrorCode::PermissionDenied,
+                "denied",
+            ))
+        });
+    let _ = denied
+        .oneshot(
+            http::Request::builder()
+                .uri("http://rpc.local/test.v1.EchoService/Denied")
+                .body(())
+                .expect("req"),
+        )
+        .await
+        .expect_err("denied");
+
+    let slow = ServiceBuilder::new()
+        .layer(ClientLayer::new(rec.sdk()))
+        .service_fn(|_req: http::Request<()>| async move {
+            let err: BoxError = Box::new(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "timed out",
+            ));
+            Err::<http::Response<http_body_util::Empty<Bytes>>, _>(err)
+        });
+    let _ = slow
+        .oneshot(
+            http::Request::builder()
+                .uri("http://rpc.local/test.v1.EchoService/Slow")
+                .body(())
+                .expect("req"),
+        )
+        .await
+        .expect_err("slow");
+
+    let spans = rec.spans();
+    for (name, want) in [
+        ("test.v1.EchoService/Denied", "PERMISSION_DENIED"),
+        ("test.v1.EchoService/Slow", "DEADLINE_EXCEEDED"),
+    ] {
+        let span = find_span(&spans, &SpanKind::Client, name).expect("span");
+        assert_eq!(
+            span_attr(&span, "rpc.response.status_code").as_deref(),
+            Some(want),
+            "{name}"
+        );
+        assert!(matches!(span.status, SpanStatus::Error { .. }), "{name}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn canonical_line_normalizes_the_http_method() {
+    use std::convert::Infallible;
+
+    use bytes::Bytes;
+    use http_body_util::BodyExt as _;
+    use tower::ServiceExt as _;
+
+    let rec = Recorder::start("connect-http-method");
+    for method in ["post", "PURGE", "x-scan-1"] {
+        let resp = ServiceBuilder::new()
+            .layer(ServerLayer::new(rec.sdk()).with_canonical_line())
+            .service_fn(|_req: http::Request<()>| async move {
+                Ok::<_, Infallible>(http::Response::new(http_body_util::Empty::<Bytes>::new()))
+            })
+            .oneshot(
+                http::Request::builder()
+                    .method(http::Method::from_bytes(method.as_bytes()).expect("method"))
+                    .uri(ECHO_PROC)
+                    .header(http::header::CONTENT_TYPE, "application/json")
+                    .body(())
+                    .expect("req"),
+            )
+            .await
+            .expect("ok");
+        let _ = resp.into_body().collect().await.expect("collect");
+    }
+    let methods: Vec<_> = summaries(&rec)
+        .iter()
+        .map(|l| l.attr_str("http.request.method").expect("method"))
+        .collect();
+    assert_eq!(methods, ["POST", "_OTHER", "_OTHER"]);
+}

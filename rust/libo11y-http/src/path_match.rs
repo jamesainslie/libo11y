@@ -4,7 +4,8 @@
 //! - `*` matches any sequence of non-`/` characters.
 //! - `?` matches any single non-`/` character.
 //! - `[...]` matches a character class (non-empty, optional leading `^` for
-//!   negation, `lo-hi` ranges, `\` escapes); never matches `/`.
+//!   negation, `lo-hi` ranges, `\` escapes). A class can match `/`, as in
+//!   Go's `path.Match` (only `filepath.Match` rejects the separator).
 //! - `\c` matches literal character `c`.
 //! - Any other character matches itself literally.
 //!
@@ -133,9 +134,8 @@ fn match_chunk<'a>(mut chunk: &str, mut s: &'a str) -> Result<(&'a str, bool), B
                 let s_char = if failed {
                     None
                 } else if let Some(ch) = s.chars().next() {
-                    if ch == '/' {
-                        failed = true;
-                    }
+                    // Go's `path.Match` lets a class match `/`, unlike `*`
+                    // and `?`: only `filepath.Match` rejects the separator.
                     s = &s[ch.len_utf8()..];
                     Some(ch)
                 } else {
@@ -309,6 +309,16 @@ mod tests {
             ("[z-a]", "m", Ok(false)),
             ("[^z-a]", "m", Ok(true)),
             ("[a-cz-a]", "b", Ok(true)),
+            // A class may match `/`, as Go's `path.Match` allows.
+            ("/a[/]b", "/a/b", Ok(true)),
+            ("a[/]b", "a/b", Ok(true)),
+            ("a[^x]b", "a/b", Ok(true)),
+            ("a[^/]b", "a/b", Ok(false)),
+            ("a[^/]b", "axb", Ok(true)),
+            ("a[!-0]b", "a/b", Ok(true)),
+            ("*[/]b", "a/b", Ok(true)),
+            ("a?b", "a/b", Ok(false)),
+            ("a*b", "a/b", Ok(false)),
         ];
 
         for &(pattern, name, want) in cases {

@@ -19,10 +19,11 @@ use opentelemetry::{Context, KeyValue};
 use pin_project_lite::pin_project;
 
 use crate::canonical::{CanonicalSummary, emit_canonical_line};
+use crate::error::code_from_error;
 use crate::semconv::{
     ERROR_TYPE, EnvelopeInspector, EnvelopeKind, HTTP_RESPONSE_STATUS_CODE, MAX_INSPECT_BYTES,
-    RPC_RESPONSE_STATUS_CODE, RpcStatusOutcome, STATUS_CODE_OK, canonical_code,
-    error_code_from_http_status, is_server_fault, parse_connect_error_json,
+    RPC_METHOD, RPC_METHOD_OTHER, RPC_RESPONSE_STATUS_CODE, RpcStatusOutcome, STATUS_CODE_OK,
+    canonical_code, error_code_from_http_status, is_server_fault, parse_connect_error_json,
     parse_grpc_status_headers,
 };
 
@@ -128,6 +129,25 @@ impl RpcStateInner {
             return grpc_res.clone().err();
         }
 
+        // A gRPC response without `grpc-status` either maps from a non-OK HTTP
+        // error status (such as 429 or 503) or was truncated before trailers
+        // (such as HTTP 200 or 304): nothing says it succeeded.
+        if self.protocol == Some(Protocol::Grpc) {
+            return Some(
+                self.http_status
+                    .and_then(error_code_from_http_status)
+                    .map_or_else(
+                        || {
+                            (
+                                ErrorCode::Unknown,
+                                Some("missing grpc-status trailer".to_owned()),
+                            )
+                        },
+                        |c| (c, None),
+                    ),
+            );
+        }
+
         // 2. Protocol-specific body inspection.
         match &self.inspector {
             BodyInspector::Envelope(inspector) => {
@@ -149,12 +169,7 @@ impl RpcStateInner {
             .map(|c| (c, None))
     }
 
-    fn finish(
-        mut self,
-        error: Option<(ErrorCode, Option<String>)>,
-        transport_error: Option<String>,
-        panicked: bool,
-    ) {
+    fn finish(mut self, error: Option<(ErrorCode, Option<String>)>, panicked: bool) {
         let span = self.cx.span();
         if panicked {
             span.set_attribute(KeyValue::new(HTTP_RESPONSE_STATUS_CODE, 500_i64));
@@ -167,9 +182,6 @@ impl RpcStateInner {
 
         let (rpc_code, is_err, err_desc) = if panicked {
             ("INTERNAL", true, Some("panic".to_owned()))
-        } else if let Some(transport_msg) = transport_error {
-            let code = error.as_ref().map_or(ErrorCode::Unavailable, |(c, _)| *c);
-            (canonical_code(code), true, Some(transport_msg))
         } else if let Some((code, msg)) = error.as_ref() {
             let name = canonical_code(*code);
             (
@@ -180,6 +192,34 @@ impl RpcStateInner {
         } else {
             (STATUS_CODE_OK, false, None)
         };
+
+        let mut collapsed_method = false;
+        if self.role == CallRole::Server {
+            if !panicked
+                && error
+                    .as_ref()
+                    .is_some_and(|(c, _)| *c == ErrorCode::Unimplemented)
+            {
+                // The path named no procedure the server routes, so it is
+                // the caller's text: a scanner's random paths must not each
+                // become a span name, metric series, or canonical method.
+                collapsed_method = true;
+                span.update_name(RPC_METHOD_OTHER);
+                self.metric_attrs.retain(|kv| kv.key.as_str() != RPC_METHOD);
+                self.metric_attrs
+                    .push(KeyValue::new(RPC_METHOD, RPC_METHOD_OTHER));
+            }
+            // A server span gets `rpc.method` only now, once the outcome
+            // says whether the procedure exists: the SDK appends a repeated
+            // key rather than replacing it.
+            if let Some(method) = self
+                .metric_attrs
+                .iter()
+                .find(|kv| kv.key.as_str() == RPC_METHOD)
+            {
+                span.set_attribute(method.clone());
+            }
+        }
 
         let status_kv = KeyValue::new(RPC_RESPONSE_STATUS_CODE, rpc_code);
         span.set_attribute(status_kv.clone());
@@ -204,12 +244,17 @@ impl RpcStateInner {
         {
             let _guard = self.cx.clone().attach();
             if let Some(canonical) = self.canonical.take() {
+                let procedure = if collapsed_method {
+                    RPC_METHOD_OTHER
+                } else {
+                    &canonical.procedure
+                };
                 emit_canonical_line(
                     &self.cx,
                     &canonical.sdk,
                     &canonical.record,
                     &CanonicalSummary {
-                        procedure: &canonical.procedure,
+                        procedure,
                         protocol: self.protocol,
                         http_method: &canonical.http_method,
                         http_status: canonical_http_status,
@@ -226,11 +271,7 @@ impl RpcStateInner {
     }
 
     fn finish_panic(self) {
-        self.finish(
-            Some((ErrorCode::Internal, Some("panic".to_owned()))),
-            None,
-            true,
-        );
+        self.finish(Some((ErrorCode::Internal, Some("panic".to_owned()))), true);
     }
 
     fn finish_on_drop(self) {
@@ -240,7 +281,7 @@ impl RpcStateInner {
         }
         if self.seen_end_stream || self.observed_grpc.is_some() {
             let err = self.resolve_error();
-            self.finish(err, None, false);
+            self.finish(err, false);
             return;
         }
         // Clients may stop polling as soon as a terminal gRPC-Web trailer
@@ -250,19 +291,19 @@ impl RpcStateInner {
         match &self.inspector {
             BodyInspector::Envelope(inspector) => {
                 if let Some(outcome) = inspector.outcome().cloned() {
-                    self.finish(outcome.err(), None, false);
+                    self.finish(outcome.err(), false);
                     return;
                 }
             }
             BodyInspector::ConnectUnaryError { buf, .. } => {
                 if let Some(err) = parse_connect_error_json(buf) {
-                    self.finish(Some(err), None, false);
+                    self.finish(Some(err), false);
                     return;
                 }
             }
             BodyInspector::None => {}
         }
-        self.finish(Some((ErrorCode::Canceled, None)), None, false);
+        self.finish(Some((ErrorCode::Canceled, None)), false);
     }
 }
 
@@ -370,17 +411,16 @@ impl RpcState {
         if let Some(mut inner) = self.inner.take() {
             inner.seen_end_stream = true;
             let err = inner.resolve_error();
-            inner.finish(err, None, false);
+            inner.finish(err, false);
         }
     }
 
-    pub(crate) fn finish_transport_error(&mut self, msg: String) {
+    /// Finishes the call as failed by the transport or body error `err`,
+    /// with the code it stands for.
+    pub(crate) fn finish_transport_error<E: fmt::Display + 'static>(&mut self, err: &E) {
         if let Some(inner) = self.inner.take() {
-            inner.finish(
-                Some((ErrorCode::Unavailable, Some(msg.clone()))),
-                Some(msg),
-                false,
-            );
+            let msg = err.to_string();
+            inner.finish(Some((code_from_error(err), Some(msg))), false);
         }
     }
 
@@ -470,7 +510,7 @@ impl<B> InstrumentedBody<B> {
 impl<B> Body for InstrumentedBody<B>
 where
     B: Body,
-    B::Error: fmt::Display,
+    B::Error: fmt::Display + 'static,
 {
     type Data = B::Data;
     type Error = B::Error;
@@ -515,7 +555,7 @@ where
             }
             Some(Err(err)) => {
                 if let Some(mut state) = this.state.take() {
-                    state.finish_transport_error(err.to_string());
+                    state.finish_transport_error(err);
                 }
             }
             None => {
@@ -578,7 +618,7 @@ impl<F, ResBody, E> Future for ResponseFuture<F>
 where
     F: Future<Output = Result<Response<ResBody>, E>>,
     ResBody: Body,
-    E: fmt::Display,
+    E: fmt::Display + 'static,
 {
     type Output = Result<Response<InstrumentedBody<ResBody>>, E>;
 
@@ -627,7 +667,7 @@ where
                 }
                 Err(err) => {
                     if let Some(mut state) = slot.take() {
-                        state.finish_transport_error(err.to_string());
+                        state.finish_transport_error(&err);
                     }
                     Poll::Ready(Err(err))
                 }

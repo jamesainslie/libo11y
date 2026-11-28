@@ -107,7 +107,11 @@
 //! renders through its own `Redact` and never falls back to a text form,
 //! and the derived impls apply exactly when every such field type has one.
 //! `Secret<T>` and `PhantomData<T>` satisfy the bound for any `T`. A
-//! redacted or omitted field is never rendered and adds no bound.
+//! redacted or omitted field is never rendered and adds no bound. A field
+//! whose type names the deriving type itself, such as
+//! `Option<Box<Node<T>>>` or `Vec<Self>`, adds no bound either, so a
+//! recursive generic type derives without overflowing the trait solver,
+//! and the field renders through the impl being derived.
 //!
 //! Each derived value, collection and pointer counts one level of
 //! nesting, and past 32 levels the rest renders `REDACTED` instead of
