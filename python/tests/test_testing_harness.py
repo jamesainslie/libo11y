@@ -45,7 +45,9 @@ def test_recorder_assert_conforms_detects_secret_and_missing_event_attrs() -> No
 
     with start_recorder(service_name="conforms-event") as rec2:
         rec2.telemetry.event(EVENT_TELEMETRY_CONFIGURED, {})
-        with pytest.raises(AssertionError, match="missing template attribute"):
+        with pytest.raises(
+            AssertionError, match=r"missing required template attribute o11y\.config\.<key>"
+        ):
             rec2.assert_conforms()
 
     with start_recorder(service_name="conforms-ok") as rec3:
