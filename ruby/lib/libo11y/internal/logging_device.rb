@@ -5,6 +5,7 @@ require "logger"
 require "opentelemetry"
 require_relative "../spec"
 require_relative "bridges"
+require_relative "pii"
 
 module Libo11y
   FORCE_EMIT_FIBER_KEY = :libo11y_force_emit
@@ -45,7 +46,7 @@ module Libo11y
         otel_logger: nil,
         console_writer: $stdout,
         console_enabled: true,
-        console_level: ::Logger::INFO,
+        log_level: ::Logger::INFO,
         attr_replacer: nil,
         extra_sinks: []
       )
@@ -54,11 +55,10 @@ module Libo11y
         @otel_logger = otel_logger
         @console_writer = console_writer
         @console_enabled = console_enabled
-        @console_level = console_level
         @attr_replacer = attr_replacer
         @extra_sinks = Array(extra_sinks).dup
         @mutex = Mutex.new
-        self.level = ::Logger::DEBUG
+        self.level = log_level
       end
 
       def add(severity, message = nil, progname = nil, &)
@@ -66,16 +66,9 @@ module Libo11y
         return true if Thread.current[REENTRY_FIBER_KEY]
 
         force = Libo11y.force_emit?
-        return true if !force && severity < @console_level && @otel_logger.nil? && @extra_sinks.empty?
+        return true if !force && severity < level
 
-        if message.nil?
-          if block_given?
-            message = yield
-          else
-            message = progname
-            @progname
-          end
-        end
+        message = block_given? ? yield : progname if message.nil?
 
         body, attrs = extract_message_and_attrs(message)
         emit_record(
@@ -145,6 +138,8 @@ module Libo11y
 
       def emit_record(severity:, body:, attrs:, event_name:, force:, raise_on_sink_error:)
         return if Thread.current[REENTRY_FIBER_KEY]
+        # One level gates every sink. force_emit and events pass it.
+        return unless force || severity >= level
 
         Thread.current[REENTRY_FIBER_KEY] = true
         begin
@@ -166,20 +161,17 @@ module Libo11y
           classified.delete("span_id")
 
           # Console leg
-          if @console_enabled && @console_writer && (force || severity >= @console_level)
-            line = build_console_line(now, sev_text, body, trace_id, span_id, classified)
-            write_console(line, raise_on_sink_error: raise_on_sink_error)
+          if @console_enabled && @console_writer
+            write_console(raise_on_sink_error: raise_on_sink_error) do
+              build_console_line(now, sev_text, body, trace_id, span_id, classified)
+            end
           end
 
           # OTLP leg
-          if @otel_logger && (force || severity >= @console_level)
-            emit_otel(now, sev_num, sev_text, body, event_name, classified, raise_on_sink_error: raise_on_sink_error)
-          end
+          emit_otel(now, sev_num, sev_text, body, event_name, classified, raise_on_sink_error: raise_on_sink_error) if @otel_logger
 
           # Extra sinks
           @extra_sinks.each do |sink|
-            next unless force || severity >= @console_level
-
             record_hash = {
               timestamp: now,
               observed_timestamp: now,
@@ -217,12 +209,26 @@ module Libo11y
         attrs.each do |k, v|
           next if %w[time level msg trace_id span_id].include?(k)
 
-          payload[k] = v
+          payload[k] = json_safe(v)
         end
         "#{JSON.generate(payload)}\n"
       end
 
-      def write_console(line, raise_on_sink_error:)
+      # JSON has no NaN and no infinity, so those floats are written as the
+      # strings Go's slog writes: "NaN", "+Inf" and "-Inf".
+      def json_safe(value)
+        case value
+        when Float then value.finite? ? value : PII.canonical_float(value)
+        when Hash then value.transform_values { |v| json_safe(v) }
+        when Array then value.map { |v| json_safe(v) }
+        else value
+        end
+      end
+
+      # Encodes and writes one line. A failure to encode or to write stays
+      # in this sink, so the record still reaches the others.
+      def write_console(raise_on_sink_error:)
+        line = yield
         @mutex.synchronize do
           @console_writer.write(line)
         end

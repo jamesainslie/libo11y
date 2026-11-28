@@ -418,7 +418,7 @@ module Libo11y
           otel_logger: otel_logger,
           console_writer: opts.console_writer.nil? ? $stdout : opts.console_writer,
           console_enabled: opts.console_enabled,
-          console_level: opts.console_level,
+          log_level: opts.log_level,
           attr_replacer: opts.attr_replacer,
           extra_sinks: opts.extra_log_sinks
         )
@@ -427,6 +427,7 @@ module Libo11y
           options: opts,
           env_map: env_map,
           identity: res_result,
+          level: structured_logger.level,
           exporters: {
             traces: trace_exporter_mode,
             metrics: metric_exporter_mode,

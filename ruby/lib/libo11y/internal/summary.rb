@@ -27,11 +27,11 @@ module Libo11y
       module_function
 
       # @return [Array(Hash, String)] the event attributes and the line
-      def build(options:, env_map:, identity:, exporters:, propagator:)
+      def build(options:, env_map:, identity:, level:, exporters:, propagator:)
         attrs = { "service.name" => identity.service_name, "service.version" => identity.service_version }
         %i[traces metrics logs].each { |signal| attrs["o11y.config.#{signal}"] = exporters.fetch(signal) }
         attrs["o11y.config.console"] = options.console_enabled ? "json" : "off"
-        attrs["o11y.config.level"] = LEVELS.fetch(options.console_level, options.console_level.to_s)
+        attrs["o11y.config.level"] = LEVELS.fetch(level, level.to_s)
         attrs["o11y.config.sampler"] = sampler(options, env_map)
         attrs["o11y.config.propagators"] = propagator.fields.empty? ? FIELDLESS : propagator.fields.join(",")
         attrs["o11y.config.runtime_metrics"] = exporters.fetch(:runtime_metrics).to_s

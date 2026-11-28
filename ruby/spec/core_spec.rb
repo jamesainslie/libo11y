@@ -262,7 +262,7 @@ RSpec.describe "Libo11y core" do
 
   describe "force_emit, events, wide records, and idempotent shutdown" do
     it "bypasses console level gate with force_emit and emits wide records" do
-      rec = Libo11y::Testing::Recorder.new(console_level: Logger::ERROR)
+      rec = Libo11y::Testing::Recorder.new(log_level: Logger::ERROR)
       rec.telemetry.logger.info("dropped_normal")
       expect(rec.console_records).to be_empty
 

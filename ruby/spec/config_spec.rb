@@ -36,7 +36,7 @@ RSpec.describe "Resolved configuration" do
     end
 
     it "is also the effective configuration, as one line" do
-      tel = init(console_level: Logger::WARN)
+      tel = init(log_level: Logger::WARN)
 
       expect(tel.effective_config).to eq(
         "service.name=checkout service.version=1.2.0 o11y.config.traces=none o11y.config.metrics=none " \
