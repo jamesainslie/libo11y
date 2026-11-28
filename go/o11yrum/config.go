@@ -393,6 +393,9 @@ func (c *Config) validate() error {
 	if err := c.Replay.validate(); err != nil {
 		return err
 	}
+	if err := c.Replay.validateRead(c.Listen); err != nil {
+		return err
+	}
 	seen := make(map[string]bool, len(c.Apps))
 	for i, a := range c.Apps {
 		if a.ServiceName == "" {
@@ -463,6 +466,10 @@ func (c *Config) clone() *Config {
 	if c.ObjectStore.S3 != nil {
 		s3c := *c.ObjectStore.S3
 		out.ObjectStore.S3 = &s3c
+	}
+	if c.Replay.SweepInterval != nil {
+		every := *c.Replay.SweepInterval
+		out.Replay.SweepInterval = &every
 	}
 	out.Apps = make([]AppConfig, len(c.Apps))
 	for i, a := range c.Apps {

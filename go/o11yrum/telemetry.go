@@ -59,6 +59,7 @@ type telemetry struct {
 	replayBytesIn  metric.Int64Counter
 	replayDrops    metric.Int64Counter
 	replayStoreDur metric.Float64Histogram
+	replayReads    metric.Int64Counter
 }
 
 // newTelemetry creates the instruments on mp, or on a noop provider when
@@ -125,6 +126,10 @@ func newTelemetry(mp metric.MeterProvider, log *slog.Logger) *telemetry {
 		metric.WithDescription("Time one object store operation on replay objects took, by operation and outcome.")); !check("o11yrum.replay.store.duration", err) {
 		t.replayStoreDur, _ = fallback.Float64Histogram("o11yrum.replay.store.duration")
 	}
+	if t.replayReads, err = m.Int64Counter("o11yrum.replay.reads", metric.WithUnit("{request}"),
+		metric.WithDescription("Replay read API requests, by operation and outcome.")); !check("o11yrum.replay.reads", err) {
+		t.replayReads, _ = fallback.Int64Counter("o11yrum.replay.reads")
+	}
 	return t
 }
 
@@ -148,6 +153,12 @@ func (t *telemetry) replayDropped(ctx context.Context, app string, s scrubStats)
 				attribute.String(telApp, app), attribute.String(telReason, reason)))
 		}
 	}
+}
+
+// replayRead counts one read API request.
+func (t *telemetry) replayRead(ctx context.Context, op, outcome string) {
+	t.replayReads.Add(ctx, 1, metric.WithAttributes(
+		attribute.String(telOperation, op), attribute.String(telOutcome, outcome)))
 }
 
 // replayStore records one object store operation on replay objects.

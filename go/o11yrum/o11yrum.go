@@ -31,6 +31,8 @@ type Handler struct {
 	symbols *symbolicator
 	// replaySlots holds one token per replay segment being handled.
 	replaySlots chan struct{}
+	// reader serves the replay read API on its own listener.
+	reader *replayReader
 
 	// derive is nil without WithMetricProducer.
 	derive           *deriver
@@ -113,6 +115,9 @@ func NewHandler(opts ...Option) (*Handler, error) {
 		}
 	}
 	h.replaySlots = make(chan struct{}, cfg.Replay.MaxConcurrent)
+	if h.reader, err = newReplayReader(h, cfg.resolvePath(cfg.Replay.ReadTokenFile)); err != nil {
+		return nil, err
+	}
 	if h.store != nil {
 		h.symbols = newSymbolicator(h.store, cfg.Symbolication, symbolicatorDeps{
 			maxValueLen: cfg.Limits.MaxValueLength,

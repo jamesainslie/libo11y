@@ -137,12 +137,9 @@ func (s *FileStore) Put(_ context.Context, key string, data []byte) (err error) 
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(p), 0o750); err != nil {
-		return fmt.Errorf("o11yrum: file store: %w", err)
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(p), ".put-*")
+	tmp, err := s.createTemp(filepath.Dir(p))
 	if err != nil {
-		return fmt.Errorf("o11yrum: file store: %w", err)
+		return err
 	}
 	defer func() {
 		if err != nil {
@@ -160,6 +157,29 @@ func (s *FileStore) Put(_ context.Context, key string, data []byte) (err error) 
 		return fmt.Errorf("o11yrum: file store: %w", err)
 	}
 	return nil
+}
+
+// createTemp creates the temporary file for an object in dir, creating dir
+// first. Delete removes directories it empties, so a Delete between the
+// two steps, or inside MkdirAll, can remove a directory again; the steps
+// are then retried.
+func (s *FileStore) createTemp(dir string) (*os.File, error) {
+	var err error
+	for range 8 {
+		var tmp *os.File
+		if err = os.MkdirAll(dir, 0o750); err == nil {
+			tmp, err = os.CreateTemp(dir, tempPrefix+"*")
+		}
+		if err == nil {
+			return tmp, nil
+		}
+		// MkdirAll answers either error when a directory it walks is
+		// removed under it.
+		if !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, fs.ErrExist) {
+			break
+		}
+	}
+	return nil, fmt.Errorf("o11yrum: file store: %w", err)
 }
 
 // Get reads the object under key.
@@ -269,7 +289,9 @@ func (s *FileStore) walk(ctx context.Context, dir, prefix string, fn func(Object
 }
 
 // Delete removes the object under key. A missing key is not an error.
-// Directories the deletion leaves empty stay: Put recreates them anyway.
+// Directories the deletion leaves empty are removed too, up to the root,
+// so an erased session leaves no directory named after it and expired
+// sessions do not pile up as empty directories. Put recreates them.
 func (s *FileStore) Delete(_ context.Context, key string) error {
 	p, err := s.path(key)
 	if err != nil {
@@ -277,6 +299,14 @@ func (s *FileStore) Delete(_ context.Context, key string) error {
 	}
 	if err := os.Remove(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("o11yrum: file store: %w", err)
+	}
+	root := filepath.Clean(s.root)
+	for dir := filepath.Dir(p); dir != root && strings.HasPrefix(dir, root+string(filepath.Separator)); dir = filepath.Dir(dir) {
+		// Remove fails on a directory that still holds anything, such as
+		// another object or a Put's temporary file, and that ends the walk.
+		if os.Remove(dir) != nil {
+			break
+		}
 	}
 	return nil
 }
