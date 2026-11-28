@@ -228,7 +228,7 @@ test("the exemplar filter comes from the option, then the environment", () => {
   );
 });
 
-test("batch and metric export numbers parse as integers; invalid or negative keeps the default", () => {
+test("batch and metric export numbers parse as Go's strconv.Atoi does; anything else or negative keeps the default", () => {
   const c = resolveConfig(
     {},
     {
@@ -245,10 +245,10 @@ test("batch and metric export numbers parse as integers; invalid or negative kee
     },
   );
   assert.deepEqual(c.batch.spans, {
-    scheduledDelayMillis: 100,
+    scheduledDelayMillis: 5000,
     exportTimeoutMillis: 5000,
     maxQueueSize: 2048,
-    maxExportBatchSize: 64,
+    maxExportBatchSize: 512,
   });
   assert.deepEqual(c.batch.logs, {
     scheduledDelayMillis: 0,
@@ -256,7 +256,32 @@ test("batch and metric export numbers parse as integers; invalid or negative kee
     maxQueueSize: 4096,
     maxExportBatchSize: 512,
   });
-  assert.deepEqual(c.metricExport, { intervalMillis: 15000, timeoutMillis: 10 });
+  assert.deepEqual(c.metricExport, { intervalMillis: 15000, timeoutMillis: 5000 });
+});
+
+test("an integer variable takes an optional sign and decimal digits, untrimmed, as strconv.Atoi does", () => {
+  const delay = (value: string): number =>
+    resolveConfig({}, { OTEL_BSP_SCHEDULE_DELAY: value }).batch.spans.scheduledDelayMillis;
+  assert.equal(delay("250"), 250);
+  assert.equal(delay("+5"), 5);
+  assert.equal(delay("007"), 7);
+  for (const value of [
+    "64.9",
+    "10ms",
+    " 100",
+    "100 ",
+    "\t100\n",
+    "-5",
+    "",
+    "+",
+    "-",
+    "1e3",
+    "0x10",
+    "1_000",
+    "99999999999999999999",
+  ]) {
+    assert.equal(delay(value), 5000, JSON.stringify(value));
+  }
 });
 
 test("options set the level, console, runtime metrics and summary", () => {

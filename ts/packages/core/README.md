@@ -132,6 +132,23 @@ for them, so pass one through the `propagators` option. `hermetic` ignores
 the variable. `effectiveConfig()` and the canary report the header fields
 in the configured order, or `none`.
 
+`OTEL_SDK_DISABLED=true` (matched case-insensitively) turns off every
+export, including injected exporters, readers and processors, as well as
+runtime metrics and exemplars. `tracerProvider` is a no-op tracer provider,
+which `setupWith` installs globally, so no spans are recorded while context
+propagation and inbound trace correlation on console logs keep working. An
+injected `metricReader` is shut down immediately during setup, and any other
+discarded injected exporter or processor is shut down once in `shutdown`.
+The same cleanup applies when a build throws or `setupWith` fails with
+`ALREADY_SETUP`, without touching anything a live telemetry still owns. A
+value other than `true`, `false` or empty warns once through the telemetry's
+error handler and leaves the SDK enabled. `hermetic` ignores the variable.
+
+Integer `OTEL_*` variables (`OTEL_BSP_*`, `OTEL_BLRP_*` and
+`OTEL_METRIC_EXPORT_*`) accept only an untrimmed base-10 integer with an
+optional sign, matching Go's `strconv.Atoi`. Negative or malformed values
+keep the default.
+
 ## Identity
 
 | Attribute                     | Set with                                                                            | Error when missing or invalid                                                  |

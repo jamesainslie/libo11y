@@ -64,8 +64,10 @@ An option outside the closed set of values it takes, such as
 
 Both take the `TelemetryOptions` that the
 [core README](https://github.com/jamesainslie/libo11y/tree/main/ts/packages/core#options) lists. `OTEL_SDK_DISABLED=true`
-turns off every export, injected exporters included, and runtime metrics.
-The logger still writes to the console.
+turns off every export, injected exporters, readers and processors included,
+and runtime metrics. The tracer provider is a no-op provider so no spans are
+recorded while propagation and console log correlation keep working, and a
+value other than `true` or `false` warns once and leaves the SDK enabled.
 
 This package re-exports the core types an application needs most:
 `Telemetry`, `TelemetryOptions`, `Logger`, `SignalReport`,
