@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Tests for release-tag.sh: it routes each Go, TypeScript, Zig, Python and
-# Rust release tag to its family, directory, module and version, and it
-# refuses any other tag.
+# Tests for release-tag.sh: it routes each Go, TypeScript, Zig, Python,
+# Rust and C release tag to its family, directory, module, version,
+# version line and changelog, and it refuses any other tag.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -72,6 +72,8 @@ dir=go
 module=github.com/jamesainslie/libo11y/go
 version=0.2.0
 prerelease=false
+lockstep=true
+changelog=go/CHANGELOG.md
 EOF
 )" go/v0.2.0
 
@@ -83,9 +85,35 @@ dir=go/$sub
 module=github.com/jamesainslie/libo11y/go/$sub
 version=1.4.10
 prerelease=false
+lockstep=true
+changelog=go/CHANGELOG.md
 EOF
 	)" "go/$sub/v1.4.10"
 done
+
+expect_route "routes the go/o11yrum module on its own version line" "$(
+	cat <<'EOF'
+kind=go
+dir=go/o11yrum
+module=github.com/jamesainslie/libo11y/go/o11yrum
+version=0.1.0
+prerelease=false
+lockstep=false
+changelog=go/o11yrum/CHANGELOG.md
+EOF
+)" go/o11yrum/v0.1.0
+
+expect_route "marks a go/o11yrum prerelease" "$(
+	cat <<'EOF'
+kind=go
+dir=go/o11yrum
+module=github.com/jamesainslie/libo11y/go/o11yrum
+version=0.2.0-rc.1
+prerelease=true
+lockstep=false
+changelog=go/o11yrum/CHANGELOG.md
+EOF
+)" go/o11yrum/v0.2.0-rc.1
 
 expect_route "marks a go prerelease" "$(
 	cat <<'EOF'
@@ -94,6 +122,8 @@ dir=go
 module=github.com/jamesainslie/libo11y/go
 version=1.0.0-rc.1
 prerelease=true
+lockstep=true
+changelog=go/CHANGELOG.md
 EOF
 )" go/v1.0.0-rc.1
 
@@ -104,6 +134,8 @@ dir=ts
 module=@libo11y
 version=0.1.0
 prerelease=false
+lockstep=false
+changelog=ts/CHANGELOG.md
 EOF
 )" ts/v0.1.0
 
@@ -114,6 +146,8 @@ dir=ts
 module=@libo11y
 version=0.2.0-beta.1
 prerelease=true
+lockstep=false
+changelog=ts/CHANGELOG.md
 EOF
 )" ts/v0.2.0-beta.1
 
@@ -124,6 +158,8 @@ dir=zig
 module=libo11y-zig
 version=0.1.0
 prerelease=false
+lockstep=false
+changelog=zig/CHANGELOG.md
 EOF
 )" zig/v0.1.0
 
@@ -134,6 +170,8 @@ dir=zig
 module=libo11y-zig
 version=1.0.0-rc.1
 prerelease=true
+lockstep=false
+changelog=zig/CHANGELOG.md
 EOF
 )" zig/v1.0.0-rc.1
 
@@ -144,6 +182,8 @@ dir=python
 module=libo11y
 version=0.1.0
 prerelease=false
+lockstep=false
+changelog=python/CHANGELOG.md
 EOF
 )" python/v0.1.0
 
@@ -154,6 +194,8 @@ dir=python
 module=libo11y
 version=0.2.0-rc.1
 prerelease=true
+lockstep=false
+changelog=python/CHANGELOG.md
 EOF
 )" python/v0.2.0-rc.1
 
@@ -164,6 +206,8 @@ dir=rust
 module=libo11y-rust
 version=0.1.0
 prerelease=false
+lockstep=false
+changelog=rust/CHANGELOG.md
 EOF
 )" rust/v0.1.0
 
@@ -174,6 +218,8 @@ dir=rust
 module=libo11y-rust
 version=0.2.0-rc.1
 prerelease=true
+lockstep=false
+changelog=rust/CHANGELOG.md
 EOF
 )" rust/v0.2.0-rc.1
 
@@ -184,6 +230,8 @@ dir=c
 module=libo11y-c
 version=0.1.0
 prerelease=false
+lockstep=false
+changelog=c/CHANGELOG.md
 EOF
 )" c/v0.1.0
 
@@ -194,10 +242,15 @@ dir=c
 module=libo11y-c
 version=0.2.0-rc.1
 prerelease=true
+lockstep=false
+changelog=c/CHANGELOG.md
 EOF
 )" c/v0.2.0-rc.1
 
 expect_failure "refuses a spec tag" 1 "spec/v1.2.0 is not a release tag" spec/v1.2.0
+expect_failure "refuses a two-part go/o11yrum version" 1 "1 is not a semantic version" go/o11yrum/v1
+expect_failure "refuses a nested go/o11yrum path" 1 "is not a release tag" go/o11yrum/cmd/v0.1.0
+expect_failure "refuses a go/o11yrum version with a path" 1 "is not a semantic version" go/o11yrum/vfoo/v1.0.0
 expect_failure "refuses an unknown go submodule" 1 "is not a release tag" go/o11yfoo/v1.0.0
 expect_failure "refuses a tag without the v" 1 "is not a release tag" ts/0.1.0
 expect_failure "refuses a nested ts path" 1 "is not a release tag" ts/core/v0.1.0

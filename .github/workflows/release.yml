@@ -4,6 +4,17 @@
 # tag of one release goes on the same commit. Rerunning a release is safe:
 # an existing GitHub Release has its notes replaced.
 #
+# A go/o11yrum/vX.Y.Z tag releases the o11yrum RUM gateway module, which
+# versions on its own line. It goes on any commit, and its go.mod may
+# require any released parent version, so verify checks that the required
+# go/ tag exists instead of requiring it on the same commit. The release
+# notes come from go/o11yrum/CHANGELOG.md, the GitHub Release is never
+# marked Latest, and the image job builds ghcr.io/jamesainslie/o11yrum-gateway
+# for linux/amd64 and linux/arm64, pushes it tagged X.Y.Z (and X.Y and
+# latest for a non-prerelease), and attests its build provenance, so
+# `gh attestation verify oci://ghcr.io/jamesainslie/o11yrum-gateway:X.Y.Z
+# --repo jamesainslie/libo11y` checks it.
+#
 # A ts/vX.Y.Z tag publishes every @libo11y/* package to npm at X.Y.Z with
 # provenance. It authenticates through npm trusted publishing: each package
 # trusts this workflow file in this repository, and no npm token is stored.
@@ -52,6 +63,7 @@ on:
       - "go/o11ygin/v*"
       - "go/o11yconnect/v*"
       - "go/o11ysql/v*"
+      - "go/o11yrum/v*"
       - "ts/v*"
       - "zig/v*"
       - "python/v*"
@@ -79,6 +91,8 @@ jobs:
       module: ${{ steps.tag.outputs.module }}
       version: ${{ steps.tag.outputs.version }}
       prerelease: ${{ steps.tag.outputs.prerelease }}
+      lockstep: ${{ steps.tag.outputs.lockstep }}
+      changelog: ${{ steps.tag.outputs.changelog }}
       # The rust branch only: every publishable crate in topological order, space separated.
       rust_crates: ${{ steps.rust_crates.outputs.crates }}
     steps:
@@ -93,7 +107,7 @@ jobs:
         run: |
           # The script explains a refused tag on stderr.
           if ! scripts/release-tag.sh "$TAG" >"$RUNNER_TEMP/release-tag.out"; then
-            echo "::error::$TAG is not a release tag with a semantic version (go/vX.Y.Z, go/<submodule>/vX.Y.Z, ts/vX.Y.Z, zig/vX.Y.Z, python/vX.Y.Z, rust/vX.Y.Z or c/vX.Y.Z)"
+            echo "::error::$TAG is not a release tag with a semantic version (go/vX.Y.Z, go/<submodule>/vX.Y.Z, go/o11yrum/vX.Y.Z, ts/vX.Y.Z, zig/vX.Y.Z, python/vX.Y.Z, rust/vX.Y.Z or c/vX.Y.Z)"
             exit 1
           fi
           cat "$RUNNER_TEMP/release-tag.out" >>"$GITHUB_OUTPUT"
@@ -107,8 +121,9 @@ jobs:
             go/o11ygin/go.sum
             go/o11yconnect/go.sum
             go/o11ysql/go.sum
+            go/o11yrum/go.sum
       - name: Require the parent tag on the same commit
-        if: steps.tag.outputs.kind == 'go' && steps.tag.outputs.dir != 'go'
+        if: steps.tag.outputs.kind == 'go' && steps.tag.outputs.dir != 'go' && steps.tag.outputs.lockstep == 'true'
         env:
           TAG: ${{ github.ref_name }}
           DIR: ${{ steps.tag.outputs.dir }}
@@ -130,13 +145,46 @@ jobs:
             echo "::error::$DIR/go.mod requires the parent at ${required:-nothing}, not v$VERSION"
             exit 1
           fi
+      # o11yrum versions on its own line: its tag goes on any commit, and
+      # the parent version its go.mod requires must be a released go/ tag.
+      - name: Require the parent release o11yrum depends on
+        if: steps.tag.outputs.kind == 'go' && steps.tag.outputs.lockstep == 'false'
+        env:
+          DIR: ${{ steps.tag.outputs.dir }}
+        run: |
+          required="$(cd "$DIR" && go mod edit -json | jq -r '.Require[] | select(.Path == "github.com/jamesainslie/libo11y/go") | .Version')"
+          git fetch --force --tags origin
+          if [[ -z "$required" ]] || ! git rev-parse --verify --quiet "refs/tags/go/$required^{commit}" >/dev/null; then
+            echo "::error::$DIR/go.mod requires the parent at ${required:-nothing}, which has no go/ release tag"
+            exit 1
+          fi
+          echo "$DIR requires github.com/jamesainslie/libo11y/go $required, released as go/$required"
+      - name: Require O11YRUM_RELEASE_VERSION at the tag's version
+        if: steps.tag.outputs.dir == 'go/o11yrum'
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          got="$(make -s --no-print-directory print-o11yrum-release-version)"
+          if [[ "$got" != "v$VERSION" ]]; then
+            echo "::error::the Makefile's O11YRUM_RELEASE_VERSION is $got, not v$VERSION; the release commit moves it"
+            exit 1
+          fi
       - name: Check the changelog has release notes
         if: steps.tag.outputs.kind == 'go'
         env:
           VERSION: ${{ steps.tag.outputs.version }}
-        run: scripts/release-notes.sh "$VERSION"
+          CHANGELOG: ${{ steps.tag.outputs.changelog }}
+        run: scripts/release-notes.sh "$VERSION" "$CHANGELOG"
       - if: steps.tag.outputs.kind == 'go'
         run: make vet test spec-check spec-drift GO_TEST_P=4
+      # Builds, vets and tests o11yrum without its replace directive against
+      # the parent it requires, installs the command and builds an external
+      # consumer, all against a throwaway local remote.
+      - name: Validate the o11yrum release as an external consumer
+        if: steps.tag.outputs.dir == 'go/o11yrum'
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: scripts/o11yrum-release-check.sh "v$VERSION"
 
       # The TypeScript branch. The release commit moved every package to the
       # tag's version (bun scripts/release.ts version X.Y.Z).
@@ -333,12 +381,13 @@ jobs:
           MODULE: ${{ needs.verify.outputs.module }}
           VERSION: ${{ needs.verify.outputs.version }}
           PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+          CHANGELOG: ${{ needs.verify.outputs.changelog }}
         run: |
           notes="$RUNNER_TEMP/release-notes.md"
-          scripts/release-notes.sh "$VERSION" >"$notes"
+          scripts/release-notes.sh "$VERSION" "$CHANGELOG" >"$notes"
           title="$MODULE v$VERSION"
           # The main module's release is the repository's Latest release; the
-          # submodules' releases, tagged on the same commit, never take it.
+          # submodules' releases, and o11yrum's, never take it.
           latest=false
           if [[ "$DIR" == "go" && "$PRERELEASE" == "false" ]]; then
             latest=true
@@ -392,6 +441,104 @@ jobs:
           printf 'package main\n\nimport _ "%s"\n\nfunc main() {}\n' "$MODULE" >main.go
           go get "$MODULE@v$VERSION"
           go build ./...
+
+  # Publishes ghcr.io/jamesainslie/o11yrum-gateway for a go/o11yrum tag,
+  # for linux/amd64 and linux/arm64, with build provenance attested to
+  # GitHub and pushed to the registry. Operators mirror it to their own
+  # registry and pin it by the digest the job summary prints.
+  image:
+    needs: [verify, release]
+    if: needs.verify.outputs.dir == 'go/o11yrum'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    env:
+      IMAGE: ghcr.io/jamesainslie/o11yrum-gateway
+      VERSION: ${{ needs.verify.outputs.version }}
+      PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Compute the tags
+        id: tags
+        run: |
+          tags="$IMAGE:$VERSION"
+          if [[ "$PRERELEASE" == "false" ]]; then
+            tags+=",$IMAGE:${VERSION%.*},$IMAGE:latest"
+          fi
+          echo "tags=$tags" >>"$GITHUB_OUTPUT"
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: go
+          file: go/o11yrum/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          build-args: VERSION=v${{ env.VERSION }}
+          provenance: mode=max
+          sbom: true
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ env.VERSION }}
+            org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.title=o11yrum-gateway
+            org.opencontainers.image.description=The libo11y RUM gateway
+      - name: Attest the build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+      - name: Smoke-test the published image
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          got="$(docker run --rm "$IMAGE@$DIGEST" -version)"
+          if [[ "$got" != "v$VERSION" ]]; then
+            echo "::error::$IMAGE@$DIGEST prints version $got, not v$VERSION"
+            exit 1
+          fi
+      - name: Write the job summary
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TAGS: ${{ steps.tags.outputs.tags }}
+          REPO: ${{ github.repository }}
+        run: |
+          {
+            echo "## o11yrum-gateway v$VERSION"
+            echo
+            echo "Digest: \`$DIGEST\`"
+            echo
+            echo "Tags:"
+            echo
+            IFS=',' read -ra tags <<<"$TAGS"
+            for t in "${tags[@]}"; do
+              echo "- \`$t\`"
+            done
+            echo
+            echo "Pin it by digest and verify its provenance:"
+            echo
+            echo '```sh'
+            echo "docker pull $IMAGE@$DIGEST"
+            echo "gh attestation verify oci://$IMAGE@$DIGEST --repo $REPO"
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
 
   publish-npm:
     needs: verify
