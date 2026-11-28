@@ -9,6 +9,9 @@ import (
 	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
+
+	"github.com/jamesainslie/libo11y/go/internal/spectables"
+	"github.com/jamesainslie/libo11y/go/spec"
 )
 
 // sinkMode identifies which log sink a per-leg classifier is guarding. Both
@@ -42,6 +45,9 @@ type classifier struct {
 	mode   sinkMode
 	policy *sensitivityPolicy
 	groups []string
+	// sealed is the class of the classified key an open group sits under,
+	// and spectables.Unclassified otherwise (see WithGroup).
+	sealed spectables.Sensitivity
 }
 
 func (c *classifier) Enabled(ctx context.Context, level slog.Level) bool {
@@ -51,6 +57,13 @@ func (c *classifier) Enabled(ctx context.Context, level slog.Level) bool {
 func (c *classifier) Handle(ctx context.Context, record slog.Record) error {
 	if c.mode == sinkOTLP {
 		ctx = markPipelineClassified(ctx)
+	}
+	if c.sealed != spectables.Unclassified {
+		if record.NumAttrs() == 0 {
+			return c.inner.Handle(ctx, record)
+		}
+		c.policy.decideClass(spec.SignalLogs, c.sealed) // counts the violation
+		return c.inner.Handle(ctx, slog.NewRecord(record.Time, record.Level, record.Message, record.PC))
 	}
 	attrs := make([]slog.Attr, 0, record.NumAttrs())
 	changed := false
@@ -90,6 +103,14 @@ func (c *classifier) classifyAttrIn(groups []string, a slog.Attr, w *compositeWa
 	if a.Value.Kind() == slog.KindGroup {
 		path := groups
 		if a.Key != "" {
+			// A named group is a value under its own key, as a map is: a
+			// classified key judges the group whole, before any member is
+			// looked at.
+			class := c.policy.lookup(attribute.Key(effectiveKey(groups, a.Key)))
+			if c.policy.actionFor(class) != actionKeep {
+				res, action := c.policy.slogLeaf(a, class)
+				return res, action != actionDrop, true
+			}
 			path = append(slices.Clone(groups), a.Key)
 		}
 		members := a.Value.Group()
@@ -317,24 +338,44 @@ func mapKey(k reflect.Value) string {
 
 // WithAttrs classifies the attributes at the handler's current group path
 // before handing them to the inner handler, so pre-bound attributes obey the
-// same rules as per-record ones.
+// same rules as per-record ones. Inside a sealed group (see WithGroup) it
+// binds nothing.
 func (c *classifier) WithAttrs(attrs []slog.Attr) slog.Handler {
+	if c.sealed != spectables.Unclassified {
+		if len(attrs) > 0 {
+			c.policy.decideClass(spec.SignalLogs, c.sealed) // counts the violation
+		}
+		return c
+	}
 	kept := make([]slog.Attr, 0, len(attrs))
 	for _, a := range attrs {
 		if out, keep, _ := c.classifyAttr(c.groups, a); keep {
 			kept = append(kept, out)
 		}
 	}
-	return &classifier{inner: c.inner.WithAttrs(kept), mode: c.mode, policy: c.policy, groups: c.groups}
+	return &classifier{inner: c.inner.WithAttrs(kept), mode: c.mode, policy: c.policy, groups: c.groups, sealed: c.sealed}
 }
 
-// WithGroup extends the group path used to build effective keys.
+// WithGroup extends the group path used to build effective keys. A group
+// whose own effective key is classified is that key's value, as a
+// group-valued attribute is (see classifyAttrIn). Its members arrive one
+// record at a time, so the classifier cannot judge the group whole. It seals
+// the group instead: every attribute logged or bound inside it, at any
+// depth, is dropped, under PIIHash as well as PIIDrop. Under PIIAllow a
+// group under a PII key is kept and never sealed.
 func (c *classifier) WithGroup(name string) slog.Handler {
 	if name == "" {
 		return c
 	}
-	return &classifier{
+	derived := &classifier{
 		inner: c.inner.WithGroup(name), mode: c.mode, policy: c.policy,
-		groups: append(slices.Clone(c.groups), name),
+		groups: append(slices.Clone(c.groups), name), sealed: c.sealed,
 	}
+	if derived.sealed == spectables.Unclassified {
+		class := c.policy.lookup(attribute.Key(strings.Join(derived.groups, ".")))
+		if c.policy.actionFor(class) != actionKeep {
+			derived.sealed = class
+		}
+	}
+	return derived
 }

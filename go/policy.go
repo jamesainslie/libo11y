@@ -242,9 +242,65 @@ func canonicalAttr(v attribute.Value) string {
 	return renderCanonical(attrNode(v, 0, newCompositeWalk()))
 }
 
-// canonicalSlog renders a resolved, non-group slog value in the canonical
-// form.
-func canonicalSlog(v slog.Value) string { return renderCanonical(slogNode(v)) }
+// canonicalSlog renders a resolved slog value in the canonical form. A group
+// renders as the object a log bridge makes of it (see groupNode).
+func canonicalSlog(v slog.Value) string {
+	if v.Kind() == slog.KindGroup {
+		return renderCanonical(groupNode(v, 0, newCompositeWalk()))
+	}
+	return renderCanonical(slogNode(v))
+}
+
+// groupNode builds the canonical node of a slog group: an object of its
+// members' canonical forms, which is what [attrNode] builds for the map a
+// log bridge makes of the same group. It spends nodes from w the way
+// attrNode does, one for the group and one for each member, and visits the
+// members in sorted key order, so a group and its bridged map truncate, and
+// tokenize, alike. A member group with an empty key is inlined, as slog
+// handlers and bridges inline it, and a later member replaces an earlier
+// one with the same key.
+//
+// One shape tokenizes differently on the two paths. The SDK's handler
+// elides an empty group before classification, as slog asks of handlers,
+// and a bridge that keeps it renders an empty object in its place.
+func groupNode(v slog.Value, depth int, w *compositeWalk) any {
+	if depth > maxCompositeDepth || !w.spend() {
+		return canonicalTruncated
+	}
+	members := inlineGroups(v.Group())
+	slices.SortStableFunc(members, func(a, b slog.Attr) int { return strings.Compare(a.Key, b.Key) })
+	obj := make(map[string]any, len(members))
+	for _, m := range members {
+		switch m.Value.Kind() {
+		case slog.KindGroup:
+			obj[m.Key] = groupNode(m.Value, depth+1, w)
+		case slog.KindAny:
+			obj[m.Key] = anyNode(m.Value.Any(), depth+1, w)
+		default:
+			if depth+1 > maxCompositeDepth || !w.spend() {
+				obj[m.Key] = canonicalTruncated
+				continue
+			}
+			obj[m.Key] = slogNode(m.Value)
+		}
+	}
+	return obj
+}
+
+// inlineGroups returns members with every value resolved and the members of
+// each empty-keyed group in place of that group, at any depth.
+func inlineGroups(members []slog.Attr) []slog.Attr {
+	out := make([]slog.Attr, 0, len(members))
+	for _, m := range members {
+		m.Value = m.Value.Resolve()
+		if m.Key == "" && m.Value.Kind() == slog.KindGroup {
+			out = append(out, inlineGroups(m.Value.Group())...)
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
+}
 
 // canonicalAny renders an arbitrary slog payload in the canonical form.
 func canonicalAny(x any) string { return renderCanonical(anyNode(x, 0, newCompositeWalk())) }
