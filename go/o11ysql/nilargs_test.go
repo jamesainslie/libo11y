@@ -57,3 +57,14 @@ func TestRegisterPoolMetricsNilDB(t *testing.T) {
 		t.Error("RegisterPoolMetrics(nil) succeeded, want an error")
 	}
 }
+
+// TestWrapNilConnectorPanicsImmediately pins that Wrap(nil) panics in Wrap
+// itself rather than deferring the panic until a connection is opened.
+func TestWrapNilConnectorPanicsImmediately(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("Wrap(nil) did not panic")
+		}
+	}()
+	_ = o11ysql.Wrap(nil)
+}

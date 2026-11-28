@@ -72,8 +72,9 @@ func newInstrumenter(cfg *config) *instrumenter {
 // unknown system gets DialectStandard and false: its text is still
 // summarized into db.operation.name and db.collection.name, but never
 // recorded as db.query.text, because a lexer that misreads a string could
-// keep part of a value. SQL Server, Oracle, and engines with backslash
-// escapes are among the systems no dialect here is known to be correct for.
+// keep part of a value. SQL Server, Oracle, and engines with other quoting
+// or escaping rules are among the systems no dialect here is known to be
+// correct for.
 func dialectFor(system string) (sqltext.Dialect, bool) {
 	switch system {
 	case "postgresql":
@@ -97,11 +98,14 @@ type statement struct {
 // describe sanitizes and summarizes query. Bytes that are not UTF-8,
 // which the lexer keeps as part of a name, become U+FFFD first: OTLP sends
 // attribute values as protobuf strings, which must be valid UTF-8, and one
-// invalid value fails the whole export batch.
+// invalid value fails the whole export batch. When Sanitize reports a
+// lexical ambiguity that depends on server settings or version, db.query.text
+// is omitted so no literal or comment can leak.
 func (in *instrumenter) describe(query string) statement {
-	sanitized := strings.ToValidUTF8(sqltext.Sanitize(query, in.dialect), "\uFFFD")
-	st := in.named(sqltext.Summarize(sanitized))
-	if in.queryText {
+	raw, safe := sqltext.Sanitize(query, in.dialect)
+	sanitized := strings.ToValidUTF8(raw, "\uFFFD")
+	st := in.named(sqltext.Summarize(sanitized, in.dialect))
+	if in.queryText && safe {
 		st.text = truncate(sanitized, maxQueryText)
 	}
 	return st

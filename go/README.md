@@ -465,8 +465,11 @@ driver makes are children of the caller's span.
 and every comment removed. It is cut to at most 4096 bytes on a UTF-8
 character boundary, so a bulk insert or a migration cannot produce an
 attribute too large to export. It is recorded only for `postgresql`,
-`sqlite`, `mysql`, and `mariadb`, which have a matching SQL lexer. Every
-other system, including the default `other_sql` and
+`sqlite`, `mysql`, and `mariadb`, which have a matching SQL lexer, and is
+omitted when a statement contains a construct whose literal or comment
+boundaries depend on server settings or version (such as backslash-escaped
+quotes in plain PostgreSQL or MySQL strings, or MySQL/MariaDB versioned
+comments). Every other system, including the default `other_sql` and
 `microsoft.sql_server`, gets spans and durations named by operation and
 collection but no query text. `Open` infers the system from the driver
 name: `postgres`, `pgx`, and `pgx/v5` give `postgresql`, `sqlite` and

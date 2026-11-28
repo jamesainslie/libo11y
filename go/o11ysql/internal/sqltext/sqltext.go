@@ -21,10 +21,11 @@ const (
 	// for postgresql, mysql, mariadb, and sqlite, the systems these three
 	// dialects describe.
 	DialectStandard Dialect = iota
-	// DialectMySQL follows MySQL and MariaDB: "..." quotes a string, a
-	// backslash escapes the next character in a string, # and -- followed
-	// by whitespace start a comment, the body of a /*! ... */ comment is
-	// lexed as SQL, and block comments do not nest.
+	// DialectMySQL follows MySQL and MariaDB: "..." quotes a string, # and --
+	// followed by whitespace start a comment, and block comments do not nest.
+	// Backslash-escaped quotes and /*! ... */ / /*M! ... */ versioned comments
+	// fail closed (see [Sanitize]), because their meaning depends on server
+	// mode and version.
 	DialectMySQL
 	// DialectSQLite follows SQLite: `...` and [...] quote identifiers, a
 	// backslash inside '...' is an ordinary character, $ @ : and # start a
@@ -39,47 +40,63 @@ const (
 const maxCollection = 128
 
 // Sanitize returns query with every string, number, and dollar-quoted
-// literal replaced by ? and every comment replaced by one space.
-// Identifiers, keywords, operators, and placeholders ($1, ?, :name, @p1,
-// and SQLite's ?1 and :1) are kept. Outside SQLite a colon never starts a
-// numbered placeholder, so the digits in arr[1:5] and 12:34 are numbers
-// and each becomes ?. A number takes every letter, digit, underscore,
-// and dot that follows it, so 1_000, 0x1F, 0b1010, and 1.5e-3 each become
-// one ?; a MySQL name that starts with a digit is removed the same way.
-// An unterminated literal, comment, or quoted identifier is removed up to
-// the end of the text. The result is never longer than query.
+// literal replaced by ? and every comment replaced by one space, along with
+// whether the result is unambiguous for dialect. Identifiers, keywords,
+// operators, and placeholders ($1, ?, :name, @p1, and SQLite's ?1 and :1)
+// are kept. Outside SQLite a colon never starts a numbered placeholder, so
+// the digits in arr[1:5] and 12:34 are numbers and each becomes ?. A number
+// takes every letter, digit, underscore, and dot that follows it, so 1_000,
+// 0x1F, 0b1010, and 1.5e-3 each become one ?; a MySQL name that starts with
+// a digit is removed the same way. An unterminated literal, comment, or
+// quoted identifier is removed up to the end of the text. The result is
+// never longer than query.
 //
-// Server settings that Sanitize cannot see can change what counts as a
-// literal, and under them part of a value can be kept:
-//   - PostgreSQL with standard_conforming_strings off, and MySQL with
-//     NO_BACKSLASH_ESCAPES, read a backslash in '...' the other way.
-//   - MySQL with ANSI_QUOTES reads "..." as an identifier, in which a
-//     backslash is an ordinary character.
-//   - A MySQL connection in a multibyte character set such as GBK, SJIS,
-//     or Big5 can read a backslash byte as half of a character.
-//   - MySQL skips a /*!NNNNN ... */ body when its own version is lower
-//     than NNNNN, and MySQL, unlike MariaDB, skips every /*M! ... */ body.
-//     DialectMySQL lexes both bodies as SQL, as MariaDB does.
-//   - DialectMySQL removes a /*+ ... */ optimizer hint as a comment that
-//     ends at the first */, even inside a quoted hint argument.
-func Sanitize(query string, dialect Dialect) string {
+// When query contains a construct whose literal or comment boundaries
+// depend on server settings or version that Sanitize cannot observe, it
+// fails closed: it replaces the rest of the statement from that construct
+// onward and returns safe=false so callers omit db.query.text. This covers:
+//   - an odd run of backslashes before a closing quote in a plain
+//     PostgreSQL '...' string (affected by standard_conforming_strings=off)
+//     or a MySQL '...' / "..." string (affected by NO_BACKSLASH_ESCAPES and
+//     ANSI_QUOTES);
+//   - a MySQL /*! ... */ or MariaDB /*M! ... */ versioned comment, whose
+//     body may be executed as SQL or skipped as a comment depending on
+//     server version.
+func Sanitize(query string, dialect Dialect) (sanitized string, safe bool) {
 	var b strings.Builder
 	b.Grow(len(query))
 	mysql, sqlite := dialect == DialectMySQL, dialect == DialectSQLite
 	pg := !mysql && !sqlite
-	inVersioned := false // inside a MySQL /*! ... */ comment, whose body is SQL
 	for i := 0; i < len(query); {
 		c := query[i]
 		switch {
 		case c == '\'':
-			i, _ = skipQuoted(query, i, '\'', mysql)
-			b.WriteByte('?')
+			if pg || mysql {
+				end, ambiguous := skipQuotedChecked(query, i, '\'')
+				b.WriteByte('?')
+				if ambiguous {
+					return b.String(), false
+				}
+				i = end
+			} else {
+				i, _ = skipQuoted(query, i, '\'', false)
+				b.WriteByte('?')
+			}
 		case pg && (c == 'E' || c == 'e') && next(query, i) == '\'':
-			i, _ = skipQuoted(query, i+1, '\'', true) // E'...' escape string
+			i, _ = skipQuoted(query, i+1, '\'', true) // E'...' always uses backslash escapes
 			b.WriteByte('?')
 		case c == '"' && !pg:
-			i, _ = skipQuoted(query, i, '"', mysql)
-			b.WriteByte('?')
+			if mysql {
+				end, ambiguous := skipQuotedChecked(query, i, '"')
+				b.WriteByte('?')
+				if ambiguous {
+					return b.String(), false
+				}
+				i = end
+			} else {
+				i, _ = skipQuoted(query, i, '"', false)
+				b.WriteByte('?')
+			}
 		case c == '"', c == '`' && !pg, c == '[' && sqlite:
 			end, closed := skipQuotedName(query, i)
 			if closed {
@@ -92,16 +109,11 @@ func Sanitize(query string, dialect Dialect) string {
 			i = skipLine(query, i)
 			b.WriteByte(' ')
 		case c == '/' && next(query, i) == '*':
-			if end, ok := skipVersionedOpen(query, i); ok && mysql {
-				inVersioned = true
-				i = end
-			} else {
-				i = skipBlock(query, i, pg)
+			if mysql && isVersionedComment(query, i) {
+				b.WriteByte(' ')
+				return b.String(), false
 			}
-			b.WriteByte(' ')
-		case inVersioned && c == '*' && next(query, i) == '/':
-			inVersioned = false
-			i += 2
+			i = skipBlock(query, i, pg)
 			b.WriteByte(' ')
 		case pg && c == '$':
 			if end, ok := skipDollarQuoted(query, i); ok {
@@ -139,7 +151,7 @@ func Sanitize(query string, dialect Dialect) string {
 			i++
 		}
 	}
-	return b.String()
+	return b.String(), true
 }
 
 // operations are the statement keywords Summarize reports. Any other first
@@ -167,19 +179,32 @@ var updateClause = map[string]bool{
 // table it names, as in FROM ONLY t or UPDATE LOW_PRIORITY IGNORE t.
 var tableModifiers = map[string]bool{"ONLY": true, "LOW_PRIORITY": true, "IGNORE": true}
 
+// clauseKeywords are SQL clause keywords that cannot serve as an implicit
+// (un-AS'd) table alias after a table name.
+var clauseKeywords = map[string]bool{
+	"WHERE": true, "JOIN": true, "INNER": true, "LEFT": true, "RIGHT": true,
+	"FULL": true, "CROSS": true, "NATURAL": true, "OUTER": true, "ON": true,
+	"USING": true, "GROUP": true, "ORDER": true, "HAVING": true, "LIMIT": true,
+	"OFFSET": true, "FETCH": true, "FOR": true, "UNION": true, "INTERSECT": true,
+	"EXCEPT": true, "SET": true, "VALUES": true, "SELECT": true, "RETURNING": true,
+	"WINDOW": true, "INTO": true, "FROM": true,
+}
+
 // Summarize returns the operation and collection names of a sanitized
 // statement (see [Sanitize]). The operation is the first keyword, upper
 // cased, when it is a known SQL operation, and empty otherwise; a
 // statement that starts with WITH has none. The collection is the one
 // table the statement names after FROM, JOIN, INTO, UPDATE, or TABLE,
-// without quotes and with its schema when qualified. It is empty when the
-// statement names no table, more than one, a subquery, or a table
-// function, as the semantic conventions ask, and for SHOW, whose FROM
-// names a database. Keywords inside the parentheses of a function call,
-// such as EXTRACT(YEAR FROM ts), name no table; those inside a
-// parenthesized SELECT or WITH do.
-func Summarize(sanitized string) (operation, collection string) {
-	toks := tokenize(sanitized)
+// without quotes and with its schema when qualified (including SQLite
+// [bracket] identifiers under DialectSQLite). It is empty when the
+// statement names no table, more than one (including comma-separated
+// aliased tables), a subquery, or a table function, as the semantic
+// conventions ask, and for SHOW, whose FROM names a database. Keywords
+// inside the parentheses of a function call, such as EXTRACT(YEAR FROM ts),
+// name no table; those inside a parenthesized SELECT or WITH do.
+func Summarize(sanitized string, dialect Dialect) (operation, collection string) {
+	sqlite := dialect == DialectSQLite
+	toks := tokenize(sanitized, sqlite)
 	if len(toks) == 0 {
 		return "", ""
 	}
@@ -214,28 +239,75 @@ func Summarize(sanitized string) (operation, collection string) {
 		if keyword == "TABLE" {
 			j = skipIfExists(toks, j)
 		}
-		if keyword == "UPDATE" && strings.EqualFold(toks[j], "OR") {
+		if keyword == "UPDATE" && j < len(toks) && strings.EqualFold(toks[j], "OR") {
 			j += 2 // SQLite's UPDATE OR IGNORE t, UPDATE OR REPLACE t
 		}
 		for j < len(toks) && tableModifiers[strings.ToUpper(toks[j])] {
 			j++
 		}
-		if j >= len(toks) || !isName(toks[j]) {
+		if j >= len(toks) || !isName(toks[j], sqlite) {
 			return operation, "" // a subquery or something unrecognized
 		}
-		if j+1 < len(toks) && (toks[j+1] == "," || toks[j+1] == "(" && (keyword == "FROM" || keyword == "JOIN")) {
+		after, multi := checkTableFollower(keyword, toks, j, sqlite)
+		if multi {
 			return operation, "" // a list of tables, or a table function
 		}
-		name := unquoteName(toks[j])
+		name := unquoteName(toks[j], sqlite)
 		if collection != "" && collection != name {
 			return operation, ""
 		}
 		collection = name
+		if after > k {
+			k = after - 1
+		}
 	}
 	if len(collection) > maxCollection {
 		return operation, ""
 	}
 	return operation, collection
+}
+
+// checkTableFollower inspects the tokens after the table name at toks[j]
+// for a table-list comma (directly or after an optional alias and column
+// alias list) or a table-function call. It returns the index past any
+// skipped alias tokens (so Summarize stays linear) and whether the table
+// belongs to a multi-table list or table function.
+func checkTableFollower(keyword string, toks []string, j int, sqlite bool) (int, bool) {
+	nextIdx := j + 1
+	if nextIdx >= len(toks) {
+		return nextIdx, false
+	}
+	if toks[nextIdx] == "," {
+		return nextIdx, true // a list of tables
+	}
+	if toks[nextIdx] == "(" && (keyword == "FROM" || keyword == "JOIN") {
+		return nextIdx, true // a table function
+	}
+	if keyword != "FROM" && keyword != "JOIN" && keyword != "UPDATE" {
+		return nextIdx, false
+	}
+	switch {
+	case strings.EqualFold(toks[nextIdx], "AS"):
+		if nextIdx+1 >= len(toks) || !isName(toks[nextIdx+1], sqlite) {
+			return nextIdx, false
+		}
+		nextIdx += 2
+	case isName(toks[nextIdx], sqlite) && !clauseKeywords[strings.ToUpper(toks[nextIdx])]:
+		nextIdx++
+	default:
+		return nextIdx, false
+	}
+	if nextIdx < len(toks) && toks[nextIdx] == "(" && (keyword == "FROM" || keyword == "JOIN") {
+		// Skip an optional flat column alias list: FROM users u(a, b), orders o
+		closeIdx := nextIdx + 1
+		for closeIdx < len(toks) && toks[closeIdx] != ")" && toks[closeIdx] != "(" {
+			closeIdx++
+		}
+		if closeIdx < len(toks) && toks[closeIdx] == ")" {
+			nextIdx = closeIdx + 1
+		}
+	}
+	return nextIdx, nextIdx < len(toks) && toks[nextIdx] == ","
 }
 
 // namesTable reports whether keyword, the upper-cased toks[k], is followed
@@ -275,14 +347,25 @@ func skipIfExists(toks []string, j int) int {
 }
 
 // unquoteName removes the quotes around each part of a possibly qualified
-// name and turns each doubled quote inside them back into one.
-func unquoteName(tok string) string {
-	if !strings.ContainsAny(tok, "\"`") {
+// name and turns each doubled quote inside them back into one. With sqlite
+// set, SQLite [bracket] identifiers are unquoted too.
+func unquoteName(tok string, sqlite bool) string {
+	if !strings.ContainsAny(tok, "\"`[") {
 		return tok
 	}
 	var b strings.Builder
 	for i := 0; i < len(tok); {
 		q := tok[i]
+		if q == '[' && sqlite {
+			end, closed := skipQuotedName(tok, i)
+			inner := tok[i+1 : end]
+			if closed {
+				inner = tok[i+1 : end-1]
+			}
+			b.WriteString(inner)
+			i = end
+			continue
+		}
 		if q != '"' && q != '`' {
 			b.WriteByte(q)
 			i++
@@ -301,15 +384,15 @@ func unquoteName(tok string) string {
 
 // tokenize splits sanitized SQL into names (possibly qualified and quoted)
 // and single punctuation characters, dropping whitespace.
-func tokenize(s string) []string {
+func tokenize(s string, sqlite bool) []string {
 	var toks []string
 	for i := 0; i < len(s); {
 		c := s[i]
 		switch {
 		case c == ' ' || c == '\t' || c == '\n' || c == '\r':
 			i++
-		case isNameStart(c):
-			end := skipName(s, i)
+		case isNameStart(c, sqlite):
+			end := skipName(s, i, sqlite)
 			toks = append(toks, s[i:end])
 			i = end
 		default:
@@ -321,15 +404,16 @@ func tokenize(s string) []string {
 }
 
 // skipName returns the end of a possibly qualified, possibly quoted name
-// that starts at s[i], such as users, "Users", or public."Users".
-func skipName(s string, i int) int {
+// that starts at s[i], such as users, "Users", public."Users", or SQLite's
+// [users].
+func skipName(s string, i int, sqlite bool) int {
 	for {
-		if s[i] == '"' || s[i] == '`' {
-			i, _ = skipQuoted(s, i, s[i], false)
+		if s[i] == '"' || s[i] == '`' || (sqlite && s[i] == '[') {
+			i, _ = skipQuotedName(s, i)
 		} else {
 			i = skipIdent(s, i)
 		}
-		if i+1 < len(s) && s[i] == '.' && isNameStart(s[i+1]) {
+		if i+1 < len(s) && s[i] == '.' && isNameStart(s[i+1], sqlite) {
 			i++
 			continue
 		}
@@ -337,9 +421,11 @@ func skipName(s string, i int) int {
 	}
 }
 
-func isName(tok string) bool { return tok != "" && isNameStart(tok[0]) }
+func isName(tok string, sqlite bool) bool { return tok != "" && isNameStart(tok[0], sqlite) }
 
-func isNameStart(c byte) bool { return isIdentStart(c) || c == '"' || c == '`' }
+func isNameStart(c byte, sqlite bool) bool {
+	return isIdentStart(c) || c == '"' || c == '`' || (sqlite && c == '[')
+}
 
 func isIdentStart(c byte) bool {
 	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c >= 0x80
@@ -376,6 +462,35 @@ func skipDigits(s string, i int) int {
 		i++
 	}
 	return i
+}
+
+// skipQuotedChecked scans a quoted string where server configuration
+// (PostgreSQL standard_conforming_strings=off, MySQL NO_BACKSLASH_ESCAPES
+// or ANSI_QUOTES) decides whether backslash escapes the closing quote. If an
+// odd run of backslashes immediately precedes quote, the two server modes
+// disagree on whether the string ended, so skipQuotedChecked fails closed
+// and reports ambiguous=true.
+func skipQuotedChecked(s string, i int, quote byte) (end int, ambiguous bool) {
+	slashes := 0
+	for j := i + 1; j < len(s); j++ {
+		switch s[j] {
+		case '\\':
+			slashes++
+		case quote:
+			if slashes%2 == 1 {
+				return len(s), true
+			}
+			if j+1 < len(s) && s[j+1] == quote {
+				j++
+				slashes = 0
+				continue
+			}
+			return j + 1, false
+		default:
+			slashes = 0
+		}
+	}
+	return len(s), false
 }
 
 // skipQuoted returns the index just past the run quoted by quote that
@@ -453,18 +568,14 @@ func skipBlock(s string, i int, nested bool) int {
 	return len(s)
 }
 
-// skipVersionedOpen reports whether s[i] opens a MySQL /*!NNNNN or a
-// MariaDB /*M!NNNNNN versioned comment and returns the index past the
-// opener and its version digits.
-func skipVersionedOpen(s string, i int) (int, bool) {
+// isVersionedComment reports whether s[i] opens a MySQL /*! or a MariaDB
+// /*M! versioned comment.
+func isVersionedComment(s string, i int) bool {
 	j := i + 2
 	if j < len(s) && s[j] == 'M' {
 		j++
 	}
-	if j >= len(s) || s[j] != '!' {
-		return 0, false
-	}
-	return skipDigits(s, j+1), true
+	return j < len(s) && s[j] == '!'
 }
 
 // skipDollarQuoted reports whether s[i] opens a PostgreSQL dollar-quoted
