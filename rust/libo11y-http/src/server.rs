@@ -1,6 +1,7 @@
 //! Tower HTTP server instrumentation layer ([`ServerLayer`]) and service
 //! ([`ServerService`]).
 
+use std::borrow::Cow;
 use std::fmt;
 use std::future::Future;
 use std::marker::PhantomData;
@@ -10,16 +11,17 @@ use std::sync::Arc;
 use std::task::{Context as TaskContext, Poll};
 use std::time::Instant;
 
-use http::header::USER_AGENT;
+use http::header::{CONTENT_TYPE, HeaderName, HeaderValue, USER_AGENT};
 use http::request::Parts;
 use http::{Request, Response};
+use http_body::{Body, Frame, SizeHint};
 use libo11y::{Record, Sdk, start_record};
 use libo11y_spec::{Outcome, attr, event};
 use opentelemetry::baggage::BaggageExt as _;
 use opentelemetry::metrics::Histogram;
 use opentelemetry::propagation::TextMapPropagator as _;
 use opentelemetry::trace::{
-    Link, SpanBuilder, SpanKind, Status, TraceContextExt as _, Tracer as _,
+    Link, SpanBuilder, SpanContext, SpanKind, Status, TraceContextExt as _, Tracer as _,
 };
 use opentelemetry::{Context as OtelContext, KeyValue};
 use pin_project_lite::pin_project;
@@ -29,7 +31,9 @@ use tower_service::Service;
 use crate::carrier::HeaderExtractor;
 use crate::method::{default_span_name, normalize_method, route_only};
 use crate::path_match::path_match;
-use crate::url::{extract_scheme, extract_server_address_port, redact_query};
+use crate::url::{
+    extract_scheme, extract_server_address_port, percent_decode_or_raw, redact_query,
+};
 use crate::{HTTP_DURATION_BOUNDARIES, SCOPE_NAME};
 
 type RequestFilter = Arc<dyn Fn(&Parts) -> bool + Send + Sync>;
@@ -42,6 +46,7 @@ struct ServerConfig {
     duration: Histogram<f64>,
     public_endpoint: bool,
     canonical_line: bool,
+    server_timing: bool,
     operation_name: Option<String>,
     filters: Vec<RequestFilter>,
     route_extractor: Option<RouteExtractor>,
@@ -84,6 +89,7 @@ impl fmt::Debug for ServerLayer {
         f.debug_struct("ServerLayer")
             .field("public_endpoint", &self.config.public_endpoint)
             .field("canonical_line", &self.config.canonical_line)
+            .field("server_timing", &self.config.server_timing)
             .field("operation_name", &self.config.operation_name)
             .field("filters", &self.config.filters.len())
             .field(
@@ -111,6 +117,7 @@ impl ServerLayer {
                 duration,
                 public_endpoint: false,
                 canonical_line: false,
+                server_timing: false,
                 operation_name: None,
                 filters: Vec::new(),
                 route_extractor: None,
@@ -129,7 +136,9 @@ impl ServerLayer {
 
     /// Excludes requests whose URL path matches any of `patterns` in Go's
     /// `path.Match` glob syntax (for example `"/healthz"` or `"/debug/*"`).
-    /// Malformed patterns never match.
+    /// The path is percent-decoded before matching, as Go's `r.URL.Path` is,
+    /// so `/%68ealthz` matches `"/healthz"`; a path with an invalid escape or
+    /// invalid UTF-8 is matched raw. Malformed patterns never match.
     #[must_use]
     pub fn with_ignore_paths<I, S>(mut self, patterns: I) -> Self
     where
@@ -140,8 +149,8 @@ impl ServerLayer {
         Arc::make_mut(&mut self.config)
             .filters
             .push(Arc::new(move |parts: &Parts| {
-                let path = parts.uri.path();
-                !patterns.iter().any(|pat| path_match(pat, path))
+                let path = percent_decode_or_raw(parts.uri.path());
+                !patterns.iter().any(|pat| path_match(pat, &path))
             }));
         self
     }
@@ -165,6 +174,26 @@ impl ServerLayer {
     #[must_use]
     pub fn with_canonical_line(mut self) -> Self {
         Arc::make_mut(&mut self.config).canonical_line = true;
+        self
+    }
+
+    /// Adds `Server-Timing: traceparent;desc="00-<trace-id>-<span-id>-<flags>"`
+    /// to HTML responses, naming the server span so a browser page
+    /// instrumented with `@libo11y/web` can adopt it as the parent of its
+    /// `app_load` span.
+    ///
+    /// An existing `Server-Timing` value set by the handler is kept, and the
+    /// `traceparent` entry is appended as an additional header value after it.
+    /// Only responses that declare a `Content-Type` whose media type (before
+    /// any parameters, trimmed and compared case-insensitively) is `text/html`
+    /// receive the header. Unlike Go's `net/http`, Rust has no automatic
+    /// content sniffing, so a response with no `Content-Type` header gets no
+    /// entry. Unsampled spans still get an entry carrying their trace flags;
+    /// requests excluded by [`Self::with_filter`] or
+    /// [`Self::with_ignore_paths`], or with no valid span context, get none.
+    #[must_use]
+    pub fn with_server_timing(mut self) -> Self {
+        Arc::make_mut(&mut self.config).server_timing = true;
         self
     }
 
@@ -220,8 +249,9 @@ impl<S: fmt::Debug> fmt::Debug for ServerService<S> {
 impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for ServerService<S>
 where
     S: Service<Request<ReqBody>, Response = Response<ResBody>>,
+    ResBody: Body,
 {
-    type Response = Response<ResBody>;
+    type Response = Response<ServerBody<ResBody>>;
     type Error = S::Error;
     type Future = ServerFuture<S::Future, ResBody, S::Error>;
 
@@ -244,7 +274,7 @@ where
         match call_result {
             Ok(future) => ServerFuture::instrumented(future, state),
             Err(payload) => {
-                state.finish_panic();
+                state.finish(Ending::Panic);
                 resume_unwind(payload);
             }
         }
@@ -260,8 +290,37 @@ struct RequestState {
     scheme: String,
     route: Option<String>,
     record: Option<Record>,
+    /// The response status, once the head is ready.
+    status: Option<u16>,
     finished: bool,
 }
+
+/// How an instrumented request ended.
+#[derive(Debug, Clone, Copy)]
+enum Ending {
+    /// The response completed: its body reached the end of the stream, or
+    /// was dropped after the head was ready.
+    Complete,
+    /// The service future failed before producing a response; carries the
+    /// error's type name.
+    ServiceError(&'static str),
+    /// The response body yielded an error; carries the error's type name.
+    BodyError(&'static str),
+    /// The service or the response body panicked.
+    Panic,
+    /// The request future was dropped before the response head was ready.
+    Canceled,
+}
+
+/// `error.type` for a panic in the service or the response body.
+const PANIC: &str = "panic";
+
+/// `error.type` for a request whose future was dropped before the head.
+const CANCELED: &str = "canceled";
+
+/// Canonical-line status for a canceled request that never got a response,
+/// after nginx's 499 Client Closed Request.
+const CLIENT_CLOSED_REQUEST: i64 = 499;
 
 impl RequestState {
     fn start(config: &Arc<ServerConfig>, parts: &Parts) -> Self {
@@ -338,71 +397,79 @@ impl RequestState {
             scheme,
             route: route_attr,
             record,
+            status: None,
             finished: false,
         }
     }
-    fn finish_response<ResBody>(&mut self, resp: &Response<ResBody>) {
+    /// Records what the response head tells: the status code and, when
+    /// enabled for an HTML response, the `Server-Timing` traceparent header.
+    fn record_head<B>(&mut self, resp: &mut Response<B>) {
+        let status = resp.status().as_u16();
+        self.status = Some(status);
+        let span = self.cx.span();
+        span.set_attribute(KeyValue::new(
+            "http.response.status_code",
+            i64::from(status),
+        ));
+        if self.config.server_timing
+            && let Some(ct) = resp
+                .headers()
+                .get(CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+            && is_html(ct)
+            && let Some(entry) = server_timing_entry(span.span_context())
+            && let Ok(value) = HeaderValue::from_str(&entry)
+        {
+            resp.headers_mut()
+                .append(HeaderName::from_static("server-timing"), value);
+        }
+    }
+
+    /// Ends the span, records the duration and emits the canonical line,
+    /// exactly once per request.
+    fn finish(&mut self, ending: Ending) {
         if self.finished {
             return;
         }
         self.finished = true;
-        let status_u16 = resp.status().as_u16();
-        let status = i64::from(status_u16);
-        let error_type = (status_u16 >= 500).then(|| status_u16.to_string());
+
+        let (error_type, description): (Option<Cow<'static, str>>, &'static str) = match ending {
+            Ending::Complete => (
+                self.status
+                    .filter(|code| *code >= 500)
+                    .map(|code| Cow::Owned(code.to_string())),
+                "",
+            ),
+            Ending::ServiceError(kind) | Ending::BodyError(kind) => {
+                (Some(Cow::Borrowed(kind)), kind)
+            }
+            Ending::Panic => (Some(Cow::Borrowed(PANIC)), PANIC),
+            Ending::Canceled => (Some(Cow::Borrowed(CANCELED)), CANCELED),
+        };
 
         let span = self.cx.span();
-        span.set_attribute(KeyValue::new("http.response.status_code", status));
-        if let Some(et) = &error_type {
-            span.set_attribute(KeyValue::new("error.type", et.clone()));
-            span.set_status(Status::error(""));
+        if let Some(kind) = &error_type {
+            span.set_attribute(KeyValue::new("error.type", kind.clone()));
+            span.set_status(Status::error(description));
         }
 
-        let elapsed = self.start.elapsed().as_secs_f64();
-        let outcome = if status_u16 >= 500 {
+        let status = self.status.map(i64::from);
+        let canonical_status = status.unwrap_or(match ending {
+            Ending::Canceled => CLIENT_CLOSED_REQUEST,
+            Ending::Complete | Ending::ServiceError(_) | Ending::BodyError(_) | Ending::Panic => {
+                500
+            }
+        });
+        let outcome = if error_type.is_some() {
             Outcome::Failure
         } else {
             Outcome::Success
         };
-        {
-            let _guard = self.cx.clone().attach();
-            self.record_duration(elapsed, Some(status), error_type.as_deref());
-            self.emit_canonical(status, outcome, elapsed);
-        }
-        span.end();
-    }
-
-    fn finish_error(&mut self, error_type: &'static str) {
-        if self.finished {
-            return;
-        }
-        self.finished = true;
-        let span = self.cx.span();
-        span.set_attribute(KeyValue::new("error.type", error_type));
-        span.set_status(Status::error(error_type));
-
         let elapsed = self.start.elapsed().as_secs_f64();
         {
             let _guard = self.cx.clone().attach();
-            self.record_duration(elapsed, None, Some(error_type));
-            self.emit_canonical(500, Outcome::Failure, elapsed);
-        }
-        span.end();
-    }
-
-    fn finish_panic(&mut self) {
-        if self.finished {
-            return;
-        }
-        self.finished = true;
-        let span = self.cx.span();
-        span.set_attribute(KeyValue::new("error.type", "panic"));
-        span.set_status(Status::error("panic"));
-
-        let elapsed = self.start.elapsed().as_secs_f64();
-        {
-            let _guard = self.cx.clone().attach();
-            self.record_duration(elapsed, None, Some("panic"));
-            self.emit_canonical(500, Outcome::Failure, elapsed);
+            self.record_duration(elapsed, status, error_type.as_deref());
+            self.emit_canonical(canonical_status, outcome, elapsed);
         }
         span.end();
     }
@@ -486,18 +553,109 @@ fn build_server_start_attrs(
 impl Drop for RequestState {
     fn drop(&mut self) {
         if !self.finished {
-            if std::thread::panicking() {
-                self.finish_panic();
+            let ending = if std::thread::panicking() {
+                Ending::Panic
+            } else if self.status.is_some() {
+                Ending::Complete
             } else {
-                self.finished = true;
-                self.cx.span().end();
-            }
+                Ending::Canceled
+            };
+            self.finish(ending);
         }
     }
 }
 
 pin_project! {
+    /// Response body returned by [`ServerService`].
+    ///
+    /// For an instrumented request it carries the server span: the span ends,
+    /// `http.server.request.duration` is recorded and the canonical line is
+    /// emitted once, when the body reaches the end of the stream, yields an
+    /// error, panics, or is dropped. A body that is already at the end of the
+    /// stream when the response head is ready finishes the request at the
+    /// head. Frames are polled inside the span's context.
+    pub struct ServerBody<B> {
+        #[pin]
+        inner: B,
+        state: Option<RequestState>,
+    }
+}
+
+impl<B: fmt::Debug> fmt::Debug for ServerBody<B> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ServerBody")
+            .field("inner", &self.inner)
+            .field("instrumented", &self.state.is_some())
+            .finish()
+    }
+}
+
+impl<B> ServerBody<B> {
+    const fn passthrough(inner: B) -> Self {
+        Self { inner, state: None }
+    }
+
+    const fn instrumented(inner: B, state: RequestState) -> Self {
+        Self {
+            inner,
+            state: Some(state),
+        }
+    }
+}
+
+impl<B: Body> Body for ServerBody<B> {
+    type Data = B::Data;
+    type Error = B::Error;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        let mut this = self.project();
+        let Some(active_cx) = this.state.as_ref().map(|s| s.cx.clone()) else {
+            return this.inner.poll_frame(cx);
+        };
+        let poll_result = {
+            let _guard = active_cx.attach();
+            catch_unwind(AssertUnwindSafe(|| this.inner.as_mut().poll_frame(cx)))
+        };
+        let item = match poll_result {
+            Ok(Poll::Pending) => return Poll::Pending,
+            Ok(Poll::Ready(item)) => item,
+            Err(payload) => {
+                if let Some(mut st) = this.state.take() {
+                    st.finish(Ending::Panic);
+                }
+                resume_unwind(payload);
+            }
+        };
+        let ending = match &item {
+            Some(Ok(_)) if !this.inner.is_end_stream() => None,
+            Some(Ok(_)) | None => Some(Ending::Complete),
+            Some(Err(_)) => Some(Ending::BodyError(std::any::type_name::<B::Error>())),
+        };
+        if let Some(ending) = ending
+            && let Some(mut st) = this.state.take()
+        {
+            st.finish(ending);
+        }
+        Poll::Ready(item)
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        self.inner.size_hint()
+    }
+}
+
+pin_project! {
     /// Response future returned by [`ServerService`].
+    ///
+    /// Dropping it before the response head is ready ends the server span
+    /// with `error.type` `canceled` and records the duration.
     pub struct ServerFuture<F, ResBody, E> {
         #[pin]
         inner: ServerFutureInner<F>,
@@ -542,15 +700,20 @@ impl<F, ResBody, E> ServerFuture<F, ResBody, E> {
 impl<F, ResBody, E> Future for ServerFuture<F, ResBody, E>
 where
     F: Future<Output = Result<Response<ResBody>, E>>,
+    ResBody: Body,
 {
-    type Output = Result<Response<ResBody>, E>;
+    type Output = Result<Response<ServerBody<ResBody>>, E>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Self::Output> {
         match self.project().inner.project() {
-            ServerFutureProj::Passthrough { future } => future.poll(cx),
+            ServerFutureProj::Passthrough { future } => future
+                .poll(cx)
+                .map_ok(|resp| resp.map(ServerBody::passthrough)),
             ServerFutureProj::Instrumented { future, state } => {
                 let Some(active_cx) = state.as_ref().map(|s| s.cx.clone()) else {
-                    return future.poll(cx);
+                    return future
+                        .poll(cx)
+                        .map_ok(|resp| resp.map(ServerBody::passthrough));
                 };
                 let poll_result = {
                     let _guard = active_cx.attach();
@@ -558,26 +721,118 @@ where
                 };
                 match poll_result {
                     Ok(Poll::Pending) => Poll::Pending,
-                    Ok(Poll::Ready(Ok(resp))) => {
-                        if let Some(mut st) = state.take() {
-                            st.finish_response(&resp);
+                    Ok(Poll::Ready(Ok(mut resp))) => {
+                        let Some(mut st) = state.take() else {
+                            return Poll::Ready(Ok(resp.map(ServerBody::passthrough)));
+                        };
+                        st.record_head(&mut resp);
+                        if resp.body().is_end_stream() {
+                            st.finish(Ending::Complete);
+                            Poll::Ready(Ok(resp.map(ServerBody::passthrough)))
+                        } else {
+                            Poll::Ready(Ok(resp.map(|body| ServerBody::instrumented(body, st))))
                         }
-                        Poll::Ready(Ok(resp))
                     }
                     Ok(Poll::Ready(Err(err))) => {
                         if let Some(mut st) = state.take() {
-                            st.finish_error(std::any::type_name::<E>());
+                            st.finish(Ending::ServiceError(std::any::type_name::<E>()));
                         }
                         Poll::Ready(Err(err))
                     }
                     Err(payload) => {
                         if let Some(mut st) = state.take() {
-                            st.finish_panic();
+                            st.finish(Ending::Panic);
                         }
                         resume_unwind(payload);
                     }
                 }
             }
+        }
+    }
+}
+
+/// Formats the `Server-Timing` entry naming `sc`, or returns `None` when `sc`
+/// is not valid. Unsampled contexts are valid and keep their flags.
+fn server_timing_entry(sc: &SpanContext) -> Option<String> {
+    if !sc.is_valid() {
+        return None;
+    }
+    Some(format!(
+        "traceparent;desc=\"00-{}-{}-{:02x}\"",
+        sc.trace_id(),
+        sc.span_id(),
+        sc.trace_flags().to_u8()
+    ))
+}
+
+/// Reports whether a `Content-Type` header value names `text/html`: the media
+/// type before any parameters, trimmed and compared case-insensitively.
+fn is_html(content_type: &str) -> bool {
+    let media = content_type
+        .split_once(';')
+        .map_or(content_type, |(head, _)| head);
+    media.trim().eq_ignore_ascii_case("text/html")
+}
+
+#[cfg(test)]
+mod tests {
+    use opentelemetry::trace::{SpanId, TraceFlags, TraceId, TraceState};
+
+    use super::*;
+
+    fn span_context(flags: TraceFlags) -> SpanContext {
+        SpanContext::new(
+            TraceId::from_hex("4bf92f3577b34da6a3ce929d0e0e4736").expect("valid trace id"),
+            SpanId::from_hex("00f067aa0ba902b7").expect("valid span id"),
+            flags,
+            false,
+            TraceState::default(),
+        )
+    }
+
+    #[test]
+    fn server_timing_entry_formats_valid_contexts_and_skips_invalid() {
+        let cases = [
+            (
+                span_context(TraceFlags::SAMPLED),
+                Some(
+                    "traceparent;desc=\"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\"",
+                ),
+            ),
+            (
+                span_context(TraceFlags::default()),
+                Some(
+                    "traceparent;desc=\"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00\"",
+                ),
+            ),
+            (
+                span_context(TraceFlags::new(0x03)),
+                Some(
+                    "traceparent;desc=\"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-03\"",
+                ),
+            ),
+            (SpanContext::empty_context(), None),
+        ];
+        for (sc, want) in cases {
+            assert_eq!(server_timing_entry(&sc).as_deref(), want);
+        }
+    }
+
+    #[test]
+    fn is_html_matches_text_html_media_type_only() {
+        let cases = [
+            ("text/html", true),
+            ("text/html; charset=utf-8", true),
+            ("Text/HTML; charset=utf-8", true),
+            ("  text/html  ;q=1", true),
+            ("application/xhtml+xml", false),
+            ("text/htmlx", false),
+            ("application/json", false),
+            ("text/plain; charset=utf-8", false),
+            ("", false),
+        ];
+        for (ct, want) in cases {
+            assert_eq!(is_html(ct), want, "Content-Type {ct:?}");
         }
     }
 }

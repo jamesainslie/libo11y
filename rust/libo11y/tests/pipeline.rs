@@ -325,3 +325,74 @@ fn the_propagator_carries_the_trace() {
         "{carrier:?}"
     );
 }
+
+#[test]
+fn default_span_level_filters_debug_and_trace_spans_and_builder_can_lower_it() {
+    let default_spans = Spans::default();
+    let default_sdk = hermetic("pipeline-span-level-default")
+        .with_span_exporter(default_spans.clone())
+        .build()
+        .expect("SDK");
+    traced(&default_sdk, || {
+        tracing::error_span!("lvl-error").in_scope(|| {});
+        tracing::warn_span!("lvl-warn").in_scope(|| {});
+        tracing::info_span!("lvl-info").in_scope(|| {});
+        tracing::debug_span!("lvl-debug").in_scope(|| {});
+        tracing::trace_span!("lvl-trace").in_scope(|| {});
+    });
+    default_sdk.force_flush().expect("flush");
+    let default_names: Vec<String> = default_spans
+        .spans()
+        .into_iter()
+        .map(|s| s.name.into_owned())
+        .collect();
+    assert_eq!(default_names, ["lvl-error", "lvl-warn", "lvl-info"]);
+
+    let debug_spans = Spans::default();
+    let debug_sdk = hermetic("pipeline-span-level-debug")
+        .span_level(tracing::Level::DEBUG)
+        .with_span_exporter(debug_spans.clone())
+        .build()
+        .expect("SDK");
+    traced(&debug_sdk, || {
+        tracing::info_span!("lvl-info").in_scope(|| {});
+        tracing::debug_span!("lvl-debug").in_scope(|| {});
+        tracing::trace_span!("lvl-trace").in_scope(|| {});
+    });
+    debug_sdk.force_flush().expect("flush");
+    let debug_names: Vec<String> = debug_spans
+        .spans()
+        .into_iter()
+        .map(|s| s.name.into_owned())
+        .collect();
+    assert_eq!(debug_names, ["lvl-info", "lvl-debug"]);
+}
+
+#[test]
+fn telemetry_suppressed_context_suppresses_tracing_spans() {
+    let spans = Spans::default();
+    let sdk = hermetic("pipeline-suppressed")
+        .with_span_exporter(spans.clone())
+        .build()
+        .expect("SDK");
+    traced(&sdk, || {
+        tracing::info_span!("before").in_scope(|| {
+            let _suppressed = Context::enter_telemetry_suppressed_scope();
+            tracing::error!("suppressed error inside active span");
+            tracing::info_span!("suppressed").in_scope(|| {
+                tracing::error!("suppressed error");
+            });
+        });
+        tracing::info_span!("after").in_scope(|| {});
+    });
+    sdk.force_flush().expect("flush");
+    let names: Vec<String> = spans
+        .spans()
+        .into_iter()
+        .map(|s| s.name.into_owned())
+        .collect();
+    assert_eq!(names, ["before", "after"]);
+    let before = spans.named("before");
+    assert_eq!(before.status, Status::Unset);
+    assert!(before.events.events.is_empty());
+}

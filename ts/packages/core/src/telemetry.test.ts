@@ -113,6 +113,26 @@ test("acceptance: a span, a correlated log and an exemplar on the histogram poin
   });
 });
 
+// Council S8: the views option reaches the exemplar store, so a renamed stream keeps its exemplars.
+test("a stream the views option renames carries the span's exemplar", async () => {
+  const { platform, lastMetrics } = rig();
+  const views = [{ instrumentName: "app.jobs", name: "app.jobs.renamed" }];
+  await withSetup({ ...OPTIONS, views }, platform, async (t) => {
+    const counter = t.meterProvider.getMeter("app").createCounter("app.jobs");
+    let spanId = "";
+    t.tracerProvider.getTracer("app").startActiveSpan("job", (span) => {
+      spanId = span.spanContext().spanId;
+      counter.add(1);
+      span.end();
+    });
+    await t.forceFlush();
+    const metric = lastMetrics().find((m) => m.descriptor.name === "app.jobs.renamed");
+    const [point] = (metric?.dataPoints ?? []) as DataPoint<unknown>[];
+    assert.ok(point);
+    assert.equal(exemplarsOf(point)[0]?.spanId, spanId);
+  });
+});
+
 test("setupWith emits the canary first and installs the globals; shutdown removes them", async () => {
   const { platform } = rig();
   const t = await setupWith(OPTIONS, platform);

@@ -88,15 +88,7 @@ pub(crate) fn attach_exemplars(
     let max_fixed = default_fixed_reservoir_size();
     for rm in &mut request.resource_metrics {
         for sm in &mut rm.scope_metrics {
-            let scope = ScopeKey {
-                name: sm.scope.as_ref().map_or("", |s| s.name.as_str()).to_owned(),
-                version: sm
-                    .scope
-                    .as_ref()
-                    .map_or("", |s| s.version.as_str())
-                    .to_owned(),
-                schema_url: sm.schema_url.clone(),
-            };
+            let scope = ScopeKey::from_proto(sm.scope.as_ref(), &sm.schema_url);
             for metric in &mut sm.metrics {
                 let key = MetricKey {
                     scope: scope.clone(),
@@ -517,6 +509,100 @@ mod tests {
         assert_eq!(
             filtered[0],
             ProtoKeyValue::from(&KeyValue::new("extra", "last"))
+        );
+    }
+
+    #[test]
+    fn scope_attributes_keep_exemplars_on_their_own_scope() {
+        let mut request = ExportMetricsServiceRequest {
+            resource_metrics: vec![ProtoResourceMetrics {
+                resource: None,
+                scope_metrics: vec![
+                    ProtoScopeMetrics {
+                        scope: Some(InstrumentationScope {
+                            name: "shared".to_owned(),
+                            version: "1.0.0".to_owned(),
+                            attributes: vec![ProtoKeyValue::from(&KeyValue::new("tier", "a"))],
+                            ..Default::default()
+                        }),
+                        metrics: vec![Metric {
+                            name: "hits".to_owned(),
+                            data: Some(Data::Sum(Sum {
+                                data_points: vec![NumberDataPoint::default()],
+                                ..Default::default()
+                            })),
+                            ..Default::default()
+                        }],
+                        schema_url: "https://example.test/schema".to_owned(),
+                    },
+                    ProtoScopeMetrics {
+                        scope: Some(InstrumentationScope {
+                            name: "shared".to_owned(),
+                            version: "1.0.0".to_owned(),
+                            attributes: vec![ProtoKeyValue::from(&KeyValue::new("tier", "b"))],
+                            ..Default::default()
+                        }),
+                        metrics: vec![Metric {
+                            name: "hits".to_owned(),
+                            data: Some(Data::Sum(Sum {
+                                data_points: vec![NumberDataPoint::default()],
+                                ..Default::default()
+                            })),
+                            ..Default::default()
+                        }],
+                        schema_url: "https://example.test/schema".to_owned(),
+                    },
+                ],
+                schema_url: String::new(),
+            }],
+        };
+
+        let scope_a = opentelemetry::InstrumentationScope::builder("shared")
+            .with_version("1.0.0")
+            .with_schema_url("https://example.test/schema")
+            .with_attributes([KeyValue::new("tier", "a")])
+            .build();
+        let scope_b = opentelemetry::InstrumentationScope::builder("shared")
+            .with_version("1.0.0")
+            .with_schema_url("https://example.test/schema")
+            .with_attributes([KeyValue::new("tier", "b")])
+            .build();
+
+        let mut drained = HashMap::from([
+            (
+                MetricKey {
+                    scope: ScopeKey::from_scope(&scope_a),
+                    name: "hits".to_owned(),
+                },
+                vec![sample(ExemplarValue::Int(10), vec![])],
+            ),
+            (
+                MetricKey {
+                    scope: ScopeKey::from_scope(&scope_b),
+                    name: "hits".to_owned(),
+                },
+                vec![sample(ExemplarValue::Int(20), vec![])],
+            ),
+        ]);
+
+        attach_exemplars(&mut request, &mut drained);
+
+        let sms = &request.resource_metrics[0].scope_metrics;
+        let Some(Data::Sum(sum_a)) = &sms[0].metrics[0].data else {
+            panic!("expected sum for scope a");
+        };
+        let Some(Data::Sum(sum_b)) = &sms[1].metrics[0].data else {
+            panic!("expected sum for scope b");
+        };
+        assert_eq!(sum_a.data_points[0].exemplars.len(), 1);
+        assert_eq!(
+            sum_a.data_points[0].exemplars[0].value,
+            Some(exemplar::Value::AsInt(10))
+        );
+        assert_eq!(sum_b.data_points[0].exemplars.len(), 1);
+        assert_eq!(
+            sum_b.data_points[0].exemplars[0].value,
+            Some(exemplar::Value::AsInt(20))
         );
     }
 }

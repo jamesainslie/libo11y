@@ -18,7 +18,10 @@ default = ["otlp-http", "otlp-grpc", "tokio", "log"]
 # OTLP over HTTP (http/protobuf and http/json) through upstream's exporters
 # and a blocking reqwest client with TLS through rustls.
 otlp-http = [
+    "dep:async-trait",
     "dep:flate2",
+    "dep:http",
+    "dep:opentelemetry-http",
     "dep:opentelemetry-otlp",
     "dep:prost",
     "dep:reqwest",
@@ -50,13 +53,16 @@ log = ["dep:tracing-log"]
 libo11y-macros.workspace = true
 libo11y-redact.workspace = true
 libo11y-spec.workspace = true
+async-trait = { version = "0.1.92", optional = true }
 flate2 = { version = "1.1.11", optional = true }
 gethostname = "1.1.0"
 hmac = "0.13.0"
+http = { version = "1.5.0", optional = true }
 # Pinned: appregistry/yaml.rs works around this exact release's panics and
 # its byte-offset marks, so an upgrade reruns the conformance and fuzz checks.
 libyaml-safer = "=0.3.0"
 opentelemetry = { version = "0.33.1", default-features = false, features = ["logs", "metrics", "trace", "internal-logs"] }
+opentelemetry-http = { version = "0.33.1", default-features = false, optional = true }
 opentelemetry-otlp = { version = "0.33.1", default-features = false, optional = true, features = ["trace", "logs", "internal-logs"] }
 opentelemetry-proto = { version = "0.33.1", default-features = false, features = ["gen-tonic-messages", "metrics", "with-serde", "internal-logs"] }
 opentelemetry-stdout = { version = "0.33.1", default-features = false, features = ["trace", "logs"] }

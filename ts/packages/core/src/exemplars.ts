@@ -12,8 +12,9 @@
  * filteredAttributes. Samples newer than the point's end time wait for the next cycle.
  *
  * attach consumes what it attaches, so with several readers the first to collect gets each sample.
- * A series is matched by the instrument's name, so a view that renames an instrument leaves its
- * stream without exemplars.
+ * A series is found by the instrument's name. A stream a view renamed is mapped back to its
+ * instrument through the telemetry's views, and when one instrument feeds several streams each
+ * stream's points get the samples of that collection.
  *
  * Nothing may ever read the store (an injected reader nobody wraps, say), so offer discards samples
  * more than 5 minutes older than the newest one it has seen, and a full store first sweeps those
@@ -36,8 +37,9 @@ import {
   type MetricData,
   type PushMetricExporter,
   type ResourceMetrics,
+  type ScopeMetrics,
 } from "@opentelemetry/sdk-metrics";
-import { renderUnbounded } from "./canonical.ts";
+import { type ExemplarRename, exemplarRenamesFor } from "./internal/exemplar-views.ts";
 import { metricWatchFor } from "./internal/watches.ts";
 
 /** Which measurements may become exemplars. */
@@ -171,6 +173,31 @@ function isSubset(point: Attributes, series: Attributes): boolean {
   return true;
 }
 
+// attributesKey renders an attribute set as sdk-metrics keys its data points: the entries in key
+// order, as JSON, so the number 3 and the string "3" are two series as they are two points.
+function attributesKey(attributes: Attributes): string {
+  const keys = Object.keys(attributes).sort();
+  return keys.length === 0 ? "" : JSON.stringify(keys.map((k) => [k, attributes[k]]));
+}
+
+// selects reports whether rename applies to the instrument behind metric in scope, with the
+// matching sdk-metrics' ViewRegistry does. The descriptor carries the instrument's unit, and its
+// type where sdk-metrics produced it.
+function selects(rename: ExemplarRename, scope: ScopeMetrics["scope"], metric: MetricData): boolean {
+  const type = (metric.descriptor as { readonly type?: unknown }).type;
+  return (
+    (rename.instrumentType === undefined || type === undefined || rename.instrumentType === type) &&
+    (rename.instrumentUnit === undefined || rename.instrumentUnit === metric.descriptor.unit) &&
+    (rename.meterName === undefined || rename.meterName === scope.name) &&
+    (scope.version === undefined ||
+      rename.meterVersion === undefined ||
+      rename.meterVersion === scope.version) &&
+    (scope.schemaUrl === undefined ||
+      rename.meterSchemaUrl === undefined ||
+      rename.meterSchemaUrl === scope.schemaUrl)
+  );
+}
+
 function toExemplar(s: Sample, filtered: Attributes): Exemplar {
   return {
     timeUnixNano: s.time,
@@ -209,8 +236,8 @@ export class ExemplarStore {
     if (this.filter === "trace_based" && !(valid && (sc.traceFlags & TraceFlags.SAMPLED) !== 0)) return;
 
     const instrumentKey = `${m.scope}\u0000${m.instrument}`;
-    // The key tells attribute sets apart, so it is rendered without the token's bounds.
-    const key = `${instrumentKey}\u0000${renderUnbounded(m.attributes)}`;
+    // The key tells attribute sets apart as sdk-metrics does, types included and without bounds.
+    const key = `${instrumentKey}\u0000${attributesKey(m.attributes)}`;
     const time = m.time === undefined ? nowNanos() : toNanos(m.time);
     if (time > this.newest) this.newest = time;
     const horizon = this.newest - MAX_SAMPLE_AGE_NANOS;
@@ -282,7 +309,10 @@ export class ExemplarStore {
    * collection are discarded. rm itself is not modified.
    */
   attach(rm: ResourceMetrics): ResourceMetricsWithExemplars {
-    const claimed = new Set<string>();
+    // The samples taken from each series this call, by series key. Every stream of one instrument
+    // shares them, so the first stream does not leave the others without.
+    const claimed = new Map<string, Sample[]>();
+    const renames = exemplarRenamesFor(this);
     let cutoff = -1n;
     const scopeMetrics = rm.scopeMetrics.map((sm) => {
       const scope = scopeKey(sm.scope.name, sm.scope.version, sm.scope.schemaUrl);
@@ -291,7 +321,12 @@ export class ExemplarStore {
           const end = toNanos(p.endTime);
           if (end > cutoff) cutoff = end;
         }
-        return this.attachMetric(scope, metric, claimed);
+        const instruments = new Set([metric.descriptor.name]);
+        for (const r of renames) {
+          if (r.name === metric.descriptor.name && selects(r, sm.scope, metric))
+            instruments.add(r.instrumentName);
+        }
+        return this.attachMetric(scope, instruments, metric, claimed);
       });
       return { ...sm, metrics };
     });
@@ -305,11 +340,17 @@ export class ExemplarStore {
     return { ...rm, scopeMetrics };
   }
 
-  // attachMetric assigns each of the instrument's series to its best point and returns the metric
-  // with exemplars on the points that got any.
-  private attachMetric(scope: string, metric: MetricData, claimed: Set<string>): MetricData {
-    const keys = this.byInstrument.get(`${scope}\u0000${metric.descriptor.name}`);
-    if (keys === undefined || keys.size === 0) return metric;
+  // attachMetric assigns each series of the instruments metric derives from to its best point and
+  // returns the metric with exemplars on the points that got any.
+  private attachMetric(
+    scope: string,
+    instruments: ReadonlySet<string>,
+    metric: MetricData,
+    claimed: Map<string, Sample[]>,
+  ): MetricData {
+    const keys: string[] = [];
+    for (const name of instruments) keys.push(...(this.byInstrument.get(`${scope}\u0000${name}`) ?? []));
+    if (keys.length === 0) return metric;
     const points = metric.dataPoints as readonly DataPoint<unknown>[];
     const perPoint = new Map<number, Exemplar[]>();
     for (const key of keys) {
@@ -326,8 +367,11 @@ export class ExemplarStore {
       });
       const point = points[best];
       if (point === undefined) continue;
-      claimed.add(key);
-      const samples = this.take(series, toNanos(point.endTime));
+      let samples = claimed.get(key);
+      if (samples === undefined) {
+        samples = this.take(series, toNanos(point.endTime));
+        claimed.set(key, samples);
+      }
       if (samples.length === 0) continue;
       const filtered: Record<string, AttributeValue | undefined> = {};
       for (const k of Object.keys(series.attributes)) {

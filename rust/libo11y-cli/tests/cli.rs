@@ -107,7 +107,7 @@ fn invalid_conformance_registries_return_expected_exit_codes() {
 }
 
 #[test]
-fn duplicate_namespace_and_missing_file_and_usage() {
+fn same_namespace_in_two_files_and_missing_file_and_usage() {
     let dir = TempDir::new();
     let a = dir.write(
         "first.yaml",
@@ -117,13 +117,18 @@ fn duplicate_namespace_and_missing_file_and_usage() {
         "second.yaml",
         "schema: libo11y.app-registry/v1\nnamespace: acme\nattributes:\n  acme.user.id: {type: string, sensitivity: internal, cardinality: unbounded}\n",
     );
+    // Each file is validated on its own, as in the Go CLI, so two valid
+    // files that share a namespace both pass.
     let out = run_cli(&["registry", "check", &a, &b]);
-    assert_eq!(out.status.code(), Some(1));
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        stdout.contains("libo11y_app_namespace_duplicate"),
-        "{stdout}"
+    assert_eq!(out.status.code(), Some(0), "{stdout}");
+    assert_eq!(
+        stdout,
+        format!(
+            "{a}: ok (1 attribute in namespace acme)\n{b}: ok (1 attribute in namespace acme)\n"
+        )
     );
+    assert!(out.stderr.is_empty());
 
     let missing = dir.0.join("missing.yaml");
     let missing_str = missing.to_string_lossy();

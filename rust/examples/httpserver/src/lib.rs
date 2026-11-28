@@ -17,6 +17,12 @@ use libo11y::redact::Redact;
 use libo11y::{AppRegistry, Error, Sdk, record_from_context};
 use libo11y_http::ServerLayer;
 
+// Compile and run the workspace README snippets as doctests so they stay
+// aligned with the public API.
+#[cfg(doctest)]
+#[doc = include_str!("../../../README.md")]
+struct WorkspaceReadmeDoctests;
+
 /// Embedded application attribute registry validated at startup.
 pub const APP_REGISTRY_YAML: &str = include_str!("../o11y-registry.yaml");
 
