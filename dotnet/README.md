@@ -1,3 +1,25 @@
+
+## Install
+
+```sh
+dotnet add package Libo11y
+dotnet add package Libo11y.AspNetCore  # ASP.NET Core and HttpClient
+dotnet add package Libo11y.Db          # database client instrumentation
+dotnet add package Libo11y.Testing     # test projects only
+dotnet tool install --global Libo11y.Cli  # the libo11y command
+```
+
+Every package releases at one version, from a `dotnet/vX.Y.Z` tag. A release
+whose packages are not on nuget.org yet attaches the `.nupkg` files to its
+[GitHub Release](https://github.com/jamesainslie/libo11y/releases). Download
+them into one directory and add it as a package source:
+
+```sh
+dotnet nuget add source /path/to/that/directory --name libo11y
+dotnet add package Libo11y --version 0.1.0
+```
+
+`O11y.Version` is the release the assembly was built from.
 # libo11y (.NET)
 
 Opinionated, elegant observability for .NET built purely on OpenTelemetry (`OpenTelemetry` 1.21.0, `System.Diagnostics.Activity`, `System.Diagnostics.Metrics`, and `Microsoft.Extensions.Logging`). Targets `.NET 10`.
@@ -46,7 +68,7 @@ var report = await O11y.ShutdownOnSignalsAsync(telemetry, beforeShutdown: () => 
 ### Registry CLI
 
 ```sh
-dotnet run --project dotnet/src/Libo11y.Cli -- registry check o11y-registry.yaml
+libo11y registry check o11y-registry.yaml
 ```
 
 ## Per-signal guarantees and caveats

@@ -45,7 +45,7 @@ Ruby (`ruby/`, unreleased, targeting `ruby/v0.1.0`) targets Ruby 3.3+ over
 OpenTelemetry Ruby (`opentelemetry-sdk`, `opentelemetry-metrics-sdk`,
 `opentelemetry-logs-sdk`), shipping Rack, `Net::HTTP`, DB, `Detached`,
 `Proc`, `Redact`, `exe/libo11y`, and `Libo11y::Testing` (`Recorder` and
-`OtlpHttpReceiver`). .NET (`dotnet/`, unreleased, targeting `dotnet/v0.1.0`)
+`OtlpHttpReceiver`). .NET (`dotnet/`, `dotnet/v0.1.0`)
 targets .NET 10 over `OpenTelemetry` 1.21.0 (`Activity`, `Meter`, `ILogger`),
 shipping `Libo11y.Spec`, `Libo11y`, `Libo11y.AspNetCore`, `Libo11y.Db`,
 `Libo11y.Testing`, and `Libo11y.Cli`. Both pass the full shared

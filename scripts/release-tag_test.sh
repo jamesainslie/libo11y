@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Tests for release-tag.sh: it routes each Go, TypeScript, Zig, Python,
-# Rust, C and ops release tag to its family, directory, module, version,
+# Rust, C, .NET and ops release tag to its family, directory, module, version,
 # version line and changelog, and it refuses any other tag.
 set -euo pipefail
 
@@ -271,6 +271,30 @@ changelog=ops/CHANGELOG.md
 EOF
 )" ops/v0.2.0-rc.1
 
+expect_route "routes the .NET packages" "$(
+	cat <<'EOF'
+kind=dotnet
+dir=dotnet
+module=libo11y-dotnet
+version=0.1.0
+prerelease=false
+lockstep=false
+changelog=dotnet/CHANGELOG.md
+EOF
+)" dotnet/v0.1.0
+
+expect_route "marks a .NET prerelease" "$(
+	cat <<'EOF'
+kind=dotnet
+dir=dotnet
+module=libo11y-dotnet
+version=0.2.0-rc.1
+prerelease=true
+lockstep=false
+changelog=dotnet/CHANGELOG.md
+EOF
+)" dotnet/v0.2.0-rc.1
+
 expect_failure "refuses a spec tag" 1 "spec/v1.2.0 is not a release tag" spec/v1.2.0
 expect_failure "refuses a two-part go/o11yrum version" 1 "1 is not a semantic version" go/o11yrum/v1
 expect_failure "refuses a nested go/o11yrum path" 1 "is not a release tag" go/o11yrum/cmd/v0.1.0
@@ -293,6 +317,9 @@ expect_failure "refuses a two-part c version" 1 "1.2 is not a semantic version" 
 expect_failure "refuses an ops tag without the v" 1 "ops/vX.Y.Z" ops/0.1.0
 expect_failure "refuses a nested ops path" 1 "is not a release tag" ops/dashboards/v0.1.0
 expect_failure "refuses a two-part ops version" 1 "1.2 is not a semantic version" ops/v1.2
+expect_failure "refuses a dotnet tag without the v" 1 "dotnet/vX.Y.Z" dotnet/0.1.0
+expect_failure "refuses a nested dotnet path" 1 "is not a release tag" dotnet/Libo11y/v0.1.0
+expect_failure "refuses a two-part dotnet version" 1 "1.2 is not a semantic version" dotnet/v1.2
 expect_failure "refuses a two-part version" 1 "1.2 is not a semantic version" ts/v1.2
 expect_failure "refuses a leading zero" 1 "01.0.0 is not a semantic version" ts/v01.0.0
 expect_failure "refuses build metadata" 1 "is not a semantic version" ts/v0.1.0+build.5

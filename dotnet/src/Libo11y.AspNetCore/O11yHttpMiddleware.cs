@@ -28,7 +28,7 @@ public sealed class O11yHttpMiddleware
 
     private sealed class RouteBox { public string? Route; }
 
-    private static readonly ActivitySource Source = new("libo11y.aspnetcore", "0.1.0");
+    private static readonly ActivitySource Source = new("libo11y.aspnetcore", O11y.Version);
     private static readonly AsyncLocal<RouteBox?> RouteOverride = new();
 
     private readonly RequestDelegate _next;
@@ -41,7 +41,7 @@ public sealed class O11yHttpMiddleware
         _options = options ?? new O11yHttpMiddlewareOptions();
         if (_options.Telemetry is not null)
         {
-            var meter = _options.Telemetry.CreateMeter("libo11y.aspnetcore", "0.1.0");
+            var meter = _options.Telemetry.CreateMeter("libo11y.aspnetcore", O11y.Version);
             _durationHist = meter.CreateHistogram<double>(
                 "http.server.request.duration",
                 unit: "s",

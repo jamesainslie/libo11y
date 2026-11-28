@@ -113,7 +113,7 @@ internal static class ResourceComposer
             ["telemetry.sdk.language"] = "dotnet",
             ["telemetry.sdk.version"] = typeof(ResourceBuilder).Assembly.GetName().Version?.ToString() ?? "1.21.0",
             ["telemetry.distro.name"] = "libo11y",
-            ["telemetry.distro.version"] = "0.1.0",
+            ["telemetry.distro.version"] = O11y.Version,
             ["process.runtime.name"] = ".NET",
             ["process.runtime.version"] = System.Environment.Version.ToString(),
             ["process.runtime.description"] = RuntimeInformation.FrameworkDescription,
