@@ -9,8 +9,9 @@ import {
   type SetupDeps,
 } from "@libo11y/web/internal";
 import { createFakeTransport, type FakeTransport } from "../../web/src/test-support/index.ts";
+import { installRumBootstrapOn, takeBootstrap } from "./bootstrap/buffer.ts";
 import { CONFIG_STORAGE_KEY, remoteConfig } from "./config/remote.ts";
-import type { CollectorName } from "./contracts/runtime.ts";
+import type { CollectorName, RumRuntime } from "./contracts/runtime.ts";
 import type { RumSetupOptions, RumTelemetry } from "./options.ts";
 import { RETENTION_QUEUE_DEFAULTS } from "./retention/buffer.ts";
 import { sessionsIn } from "./retention/sessions.ts";
@@ -948,4 +949,48 @@ test("remoteConfig refuses limits outside [0, 1] and a refresh interval that is 
       (e: unknown) => e instanceof O11yError && e.code === "INVALID_OPTION",
     );
   }
+});
+
+// The two-part loader (decision P9).
+
+function bootstrapWith(consent: "pending" | "granted"): EventTarget {
+  const target = new EventTarget();
+  installRumBootstrapOn(target, { consent }, { now: () => performance.now(), setTimeout: () => 0 });
+  const e = new Event("error");
+  Object.defineProperty(e, "error", { value: new Error("early") });
+  target.dispatchEvent(e);
+  return target;
+}
+
+function bootstrapCollector(seen: string[]) {
+  return {
+    name: "errors" as const,
+    start: (rt: RumRuntime) =>
+      rt.bus.subscribe((s) => {
+        if (s.type === "bootstrap") seen.push(s.entry.kind);
+      }),
+  };
+}
+
+test("setupRum replays what a granted bootstrap buffered once the collectors started", async () => {
+  bootstrapWith("granted");
+  const seen: string[] = [];
+  const h = harness();
+  open = await setupRumWith(
+    { ...OPTS, consent: { initial: "granted" }, rum: { collectors: [bootstrapCollector(seen)] } },
+    h.deps,
+  );
+  assert.deepEqual(seen, ["error"]);
+  assert.equal(takeBootstrap(), undefined, "the buffer was taken");
+});
+
+test("a bootstrap buffer is discarded when consent is no longer granted at start", async () => {
+  bootstrapWith("granted");
+  const seen: string[] = [];
+  const h = harness();
+  open = await setupRumWith({ ...OPTS, rum: { collectors: [bootstrapCollector(seen)] } }, h.deps);
+  open.consent.grant();
+  await until(() => open?.rum.sessionId() !== undefined, "the session");
+  assert.deepEqual(seen, []);
+  assert.equal(takeBootstrap(), undefined);
 });

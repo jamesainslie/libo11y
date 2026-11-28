@@ -15,6 +15,7 @@
  * console.error when it is still RUM's wrapper.
  */
 import type { RUMErrorSource } from "@libo11y/spec";
+import type { BootstrapEntry } from "../bootstrap/buffer.ts";
 import type { RumCollector, RumRuntime } from "../contracts/runtime.ts";
 import { normalizeError } from "./normalize.ts";
 import { recordError } from "./record.ts";
@@ -142,6 +143,19 @@ export function errorsWith(opts: ErrorsOptions, env: ErrorsEnv): RumCollector {
           stamp(e),
         );
       };
+      // Errors the bootstrap buffered before RUM loaded.
+      const replay = (entry: BootstrapEntry): void => {
+        if (entry.kind === "error") {
+          record("uncaught", entry.error ?? new Described("Error", entry.message), entry.at);
+        } else if (entry.kind === "rejection") record("unhandled_rejection", entry.reason, entry.at);
+        else if (entry.kind === "csp") {
+          record(
+            "csp",
+            new Described("CSPViolation", `${entry.directive} blocked ${blocked(entry.blocked)}`),
+            entry.at,
+          );
+        }
+      };
       env.window.addEventListener("error", onError, { capture: true });
       env.window.addEventListener("unhandledrejection", onRejection);
       env.window.addEventListener("securitypolicyviolation", onCsp);
@@ -149,7 +163,8 @@ export function errorsWith(opts: ErrorsOptions, env: ErrorsEnv): RumCollector {
       // Requests in flight, so a failed one can be described by its method and host.
       const requests = new Map<string, { method: string; url: string }>();
       const offBus = rt.bus.subscribe((s) => {
-        if (s.type === "request-start") requests.set(s.spanId, { method: s.method, url: s.url });
+        if (s.type === "bootstrap") replay(s.entry);
+        else if (s.type === "request-start") requests.set(s.spanId, { method: s.method, url: s.url });
         else if (s.type === "request-end") {
           const r = requests.get(s.spanId);
           requests.delete(s.spanId);

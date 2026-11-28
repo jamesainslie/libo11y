@@ -8,6 +8,7 @@
   "sideEffects": false,
   "exports": {
     ".": "./src/index.ts",
+    "./bootstrap": "./src/bootstrap.ts",
     "./internal": "./src/internal.ts"
   },
   "repository": {
@@ -17,8 +18,8 @@
   },
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
-    "api": "api-extractor run --local",
-    "api:check": "api-extractor run"
+    "api": "api-extractor run --local && api-extractor run --local -c api-extractor.bootstrap.json",
+    "api:check": "api-extractor run && api-extractor run -c api-extractor.bootstrap.json"
   },
   "dependencies": {
     "@libo11y/core": "workspace:*",

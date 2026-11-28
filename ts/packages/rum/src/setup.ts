@@ -51,6 +51,8 @@ import { type ExportResult, ExportResultCode } from "@opentelemetry/core";
 import { ConsoleSpanExporter, type SpanExporter, type SpanProcessor } from "@opentelemetry/sdk-trace";
 import { recordInstantAction } from "./actions/record.ts";
 import { ATTR_SESSION_ID, ATTR_USER_ID } from "./attrs.ts";
+import { takeBootstrap } from "./bootstrap/buffer.ts";
+import { replayBootstrap } from "./bootstrap/replay.ts";
 import { createBus } from "./bus.ts";
 import type { RemoteConfigDocument } from "./config/clamp.ts";
 import type { RemoteConfigConnection } from "./config/remote.ts";
@@ -739,6 +741,12 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
     return shutdownPromise;
   };
 
-  if (gate.recording()) await startAll();
+  // The bootstrap buffer (decision P9) is replayed only into the start setup makes with consent
+  // granted. A page that starts pending discards it, even if consent is granted later.
+  const early = takeBootstrap();
+  if (gate.recording()) {
+    await startAll();
+    if (!killed) replayBootstrap(runtime, early);
+  }
   return handle;
 }

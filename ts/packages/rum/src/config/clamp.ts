@@ -23,7 +23,7 @@ export interface RemoteConfigDocument {
 
 /** The range remote configuration may move a value within. */
 export interface RemoteConfigLimits {
-  /** The range of sessionSampleRate, with 0 <= min <= max <= 1. Default [rate, rate]: no change. */
+  /** The range of sessionSampleRate: min and max between 0 and 1, min not above max. Default [rate, rate]: no change. */
   readonly sessionSampleRate?: readonly [min: number, max: number];
 }
 

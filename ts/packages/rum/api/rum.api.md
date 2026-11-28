@@ -36,6 +36,27 @@ export interface AddErrorOptions {
     readonly source?: "custom" | "boundary";
 }
 
+// @public
+export type BootstrapEntry = {
+    readonly kind: "error";
+    readonly at: number;
+    readonly error: unknown;
+    readonly message: string;
+} | {
+    readonly kind: "rejection";
+    readonly at: number;
+    readonly reason: unknown;
+} | {
+    readonly kind: "csp";
+    readonly at: number;
+    readonly directive: string;
+    readonly blocked: string;
+} | {
+    readonly kind: "click";
+    readonly at: number;
+    readonly target: Element;
+};
+
 // @public (undocumented)
 export type CollectorName = "views" | "actions" | "errors" | "vitals" | "resources" | "long_animation_frames";
 
@@ -246,6 +267,11 @@ export type RumSignal = {
     readonly kind: string;
     readonly label: string;
     readonly at: number;
+}
+/** An event the bootstrap buffered before RUM loaded, replayed once the collectors started (R3d). */
+| {
+    readonly type: "bootstrap";
+    readonly entry: BootstrapEntry;
 };
 
 // @public

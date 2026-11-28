@@ -3,6 +3,7 @@
  */
 
 export { type ActionsOptions, actions } from "./actions/collector.ts";
+export type { BootstrapEntry } from "./bootstrap/buffer.ts";
 export type { RemoteConfigDocument, RemoteConfigLimits } from "./config/clamp.ts";
 export {
   type RemoteConfig,

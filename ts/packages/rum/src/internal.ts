@@ -5,6 +5,14 @@
  */
 export { actionName, actionTarget, elementSelector } from "./actions/naming.ts";
 export { ATTR_SESSION_ID, ATTR_USER_ID, summaryCountKey, summaryVitalKey } from "./attrs.ts";
+export {
+  afterLoadOn,
+  BOOTSTRAP_KEY,
+  bootstrapBuffer,
+  installRumBootstrapOn,
+  takeBootstrap,
+} from "./bootstrap/buffer.ts";
+export { replayBootstrap } from "./bootstrap/replay.ts";
 export { createBus } from "./bus.ts";
 export { clampConfig, parseRemoteConfig, resolveLimits } from "./config/clamp.ts";
 export { CONFIG_STORAGE_KEY, createRemoteConfig } from "./config/remote.ts";
