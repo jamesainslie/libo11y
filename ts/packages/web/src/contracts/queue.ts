@@ -1,5 +1,6 @@
 /**
- * Contract, frozen by the L4 scaffold. Changing it needs the architect's sign-off.
+ * Contract, frozen by the L4 scaffold. Changing it needs the architect's sign-off. RUM R5 widened
+ * PersistentQueue.kind with "storage", additively, with that sign-off.
  *
  * The persistent queue (WP2) that the delivery (WP1) uses for offline retry and the webext worker
  * (WP5) uses to persist every batch before it is sent. Every tab of an origin, and every wake of an
@@ -52,8 +53,11 @@ export interface QueueSize {
  * dropped.
  */
 export interface PersistentQueue {
-  /** "indexeddb", or "memory" when IndexedDB is unavailable or failed to open. */
-  readonly kind: "indexeddb" | "memory";
+  /**
+   * "indexeddb", "memory" when IndexedDB is unavailable or failed to open, or "storage" for a queue
+   * over a key-value storage, as on React Native.
+   */
+  readonly kind: "indexeddb" | "memory" | "storage";
   /**
    * Stores a batch. Entries older than maxAgeMillis are dropped first, then the oldest entries
    * until the new one fits maxEntries and maxBytes. Resolves with the stored entry, or undefined
