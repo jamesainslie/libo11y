@@ -3,13 +3,16 @@ package ing.o11y.libo11y.internal;
 import ing.o11y.libo11y.O11yException;
 import ing.o11y.libo11y.PiiMode;
 import ing.o11y.libo11y.spec.AppRegistryValidator;
+import ing.o11y.libo11y.spec.GoQuote;
 import ing.o11y.libo11y.spec.generated.Spec;
 import ing.o11y.libo11y.spec.generated.SpecTables;
 import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.api.common.Attributes;
 import io.opentelemetry.api.common.AttributesBuilder;
 import io.opentelemetry.api.metrics.LongCounter;
+import java.lang.reflect.Array;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
@@ -24,18 +27,28 @@ public final class SensitivityPolicy {
     public static final int MAX_DEPTH = 16;
     public static final int MAX_NODES = 2048;
 
-    private static final AttributeKey<String> VIOLATION_KIND_KEY =
+    private static final AttributeKey<String> RULE_KEY =
             AttributeKey.stringKey(Spec.Attributes.RULE);
     private static final AttributeKey<String> SIGNAL_KEY =
             AttributeKey.stringKey(Spec.Attributes.SIGNAL);
-    private static final AttributeKey<String> ATTR_KEY =
-            AttributeKey.stringKey("o11y.attribute.key");
+
+    /** Rule counted when a secret-classified attribute is dropped. */
+    public static final String RULE_SECRET_ATTRIBUTE = "secret_attribute";
+    /** Rule counted when a PII-classified attribute is dropped or tokenized. */
+    public static final String RULE_PII_ATTRIBUTE = "pii_attribute";
 
     private final Map<String, SpecTables.Sensitivity> classes;
     private final PiiMode piiMode;
     private final byte[] piiHashKey;
-    private final AtomicReference<LongCounter> violationCounter = new AtomicReference<>();
+    /** Shared with every {@link #silent()} copy; a silent copy never reads it. */
+    private final AtomicReference<LongCounter> violationCounter;
+    private final boolean counting;
 
+    /**
+     * Builds the policy. Each application registry must declare its own namespace: two
+     * registries that declare one namespace fail with {@code INVALID_APP_REGISTRY}, so a later
+     * registry cannot reclassify the keys of an earlier one.
+     */
     public SensitivityPolicy(
             PiiMode piiMode,
             byte[] piiHashKey,
@@ -54,11 +67,39 @@ public final class SensitivityPolicy {
 
         Map<String, SpecTables.Sensitivity> merged = new HashMap<>(SpecTables.SENSITIVITY_OF);
         if (appRegistries != null) {
+            Map<String, String> declaredBy = new HashMap<>();
             for (AppRegistryValidator.CompiledAppRegistry reg : appRegistries) {
-                merged.putAll(reg.classes());
+                String first = declaredBy.putIfAbsent(reg.namespace(), reg.source());
+                if (first != null) {
+                    throw new O11yException(
+                            O11yException.ErrorCode.INVALID_APP_REGISTRY,
+                            "o11y: invalid application registry: " + first + " and " + reg.source()
+                                    + " both declare namespace " + GoQuote.quote(reg.namespace()));
+                }
+                // Registry namespaces are disjoint from the specification's (the validator
+                // refuses o11y, otel and every semconv namespace), so a spec class wins.
+                reg.classes().forEach(merged::putIfAbsent);
             }
         }
         this.classes = Collections.unmodifiableMap(merged);
+        this.violationCounter = new AtomicReference<>();
+        this.counting = true;
+    }
+
+    private SensitivityPolicy(SensitivityPolicy base) {
+        this.classes = base.classes;
+        this.piiMode = base.piiMode;
+        this.piiHashKey = base.piiHashKey;
+        this.violationCounter = base.violationCounter;
+        this.counting = false;
+    }
+
+    /**
+     * Returns a copy that makes the same decisions but records no violations. It serves a second
+     * redaction of data another wrapper already counts, so one attribute is one violation.
+     */
+    public SensitivityPolicy silent() {
+        return counting ? new SensitivityPolicy(this) : this;
     }
 
     public void attachViolationCounter(LongCounter counter) {
@@ -73,17 +114,34 @@ public final class SensitivityPolicy {
         return classes.getOrDefault(key, SpecTables.Sensitivity.INTERNAL);
     }
 
+    /**
+     * Reports whether a metric attribute under key must be removed: secret always, PII unless the
+     * mode is {@link PiiMode#KEEP}. Hash mode drops PII on metrics, because a token per value would
+     * multiply series cardinality. Metric-side removals are never counted.
+     */
     public boolean isMetricDisallowed(String key) {
-        SpecTables.Sensitivity sens = sensitivityOf(key);
-        return sens == SpecTables.Sensitivity.SECRET || sens == SpecTables.Sensitivity.PII;
+        return switch (sensitivityOf(key)) {
+            case SECRET -> true;
+            case PII -> piiMode != PiiMode.KEEP;
+            default -> false;
+        };
     }
 
-    private void recordViolation(String kind, String signal, String key) {
+    /** Counts n violations of rule on signal, once the violation counter is attached. */
+    public void recordViolations(String signal, String rule, long n) {
+        if (!counting || n <= 0) {
+            return;
+        }
         LongCounter counter = violationCounter.get();
         if (counter == null) {
             return;
         }
-        counter.add(1L, Attributes.of(VIOLATION_KIND_KEY, kind, SIGNAL_KEY, signal, ATTR_KEY, key));
+        counter.add(n, Attributes.of(SIGNAL_KEY, signal, RULE_KEY, rule));
+    }
+
+    /** Names the violation rule for an attribute of the given class that was dropped or rewritten. */
+    public static String ruleFor(SpecTables.Sensitivity sens) {
+        return sens == SpecTables.Sensitivity.SECRET ? RULE_SECRET_ATTRIBUTE : RULE_PII_ATTRIBUTE;
     }
 
     public record Decision(boolean drop, Object value) {
@@ -94,30 +152,36 @@ public final class SensitivityPolicy {
         }
     }
 
+    /**
+     * Classifies one value. On logs, spans and the resource a secret is dropped and PII is dropped,
+     * tokenized or kept per the mode, and each drop or rewrite is counted when countViolation is
+     * set and signal is not null. On metrics the rule of {@link #isMetricDisallowed} applies and
+     * nothing is counted.
+     */
     public Decision classifyScalar(String key, Object value, String signal, boolean countViolation) {
-        SpecTables.Sensitivity sens = sensitivityOf(key);
-        if (sens == SpecTables.Sensitivity.SECRET) {
-            if (countViolation && signal != null) {
-                recordViolation("secret_dropped", signal, key);
-            }
-            return Decision.DROP;
+        if (Spec.Signal.METRICS.equals(signal)) {
+            return isMetricDisallowed(key) ? Decision.DROP : Decision.keep(value);
         }
-        if (sens == SpecTables.Sensitivity.PII) {
-            if (Spec.Signal.METRICS.equals(signal)) {
-                return Decision.DROP;
-            }
-            return switch (piiMode) {
-                case DROP -> {
-                    if (countViolation && signal != null) {
-                        recordViolation("pii_dropped", signal, key);
-                    }
-                    yield Decision.DROP;
-                }
+        SpecTables.Sensitivity sens = sensitivityOf(key);
+        Decision d;
+        if (sens == SpecTables.Sensitivity.SECRET) {
+            d = Decision.DROP;
+        } else if (sens == SpecTables.Sensitivity.PII) {
+            d = switch (piiMode) {
+                case DROP -> Decision.DROP;
                 case HASH -> Decision.keep(PiiTokenizer.token(piiHashKey, value));
                 case KEEP -> Decision.keep(value);
             };
+            if (piiMode == PiiMode.KEEP) {
+                return d;
+            }
+        } else {
+            return Decision.keep(value);
         }
-        return Decision.keep(value);
+        if (countViolation && signal != null) {
+            recordViolations(signal, ruleFor(sens), 1L);
+        }
+        return d;
     }
 
     /** Classifies an OpenTelemetry Attributes bag for spans, events, links, logs, or resource. */
@@ -136,10 +200,18 @@ public final class SensitivityPolicy {
         return builder.build();
     }
 
-    /** Classifies metric measurement attributes (always drops SECRET and PII, never counts). */
+    /**
+     * Classifies metric measurement attributes per {@link #isMetricDisallowed} and never counts.
+     * Returns attrs itself when every attribute is kept, so the common path allocates nothing.
+     */
     public Attributes classifyMetricAttributes(Attributes attrs) {
         if (attrs == null || attrs.isEmpty()) {
             return Attributes.empty();
+        }
+        boolean[] dropsAny = {false};
+        attrs.forEach((key, val) -> dropsAny[0] |= isMetricDisallowed(key.getKey()));
+        if (!dropsAny[0]) {
+            return attrs;
         }
         AttributesBuilder builder = Attributes.builder();
         attrs.forEach((key, val) -> {
@@ -237,23 +309,42 @@ public final class SensitivityPolicy {
                 walk.active.remove(map);
             }
         }
-        if (value instanceof Iterable<?> iter) {
-            if (!walk.active.add(iter)) {
-                return DROPPED_SENTINEL;
+        if (value instanceof Collection<?> coll) {
+            return classifyLogSequence(dottedKey, coll, coll, depth, walk, countViolation);
+        }
+        if (value.getClass().isArray() && !(value instanceof byte[])) {
+            int len = Array.getLength(value);
+            List<Object> elements = new ArrayList<>(len);
+            for (int i = 0; i < len; i++) {
+                elements.add(Array.get(value, i));
             }
-            try {
-                List<Object> nested = new ArrayList<>();
-                for (Object el : iter) {
-                    Object cv = classifyLogValue(dottedKey, el, depth + 1, walk, countViolation);
-                    if (cv != DROPPED_SENTINEL) {
-                        nested.add(cv);
-                    }
-                }
-                return nested;
-            } finally {
-                walk.active.remove(iter);
-            }
+            return classifyLogSequence(dottedKey, value, elements, depth, walk, countViolation);
         }
         return value;
+    }
+
+    /** Walks the elements of a collection or array (identity), judging each on the parent key. */
+    private Object classifyLogSequence(
+            String dottedKey,
+            Object identity,
+            Iterable<?> elements,
+            int depth,
+            LogWalk walk,
+            boolean countViolation) {
+        if (!walk.active.add(identity)) {
+            return DROPPED_SENTINEL;
+        }
+        try {
+            List<Object> nested = new ArrayList<>();
+            for (Object el : elements) {
+                Object cv = classifyLogValue(dottedKey, el, depth + 1, walk, countViolation);
+                if (cv != DROPPED_SENTINEL) {
+                    nested.add(cv);
+                }
+            }
+            return nested;
+        } finally {
+            walk.active.remove(identity);
+        }
     }
 }

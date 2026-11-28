@@ -52,6 +52,9 @@
         <project.build.outputTimestamp>2026-11-27T00:00:00Z</project.build.outputTimestamp>
         <maven.compiler.release>21</maven.compiler.release>
         <spring-boot.version>4.2.0</spring-boot.version>
+        <!-- OTLP protobuf bindings for the libo11y-test receiver. Built on the
+             same protobuf-java line Spring Boot manages (4.36.x). -->
+        <opentelemetry-proto.version>1.11.1-alpha</opentelemetry-proto.version>
         <maven-compiler-plugin.version>3.14.0</maven-compiler-plugin.version>
         <maven-surefire-plugin.version>3.5.3</maven-surefire-plugin.version>
         <maven-jar-plugin.version>3.5.1</maven-jar-plugin.version>
@@ -79,6 +82,11 @@
                 <version>${spring-boot.version}</version>
                 <type>pom</type>
                 <scope>import</scope>
+            </dependency>
+            <dependency>
+                <groupId>io.opentelemetry.proto</groupId>
+                <artifactId>opentelemetry-proto</artifactId>
+                <version>${opentelemetry-proto.version}</version>
             </dependency>
             <dependency>
                 <groupId>ing.o11y</groupId>
