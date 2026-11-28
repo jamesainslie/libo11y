@@ -2,12 +2,15 @@ package ing.o11y.libo11y.internal;
 
 import ing.o11y.libo11y.O11yException;
 import ing.o11y.libo11y.O11yOptions;
+import ing.o11y.libo11y.PiiMode;
 import ing.o11y.libo11y.spec.generated.Spec;
 import ing.o11y.libo11y.spec.generated.SpecTables;
 import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.api.common.Attributes;
 import io.opentelemetry.api.common.AttributesBuilder;
 import io.opentelemetry.sdk.resources.Resource;
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.net.InetAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -17,17 +20,40 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /** Composes the single schema-stamped OpenTelemetry Resource with tier-0 validation and sensitivity filtering. */
 public final class ResourceComposer {
     private static final String UNKNOWN_VERSION = "0.0.0-unknown";
-    private static final Pattern CONTAINER_ID_RE = Pattern.compile("([0-9a-fA-F]{64})");
+    /** The OpenTelemetry Go container detector's pattern, applied to each /proc/self/cgroup line. */
+    private static final Pattern CONTAINER_ID_RE = Pattern.compile("^.*/(?:.*[-:])?([0-9a-f]+)(?:\\.|[\\t\\n\\f\\r ]*$)");
+    private static final Path CGROUP_PATH = Path.of("/proc/self/cgroup");
+
+    /** Rule counted when no usable service.name resolves under lenient identity. */
+    public static final String RULE_IDENTITY_SERVICE_NAME = "identity_service_name";
+    /** Rule counted when no deployment.environment.name resolves under lenient identity. */
+    public static final String RULE_IDENTITY_ENVIRONMENT = "identity_environment";
+    /** Rule counted when deployment.environment.name is not an allowed value under lenient identity. */
+    public static final String RULE_IDENTITY_ENVIRONMENT_INVALID = "identity_environment_invalid";
 
     private ResourceComposer() {}
 
-    public record ComposedResource(Resource resource, List<String> missingIdentity) {}
+    /**
+     * The composed resource and what composing it found.
+     *
+     * @param resource the classified, schema-stamped resource
+     * @param identityViolations the identity rules not met under lenient identity, in check order
+     * @param classificationViolations how many resource attributes the policy dropped or tokenized,
+     *     per violation rule, for the caller to count once the violation counter exists
+     * @param serviceVersionFallback whether service.version fell back to {@code 0.0.0-unknown}
+     */
+    public record ComposedResource(
+            Resource resource,
+            List<String> identityViolations,
+            Map<String, Long> classificationViolations,
+            boolean serviceVersionFallback) {}
 
     public static ComposedResource compose(
             O11yOptions options,
@@ -35,14 +61,16 @@ public final class ResourceComposer {
             SensitivityPolicy policy) {
         Map<String, String> attrs = new LinkedHashMap<>();
 
-        // 1. Telemetry SDK and runtime defaults
-        attrs.put("telemetry.sdk.name", "libo11y");
-        attrs.put("telemetry.sdk.language", "java");
-        attrs.put("telemetry.sdk.version", "0.1.0");
+        // 1. Telemetry SDK identity (the OpenTelemetry SDK's own, as in Go) and runtime defaults
+        Resource otelDefault = Resource.getDefault();
+        for (String key : List.of("telemetry.sdk.name", "telemetry.sdk.language", "telemetry.sdk.version")) {
+            String value = otelDefault.getAttribute(AttributeKey.stringKey(key));
+            if (value != null && !value.isEmpty()) {
+                attrs.put(key, value);
+            }
+        }
         attrs.put("process.runtime.name", System.getProperty("java.vm.name", "jvm"));
         attrs.put("process.runtime.version", System.getProperty("java.version", ""));
-        attrs.put("process.runtime.description",
-                System.getProperty("java.vm.vendor", "") + " " + System.getProperty("java.runtime.version", ""));
 
         String hostName = detectHostName();
         if (!hostName.isEmpty()) {
@@ -104,7 +132,7 @@ public final class ResourceComposer {
                         O11yException.ErrorCode.NO_SERVICE_NAME,
                         "service.name is required and must not be empty or unknown_service");
             }
-            missing.add("service.name");
+            missing.add(RULE_IDENTITY_SERVICE_NAME);
         }
 
         String deployEnv = attrs.getOrDefault("deployment.environment.name", "").trim();
@@ -118,18 +146,19 @@ public final class ResourceComposer {
                         O11yException.ErrorCode.NO_ENVIRONMENT,
                         "deployment.environment.name is required");
             }
-            missing.add("deployment.environment.name");
+            missing.add(RULE_IDENTITY_ENVIRONMENT);
         } else if (!allowedEnvs.contains(deployEnv)) {
             if (options.strictIdentity()) {
                 throw new O11yException(
                         O11yException.ErrorCode.INVALID_ENVIRONMENT,
                         "deployment.environment.name " + deployEnv + " is not in allowed environments " + allowedEnvs);
             }
-            missing.add("deployment.environment.name");
+            missing.add(RULE_IDENTITY_ENVIRONMENT_INVALID);
         }
 
-        // service.version fallback
-        if (attrs.getOrDefault("service.version", "").trim().isEmpty()) {
+        // service.version fallback, flagged in the effective configuration
+        boolean versionFallback = attrs.getOrDefault("service.version", "").trim().isEmpty();
+        if (versionFallback) {
             attrs.put("service.version", UNKNOWN_VERSION);
         }
 
@@ -142,13 +171,20 @@ public final class ResourceComposer {
             attrs.put("service.instance.id", derived != null ? derived : InstanceId.random());
         }
 
-        // 6. Classify resource attributes through SensitivityPolicy (never count violations at init)
+        // 6. Classify resource attributes through SensitivityPolicy. The violation counter does
+        // not exist yet, so the drops and rewrites are returned for the caller to count.
         AttributesBuilder builder = Attributes.builder();
+        Map<String, Long> counts = new TreeMap<>();
         for (Map.Entry<String, String> entry : attrs.entrySet()) {
             String k = entry.getKey();
             String v = entry.getValue();
             if (k == null || k.isEmpty() || v == null) {
                 continue;
+            }
+            SpecTables.Sensitivity sens = policy.sensitivityOf(k);
+            if (sens == SpecTables.Sensitivity.SECRET
+                    || (sens == SpecTables.Sensitivity.PII && policy.piiMode() != PiiMode.KEEP)) {
+                counts.merge(SensitivityPolicy.ruleFor(sens), 1L, Long::sum);
             }
             if (Spec.Attributes.BUILD_MODIFIED.equals(k)) {
                 boolean b = Boolean.parseBoolean(v);
@@ -165,7 +201,7 @@ public final class ResourceComposer {
         }
 
         Resource resource = Resource.create(builder.build(), Spec.SCHEMA_URL);
-        return new ComposedResource(resource, List.copyOf(missing));
+        return new ComposedResource(resource, List.copyOf(missing), Map.copyOf(counts), versionFallback);
     }
 
     private static String detectHostName() {
@@ -177,22 +213,31 @@ public final class ResourceComposer {
         }
     }
 
+    /**
+     * Extracts the container ID from /proc/self/cgroup content the way the OpenTelemetry Go
+     * container detector does: the first line whose last path segment ends in a hex run (after an
+     * optional prefix ending in '-' or ':') followed by '.' or the end of the line. Returns null when
+     * no line matches.
+     */
+    public static String containerIdFromCgroup(String cgroup) {
+        for (String line : cgroup.split("\\r?\\n")) {
+            Matcher m = CONTAINER_ID_RE.matcher(line);
+            if (m.find()) {
+                return m.group(1);
+            }
+        }
+        return null;
+    }
+
     private static String detectContainerId() {
-        Path cgroup = Path.of("/proc/self/cgroup");
-        if (!Files.isReadable(cgroup)) {
+        if (!Files.isReadable(CGROUP_PATH)) {
             return null;
         }
         try {
-            List<String> lines = Files.readAllLines(cgroup, StandardCharsets.UTF_8);
-            for (String line : lines) {
-                Matcher m = CONTAINER_ID_RE.matcher(line);
-                if (m.find()) {
-                    return m.group(1);
-                }
-            }
-        } catch (Exception ignored) {
+            return containerIdFromCgroup(Files.readString(CGROUP_PATH, StandardCharsets.UTF_8));
+        } catch (IOException | UncheckedIOException ex) {
+            // A missing container ID degrades telemetry identity; it never blocks startup.
             return null;
         }
-        return null;
     }
 }
