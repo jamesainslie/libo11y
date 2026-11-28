@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import builtins
 import dataclasses
+import inspect
+import sys
 from collections.abc import Mapping, Sequence
 from enum import IntEnum
-from typing import Annotated, Any, Final, Protocol, cast, get_args, get_origin, get_type_hints
+from typing import Annotated, Any, Final, ForwardRef, Protocol, cast, get_args, get_origin
 
 REDACTED: Final[str] = "REDACTED"
 
@@ -99,12 +102,121 @@ class Masked[T]:
         return self._masked()
 
 
+class _Unresolved:
+    """Base of the stand-ins for names an annotation uses before they exist.
+
+    ``@redacted`` runs while the class is being defined, so under postponed
+    annotations a field may name the class itself or a class defined later
+    in the same function. Those names evaluate to subclasses of this type,
+    which is enough to read a field's ``Annotated`` metadata.
+    """
+
+    __slots__ = ()
+
+    def __class_getitem__(cls, params: object) -> _UnresolvedAlias:
+        if isinstance(params, tuple):
+            return _UnresolvedAlias(cls, cast(tuple[object, ...], params))
+        return _UnresolvedAlias(cls, (params,))
+
+
+class _UnresolvedAlias:
+    """A subscripted stand-in, such as ``LocalBox[int]`` before LocalBox exists."""
+
+    __slots__ = ("args", "origin")
+
+    def __init__(self, origin: type[_Unresolved], args: tuple[object, ...]) -> None:
+        self.origin = origin
+        self.args = args
+
+    def __call__(self) -> None:
+        # Callable, so typing accepts it as the first argument of Annotated.
+        raise TypeError(f"{self.origin.__name__} is not defined yet")
+
+    def __or__(self, other: object) -> _UnresolvedAlias:
+        return self
+
+    def __ror__(self, other: object) -> _UnresolvedAlias:
+        return self
+
+
+class _AnnotationNamespace(dict[str, object]):
+    """Evaluation locals resolving names from a module, then builtins, then stand-ins."""
+
+    def __init__(self, module_globals: Mapping[str, object], cls: type) -> None:
+        super().__init__({cls.__name__: cls})
+        self._globals = module_globals
+
+    def __missing__(self, key: str) -> object:
+        if key in self._globals:
+            return self._globals[key]
+        if hasattr(builtins, key):
+            return cast(object, getattr(builtins, key))
+        stand_in = type(key, (_Unresolved,), {"__slots__": ()})
+        self[key] = stand_in
+        return stand_in
+
+
+def _field_owner(cls: type, name: str) -> type:
+    """Return the class in cls's MRO that declares the field name."""
+    for base in cls.__mro__:
+        if base is object:
+            break
+        try:
+            annotations = inspect.get_annotations(base)
+        except NameError:
+            continue
+        if name in annotations:
+            return base
+    return cls
+
+
+def _field_annotation(cls: type, field: dataclasses.Field[object]) -> object:
+    """Return a field's annotation, evaluating a postponed one leniently."""
+    ann: object = field.type
+    if isinstance(ann, ForwardRef):
+        ann = ann.__forward_arg__
+    if not isinstance(ann, str):
+        return ann
+    owner = _field_owner(cls, field.name)
+    module = sys.modules.get(owner.__module__)
+    module_globals: Mapping[str, object] = vars(module) if module is not None else {}
+    try:
+        return cast(
+            object, eval(ann, dict(module_globals), _AnnotationNamespace(module_globals, owner))
+        )
+    except Exception as exc:
+        raise TypeError(
+            f"cannot evaluate the annotation {ann!r} of field {field.name!r} "
+            "to read its redaction tags"
+        ) from exc
+
+
+def _is_unresolved(value: object) -> bool:
+    return isinstance(value, _UnresolvedAlias) or (
+        isinstance(value, type) and issubclass(value, _Unresolved)
+    )
+
+
 def _extract_field_protection(field_name: str, annotation: object) -> _Protection:
+    if isinstance(annotation, _UnresolvedAlias):
+        # An undefined generic: it may be Annotated under another name, so a
+        # string argument could be a tag that would otherwise be ignored.
+        if any(isinstance(arg, str) for arg in annotation.args):
+            raise TypeError(
+                f"cannot resolve {annotation.origin.__name__!r} in the annotation of field "
+                f"{field_name!r} to read its redaction tags"
+            )
+        return _Protection.PASSTHROUGH
     if get_origin(annotation) is not Annotated:
         return _Protection.PASSTHROUGH
     args = get_args(annotation)
     level = _Protection.PASSTHROUGH
     for meta in args[1:]:
+        if _is_unresolved(meta):
+            raise TypeError(
+                f"redaction metadata {meta!r} on field {field_name!r} names something "
+                "that is not defined when the class is defined"
+            )
         if isinstance(meta, str):
             mapped = _TAG_MAP.get(meta)
             if mapped is None:
@@ -167,6 +279,23 @@ def render_redacted(value: object) -> object:
     return _protect(value, _Protection.PASSTHROUGH, 0, set())
 
 
+def json_default(value: object) -> object:
+    """Render a protected value for ``json.dumps(obj, default=json_default)``.
+
+    ``json.dumps`` cannot serialize a Secret, a Masked, or a ``@redacted``
+    instance on its own and raises TypeError, so it never emits a raw value.
+    With this hook, a Secret becomes ``"REDACTED"``, a Masked becomes its
+    run of ``X``, and a ``@redacted`` instance becomes an object of its
+    protected fields: omitted fields are absent, and the strictest
+    protection in scope wins through nesting, as in ``str()``. Any other
+    value json.dumps cannot serialize raises TypeError, as it does without
+    a hook.
+    """
+    if contains_redactable(value):
+        return render_redacted(value)
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
 def _format_protected_mapping(data: Mapping[str, object]) -> str:
     parts: list[str] = []
     for k, v in data.items():
@@ -180,16 +309,25 @@ def _format_protected_mapping(data: Mapping[str, object]) -> str:
 def redacted[C: type](cls: C) -> C:
     """Dataclass decorator enforcing Annotated field redaction tags on every surface.
 
-    Tags are validated when the class is defined: an unknown string tag raises
+    ``str()``, ``repr()``, ``format()`` and the logging handler render the
+    protected form, and ``json_default`` renders it for ``json.dumps``. Tags
+    are validated when the class is defined: an unknown string tag raises
     TypeError immediately at import time rather than leaking at runtime.
+    Postponed annotations may name the class itself or a class defined later
+    in the same scope; a tag given by a name that is not defined yet raises
+    TypeError.
+
+    Functions that read fields directly see the raw values:
+    ``dataclasses.asdict``, ``dataclasses.astuple``, ``vars()``, ``pickle``
+    and ``copy`` all return or keep them. Use ``to_redacted_dict`` for the
+    protected mapping.
     """
     if not dataclasses.is_dataclass(cls):
         raise TypeError("@redacted must decorate a dataclass")
 
-    hints = get_type_hints(cls, include_extras=True)
     field_plans: list[tuple[str, _Protection]] = []
     for f in dataclasses.fields(cls):
-        ann = hints.get(f.name, f.type)
+        ann = _field_annotation(cls, f)
         prot = _extract_field_protection(f.name, ann)
         field_plans.append((f.name, prot))
     plans_tuple = tuple(field_plans)
@@ -261,6 +399,7 @@ __all__ = [
     "SECRET",
     "Masked",
     "Secret",
+    "json_default",
     "redacted",
     "render_redacted",
     "to_redacted_dict",
