@@ -1,0 +1,28 @@
+{
+  "description": "Custom, plugin, asset and annotation events, Input, CanvasMutation, Font and Log incremental events, and unknown types and sources are dropped. Load events keep no data, and every event keeps only type, timestamp and data.",
+  "query_allow_list": [],
+  "text_allowed_ids": [],
+  "editable_ids": [],
+  "parent_tags": {},
+  "secrets": ["Jane", "jane", "hunter2", "SECRET"],
+  "allowed_texts": [],
+  "events": [
+    { "type": 0, "timestamp": 1, "data": { "note": "Jane" } },
+    { "type": 1, "timestamp": 2, "data": {}, "delay": 5 },
+    { "type": 5, "timestamp": 3, "data": { "tag": "user", "payload": { "email": "jane@x.test" } } },
+    { "type": 6, "timestamp": 4, "data": { "plugin": "rrweb/console@1", "payload": { "payload": ["jane@x.test"] } } },
+    { "type": 7, "timestamp": 5, "data": { "url": "https://x.example/a.png?SECRET", "payload": { "rr_type": "CssText", "cssTexts": ["SECRET"] } } },
+    { "type": 8, "timestamp": 6, "data": { "type": "caption", "text": "Jane" } },
+    { "type": 3, "timestamp": 7, "data": { "source": 5, "id": 1, "text": "hunter2", "isChecked": false } },
+    { "type": 3, "timestamp": 8, "data": { "source": 9, "id": 2, "type": 0, "commands": [{ "property": "fillText", "args": ["Jane", 0, 0] }] } },
+    { "type": 3, "timestamp": 9, "data": { "source": 10, "family": "Jane", "fontSource": "data:font/woff2;base64,SECRET", "buffer": false } },
+    { "type": 3, "timestamp": 10, "data": { "source": 11, "level": "log", "payload": ["jane@x.test"], "trace": [] } },
+    { "type": 3, "timestamp": 11, "data": { "source": 99, "text": "SECRET" } },
+    { "type": 3, "timestamp": 12, "data": { "text": "no source SECRET" } },
+    { "type": 99, "timestamp": 13, "data": { "text": "SECRET" } }
+  ],
+  "expected": [
+    { "type": 0, "timestamp": 1, "data": {} },
+    { "type": 1, "timestamp": 2, "data": {} }
+  ]
+}

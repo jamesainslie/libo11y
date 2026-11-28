@@ -1,0 +1,123 @@
+{
+  "description": "A full snapshot of a small page with an empty unmask list: every text is masked, input state and editable content dropped, unknown attributes removed and URLs stripped. Only the stylesheet is allowed, as the DOM context allows style elements.",
+  "query_allow_list": ["page"],
+  "text_allowed_ids": [5, 6],
+  "editable_ids": [],
+  "parent_tags": {},
+  "secrets": ["Jane", "jane", "hunter2", "SECRET", "diary", "Welcome", "Public title", "Password", "Inbox", "track("],
+  "allowed_texts": [],
+  "events": [
+    {
+      "type": 2,
+      "timestamp": 1700000000000,
+      "data": {
+        "node": {
+          "type": 0, "id": 1, "compatMode": "CSS1Compat", "childNodes": [
+            { "type": 1, "id": 2, "name": "html", "publicId": "", "systemId": "" },
+            { "type": 2, "id": 3, "tagName": "html", "attributes": { "lang": "en" }, "childNodes": [
+              { "type": 2, "id": 4, "tagName": "head", "attributes": {}, "childNodes": [
+                { "type": 2, "id": 5, "tagName": "style", "attributes": { "_cssText": "body{background:url(/bg.png?token=SECRET_TOKEN&page=1)}" }, "childNodes": [
+                  { "type": 3, "id": 6, "textContent": "body{margin:0}", "isStyle": true }
+                ] },
+                { "type": 2, "id": 7, "tagName": "title", "attributes": {}, "childNodes": [
+                  { "type": 3, "id": 8, "textContent": "Inbox for Jane Doe" }
+                ] }
+              ] },
+              { "type": 2, "id": 9, "tagName": "body", "attributes": { "class": "app", "onload": "track('jane@x.test')" }, "childNodes": [
+                { "type": 2, "id": 10, "tagName": "form", "attributes": { "action": "/login?next=/inbox", "data-user": "jane@x.test" }, "childNodes": [
+                  { "type": 2, "id": 11, "tagName": "label", "attributes": { "for": "pw" }, "childNodes": [
+                    { "type": 3, "id": 12, "textContent": "Password for Jane Doe" }
+                  ] },
+                  { "type": 2, "id": 13, "tagName": "input", "attributes": { "type": "password", "id": "pw", "name": "pw", "value": "hunter2", "placeholder": "Jane's password", "autocomplete": "current-password" }, "childNodes": [] },
+                  { "type": 2, "id": 14, "tagName": "textarea", "attributes": { "name": "note", "value": "Dear Jane Doe" }, "childNodes": [
+                    { "type": 3, "id": 15, "textContent": "Dear Jane Doe" }
+                  ] },
+                  { "type": 2, "id": 16, "tagName": "div", "attributes": { "contenteditable": "true", "class": "editor" }, "childNodes": [
+                    { "type": 3, "id": 17, "textContent": "My diary entry" }
+                  ] }
+                ] },
+                { "type": 2, "id": 18, "tagName": "p", "attributes": { "class": "public", "title": "Public title" }, "childNodes": [
+                  { "type": 3, "id": 19, "textContent": "Welcome back" },
+                  { "type": 2, "id": 20, "tagName": "span", "attributes": { "data-o11y-mask": "" }, "childNodes": [
+                    { "type": 3, "id": 21, "textContent": "Jane Doe" }
+                  ] }
+                ] },
+                { "type": 2, "id": 22, "tagName": "img", "attributes": { "src": "https://cdn.example/a.png?sig=SECRET_SIG#x", "srcset": "/a.png?sig=SECRET_SIG 1x, data:image/png;base64,SECRET_PIXELS 2x", "alt": "Photo of Jane Doe", "width": "10" }, "childNodes": [] },
+                { "type": 2, "id": 23, "tagName": "svg", "attributes": { "viewBox": "0 0 10 10", "xmlns": "http://www.w3.org/2000/svg" }, "isSVG": true, "childNodes": [
+                  { "type": 2, "id": 24, "tagName": "path", "attributes": { "d": "M0 0L10 10", "fill": "url(#g)" }, "isSVG": true, "childNodes": [] },
+                  { "type": 2, "id": 25, "tagName": "text", "attributes": { "x": "1", "y": "9" }, "isSVG": true, "childNodes": [
+                    { "type": 3, "id": 26, "textContent": "Jane" }
+                  ] }
+                ] },
+                { "type": 2, "id": 30, "tagName": "div", "attributes": { "data-o11y-block": "", "class": "ad", "title": "Ad for Jane", "rr_width": "300px", "rr_height": "250px" }, "needBlock": true, "childNodes": [
+                  { "type": 3, "id": 31, "textContent": "Ad for Jane" }
+                ] },
+                { "type": 5, "id": 27, "textContent": "user jane@x.test" },
+                { "type": 2, "id": 28, "tagName": "script", "attributes": { "src": "/app.js?v=1" }, "childNodes": [
+                  { "type": 3, "id": 29, "textContent": "SCRIPT_PLACEHOLDER" }
+                ] }
+              ] }
+            ] }
+          ]
+        },
+        "initialOffset": { "top": 0, "left": 0 }
+      }
+    }
+  ],
+  "expected": [
+    {
+      "type": 2,
+      "timestamp": 1700000000000,
+      "data": {
+        "node": {
+          "type": 0, "id": 1, "compatMode": "CSS1Compat", "childNodes": [
+            { "type": 1, "id": 2, "name": "html", "publicId": "", "systemId": "" },
+            { "type": 2, "id": 3, "tagName": "html", "attributes": { "lang": "en" }, "childNodes": [
+              { "type": 2, "id": 4, "tagName": "head", "attributes": {}, "childNodes": [
+                { "type": 2, "id": 5, "tagName": "style", "attributes": { "_cssText": "body{background:url(\"/bg.png?page=1\")}" }, "childNodes": [
+                  { "type": 3, "id": 6, "textContent": "body{margin:0}", "isStyle": true }
+                ] },
+                { "type": 2, "id": 7, "tagName": "title", "attributes": {}, "childNodes": [
+                  { "type": 3, "id": 8, "textContent": "***** *** **** ***" }
+                ] }
+              ] },
+              { "type": 2, "id": 9, "tagName": "body", "attributes": { "class": "app" }, "childNodes": [
+                { "type": 2, "id": 10, "tagName": "form", "attributes": {}, "childNodes": [
+                  { "type": 2, "id": 11, "tagName": "label", "attributes": { "for": "pw" }, "childNodes": [
+                    { "type": 3, "id": 12, "textContent": "******** *** **** ***" }
+                  ] },
+                  { "type": 2, "id": 13, "tagName": "input", "attributes": { "type": "password", "id": "pw", "name": "pw", "placeholder": "****** ********" }, "childNodes": [] },
+                  { "type": 2, "id": 14, "tagName": "textarea", "attributes": { "name": "note" }, "childNodes": [
+                    { "type": 3, "id": 15, "textContent": "" }
+                  ] },
+                  { "type": 2, "id": 16, "tagName": "div", "attributes": { "class": "editor" }, "childNodes": [
+                    { "type": 3, "id": 17, "textContent": "" }
+                  ] }
+                ] },
+                { "type": 2, "id": 18, "tagName": "p", "attributes": { "class": "public", "title": "****** *****" }, "childNodes": [
+                  { "type": 3, "id": 19, "textContent": "******* ****" },
+                  { "type": 2, "id": 20, "tagName": "span", "attributes": { "data-o11y-mask": "" }, "childNodes": [
+                    { "type": 3, "id": 21, "textContent": "**** ***" }
+                  ] }
+                ] },
+                { "type": 2, "id": 22, "tagName": "img", "attributes": { "src": "https://cdn.example/a.png", "srcset": "/a.png 1x", "alt": "***** ** **** ***", "width": "10" }, "childNodes": [] },
+                { "type": 2, "id": 23, "tagName": "svg", "attributes": { "viewBox": "0 0 10 10", "xmlns": "http://www.w3.org/2000/svg" }, "isSVG": true, "childNodes": [
+                  { "type": 2, "id": 24, "tagName": "path", "attributes": { "d": "M0 0L10 10", "fill": "url(\"#g\")" }, "isSVG": true, "childNodes": [] },
+                  { "type": 2, "id": 25, "tagName": "text", "attributes": { "x": "1", "y": "9" }, "isSVG": true, "childNodes": [
+                    { "type": 3, "id": 26, "textContent": "****" }
+                  ] }
+                ] },
+                { "type": 2, "id": 30, "tagName": "div", "attributes": { "class": "ad", "rr_width": "300px", "rr_height": "250px" }, "needBlock": true, "childNodes": [] },
+                { "type": 5, "id": 27, "textContent": "" },
+                { "type": 2, "id": 28, "tagName": "script", "attributes": { "src": "/app.js" }, "childNodes": [
+                  { "type": 3, "id": 29, "textContent": "" }
+                ] }
+              ] }
+            ] }
+          ]
+        },
+        "initialOffset": { "top": 0, "left": 0 }
+      }
+    }
+  ]
+}

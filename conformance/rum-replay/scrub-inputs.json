@@ -1,0 +1,71 @@
+{
+  "description": "Input values, checked and selected state and Input events are never recorded; option labels are masked.",
+  "query_allow_list": [],
+  "text_allowed_ids": [],
+  "editable_ids": [],
+  "parent_tags": {},
+  "secrets": ["Canada", "SECRET", "jane", "Jane", "\"ca\""],
+  "allowed_texts": [],
+  "events": [
+    {
+      "type": 2,
+      "timestamp": 1,
+      "data": {
+        "node": { "type": 2, "id": 1, "tagName": "form", "attributes": {}, "childNodes": [
+          { "type": 2, "id": 2, "tagName": "select", "attributes": { "name": "country" }, "childNodes": [
+            { "type": 2, "id": 3, "tagName": "option", "attributes": { "value": "ca", "selected": true, "label": "Canada" }, "childNodes": [
+              { "type": 3, "id": 4, "textContent": "Canada" }
+            ] }
+          ] },
+          { "type": 2, "id": 5, "tagName": "input", "attributes": { "type": "checkbox", "checked": true, "name": "terms" }, "childNodes": [] },
+          { "type": 2, "id": 6, "tagName": "input", "attributes": { "type": "hidden", "name": "csrf", "value": "SECRET_CSRF" }, "childNodes": [] }
+        ] },
+        "initialOffset": { "top": 0, "left": 0 }
+      }
+    },
+    { "type": 3, "timestamp": 2, "data": { "source": 5, "id": 6, "text": "jane@x.test", "isChecked": false, "userTriggered": true } },
+    {
+      "type": 3,
+      "timestamp": 3,
+      "data": {
+        "source": 0,
+        "texts": [],
+        "attributes": [
+          { "id": 5, "attributes": { "checked": "", "value": "SECRET_VALUE" } },
+          { "id": 6, "attributes": { "value": "SECRET_CSRF2", "placeholder": "Jane" } }
+        ],
+        "removes": [],
+        "adds": []
+      }
+    }
+  ],
+  "expected": [
+    {
+      "type": 2,
+      "timestamp": 1,
+      "data": {
+        "node": { "type": 2, "id": 1, "tagName": "form", "attributes": {}, "childNodes": [
+          { "type": 2, "id": 2, "tagName": "select", "attributes": { "name": "country" }, "childNodes": [
+            { "type": 2, "id": 3, "tagName": "option", "attributes": { "label": "******" }, "childNodes": [
+              { "type": 3, "id": 4, "textContent": "******" }
+            ] }
+          ] },
+          { "type": 2, "id": 5, "tagName": "input", "attributes": { "type": "checkbox", "name": "terms" }, "childNodes": [] },
+          { "type": 2, "id": 6, "tagName": "input", "attributes": { "type": "hidden", "name": "csrf" }, "childNodes": [] }
+        ] },
+        "initialOffset": { "top": 0, "left": 0 }
+      }
+    },
+    {
+      "type": 3,
+      "timestamp": 3,
+      "data": {
+        "source": 0,
+        "texts": [],
+        "attributes": [{ "id": 6, "attributes": { "placeholder": "****" } }],
+        "removes": [],
+        "adds": []
+      }
+    }
+  ]
+}

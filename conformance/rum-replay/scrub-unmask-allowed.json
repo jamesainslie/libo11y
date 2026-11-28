@@ -1,0 +1,57 @@
+{
+  "description": "Text under an unmasked element is kept, but a mask marker, an input and an unlisted data-o11y-unmask inside the same tree stay masked whatever the context allows.",
+  "query_allow_list": [],
+  "text_allowed_ids": [2, 3, 4, 5, 6, 7, 8],
+  "editable_ids": [],
+  "parent_tags": {},
+  "secrets": ["Jane", "jane", "12345", "Your email"],
+  "allowed_texts": ["Welcome back", "Order summary", "Pay now"],
+  "events": [
+    {
+      "type": 2,
+      "timestamp": 1,
+      "data": {
+        "node": { "type": 2, "id": 1, "tagName": "div", "attributes": { "class": "page" }, "childNodes": [
+          { "type": 2, "id": 2, "tagName": "p", "attributes": { "class": "public", "title": "Order summary" }, "childNodes": [
+            { "type": 3, "id": 3, "textContent": "Welcome back" },
+            { "type": 2, "id": 4, "tagName": "span", "attributes": { "data-o11y-mask": "", "title": "Jane Doe" }, "childNodes": [
+              { "type": 3, "id": 5, "textContent": "Jane Doe" }
+            ] },
+            { "type": 2, "id": 6, "tagName": "input", "attributes": { "type": "text", "placeholder": "Your email", "value": "jane@x.test" }, "childNodes": [] },
+            { "type": 2, "id": 7, "tagName": "button", "attributes": { "aria-label": "Pay now" }, "childNodes": [
+              { "type": 3, "id": 8, "textContent": "Pay" }
+            ] }
+          ] },
+          { "type": 2, "id": 9, "tagName": "p", "attributes": { "data-o11y-unmask": "" }, "childNodes": [
+            { "type": 3, "id": 10, "textContent": "Account 12345" }
+          ] }
+        ] },
+        "initialOffset": { "top": 12, "left": 0 }
+      }
+    }
+  ],
+  "expected": [
+    {
+      "type": 2,
+      "timestamp": 1,
+      "data": {
+        "node": { "type": 2, "id": 1, "tagName": "div", "attributes": { "class": "page" }, "childNodes": [
+          { "type": 2, "id": 2, "tagName": "p", "attributes": { "class": "public", "title": "Order summary" }, "childNodes": [
+            { "type": 3, "id": 3, "textContent": "Welcome back" },
+            { "type": 2, "id": 4, "tagName": "span", "attributes": { "data-o11y-mask": "", "title": "**** ***" }, "childNodes": [
+              { "type": 3, "id": 5, "textContent": "**** ***" }
+            ] },
+            { "type": 2, "id": 6, "tagName": "input", "attributes": { "type": "text", "placeholder": "**** *****" }, "childNodes": [] },
+            { "type": 2, "id": 7, "tagName": "button", "attributes": { "aria-label": "Pay now" }, "childNodes": [
+              { "type": 3, "id": 8, "textContent": "Pay" }
+            ] }
+          ] },
+          { "type": 2, "id": 9, "tagName": "p", "attributes": { "data-o11y-unmask": "" }, "childNodes": [
+            { "type": 3, "id": 10, "textContent": "******* *****" }
+          ] }
+        ] },
+        "initialOffset": { "top": 12, "left": 0 }
+      }
+    }
+  ]
+}
