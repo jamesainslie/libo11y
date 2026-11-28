@@ -250,6 +250,38 @@ test("revoke clears the delivery", async () => {
   });
 });
 
+test("revoke empties the memory queue at once while the flush stalls", async () => {
+  const r = rig({ stored: "granted" });
+  await withContent(r, BASE, async (h) => {
+    await r.queue.put({ signal: "traces", body: "{}", notBefore: Date.now() + 3_600_000 });
+    let release = (): void => {};
+    const stalled = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const flush = h.forceFlush.bind(h);
+    h.forceFlush = async (opts) => {
+      await stalled;
+      return flush(opts);
+    };
+    const revoked = h.consent.revoke();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(r.queue.entries.size, 0, "emptied while the flush is still pending");
+    release();
+    await revoked;
+  });
+});
+
+test("revoke empties the memory queue even when the flush rejects", async () => {
+  const r = rig({ stored: "granted" });
+  await withContent(r, BASE, async (h) => {
+    await r.queue.put({ signal: "traces", body: "{}", notBefore: Date.now() + 3_600_000 });
+    // Core's own forceFlush never rejects; the revoke must not depend on that.
+    h.forceFlush = () => Promise.reject(new Error("collector unreachable"));
+    await h.consent.revoke();
+    assert.equal(r.queue.entries.size, 0);
+  });
+});
+
 test("the handle is core's, with consent, the active consent and traced messaging", async () => {
   const r = rig({ stored: "granted" });
   const worker = createTracedMessaging(r.worker.chrome, {

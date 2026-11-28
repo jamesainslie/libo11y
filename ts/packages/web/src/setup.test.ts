@@ -22,6 +22,7 @@ import type { VisibilitySource } from "./lifecycle.ts";
 import type { DocumentLoadOptions, HttpInstrumentationOptions, WebSetupOptions } from "./options.ts";
 import { type SetupDeps, setupWithDeps } from "./setup.ts";
 import { createFakeQueue, createFakeTransport, type FakeQueue } from "./test-support/index.ts";
+import { createDelivery } from "./transport/delivery.ts";
 import type { SignalEndpoints } from "./transport/endpoints.ts";
 import type { HttpTransportOptions } from "./transport/http.ts";
 
@@ -474,7 +475,7 @@ test("a hide flushes every provider, for setup and createTelemetry alike", async
   }
 });
 
-test("revoke flushes the providers into the closed gate, then clears the delivery", async () => {
+test("revoke clears the delivery, then flushes the providers into the closed gate", async () => {
   const h = harness();
   const web = await setupWithDeps(
     { ...BASE, consent: { initial: "granted" }, spanProcessor: loggingProcessor(h.log) },
@@ -485,7 +486,66 @@ test("revoke flushes the providers into the closed gate, then clears the deliver
     const mark = h.log.length;
     await web.consent.revoke();
     assert.equal(web.consent.state(), "denied");
-    assert.deepEqual(h.log.slice(mark), ["flush", "delivery.clear"]);
+    assert.deepEqual(h.log.slice(mark), ["delivery.clear", "flush"]);
+  } finally {
+    await web.shutdown();
+  }
+});
+
+/** A span processor whose forceFlush returns flush(). */
+function flushingProcessor(flush: () => Promise<void>): SpanProcessor {
+  return { onStart: () => {}, onEnd: () => {}, forceFlush: flush, shutdown: async () => {} };
+}
+
+/** A harness whose delivery is the real one, over the harness's queue and a fake transport. */
+function realDeliveryHarness(): Harness {
+  return harness({ createDelivery });
+}
+
+/** Puts a batch due in an hour into the harness's queue, so no drain sends it meanwhile. */
+async function queued(h: Harness): Promise<FakeQueue> {
+  const queue = h.queues[0];
+  assert.ok(queue !== undefined);
+  await queue.put({ signal: "traces", body: "{}", notBefore: Date.now() + 3_600_000 });
+  assert.equal(queue.entries.size, 1);
+  return queue;
+}
+
+test("revoke empties the queue at once while an export to an unreachable collector stalls the flush", async () => {
+  // Core's forceFlush waits for exports in flight, up to its deadline. A revoke must not wait with
+  // it: a page closed meanwhile would keep the queue, to be sent after a later grant.
+  const h = realDeliveryHarness();
+  let release = (): void => {};
+  const stalled = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const web = await setupWithDeps(
+    { ...BASE, consent: { initial: "granted" }, spanProcessor: flushingProcessor(() => stalled) },
+    h.deps,
+    true,
+  );
+  try {
+    const queue = await queued(h);
+    const revoked = web.consent.revoke();
+    await tick();
+    assert.equal(queue.entries.size, 0, "emptied while the flush is still pending");
+    release();
+    await revoked;
+  } finally {
+    release();
+    await web.shutdown();
+  }
+});
+
+test("revoke empties the queue even when the flush rejects", async () => {
+  const h = realDeliveryHarness();
+  const web = await setupWithDeps({ ...BASE, consent: { initial: "granted" } }, h.deps, true);
+  try {
+    const queue = await queued(h);
+    // Core's own forceFlush never rejects; the revoke must not depend on that.
+    web.forceFlush = () => Promise.reject(new Error("collector unreachable"));
+    await assert.rejects(web.consent.revoke(), /collector unreachable/);
+    assert.equal(queue.entries.size, 0);
   } finally {
     await web.shutdown();
   }
