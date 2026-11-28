@@ -49,8 +49,12 @@ With `pkg-config`:
 
 ```sh
 export PKG_CONFIG_PATH=/opt/libo11y/lib/pkgconfig
-cc -std=c11 app.c $(pkg-config --cflags --libs --static libo11y) -o app
+cc -std=c11 app.c $(pkg-config --cflags --libs libo11y) -Wl,-rpath,/opt/libo11y/lib -o app
 ```
+
+When linking `/opt/libo11y/lib/libo11y.a` from a static-only prefix (or directly
+without `libo11y.so`/`.dylib` alongside it), pass `--static` so `pkg-config`
+includes `Libs.private` (`-lpthread -lm`).
 
 With CMake (`libo11y::o11y` prefers shared on Unix, or choose `libo11y::o11y_shared` / `libo11y::o11y_static`):
 

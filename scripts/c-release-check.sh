@@ -258,7 +258,11 @@ if command -v pkg-config >/dev/null; then
 	read -r -a pc_shared_flags < <(PKG_CONFIG_PATH="$prefix/lib/pkgconfig" pkg-config --cflags --libs libo11y)
 	cc -std=c11 -Wall -Wextra -Werror -Wpedantic "$tmp/shared_consumer.c" "${pc_shared_flags[@]}" -Wl,-rpath,"$prefix/lib" -o "$tmp/consumer-pc-shared"
 	"$tmp/consumer-pc-shared"
-	read -r -a pc_static_flags < <(PKG_CONFIG_PATH="$prefix/lib/pkgconfig" pkg-config --cflags --libs --static libo11y)
+	mkdir -p "$tmp/static-only/lib/pkgconfig"
+	ln -s "$prefix/include" "$tmp/static-only/include"
+	ln -s "$prefix/lib/libo11y.a" "$tmp/static-only/lib/libo11y.a"
+	cp "$prefix/lib/pkgconfig/libo11y.pc" "$tmp/static-only/lib/pkgconfig/libo11y.pc"
+	read -r -a pc_static_flags < <(PKG_CONFIG_PATH="$tmp/static-only/lib/pkgconfig" pkg-config --cflags --libs --static libo11y)
 	cc -std=c11 -Wall -Wextra -Werror -Wpedantic "$tmp/shared_consumer.c" "${pc_static_flags[@]}" -o "$tmp/consumer-pc-static"
 	"$tmp/consumer-pc-static"
 	read -r -a pc_flags < <(PKG_CONFIG_PATH="$prefix/lib/pkgconfig" pkg-config --cflags --libs libo11ytest)
