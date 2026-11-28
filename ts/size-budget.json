@@ -7,7 +7,7 @@
     },
     "@libo11y/rum setupRum": {
       "code": "import { setupRum } from \"@libo11y/rum\"; (globalThis as Record<string, unknown>).__x = setupRum;\n",
-      "budget": 87296
+      "budget": 92160
     },
     "@libo11y/rum/webext setupRumExtension": {
       "code": "import { setupRumExtension } from \"@libo11y/rum/webext\"; (globalThis as Record<string, unknown>).__x = setupRumExtension;\n",

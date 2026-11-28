@@ -72,6 +72,26 @@ adhere to [Semantic Versioning](https://semver.org/).
   `INVALID_APP_REGISTRY`, named `registry N`. Before, a hand-built or
   deserialized compiled registry was used as is and could reclassify spec
   keys. Anything `compileAppRegistry` returned still passes.
+- `@libo11y/web` and `@libo11y/webext`: after a consent revocation,
+  cumulative metrics are measured from the revocation. The SDK keeps each
+  series' running total, so in 0.4.0 a grant after a revoke exported the
+  totals and attribute sets recorded before it. The collection the
+  revocation flush drains into the closed gate is now the consent
+  boundary. Each later point carries only what was recorded since, starts
+  no earlier than the boundary, and is left out when nothing changed.
+  Sums and histograms subtract the boundary's values, histograms lose
+  `min` and `max`, and a gauge reading equal to the boundary's is left
+  out. Delta temporality is unchanged. The `@libo11y/web` README has the
+  rule for each instrument.
+- `@libo11y/web` and `@libo11y/webext`: a `grant()` made while a
+  `revoke()` is still clearing the queue and flushing changes the state at
+  once, but recording and sending start only when every revocation in
+  progress has finished. In 0.4.0 such a grant reopened the gate while
+  the flush was still draining, and spans, log records and metrics from
+  before the revoke were exported.
+- `@libo11y/webext`: the manifest version is now the detected
+  `service.version`, below `OTEL_RESOURCE_ATTRIBUTES` in `env` and the
+  `serviceVersion` option. In 0.4.0 it beat `OTEL_RESOURCE_ATTRIBUTES`.
 
 ### Fixed
 
@@ -89,6 +109,21 @@ adhere to [Semantic Versioning](https://semver.org/).
   renames now carries the exemplars of the instrument it derives from.
   When one instrument feeds several streams, each stream's points get
   the samples. Before, a renamed stream had no exemplars.
+- `@libo11y/web` and `@libo11y/webext`: a page or worker that starts with
+  consent `denied` clears the IndexedDB queue an earlier page load or wake
+  left, before anything can send it. In 0.4.0 those batches survived and
+  were sent after a later grant. This covers a revoke in another context
+  while the worker was stopped, `consent.initial: "denied"` and a
+  respected privacy signal. A start in `pending` keeps the queue.
+- `@libo11y/web` and `@libo11y/webext`: `shutdown({ timeoutMillis })`
+  keeps its deadline for the delivery too. In 0.4.0 it waited for a drain
+  in progress with no limit, and reported success after it. A send still
+  in flight at the deadline is now aborted, its batch stays queued with its
+  lease released, and the report has `o11y: shutdown <signal>: deadline
+  exceeded` for its signal.
+- `@libo11y/webext`: the worker's `shutdown()` removes the traced
+  listeners added through `onMessage`. In 0.4.0 they stayed registered and
+  still received messages after a second `setupWorker`.
 
 ## [0.4.0] - 2026-11-27
 

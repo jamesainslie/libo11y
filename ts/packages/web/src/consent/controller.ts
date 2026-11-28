@@ -44,6 +44,12 @@ function subscribeTo<T>(listeners: Set<(value: T) => void>, listener: (value: T)
  * to "denied", notifies, then runs the revoke hooks in order. Subscribers (both consent.subscribe
  * and the RecordingGate subscribe) are called only on a real change, synchronously, in
  * registration order; a throwing subscriber is reported through diag.
+ *
+ * The gate is open while the state is "granted" and no revocation is running its hooks. A grant
+ * during a revocation changes the state at once, and the consent subscribers hear it, but
+ * recording() stays false and the gate subscribers hear true only when the hooks of every
+ * revocation in progress have settled, if the state is still "granted" then. So the flush a hook
+ * runs always drains into a closed gate, and nothing recorded before the revoke is exported.
  */
 export function createConsentController(opts: ConsentControllerOptions = {}): ConsentController {
   const nav = "navigator" in opts ? opts.navigator : defaultNavigator();
@@ -53,14 +59,26 @@ export function createConsentController(opts: ConsentControllerOptions = {}): Co
   const gateListeners = new Set<(recording: boolean) => void>();
   const hooks = new Set<() => void | Promise<void>>();
 
+  // How many revocations are running their hooks. The gate stays closed while there is one.
+  let revoking = 0;
+  const open = (): boolean => state === "granted" && revoking === 0;
+  // What the gate subscribers last heard, so they hear changes only.
+  let gateOpen = open();
+
+  // syncGate tells the gate subscribers when recording() changed.
+  const syncGate = (): void => {
+    const next = open();
+    if (next === gateOpen) return;
+    gateOpen = next;
+    notify(gateListeners, next, "gate subscriber");
+  };
+
   // move changes the state and notifies: the gate's listeners first, when recording changed, so
   // core stops or starts recording before the application hears of the change.
   const move = (next: ConsentState): void => {
     if (next === state) return;
-    const wasRecording = state === "granted";
     state = next;
-    const recording = state === "granted";
-    if (recording !== wasRecording) notify(gateListeners, recording, "gate subscriber");
+    syncGate();
     notify(stateListeners, state, "subscriber");
   };
 
@@ -71,13 +89,20 @@ export function createConsentController(opts: ConsentControllerOptions = {}): Co
       return state;
     },
     async revoke() {
-      move("denied");
-      for (const hook of [...hooks]) {
-        try {
-          await hook();
-        } catch (err) {
-          diag.error("libo11y: consent revoke hook failed", err);
+      revoking++;
+      try {
+        move("denied");
+        for (const hook of [...hooks]) {
+          try {
+            await hook();
+          } catch (err) {
+            diag.error("libo11y: consent revoke hook failed", err);
+          }
         }
+      } finally {
+        // A grant made while the hooks ran opens the gate now, unless another revocation still runs.
+        revoking--;
+        syncGate();
       }
     },
     subscribe: (listener) => subscribeTo(stateListeners, listener),
@@ -85,7 +110,7 @@ export function createConsentController(opts: ConsentControllerOptions = {}): Co
 
   return {
     consent,
-    recording: () => state === "granted",
+    recording: open,
     subscribe: (listener) => subscribeTo(gateListeners, listener),
     onRevoke(hook) {
       const entry = () => hook();

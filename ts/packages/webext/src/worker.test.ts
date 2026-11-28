@@ -4,6 +4,7 @@ import type { HttpInstrumentationOptions } from "@libo11y/web";
 import {
   activeConsent,
   type ConsentControllerOptions,
+  createDelivery,
   type HttpTransportOptions,
   type PersistentQueue,
   type QueueOptions,
@@ -523,6 +524,9 @@ test("shutdown removes the listeners, stops the delivery and closes the queue, o
   };
   const r2 = rig({ stored: "granted", queue: counting });
   const h = await setupWorkerWith(BASE, r2.deps);
+  // A traced listener the handle owns is removed too.
+  h.onMessage(() => undefined);
+  assert.ok(r2.worker.listeners().length > 0);
   const first = h.shutdown();
   assert.equal(h.shutdown(), first);
   await first;
@@ -730,4 +734,106 @@ test("a revoke while a batch is being stored leaves nothing in the queue", async
     assert.equal(reply.ok, false);
     assert.equal(queue.entries.size, 0);
   });
+});
+
+test("service.version from OTEL_RESOURCE_ATTRIBUTES beats the manifest version, and serviceVersion beats both", async () => {
+  // The platform's environment layer, as webPlatform reads OTEL_RESOURCE_ATTRIBUTES from options.env.
+  const fromEnv = (r: ReturnType<typeof rig>): WorkerDeps => ({
+    ...r.deps,
+    webPlatform: (o) => ({
+      ...testPlatform({ gate: o.gate }),
+      detectResource: async () => ({ detected: {}, fromEnv: { "service.version": "4.5.6" } }),
+    }),
+  });
+  const r = rig();
+  const h = await setupWorkerWith(BASE, fromEnv(r));
+  try {
+    assert.equal(h.resource.attributes["service.version"], "4.5.6");
+  } finally {
+    await h.shutdown();
+  }
+  const r2 = rig();
+  const h2 = await setupWorkerWith({ ...BASE, serviceVersion: "9.9.9" }, fromEnv(r2));
+  try {
+    assert.equal(h2.resource.attributes["service.version"], "9.9.9");
+  } finally {
+    await h2.shutdown();
+  }
+});
+
+/** A fake queue holding a batch an earlier wake left. */
+function seededQueue(): ReturnType<typeof createFakeQueue> {
+  const queue = createFakeQueue();
+  void queue.put({ signal: "traces", body: "{}" });
+  return queue;
+}
+
+test("a worker that wakes to a stored denied clears the queue an earlier wake left, before the delivery exists", async () => {
+  const queue = seededQueue();
+  const r = rig({ stored: "denied", queue });
+  const deps: WorkerDeps = {
+    ...r.deps,
+    createDelivery: (o) => {
+      r.log.push(`delivery with ${queue.entries.size} queued`);
+      return r.deps.createDelivery(o);
+    },
+  };
+  const h = await setupWorkerWith(BASE, deps);
+  try {
+    assert.equal(queue.entries.size, 0);
+    assert.ok(r.log.includes("delivery with 0 queued"));
+  } finally {
+    await h.shutdown();
+  }
+});
+
+test("a worker that starts denied by its initial option clears the earlier queue too, and a pending one keeps it", async () => {
+  const denied = seededQueue();
+  await withWorker(rig({ queue: denied }), { ...BASE, consent: { initial: "denied" } }, async () => {
+    assert.equal(denied.entries.size, 0);
+  });
+  const pending = seededQueue();
+  await withWorker(rig({ queue: pending }), BASE, async (h) => {
+    assert.equal(h.consent.state(), "pending");
+    assert.equal(pending.entries.size, 1);
+  });
+});
+
+test("worker shutdown keeps its deadline with a drain send held open, and reports the timeout", async () => {
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const aborts: (AbortSignal | undefined)[] = [];
+  const queue = seededQueue();
+  const r = rig({ stored: "granted", queue });
+  const deps: WorkerDeps = {
+    ...r.deps,
+    createDelivery,
+    createHttpTransport: () => ({
+      async send(req) {
+        aborts.push(req.abortSignal);
+        await held;
+        return { kind: "ok" };
+      },
+    }),
+  };
+  const h = await setupWorkerWith(BASE, deps);
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(aborts.length, 1, "the wake's drain has the earlier batch on the wire");
+    const started = performance.now();
+    const first = h.shutdown({ timeoutMillis: 5 });
+    assert.equal(h.shutdown(), first);
+    const report = await first;
+    assert.ok(performance.now() - started < 60, "shutdown kept its deadline");
+    assert.deepEqual(
+      report.errors.map((e) => [e.signal, (e.error as Error).message]),
+      [["traces", "o11y: shutdown traces: deadline exceeded"]],
+    );
+    assert.equal(aborts[0]?.aborted, true);
+    assert.equal(r.worker.listeners().length, 0, "the listeners are still removed");
+  } finally {
+    release();
+  }
 });

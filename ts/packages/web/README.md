@@ -60,9 +60,14 @@ and drains the queue. Pass its handle as `telemetry` to `instrumentFetch`.
 The console sink defaults to off in the browser. `console: "json"` or
 `console: "text"` turns it on.
 
-`telemetry.shutdown()` shuts the providers down, then removes the
-instrumentation and the page listeners, stops the delivery and closes the
-queue.
+`telemetry.shutdown({ timeoutMillis })` shuts the providers down, then
+stops the delivery, then removes the instrumentation and the page
+listeners and closes the queue. One deadline, 5000 ms by default, covers
+the providers and the delivery. A send still in flight when it passes is
+aborted. Its batch stays in the IndexedDB queue for the next page load,
+with its lease released, and the report has
+`o11y: shutdown <signal>: deadline exceeded` for its signal. The promise
+never rejects, and every later call returns the first call's promise.
 
 ## Consent
 
@@ -90,6 +95,11 @@ create no span and inject no header while consent is not granted.
   succeeds, fails or runs to its deadline. The promise resolves when the
   queues are clear and never rejects. A request already on the wire is not
   recalled.
+- A `grant()` while a revocation is still clearing the queues and flushing
+  shows at once: `state()` returns `granted` and the subscribers hear it.
+  Recording and sending start only when every revocation in progress has
+  finished, so the flush always drains into a closed gate. Nothing
+  recorded between the regrant and the end of the cleanup is kept.
 - `consent.state()` returns the current state.
 - `consent.subscribe(listener)` calls `listener` after every change and
   returns a function that unsubscribes.
@@ -103,6 +113,33 @@ create no span and inject no header while consent is not granted.
 The package does not store the consent state. Each page load starts at
 `initial`, so call `grant()` on every load from the decision the consent
 platform stored.
+
+A page that starts `denied`, from `initial` or from a respected privacy
+signal, clears the IndexedDB queue that an earlier page load left before
+anything can send it. A page that starts `pending` keeps the queue for a
+later grant, because nothing was refused.
+
+### Metrics after a revocation
+
+The SDK keeps the running total of every cumulative series and cannot
+reset it. So the metric collection that the revocation flush drains into
+the closed gate becomes the consent boundary, and every later export is
+measured from it. Nothing recorded before the revoke is exported after it.
+
+| Instrument                                  | Exported after the boundary                                  |
+| ------------------------------------------- | ------------------------------------------------------------ |
+| counter, histogram, observable counter      | the amount recorded since the boundary                       |
+| up-down counter, observable up-down counter | the net change since the boundary                            |
+| gauge, observable gauge                     | the reading, unless it equals the reading at the boundary    |
+| any instrument with delta temporality       | as recorded, because the revocation flush already drained it |
+
+Every point starts no earlier than the boundary. A series with no change
+since the boundary is left out, and so is a collection with nothing left.
+Histograms carry no `min` and `max` after a boundary, because a difference
+cannot give them. A gauge reading equal to the one at the boundary cannot
+be told apart from it, so it is left out too. Exemplars sampled before the
+revoke are taken by the revocation flush and never exported. The next
+revocation moves the boundary.
 
 The deferred canary is the one record kept for a later grant. When setup
 runs with consent closed, the `o11y.telemetry.configured` event goes to the

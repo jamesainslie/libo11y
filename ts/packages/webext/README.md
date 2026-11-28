@@ -104,9 +104,16 @@ differs from the page `setup` in these ways:
   interval to 15000 ms, because the worker can stop at any time.
   `OTEL_BSP_SCHEDULE_DELAY`, `OTEL_BLRP_SCHEDULE_DELAY` and
   `OTEL_METRIC_EXPORT_INTERVAL` in `env` override them.
-- `serviceVersion` defaults to the manifest's `version`.
+- The manifest's `version` is the detected `service.version`. A
+  `service.version` in `OTEL_RESOURCE_ATTRIBUTES` beats it, and the
+  `serviceVersion` option beats both, as resource layers merge in core.
 - The console sink defaults to off.
 - `setupWorker` rejects when there is no `chrome.runtime`.
+- `telemetry.shutdown({ timeoutMillis })` keeps one deadline for the
+  providers and the delivery, as on a page. A batch still on the wire when
+  it passes is aborted and stays in the queue for the next wake. Shutdown
+  also removes every listener the handle added, the traced ones from
+  `onMessage` included.
 
 | Worker option     | Default                  | Effect                                                                                                                             |
 | ----------------- | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
@@ -173,8 +180,12 @@ content scripts to read. A content script starts from the stored state, or
 Every context writes its changes to storage and applies changes from other
 contexts. `grant()` and `revoke()` in any context change consent for the
 whole extension. A revoke anywhere clears the worker's IndexedDB queue and
-each context's buffers, as `revoke()` does on a page. A stored state never
-moves back to `pending`.
+each context's buffers, as `revoke()` does on a page. A revoke made while
+the worker was stopped counts too: a worker that wakes to `denied` clears
+the queue before its delivery can send anything, and so does a worker
+whose `consent.initial` or respected privacy signal starts it `denied`. A
+worker that wakes to `pending` keeps the queue. A stored state never moves
+back to `pending`.
 
 The worker's `consent` options decide the privacy signals for the whole
 extension. When a respected DNT or GPC signal refuses a stored grant, from

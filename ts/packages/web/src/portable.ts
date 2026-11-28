@@ -32,6 +32,8 @@ export type {
   DeliveryOptions,
   DeliveryOutcome,
   DeliveryResult,
+  DeliveryShutdownOptions,
+  DeliveryShutdownReport,
   SendMode,
   SendRequest,
   SendResult,

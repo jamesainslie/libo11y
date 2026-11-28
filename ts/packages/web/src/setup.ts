@@ -30,6 +30,7 @@ import type {
 } from "./options.ts";
 import { type WebPlatformOptions, webPlatformWith } from "./platform.ts";
 import { openQueue } from "./queue/open.ts";
+import { shutdownWithin } from "./shutdown.ts";
 import { createDelivery, leaseForTimeout } from "./transport/delivery.ts";
 import { resolveEndpoints, type SignalEndpoints } from "./transport/endpoints.ts";
 import { createExporterSet } from "./transport/exporters.ts";
@@ -87,9 +88,13 @@ export function defaultSetupDeps(): SetupDeps {
  * false, then the handle. consent.onRevoke clears the delivery and, without waiting for that,
  * flushes every provider into the closed gate. After setup the queue is drained once.
  *
+ * A page that starts denied clears the queue before the delivery is built, so a batch an earlier
+ * page load queued is never sent after a later grant.
+ *
  * The handle is core's Telemetry extended in place with consent (so exemplarStoreOf still finds
- * it), and its shutdown also removes the instrumentation and listeners, clears the active consent,
- * shuts the delivery down and closes the queue, after the providers shut down.
+ * it). Its shutdown shuts the providers down, then the delivery in what is left of the same
+ * deadline (shutdownWithin), then removes the instrumentation and listeners, clears the active
+ * consent and closes the queue.
  */
 export function setup(options: WebSetupOptions = {}): Promise<WebTelemetry> {
   return setupWithDeps(options, defaultSetupDeps(), true);
@@ -145,6 +150,16 @@ export async function setupWithDeps(
   const controller = deps.createConsentController(options.consent ?? {});
   const queue =
     options.transport?.offlineQueue === false ? undefined : await deps.openQueue(queueOptions(options));
+  // A page that starts denied (consent.initial, or a respected privacy signal) refused what an
+  // earlier page load queued, and no revoke in this load will clear it: clear it before any
+  // delivery exists, so a later grant cannot send it. A pending start keeps it.
+  if (queue !== undefined && controller.consent.state() === "denied") {
+    try {
+      await queue.clear();
+    } catch (err) {
+      diag.warn("o11y: clearing the queue of a denied page failed", err);
+    }
+  }
   const listeners: (() => void)[] = [];
   let delivery: Delivery | undefined;
   let endpoints: SignalEndpoints;
@@ -236,7 +251,8 @@ export async function setupWithDeps(
   let shutdownPromise: Promise<SignalReport> | undefined;
   handle.shutdown = (opts) => {
     shutdownPromise ??= (async () => {
-      const report = await coreShutdown(opts);
+      // One deadline: core's providers, then the delivery's drain in what is left of it.
+      const report = await shutdownWithin(coreShutdown, activeDelivery, opts);
       await cleanup([
         ...uninstalls,
         ...listeners,
@@ -244,7 +260,6 @@ export async function setupWithDeps(
         () => {
           if (install && activeConsent() === controller.consent) setActiveConsent(undefined);
         },
-        () => activeDelivery.shutdown(),
         () => queue?.close(),
       ]);
       return report;

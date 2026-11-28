@@ -21,7 +21,7 @@ function fakeDelivery(): Delivery {
     deliver: async () => ({ outcome: "sent" }),
     drain: async () => {},
     clear: async () => {},
-    shutdown: async () => {},
+    shutdown: async () => ({ timedOut: [] }),
   };
 }
 

@@ -29,6 +29,8 @@ export type {
   DeliveryOptions,
   DeliveryOutcome,
   DeliveryResult,
+  DeliveryShutdownOptions,
+  DeliveryShutdownReport,
   SendMode,
   SendRequest,
   SendResult,
@@ -60,6 +62,7 @@ export {
   parseResourceAttributes,
 } from "../resource.ts";
 export { defaultSetupDeps, type SetupDeps, setupWithDeps } from "../setup.ts";
+export { shutdownWithin } from "../shutdown.ts";
 export { createDelivery } from "../transport/delivery.ts";
 export { resolveEndpoints, type SignalEndpoints } from "../transport/endpoints.ts";
 export {

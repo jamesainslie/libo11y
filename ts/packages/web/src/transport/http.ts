@@ -47,6 +47,30 @@ function timeoutSignal(ms: number): { signal: AbortSignal; dispose: () => void }
   return { signal: controller.signal, dispose: () => clearTimeout(timer) };
 }
 
+// withAbort is timeout, also aborted by abort when there is one. dispose removes the listeners the
+// fallback adds to abort, which outlives the request.
+function withAbort(
+  timeout: AbortSignal,
+  abort: AbortSignal | undefined,
+): { signal: AbortSignal; dispose: () => void } {
+  if (abort === undefined) return { signal: timeout, dispose: () => {} };
+  if (typeof AbortSignal.any === "function")
+    return { signal: AbortSignal.any([timeout, abort]), dispose: () => {} };
+  const controller = new AbortController();
+  const onAbort = (e: Event): void => controller.abort((e.target as AbortSignal).reason);
+  for (const from of [timeout, abort]) {
+    if (from.aborted) controller.abort(from.reason);
+    else from.addEventListener("abort", onAbort, { once: true });
+  }
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      timeout.removeEventListener("abort", onAbort);
+      abort.removeEventListener("abort", onAbort);
+    },
+  };
+}
+
 function errorName(err: unknown): string {
   return typeof err === "object" && err !== null && "name" in err ? String(err.name) : "";
 }
@@ -92,9 +116,11 @@ export function createHttpTransport(opts: HttpTransportOptions): Transport {
     body: Uint8Array,
     gzipped: boolean,
     keepalive: boolean,
+    abort: AbortSignal | undefined,
   ): Promise<SendResult> {
     if (fetchImpl === undefined) return { kind: "fatal", reason: "fetch is unavailable" };
     const timeout = timeoutSignal(timeoutMillis);
+    const signal = withAbort(timeout.signal, abort);
     try {
       const headers = new Headers(userHeaders);
       headers.set("Content-Type", "application/json");
@@ -103,7 +129,7 @@ export function createHttpTransport(opts: HttpTransportOptions): Transport {
         method: "POST",
         headers,
         body: body as Uint8Array<ArrayBuffer>,
-        signal: timeout.signal,
+        signal: signal.signal,
         ...(keepalive ? { keepalive: true } : {}),
       });
       const result = classify(res);
@@ -116,6 +142,7 @@ export function createHttpTransport(opts: HttpTransportOptions): Transport {
       }
       return { kind: "retry", reason: `network error: ${err instanceof Error ? err.message : String(err)}` };
     } finally {
+      signal.dispose();
       timeout.dispose();
     }
   }
@@ -135,12 +162,12 @@ export function createHttpTransport(opts: HttpTransportOptions): Transport {
   // Unload sends are never compressed: CompressionStream resolves in a later task, and on a real
   // navigation the document is gone by then, so the request would never be issued. Everything up
   // to the keepalive fetch or the beacon runs synchronously in the hide or pagehide handler.
-  async function unload(url: string, raw: Uint8Array): Promise<SendResult> {
+  async function unload(url: string, raw: Uint8Array, abort: AbortSignal | undefined): Promise<SendResult> {
     const size = raw.byteLength;
     if (size <= UNLOAD_BODY_LIMIT && keepaliveInFlight + size <= UNLOAD_BODY_LIMIT) {
       keepaliveInFlight += size;
       try {
-        return await post(url, raw, false, true);
+        return await post(url, raw, false, true, abort);
       } finally {
         keepaliveInFlight -= size;
       }
@@ -155,9 +182,9 @@ export function createHttpTransport(opts: HttpTransportOptions): Transport {
     if (url === undefined) return { kind: "fatal", reason: `no OTLP endpoint for ${req.signal}` };
     if (!isOnline()) return { kind: "retry", reason: "offline" };
     const raw = encoder.encode(req.body);
-    if (req.mode === "unload") return unload(url, raw);
+    if (req.mode === "unload") return unload(url, raw, req.abortSignal);
     const compressed = gzipOn && canGzip() ? await gzip(raw) : undefined;
-    return post(url, compressed ?? raw, compressed !== undefined, false);
+    return post(url, compressed ?? raw, compressed !== undefined, false, req.abortSignal);
   }
 
   return {

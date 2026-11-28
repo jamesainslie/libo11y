@@ -10,6 +10,7 @@ import { exemplarStoreOf } from "@libo11y/core/testing";
 import { trace } from "@opentelemetry/api";
 import type { ReadableSpan, SpanProcessor } from "@opentelemetry/sdk-trace";
 import { activeConsent, setActiveConsent } from "./consent/active.ts";
+import { createConsentController } from "./consent/controller.ts";
 import type {
   Consent,
   ConsentController,
@@ -164,6 +165,7 @@ function harness(overrides: Partial<SetupDeps> = {}): Harness {
         },
         shutdown: async () => {
           log.push("delivery.shutdown");
+          return { timedOut: [] };
         },
       };
     },
@@ -710,4 +712,99 @@ test("a failure after core set up shuts core down too, so the next setup is not 
   assert.ok(h.log.includes("queue.close"));
   const next = await setupWithDeps(BASE, harness().deps, true);
   await next.shutdown();
+});
+
+/** A harness whose queue already holds a batch an earlier page load left. */
+function seededHarness(overrides: Partial<SetupDeps> = {}): { h: Harness; queue: FakeQueue } {
+  const queue = createFakeQueue();
+  void queue.put({ signal: "traces", body: "{}" });
+  const h = harness({ openQueue: async () => queue, ...overrides });
+  const close = queue.close.bind(queue);
+  queue.close = () => {
+    h.log.push("queue.close");
+    close();
+  };
+  return { h, queue };
+}
+
+test("a page set up denied clears the queue an earlier page load left, before the delivery exists", async () => {
+  const { h, queue } = seededHarness({
+    createDelivery: (opts) => {
+      h.log.push(`delivery with ${queue.entries.size} queued`);
+      return createDelivery(opts);
+    },
+  });
+  const web = await setupWithDeps({ ...BASE, consent: { initial: "denied" } }, h.deps, true);
+  try {
+    assert.equal(queue.entries.size, 0);
+    assert.ok(h.log.includes("delivery with 0 queued"));
+  } finally {
+    await web.shutdown();
+  }
+});
+
+test("a page a respected privacy signal denies clears the earlier queue too", async () => {
+  const { h, queue } = seededHarness({
+    createConsentController: (opts) => createConsentController({ ...opts, navigator: { doNotTrack: "1" } }),
+  });
+  const web = await setupWithDeps(
+    { ...BASE, consent: { initial: "granted", respectDoNotTrack: true } },
+    h.deps,
+    true,
+  );
+  try {
+    assert.equal(web.consent.state(), "denied");
+    assert.equal(queue.entries.size, 0);
+  } finally {
+    await web.shutdown();
+  }
+});
+
+test("a page set up pending keeps the earlier queue for a grant", async () => {
+  const { h, queue } = seededHarness();
+  const web = await setupWithDeps(BASE, h.deps, true);
+  try {
+    assert.equal(web.consent.state(), "pending");
+    assert.equal(queue.entries.size, 1);
+  } finally {
+    await web.shutdown();
+  }
+});
+
+test("shutdown keeps its deadline with a drain send held open, and reports the timeout", async () => {
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const aborts: (AbortSignal | undefined)[] = [];
+  const { h } = seededHarness({
+    createDelivery,
+    createHttpTransport: () => ({
+      async send(req) {
+        aborts.push(req.abortSignal);
+        await held;
+        return { kind: "ok" };
+      },
+    }),
+  });
+  const web = await setupWithDeps({ ...BASE, consent: { initial: "granted" } }, h.deps, true);
+  try {
+    await tick();
+    assert.equal(aborts.length, 1, "the setup drain has the earlier batch on the wire");
+    const started = performance.now();
+    const first = web.shutdown({ timeoutMillis: 5 });
+    assert.equal(web.shutdown(), first);
+    const report = await first;
+    assert.ok(performance.now() - started < 60, "shutdown kept its deadline");
+    assert.equal(report.ok, false);
+    assert.deepEqual(
+      report.errors.map((e) => [e.signal, (e.error as Error).message]),
+      [["traces", "o11y: shutdown traces: deadline exceeded"]],
+    );
+    assert.equal(aborts[0]?.aborted, true, "the send in flight was aborted");
+    assert.ok(h.log.includes("queue.close"), "the queue is still closed");
+    assert.equal(activeConsent(), undefined, "and the active consent released");
+  } finally {
+    release();
+  }
 });

@@ -8,15 +8,17 @@ import type { Attributes } from '@opentelemetry/api';
 import type { ContextManager } from '@opentelemetry/api';
 import { ExporterRequest } from '@libo11y/core';
 import { ExporterSet } from '@libo11y/core';
+import type { LifecycleOptions } from '@libo11y/core';
 import { LogRecordExporter } from '@opentelemetry/sdk-logs';
 import { Platform } from '@libo11y/core';
 import { PushMetricExporter } from '@opentelemetry/sdk-metrics';
 import type { ReadableLogRecord } from '@opentelemetry/sdk-logs';
 import type { ReadableSpan } from '@opentelemetry/sdk-trace';
-import type { RecordingGate } from '@libo11y/core';
+import { RecordingGate } from '@libo11y/core';
 import type { ResourceLayers } from '@libo11y/core';
 import type { ResourceMetrics } from '@opentelemetry/sdk-metrics';
 import { ResourceMetricsWithExemplars } from '@libo11y/core';
+import type { SignalReport } from '@libo11y/core';
 import type { Span } from '@opentelemetry/api';
 import type { SpanContext } from '@opentelemetry/api';
 import { SpanExporter } from '@opentelemetry/sdk-trace';
@@ -101,7 +103,7 @@ export function createLogExporter(delivery: Delivery, opts?: ExporterOptions): L
 export function createMemoryQueue(opts?: QueueOptions): PersistentQueue;
 
 // @public
-export function createMetricExporter(delivery: Delivery, temporality?: "cumulative" | "delta"): PushMetricExporter;
+export function createMetricExporter(delivery: Delivery, temporality?: "cumulative" | "delta", gate?: RecordingGate): PushMetricExporter;
 
 // @public
 export function createSpanExporter(delivery: Delivery, opts?: ExporterOptions): SpanExporter;
@@ -114,7 +116,7 @@ export interface Delivery {
     clear(): Promise<void>;
     deliver(batch: OtlpBatch): Promise<DeliveryResult>;
     drain(): Promise<void>;
-    shutdown(): Promise<void>;
+    shutdown(opts?: DeliveryShutdownOptions): Promise<DeliveryShutdownReport>;
 }
 
 // @public
@@ -159,6 +161,16 @@ export interface DeliveryResult {
 }
 
 // @public
+export interface DeliveryShutdownOptions {
+    readonly timeoutMillis?: number;
+}
+
+// @public
+export interface DeliveryShutdownReport {
+    readonly timedOut: readonly OtlpSignal[];
+}
+
+// @public
 export function detectBrowserResource(opts: BrowserResourceOptions): Promise<ResourceLayers>;
 
 // @public
@@ -169,6 +181,7 @@ export interface DocumentLoadOptions {
 
 // @public
 export interface ExporterOptions {
+    readonly gate?: RecordingGate;
     readonly metricTemporality?: "cumulative" | "delta";
     readonly mode?: () => SendMode;
 }
@@ -340,6 +353,7 @@ export type SendMode =
 
 // @public
 export interface SendRequest extends OtlpBatch {
+    readonly abortSignal?: AbortSignal;
     // (undocumented)
     readonly mode: SendMode;
 }
@@ -411,6 +425,9 @@ export function setupWithDeps(options: WebSetupOptions, deps: SetupDeps, install
 
 // @public
 export function shouldPropagate(url: URL, allow: readonly OriginMatcher[], pageOrigin?: string): boolean;
+
+// @public
+export function shutdownWithin(coreShutdown: (opts?: LifecycleOptions) => Promise<SignalReport>, delivery: Delivery, opts: LifecycleOptions | undefined): Promise<SignalReport>;
 
 // @public
 export type SignalEndpoints = Readonly<Record<OtlpSignal, string | undefined>>;
