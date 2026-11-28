@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Reflection;
 using OpenTelemetry.Resources;
 using Xunit;
@@ -81,5 +82,40 @@ public sealed class ResourceAndConfigTests
         string expectedVersion = typeof(ResourceBuilder).Assembly
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()!.InformationalVersion.Split('+')[0];
         Assert.Equal(expectedVersion, telemetry.ResourceAttributes["telemetry.sdk.version"]);
+    }
+
+    [Theory]
+    [InlineData("traceidratio", null, true)]
+    [InlineData("parentbased_traceidratio", " ", true)]
+    [InlineData("traceidratio", "0", false)]
+    [InlineData("parentbased_traceidratio", "0", false)]
+    [InlineData("traceidratio", "invalid", true)]
+    [InlineData("parentbased_traceidratio", "NaN", true)]
+    [InlineData("traceidratio", "-1", true)]
+    [InlineData("parentbased_traceidratio", "2", true)]
+    public void TraceSampler_RatioDefaultsToOneForMissingOrInvalidArguments(string sampler, string? argument, bool recorded)
+    {
+        const string service = "ratio-sampler";
+        var env = new Dictionary<string, string>
+        {
+            ["OTEL_TRACES_SAMPLER"] = sampler,
+            ["OTEL_TRACES_EXPORTER"] = "none",
+            ["OTEL_METRICS_EXPORTER"] = "none",
+            ["OTEL_LOGS_EXPORTER"] = "none",
+        };
+        if (argument is not null) env["OTEL_TRACES_SAMPLER_ARG"] = argument;
+
+        using var telemetry = O11y.Init(new O11yOptions
+        {
+            ServiceName = service,
+            Environment = "test",
+            Env = env,
+            ConsoleEnabled = false,
+            RuntimeMetrics = false,
+        });
+        using var source = new ActivitySource(service);
+        using var activity = source.StartActivity("root");
+
+        Assert.Equal(recorded, activity?.Recorded ?? false);
     }
 }

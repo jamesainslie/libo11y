@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Libo11y.Testing;
+using Microsoft.Extensions.Logging;
 using Xunit;
 
 namespace Libo11y.Tests;
@@ -19,7 +20,7 @@ public sealed class OtlpConfigurationTests
         var env = TraceEnvironment($"{receiver.Endpoint}/collector/?key=test");
         if (signalPath is not null) env["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] = receiver.Endpoint + signalPath;
 
-        using var telemetry = O11y.Init(TraceOptions("otlp-endpoint", env));
+        using var telemetry = O11y.Init(OtlpOptions("otlp-endpoint", env));
         ExportSpan(telemetry, "otlp-endpoint");
 
         Assert.Equal(expectedPath, Assert.Single(receiver.TraceRequests).Path);
@@ -37,7 +38,7 @@ public sealed class OtlpConfigurationTests
         env["OTEL_EXPORTER_OTLP_PROTOCOL"] = "grpc";
         if (insecure is not null) env["OTEL_EXPORTER_OTLP_INSECURE"] = insecure;
         if (tracesInsecure is not null) env["OTEL_EXPORTER_OTLP_TRACES_INSECURE"] = tracesInsecure;
-        using var telemetry = O11y.Init(TraceOptions("otlp-grpc", env));
+        using var telemetry = O11y.Init(OtlpOptions("otlp-grpc", env));
 
         Assert.Equal(expectedEndpoint, telemetry.EffectiveConfig()["traces.endpoint"]);
     }
@@ -47,7 +48,7 @@ public sealed class OtlpConfigurationTests
     {
         var env = TraceEnvironment("http://user:private-token@[incomplete");
 
-        var error = Assert.Throws<InvalidOptionException>(() => O11y.Init(TraceOptions("otlp-invalid", env)));
+        var error = Assert.Throws<InvalidOptionException>(() => O11y.Init(OtlpOptions("otlp-invalid", env)));
         Assert.Contains("OTEL_EXPORTER_OTLP_ENDPOINT", error.Message);
         Assert.DoesNotContain("private-token", error.ToString());
     }
@@ -60,7 +61,7 @@ public sealed class OtlpConfigurationTests
         env["OTEL_EXPORTER_OTLP_HEADERS"] = "x-general=value,X-Routing=general";
         env["OTEL_EXPORTER_OTLP_TRACES_HEADERS"] = "x-routing=one%2Ctwo%3Dthree%2525";
 
-        using var telemetry = O11y.Init(TraceOptions("otlp-headers", env));
+        using var telemetry = O11y.Init(OtlpOptions("otlp-headers", env));
         ExportSpan(telemetry, "otlp-headers");
 
         var request = Assert.Single(receiver.TraceRequests);
@@ -79,10 +80,60 @@ public sealed class OtlpConfigurationTests
             System.Environment.SetEnvironmentVariable(variable, "x-ambient=unexpected");
             using var receiver = new OtlpHttpReceiver();
             var env = TraceEnvironment(receiver.Endpoint);
-            using var telemetry = O11y.Init(TraceOptions("otlp-isolated-headers", env));
+            using var telemetry = O11y.Init(OtlpOptions("otlp-isolated-headers", env));
             ExportSpan(telemetry, "otlp-isolated-headers");
 
             Assert.False(Assert.Single(receiver.TraceRequests).Headers.ContainsKey("x-ambient"));
+        }
+        finally
+        {
+            System.Environment.SetEnvironmentVariable(variable, original);
+        }
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("none")]
+    [InlineData("unknown")]
+    public void Compression_AppliesTheGeneralSettingAndSignalOverride(string? logsCompression)
+    {
+        const string service = "otlp-compressed";
+        using var receiver = new OtlpHttpReceiver();
+        var env = new Dictionary<string, string>
+        {
+            ["OTEL_EXPORTER_OTLP_ENDPOINT"] = receiver.Endpoint,
+            ["OTEL_EXPORTER_OTLP_COMPRESSION"] = "gzip",
+        };
+        if (logsCompression is not null) env["OTEL_EXPORTER_OTLP_LOGS_COMPRESSION"] = logsCompression;
+
+        using var telemetry = O11y.Init(OtlpOptions(service, env));
+        telemetry.CreateMeter(service).CreateCounter<long>("compression.calls").Add(1);
+        telemetry.Log(LogLevel.Information, "compression test");
+        ExportSpan(telemetry, service);
+        Assert.True(telemetry.Shutdown().IsOk);
+
+        Assert.Equal("gzip", Assert.Single(receiver.TraceRequests).Headers.GetValueOrDefault("Content-Encoding"));
+        Assert.NotEmpty(receiver.MetricRequests);
+        Assert.All(receiver.MetricRequests, request => Assert.Equal("gzip", request.Headers.GetValueOrDefault("Content-Encoding")));
+        Assert.NotEmpty(receiver.LogRequests);
+        Assert.All(receiver.LogRequests, request => Assert.Equal(
+            logsCompression is null ? "gzip" : null, request.Headers.GetValueOrDefault("Content-Encoding")));
+    }
+
+    [Fact]
+    public void Compression_UsesNoCompressionWhenTheExplicitEnvironmentOmitsIt()
+    {
+        const string variable = "OTEL_EXPORTER_OTLP_COMPRESSION";
+        string? original = System.Environment.GetEnvironmentVariable(variable);
+        try
+        {
+            System.Environment.SetEnvironmentVariable(variable, "gzip");
+            using var receiver = new OtlpHttpReceiver();
+            var env = TraceEnvironment(receiver.Endpoint);
+            using var telemetry = O11y.Init(OtlpOptions("otlp-isolated-compression", env));
+            ExportSpan(telemetry, "otlp-isolated-compression");
+
+            Assert.False(Assert.Single(receiver.TraceRequests).Headers.ContainsKey("Content-Encoding"));
         }
         finally
         {
@@ -97,7 +148,7 @@ public sealed class OtlpConfigurationTests
         ["OTEL_LOGS_EXPORTER"] = "none",
     };
 
-    private static O11yOptions TraceOptions(string serviceName, Dictionary<string, string> env) => new()
+    private static O11yOptions OtlpOptions(string serviceName, Dictionary<string, string> env) => new()
     {
         ServiceName = serviceName,
         Environment = "test",
