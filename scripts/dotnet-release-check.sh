@@ -115,35 +115,41 @@ if [[ "$from_nuget" == false ]]; then
 	echo "dotnet-release-check: packed $want packages at $plain"
 fi
 
-# The consumer restores Libo11y.* from the packed feed only, or from
-# nuget.org only with --from-nuget, so neither mode can pass on the other's
-# packages.
-if [[ "$from_nuget" == true ]]; then
-	libo11y_source=nuget.org
-else
-	libo11y_source=local
-fi
+# The consumer restores Libo11y.* from the packed feed in pack mode.
+# The published smoke check needs only nuget.org for all packages.
 consumer="$tmp/consumer"
 mkdir -p "$consumer"
-cat >"$consumer/nuget.config" <<EOF
+{
+	cat <<'EOF'
 <?xml version="1.0" encoding="utf-8"?>
 <configuration>
   <packageSources>
     <clear />
-    <add key="local" value="$feed" />
     <add key="nuget.org" value="https://api.nuget.org/v3/index.json" />
+EOF
+	if [[ "$from_nuget" == false ]]; then
+		printf '    <add key="local" value="%s" />\n' "$feed"
+	fi
+	cat <<'EOF'
   </packageSources>
   <packageSourceMapping>
     <packageSource key="nuget.org">
       <package pattern="*" />
     </packageSource>
-    <packageSource key="$libo11y_source">
+EOF
+	if [[ "$from_nuget" == false ]]; then
+		cat <<'EOF'
+    <packageSource key="local">
       <package pattern="Libo11y" />
       <package pattern="Libo11y.*" />
     </packageSource>
+EOF
+	fi
+	cat <<'EOF'
   </packageSourceMapping>
 </configuration>
 EOF
+} >"$consumer/nuget.config"
 
 {
 	cat <<'EOF'
