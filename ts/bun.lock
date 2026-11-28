@@ -91,6 +91,16 @@
         "@libo11y/test": "workspace:*",
       },
     },
+    "packages/sourcemaps": {
+      "name": "@libo11y/sourcemaps",
+      "version": "0.2.1",
+      "bin": {
+        "libo11y-sourcemaps": "./src/cli.ts",
+      },
+      "devDependencies": {
+        "@libo11y/test": "workspace:*",
+      },
+    },
     "packages/spec": {
       "name": "@libo11y/spec",
       "version": "0.2.1",
@@ -182,6 +192,8 @@
     "@libo11y/rum": ["@libo11y/rum@workspace:packages/rum"],
 
     "@libo11y/server": ["@libo11y/server@workspace:packages/server"],
+
+    "@libo11y/sourcemaps": ["@libo11y/sourcemaps@workspace:packages/sourcemaps"],
 
     "@libo11y/spec": ["@libo11y/spec@workspace:packages/spec"],
 

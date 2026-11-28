@@ -115,6 +115,12 @@ printf '{ "name": "libo11y-consumer", "private": true, "type": "module" }\n' >"$
 	[[ "$(bun -e "$serve_smoke")" == up ]] || fail "bun could not run instrumentServe and instrumentFetch"
 	echo "ts-release-check: instrumentServe and instrumentFetch ok under node and bun"
 
+	sourcemaps_smoke='import { findSourceMaps, UploadError, VERSION } from "@libo11y/sourcemaps"; console.log(typeof findSourceMaps, new UploadError("x", 401, "a.js").status, VERSION);'
+	want_sourcemaps="function 401 $plain"
+	[[ "$(node --input-type=module -e "$sourcemaps_smoke")" == "$want_sourcemaps" ]] || fail "node could not import @libo11y/sourcemaps"
+	[[ "$(bun -e "$sourcemaps_smoke")" == "$want_sourcemaps" ]] || fail "bun could not import @libo11y/sourcemaps"
+	echo "ts-release-check: import @libo11y/sourcemaps ok under node and bun"
+
 	# The browser packages run in neither Node nor Bun. They must bundle
 	# for the browser with no Node builtin, from every entry point. The
 	# release workflow's npm-smoke job runs the same check on the
@@ -129,6 +135,7 @@ import { AppRegistryParseError, parseAppRegistry, parseAppRegistryBytes } from "
 import { O11yError, type TelemetryOptions } from "@libo11y/core";
 import { createTestPlatform } from "@libo11y/core/testing";
 import { createRecorder, type OtlpSink, type RecorderOptions, startOtlpSink } from "@libo11y/test";
+import { findSourceMaps, type UploadedMap, UploadError, type UploadOptions, uploadSourceMaps } from "@libo11y/sourcemaps";
 import {
   createTelemetry,
   type FetchOptions,
@@ -166,6 +173,16 @@ const handler: (req: Request) => Promise<Response> = instrumentServe(async () =>
 }, serveOptions);
 const fetchOptions: FetchOptions = { peerService: "upstream", propagate: (url) => url.hostname !== "example.com" };
 const traced: typeof fetch = instrumentFetch(fetch, fetchOptions);
+const uploadOptions: UploadOptions = {
+  endpoint: "https://gateway.example",
+  token: "t",
+  service: "svc",
+  version: "1.0.0",
+  urlPrefix: "/assets/",
+  directory: "dist",
+};
+const uploadedKey = (u: UploadedMap): string => u.key;
+const failedStatus: number = new UploadError("x", 401, "a.js").status;
 export const checked: readonly unknown[] = [
   result.ok,
   kind,
@@ -186,6 +203,11 @@ export const checked: readonly unknown[] = [
   signalOptions,
   handler,
   traced,
+  uploadOptions,
+  uploadedKey,
+  failedStatus,
+  findSourceMaps,
+  uploadSourceMaps,
 ];
 TS
 	# A server consumer has its runtime's types, which declare fetch, Request, Response and URL.
@@ -213,6 +235,14 @@ JSON
 		npx --no-install libo11y registry check "$valid"
 		bun node_modules/.bin/libo11y registry check "$valid"
 		echo "ts-release-check: libo11y registry check ok under node and bun"
+
+		node_help="$(npx --no-install libo11y-sourcemaps --help)"
+		grep -q '^usage: libo11y-sourcemaps upload' <<<"$node_help" ||
+			fail "libo11y-sourcemaps --help printed no usage under node"
+		bun_help="$(bun node_modules/.bin/libo11y-sourcemaps --help)"
+		grep -q '^usage: libo11y-sourcemaps upload' <<<"$bun_help" ||
+			fail "libo11y-sourcemaps --help printed no usage under bun"
+		echo "ts-release-check: libo11y-sourcemaps --help ok under node and bun"
 	fi
 )
 

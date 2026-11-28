@@ -22,6 +22,7 @@ const (
 	telOutcome = "o11yrum.outcome"
 	telReason  = "o11yrum.reason"
 	telSink    = "o11yrum.sink"
+	telResult  = "o11yrum.result"
 )
 
 // Batch outcomes and the reason recorded for a batch that was not refused.
@@ -48,6 +49,8 @@ type telemetry struct {
 	dropped      metric.Int64Counter
 	attrsRemoved metric.Int64Counter
 	sinkDuration metric.Float64Histogram
+	uploads      metric.Int64Counter
+	frames       metric.Int64Counter
 }
 
 // newTelemetry creates the instruments on mp, or on a noop provider when
@@ -89,7 +92,21 @@ func newTelemetry(mp metric.MeterProvider, log *slog.Logger) *telemetry {
 		metric.WithDescription("Time one sink took to export one batch, by sink and outcome.")); !check("o11yrum.sink.duration", err) {
 		t.sinkDuration, _ = fallback.Float64Histogram("o11yrum.sink.duration")
 	}
+	if t.uploads, err = m.Int64Counter("o11yrum.sourcemaps.uploads", metric.WithUnit("{upload}"),
+		metric.WithDescription("Source map uploads the gateway handled, by app and outcome.")); !check("o11yrum.sourcemaps.uploads", err) {
+		t.uploads, _ = fallback.Int64Counter("o11yrum.sourcemaps.uploads")
+	}
+	if t.frames, err = m.Int64Counter("o11yrum.symbolication.frames", metric.WithUnit("{frame}"),
+		metric.WithDescription("Stack frames symbolication handled, by app and result: hit, unmapped, miss, error or skipped.")); !check("o11yrum.symbolication.frames", err) {
+		t.frames, _ = fallback.Int64Counter("o11yrum.symbolication.frames")
+	}
 	return t
+}
+
+// upload counts one source map upload.
+func (t *telemetry) upload(ctx context.Context, app, outcome string) {
+	t.uploads.Add(ctx, 1, metric.WithAttributes(
+		attribute.String(telApp, app), attribute.String(telOutcome, outcome)))
 }
 
 // report records one finished OTLP request. What validation removed is

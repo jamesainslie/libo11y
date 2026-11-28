@@ -12,6 +12,11 @@
 // The metrics the gateway derives leave with its own metrics, through the
 // reader OTEL_METRICS_EXPORTER selects. When OTEL_METRICS_PRODUCERS is
 // set it must include o11yrum.
+//
+// With an object_store configured, the gateway accepts source map uploads
+// at /_o11y/v1/sourcemaps and symbolicates error stacks. An s3 store
+// authenticates with the AWS SDK's default credential chain, so on EKS
+// Pod Identity or IRSA supplies credentials and no static key is needed.
 package main
 
 import (
@@ -34,6 +39,7 @@ import (
 
 	o11y "github.com/jamesainslie/libo11y/go"
 	"github.com/jamesainslie/libo11y/go/o11yrum"
+	"github.com/jamesainslie/libo11y/go/o11yrum/s3store"
 	"github.com/jamesainslie/libo11y/go/spec"
 )
 
@@ -91,9 +97,14 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(err)
 	}
+	store, err := objectStore(ctx, cfg)
+	if err != nil {
+		return fail(err)
+	}
 	if *check {
-		// Building a handler also reads every remote configuration file.
-		h, err := o11yrum.NewHandler(o11yrum.WithConfig(cfg))
+		// Building a handler also reads every remote configuration file
+		// and upload token.
+		h, err := o11yrum.NewHandler(o11yrum.WithConfig(cfg), o11yrum.WithObjectStore(store))
 		if err != nil {
 			return fail(err)
 		}
@@ -101,7 +112,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintln(stdout, "ok")
 		return 0
 	}
-	if err := serve(ctx, cfg, sink, stderr); err != nil {
+	if err := serve(ctx, cfg, sink, store, stderr); err != nil {
 		return fail(err)
 	}
 	return 0
@@ -140,6 +151,23 @@ func load(path string) (*o11yrum.Config, *o11yrum.OTLPSink, error) {
 		return nil, nil, err
 	}
 	return cfg, sink, nil
+}
+
+// objectStore builds the S3 store the configuration names, with the AWS
+// SDK's default credential chain. It returns nil otherwise: the handler
+// builds a filesystem store itself.
+func objectStore(ctx context.Context, cfg *o11yrum.Config) (o11yrum.ObjectStore, error) {
+	c := cfg.ObjectStore.S3
+	if c == nil {
+		return nil, nil
+	}
+	store, err := s3store.New(ctx, s3store.Config{
+		Bucket: c.Bucket, Prefix: c.Prefix, Region: c.Region, Endpoint: c.Endpoint, UsePathStyle: c.UsePathStyle,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return store, nil
 }
 
 // sinkFromEnvironment fills the OTLP sink from the standard exporter
@@ -193,7 +221,7 @@ func parseOTLPHeaders(raw string) (map[string]string, error) {
 }
 
 // serve runs the gateway until ctx ends, then drains it.
-func serve(ctx context.Context, cfg *o11yrum.Config, sink *o11yrum.OTLPSink, stderr io.Writer) (err error) {
+func serve(ctx context.Context, cfg *o11yrum.Config, sink *o11yrum.OTLPSink, store o11yrum.ObjectStore, stderr io.Writer) (err error) {
 	// The producer is registered before o11y.New builds the metric reader,
 	// which asks autoexport for its producers.
 	producer := o11yrum.NewMetricProducer()
@@ -212,7 +240,10 @@ func serve(ctx context.Context, cfg *o11yrum.Config, sink *o11yrum.OTLPSink, std
 			err = fmt.Errorf("telemetry shutdown: %w", serr)
 		}
 	}()
-	opts := []o11yrum.Option{o11yrum.WithConfig(cfg), o11yrum.WithSDK(sdk), o11yrum.WithMetricProducer(producer)}
+	opts := []o11yrum.Option{
+		o11yrum.WithConfig(cfg), o11yrum.WithSDK(sdk), o11yrum.WithMetricProducer(producer),
+		o11yrum.WithObjectStore(store),
+	}
 	if sink != nil {
 		defer func() { _ = sink.Close() }()
 		opts = append(opts, o11yrum.WithSinks(sink))

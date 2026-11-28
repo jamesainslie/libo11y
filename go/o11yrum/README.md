@@ -62,3 +62,75 @@ at most 256 bytes, and longer values are cut to 256 bytes. Keys the
 specification classifies PII, secret or unbounded, such as `session.id`,
 are always dropped, whatever the app's `pii` mode, and a configuration
 that lists one fails to load.
+
+## Source maps and symbolication
+
+With an object store configured, the gateway accepts source map uploads
+and symbolicates the JavaScript stacks of `o11y.rum.error` records,
+other records carrying `exception.stacktrace`, and span events named
+`exception`. It runs after enrichment and before the sinks and metric
+derivation, so the sinks and any operator metric see the resolved stack.
+
+```yaml
+object_store:
+  # One of:
+  filesystem: {root: /var/lib/o11yrum}
+  # s3: {bucket: shop-sourcemaps, prefix: o11yrum/, region: us-east-1}
+apps:
+  - service_name: shop-web
+    origins: ["https://shop.example"]
+    sourcemaps:
+      upload_token_file: /run/secrets/shop-web-sourcemaps
+```
+
+The S3 store authenticates with the AWS SDK's default credential chain,
+so on EKS Pod Identity or IRSA supplies the credentials and no static key
+is configured. `endpoint` and `use_path_style` point it at an
+S3-compatible store instead. Grant the gateway's role `s3:GetObject`,
+`s3:PutObject` and `s3:ListBucket` on the bucket: without `s3:ListBucket`,
+S3 answers a missing map with 403 rather than 404, and every frame of a
+release without maps counts as `error` rather than `miss`. The library
+builds the filesystem store from
+the configuration. An S3 store comes from the `s3store` package through
+`WithObjectStore`, which the command does for you.
+
+`POST /_o11y/v1/sourcemaps?service=&version=&url=[&update_id=]` takes one
+map as the body, optionally gzipped, with the app's upload token as
+`Authorization: Bearer`. It answers 201 with the object key. A map is
+checked by parsing it (422 when it is not a version 3 map, or is an index
+map) and kept under
+`sourcemaps/<namespace>/<service.version>/<update_id or _>/<hash of the script path>.map`.
+The script path is the URL's path, so one upload serves every origin and
+`chrome-extension://` URLs. `sourcemaps.namespace` defaults to the
+`service_name`. The gateway never serves a map back. A wrong token, an
+unknown app and an app without uploads all answer 401, and each failed
+attempt spends the client's rate limit. Authenticated uploads are not
+rate limited. `@libo11y/sourcemaps` and its `libo11y-sourcemaps` command
+upload a build's maps.
+
+Each frame is looked up by the resource's `service.version` and
+`o11y.rum.app.update_id` (a record's own update ID wins). A resolved frame
+takes the original file, line and column, and the function name mapped at
+its caller's call site. A stack is rewritten only when a frame resolved.
+Every symbolicated record gets `o11y.rum.error.fingerprint`, 32 hex
+digits over the exception type and the script path and function of the
+first five frames with a URL, or over the message with digits folded when
+there are none. A fingerprint a client sent is removed. The fingerprint is
+taken after symbolication, so an error that arrives before its release's
+maps are uploaded, or while the store is failing, groups apart from the
+same error once its frames resolve. Upload maps before the release
+serves traffic.
+
+The `symbolication` section bounds the work: `cache_maps` (default 64) and
+`cache_bytes` (default 256 MiB) bound the parsed maps held in memory,
+`cache_ttl` (default 10m) is how long a parsed map is used before the
+store is read again, `negative_ttl` (default 60s) is how long a missing or
+broken map is not looked up again, and `max_frames` (default 50) caps the
+frames kept per stack. An upload clears the cache entry on the replica
+that took it at once; other replicas pick up a replaced map within
+`cache_ttl`. One batch reads at most 16 maps from the store and starts no
+read after 2 seconds, so a batch naming many scripts cannot hold a
+request. Frames past that budget count as `skipped`. `o11yrum.symbolication.frames`
+counts frames by `o11yrum.result`: `hit`, `unmapped`, `miss`, `error` and
+`skipped`. `o11yrum.sourcemaps.uploads` counts uploads by outcome. A
+failing store is logged at most once a minute.

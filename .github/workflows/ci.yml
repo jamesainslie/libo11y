@@ -101,6 +101,33 @@ jobs:
         working-directory: ts
         run: bun scripts/size.ts --check --summary "$GITHUB_STEP_SUMMARY"
 
+  # The RUM gateway end-to-end journey: a built o11yrum-gateway in front of
+  # the TypeScript OTLP sink, under Node and Bun.
+  rum-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.x"
+          check-latest: true
+          cache-dependency-path: go/o11yrum/go.sum
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.13"
+      - uses: actions/cache@v6
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('ts/bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24.x"
+      - run: make rum-e2e
+
   # The browser packages' suites under Playwright: @libo11y/web and
   # @libo11y/webext in headless Chromium, @libo11y/rum and its adapters in
   # headless Chromium, Firefox and WebKit.
