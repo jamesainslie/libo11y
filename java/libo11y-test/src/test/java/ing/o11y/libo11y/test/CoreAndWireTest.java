@@ -220,13 +220,13 @@ class CoreAndWireTest {
     @Test
     void captureTimeRedactionForceEmitAndRecord(O11yRecorder rec) {
         assertEquals(Redact.REDACTED, Redact.Secret.of("top-secret").toString());
-        assertEquals("****4242", Redact.Masked.of("4111-1111-1111-4242").toString());
+        assertEquals("XXXXXXXXXXXXXXXXXXX", Redact.Masked.of("4111-1111-1111-4242").toString());
 
         @SuppressWarnings("unchecked")
         Map<String, Object> scrubbed = (Map<String, Object>) Redact.scrub(
                 new Customer("c1", "411111114242", "hunter2", "tok"));
         assertEquals("c1", scrubbed.get("id"));
-        assertEquals("****4242", scrubbed.get("cardNumber"));
+        assertEquals("XXXXXXXXXXXX", scrubbed.get("cardNumber"));
         assertEquals(Redact.REDACTED, scrubbed.get("password"));
         assertFalse(scrubbed.containsKey("internalToken"));
 
