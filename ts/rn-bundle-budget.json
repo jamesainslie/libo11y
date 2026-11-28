@@ -1,0 +1,7 @@
+{
+  "unit": "bytes of minified JavaScript in the Android bundle, before Hermes compilation",
+  "budgets": {
+    "@libo11y": 184320,
+    "@opentelemetry": 409600
+  }
+}
