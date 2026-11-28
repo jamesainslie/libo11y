@@ -1,0 +1,41 @@
+{
+  "name": "@libo11y/rum-tanstack-router",
+  "version": "0.2.1",
+  "private": true,
+  "description": "TanStack Router adapter for @libo11y/rum: names views by route template and times soft navigations to the first paint after the new route rendered.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jamesainslie/libo11y.git",
+    "directory": "ts/packages/rum-tanstack-router"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "api": "api-extractor run --local",
+    "api:check": "api-extractor run"
+  },
+  "peerDependencies": {
+    "@libo11y/rum": "workspace:*",
+    "@tanstack/router-core": "^1.170.0"
+  },
+  "peerDependenciesMeta": {
+    "@tanstack/router-core": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@libo11y/rum": "workspace:*",
+    "@tanstack/history": "1.162.5",
+    "@tanstack/react-router": "1.170.46",
+    "@tanstack/router-core": "1.171.39",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  }
+}

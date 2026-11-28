@@ -198,15 +198,18 @@ npm install --save-dev @libo11y/test # the hermetic recorder and the OTLP sink
 npm install @libo11y/web             # browsers: setup, consent, the offline queue, fetch and XHR spans
 npm install @libo11y/webext          # Manifest V3 extensions: the service worker and content scripts
 npm install @libo11y/rum             # RUM for browsers and extensions
+npm install @libo11y/rum-react       # RUM adapters: React, TanStack Router and Connect
+npm install @libo11y/rum-tanstack-router
+npm install @libo11y/rum-connect
 npm install --save-dev @libo11y/sourcemaps # uploads source maps to the RUM gateway
 ```
 
-The eight packages release together at one version, and they are built on
+The eleven packages release together at one version, and they are built on
 OpenTelemetry JS 3.x. `@libo11y/server` and `@libo11y/test` run on Bun
 1.3.13 and Node 24, and so does `@libo11y/sourcemaps`, a build tool.
 `@libo11y/web`, `@libo11y/webext` and `@libo11y/rum` run in browsers, and
 by default they record nothing until the application grants consent.
-`@libo11y/rum` and `@libo11y/sourcemaps` are in development and have not
+`@libo11y/rum`, its adapters and `@libo11y/sourcemaps` are in development and have not
 shipped yet.
 
 ## Quick start (TypeScript)

@@ -2,8 +2,9 @@
 
 All notable changes to the libo11y TypeScript packages are documented
 here: `@libo11y/spec`, `@libo11y/core`, `@libo11y/server`,
-`@libo11y/test`, `@libo11y/web`, `@libo11y/webext`, `@libo11y/rum` and
-`@libo11y/sourcemaps`, which release together at one version from a `ts/vX.Y.Z`
+`@libo11y/test`, `@libo11y/web`, `@libo11y/webext`, `@libo11y/rum`,
+`@libo11y/rum-react`, `@libo11y/rum-tanstack-router`, `@libo11y/rum-connect`
+and `@libo11y/sourcemaps`, which release together at one version from a `ts/vX.Y.Z`
 tag. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the packages
 adhere to [Semantic Versioning](https://semver.org/).
@@ -39,6 +40,25 @@ adhere to [Semantic Versioning](https://semver.org/).
   failures, and optionally `console.error`, each with breadcrumbs. The
   `rum` handle gains `startView`, `setViewName`, `viewRendered`,
   `addAction` and `addError`.
+- `@libo11y/rum-react`, `@libo11y/rum-tanstack-router` and
+  `@libo11y/rum-connect`, the RUM adapters. In development; they are not on
+  npm yet. `@libo11y/rum-react` has `RumProvider`, `useRum` and
+  `RumErrorBoundary`, which records a render error as `o11y.rum.error`
+  with source `boundary` and the component stack. React 18.3 and 19 are
+  its peers. `@libo11y/rum-tanstack-router` has `instrumentTanStackRouter`,
+  which names views by route template, never by URL, starts a soft view
+  when a navigation changes the path, and ends the view span at the first
+  paint after the new route rendered. A redirect before the navigation
+  resolved starts no second view, and a location no route matches is the
+  view `$notFound`. It reads router-core 1.x events only and has no
+  runtime dependency on TanStack Router.
+  `@libo11y/rum-connect` has `connectRequestNaming`, which names the fetch
+  spans of Connect and gRPC-Web RPCs `<service>/<method>` with
+  `rpc.system.name` and `rpc.method`, as `go/o11yconnect` names its
+  client spans. A request is an RPC when its path ends in a PascalCase
+  service and method.
+- `scripts/size.ts`: a size budget entry can name `external` modules,
+  such as `react` for the React adapter, which are left out of its bundle.
 - `@libo11y/rum`: app metrics export with delta temporality, as the RUM
   gateway requires. `@libo11y/web` on its own still exports cumulative
   metrics.
