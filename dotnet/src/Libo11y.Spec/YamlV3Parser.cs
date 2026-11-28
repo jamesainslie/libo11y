@@ -83,24 +83,28 @@ internal static partial class YamlV3Parser
         ["<<"] = TagMerge,
     };
 
+    // These patterns stand in for Go checks that accept the whole text only
+    // (regexp with $, time.Parse, base64 decoding), so each one ends in \z:
+    // .NET's $ also matches before a final newline. [0-9] replaces \d, which
+    // matches every Unicode digit in .NET but only ASCII digits in Go.
     private static readonly Regex YamlStyleFloatRe = new(
-        @"^[-+]?(\.[0-9]+|[0-9]+(\.[0-9]*)?)([eE][-+]?[0-9]+)?$",
-        RegexOptions.Compiled);
+        @"^[-+]?(\.[0-9]+|[0-9]+(\.[0-9]*)?)([eE][-+]?[0-9]+)?\z",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private static readonly Regex DotFloatRe = new(
-        @"^\.[0-9]+([eE][-+]?[0-9]+)?$",
-        RegexOptions.Compiled);
+        @"^\.[0-9]+([eE][-+]?[0-9]+)?\z",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private static readonly Regex Base64Re = new(
-        @"^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$",
-        RegexOptions.Compiled);
+        @"^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?\z",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private static readonly Regex[] TimestampRes =
     [
-        new(@"^(\d{4})-(\d\d?)-(\d\d?)T(\d\d?):(\d\d?):(\d\d?)(?:[.,]\d+)?(Z|[+-](\d\d):(\d\d))$", RegexOptions.Compiled),
-        new(@"^(\d{4})-(\d\d?)-(\d\d?)t(\d\d?):(\d\d?):(\d\d?)(?:[.,]\d+)?(Z|[+-](\d\d):(\d\d))$", RegexOptions.Compiled),
-        new(@"^(\d{4})-(\d\d?)-(\d\d?) (\d\d?):(\d\d?):(\d\d?)(?:[.,]\d+)?$", RegexOptions.Compiled),
-        new(@"^(\d{4})-(\d\d?)-(\d\d?)$", RegexOptions.Compiled),
+        new(@"^([0-9]{4})-([0-9][0-9]?)-([0-9][0-9]?)T([0-9][0-9]?):([0-9][0-9]?):([0-9][0-9]?)(?:[.,][0-9]+)?(Z|[+-]([0-9][0-9]):([0-9][0-9]))\z", RegexOptions.Compiled | RegexOptions.CultureInvariant),
+        new(@"^([0-9]{4})-([0-9][0-9]?)-([0-9][0-9]?)t([0-9][0-9]?):([0-9][0-9]?):([0-9][0-9]?)(?:[.,][0-9]+)?(Z|[+-]([0-9][0-9]):([0-9][0-9]))\z", RegexOptions.Compiled | RegexOptions.CultureInvariant),
+        new(@"^([0-9]{4})-([0-9][0-9]?)-([0-9][0-9]?) ([0-9][0-9]?):([0-9][0-9]?):([0-9][0-9]?)(?:[.,][0-9]+)?\z", RegexOptions.Compiled | RegexOptions.CultureInvariant),
+        new(@"^([0-9]{4})-([0-9][0-9]?)-([0-9][0-9]?)\z", RegexOptions.Compiled | RegexOptions.CultureInvariant),
     ];
 
     public static string DecodeInput(ReadOnlySpan<byte> raw)
@@ -165,121 +169,10 @@ internal static partial class YamlV3Parser
         }
     }
 
-    private static string PreprocessDoubleQuotedEscapes(string text)
-    {
-        var sb = new StringBuilder(text.Length);
-        int i = 0;
-        int len = text.Length;
-        bool inSingle = false;
-        bool inDouble = false;
-        bool inComment = false;
-
-        while (i < len)
-        {
-            char ch = text[i];
-            if (inComment)
-            {
-                sb.Append(ch);
-                if (ch == '\n' || ch == '\r')
-                {
-                    inComment = false;
-                }
-                i++;
-            }
-            else if (inSingle)
-            {
-                sb.Append(ch);
-                if (ch == '\'')
-                {
-                    if (i + 1 < len && text[i + 1] == '\'')
-                    {
-                        sb.Append('\'');
-                        i += 2;
-                    }
-                    else
-                    {
-                        inSingle = false;
-                        i++;
-                    }
-                }
-                else
-                {
-                    i++;
-                }
-            }
-            else if (inDouble)
-            {
-                if (ch == '\\')
-                {
-                    if (i + 1 >= len)
-                    {
-                        throw new YamlV3SyntaxException("unterminated escape in double-quoted scalar");
-                    }
-                    char nxt = text[i + 1];
-                    if (nxt == '/')
-                    {
-                        throw new YamlV3SyntaxException("found unknown escape character '/'");
-                    }
-                    if (nxt == '\'')
-                    {
-                        sb.Append('\'');
-                        i += 2;
-                    }
-                    else if (nxt == 'u' && i + 5 < len)
-                    {
-                        var hex = text.AsSpan(i + 2, 4);
-                        if (int.TryParse(hex, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out int cp) &&
-                            cp >= 0xD800 && cp <= 0xDFFF)
-                        {
-                            throw new YamlV3SyntaxException("found invalid Unicode character escape code");
-                        }
-                        sb.Append(ch);
-                        sb.Append(nxt);
-                        i += 2;
-                    }
-                    else
-                    {
-                        sb.Append(ch);
-                        sb.Append(nxt);
-                        i += 2;
-                    }
-                }
-                else
-                {
-                    sb.Append(ch);
-                    if (ch == '"')
-                    {
-                        inDouble = false;
-                    }
-                    i++;
-                }
-            }
-            else
-            {
-                if (ch == '#' && (i == 0 || text[i - 1] is ' ' or '\t' or '\n' or '\r'))
-                {
-                    inComment = true;
-                }
-                else if (ch == '\'')
-                {
-                    inSingle = true;
-                }
-                else if (ch == '"')
-                {
-                    inDouble = true;
-                }
-                sb.Append(ch);
-                i++;
-            }
-        }
-
-        return sb.ToString();
-    }
-
     public static List<YamlV3Document> ParseDocuments(string text)
     {
         CheckCharacters(text);
-        var normalized = PreprocessDoubleQuotedEscapes(text);
+        var normalized = YamlEscapePreprocessor.Rewrite(text);
 
         var docs = new List<YamlV3Document>();
         try

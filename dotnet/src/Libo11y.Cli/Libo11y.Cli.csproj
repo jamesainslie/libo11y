@@ -9,5 +9,6 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\Libo11y.Spec\Libo11y.Spec.csproj" />
+    <InternalsVisibleTo Include="Libo11y.Tests" />
   </ItemGroup>
 </Project>
