@@ -30,6 +30,12 @@
       "code": "import { connectRequestNaming } from \"@libo11y/rum-connect\"; (globalThis as Record<string, unknown>).__x = connectRequestNaming;\n",
       "budget": 512
     },
+    "@libo11y/react-native setupReactNative": {
+      "code": "import { setupReactNative } from \"@libo11y/react-native\"; (globalThis as Record<string, unknown>).__x = setupReactNative;\n",
+      "external": ["react-native"],
+      "conditions": ["react-native"],
+      "budget": 79360
+    },
     "@libo11y/rum/bootstrap": {
       "code": "import { afterLoad, installRumBootstrap } from \"@libo11y/rum/bootstrap\"; (globalThis as Record<string, unknown>).__x = [afterLoad, installRumBootstrap];\n",
       "budget": 1536

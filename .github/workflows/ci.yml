@@ -152,7 +152,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "24.x"
-      - run: make ts-check ts-browser-bundle-test ts-npm-plan-test
+      - run: make ts-check ts-browser-bundle-test ts-rn-bundle-test ts-npm-plan-test
       # The browser bundle size budgets, with the table in the job summary.
       - name: Size budgets
         working-directory: ts

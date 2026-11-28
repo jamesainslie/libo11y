@@ -34,6 +34,20 @@ export const DURATION_BUCKETS: readonly number[] = [
   0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10,
 ];
 
+/**
+ * What a platform other than the browser sets on the fetch and XHR instrumentation, such as React
+ * Native. Internal: not part of the public options.
+ */
+export interface HttpInternals {
+  /** The instrumentation scope of the spans and the duration histogram. Default SCOPE. */
+  readonly scope?: string;
+  /**
+   * XHR only. While it returns true, a send gets no span and no injection: bare React Native's
+   * fetch opens an XHR inside its own call, and that XHR must not count twice.
+   */
+  readonly skip?: () => boolean;
+}
+
 /** The tracer, histogram, propagator and consent one request uses. */
 export interface HttpInstruments {
   readonly tracer: Tracer;
@@ -61,9 +75,12 @@ export function consentAllows(consent: Consent | undefined): boolean {
  * Returns a resolver of the instruments for each request: from telemetry when given (its consent
  * when it is a WebTelemetry), else the global providers, the global propagator and activeConsent().
  * Globals are looked up per request and the instruments rebuilt only when a provider changes, as on
- * the server.
+ * the server. The tracer and the meter are named scope.
  */
-export function instrumentResolver(telemetry: Telemetry | undefined): () => HttpInstruments {
+export function instrumentResolver(
+  telemetry: Telemetry | undefined,
+  scope: string = SCOPE,
+): () => HttpInstruments {
   let cached:
     | {
         tp: TracerProvider;
@@ -80,7 +97,7 @@ export function instrumentResolver(telemetry: Telemetry | undefined): () => Http
     const propagator = telemetry?.propagator ?? propagation;
     const consent = telemetry === undefined ? activeConsent() : ownConsent;
     if (cached === undefined || cached.tp !== tp || cached.mp !== mp) {
-      const histogram = mp.getMeter(SCOPE, VERSION).createHistogram(DURATION_METRIC, {
+      const histogram = mp.getMeter(scope, VERSION).createHistogram(DURATION_METRIC, {
         unit: "s",
         description: "Duration of HTTP client requests.",
         advice: { explicitBucketBoundaries: [...DURATION_BUCKETS] },
@@ -90,7 +107,7 @@ export function instrumentResolver(telemetry: Telemetry | undefined): () => Http
         mp,
         propagator,
         consent,
-        instruments: { tracer: tp.getTracer(SCOPE, VERSION), histogram, propagator, consent },
+        instruments: { tracer: tp.getTracer(scope, VERSION), histogram, propagator, consent },
       };
     } else if (cached.consent !== consent || cached.propagator !== propagator) {
       cached = {

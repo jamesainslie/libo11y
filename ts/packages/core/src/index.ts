@@ -45,6 +45,7 @@ export type {
 } from "./platform.ts";
 export type { PIIMode } from "./policy.ts";
 export { currentRecord, type EventEmitter, startRecord, type WideRecord } from "./record.ts";
+export { sha1 } from "./sha1.ts";
 export {
   createTelemetryWith,
   type LifecycleOptions,

@@ -1,0 +1,40 @@
+{
+  "name": "@libo11y/react-native",
+  "version": "0.3.0",
+  "private": true,
+  "description": "The libo11y React Native platform for TypeScript: setup over the OpenTelemetry JS 3.x providers on Hermes, the mobile resource, an OTLP/HTTP transport with a persistent retry queue on device storage, AppState flushing, the consent gate, and fetch and XHR spans.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts",
+    "./internal": "./src/internal.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jamesainslie/libo11y.git",
+    "directory": "ts/packages/react-native"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "api": "api-extractor run --local",
+    "api:check": "api-extractor run"
+  },
+  "dependencies": {
+    "@libo11y/core": "workspace:*",
+    "@libo11y/spec": "workspace:*",
+    "@libo11y/web": "workspace:*",
+    "@opentelemetry/api": "1.10.0",
+    "@opentelemetry/core": "3.1.1"
+  },
+  "peerDependencies": {
+    "react-native": ">=0.88.0"
+  },
+  "devDependencies": {
+    "@libo11y/test": "workspace:*",
+    "@opentelemetry/sdk-trace": "3.1.1",
+    "@types/react": "19.3.0",
+    "react": "19.3.1",
+    "react-native": "0.88.1"
+  }
+}

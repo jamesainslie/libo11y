@@ -54,6 +54,8 @@ test("the portable entry evaluates and makes IDs with every browser global remov
     `if (typeof m.createDelivery !== "function") throw new Error("no createDelivery");`,
     `if (!/^[0-9a-f-]{36}$/.test(m.randomUuid())) throw new Error("no UUID");`,
     `const c = m.createConsentController({ initial: "granted" });`,
+    `if (m.parseResourceAttributes("a=1").a !== "1") throw new Error("no parseResourceAttributes");`,
+    `if (typeof m.instrumentFetchWith !== "function" || typeof m.installXhrInstrumentationWith !== "function") throw new Error("no HTTP internals");`,
     `if (!c.recording()) throw new Error("consent does not grant");`,
     `console.log("ok");`,
   ].join("\n");

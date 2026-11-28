@@ -10,6 +10,7 @@ import {
   consentAllows,
   errorName,
   HEADERS_SETTER,
+  type HttpInternals,
   instrumentResolver,
   isHttpUrl,
   methodAttributes,
@@ -36,8 +37,19 @@ export function instrumentFetch(
   fetchImpl: typeof fetch = globalThis.fetch,
   opts: HttpInstrumentationOptions = {},
 ): typeof fetch {
-  const base = fetchImpl;
-  const instruments = instrumentResolver(opts.telemetry);
+  return instrumentFetchWith(fetchImpl, opts);
+}
+
+/**
+ * instrumentFetch with the scope a platform other than the browser sets. Internal. skip is the
+ * XHR patch's alone: a platform that nests fetch calls handles that in its own wrapper.
+ */
+export function instrumentFetchWith(
+  base: typeof fetch,
+  opts: HttpInstrumentationOptions,
+  internals?: Pick<HttpInternals, "scope">,
+): typeof fetch {
+  const instruments = instrumentResolver(opts.telemetry, internals?.scope);
   const propagateTo = opts.propagateTo ?? [];
   const ignoreUrls = opts.ignoreUrls ?? [];
 
