@@ -276,6 +276,7 @@ pub const BatchLogProcessor = struct {
     io: Io,
     is_shutdown: std.atomic.Value(bool) = .init(false),
     shutdown_done: Io.Event = .unset,
+    shutdown_result: ?ExportError = null,
 
     pub const Options = struct {
         config: batch.Config = default_batch_config,
@@ -330,8 +331,8 @@ pub const BatchLogProcessor = struct {
     }
 
     /// Exports everything queued, then flushes and shuts the exporter
-    /// down, all under `deadline`. Concurrent callers wait for the first
-    /// shutdown to finish; a second call does nothing.
+    /// down, all under `deadline`. Concurrent and later callers wait for
+    /// the first shutdown to finish and return its result.
     fn shutdown(ptr: *anyopaque, deadline: Deadline) ExportError!void {
         const self: *BatchLogProcessor = @ptrCast(@alignCast(ptr));
         if (self.is_shutdown.swap(true, .acq_rel)) {
@@ -339,13 +340,21 @@ pub const BatchLogProcessor = struct {
                 error.Timeout => return error.Timeout,
                 error.Canceled => return error.Canceled,
             };
+            if (self.shutdown_result) |err| return err;
             return;
         }
-        defer self.shutdown_done.set(self.io);
         const drained = self.batcher.shutdown(deadline);
         const closed = flushAndShutdown(self.exporter, deadline);
-        try drained;
-        try closed;
+        var result: ?ExportError = null;
+        drained catch |err| {
+            result = err;
+        };
+        if (result == null) closed catch |err| {
+            result = err;
+        };
+        self.shutdown_result = result;
+        self.shutdown_done.set(self.io);
+        if (result) |err| return err;
     }
 
     fn exportBatch(ptr: *anyopaque, records: []const *const LogData, deadline: Deadline) ExportError!void {

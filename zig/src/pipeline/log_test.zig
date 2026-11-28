@@ -321,6 +321,32 @@ test "shutdown flushes every queued record and shuts the exporter down" {
     try testing.expectEqual(@as(u64, 0), blp.droppedCount());
 }
 
+test "a later batch log processor shutdown returns the first call's failure" {
+    const Rejecting = struct {
+        fn exporter(self: *@This()) log_processor.LogExporter {
+            return .{ .ptr = self, .vtable = &.{ .exportLogs = exportLogs, .forceFlush = noop, .shutdown = noop } };
+        }
+        fn exportLogs(_: *anyopaque, _: []const *const LogData, _: deadline.Deadline) processor.ExportError!void {
+            return error.ExportFailed;
+        }
+        fn noop(_: *anyopaque, _: deadline.Deadline) processor.ExportError!void {}
+    };
+    var rejecting: Rejecting = .{};
+    var config = log_processor.default_batch_config;
+    config.schedule_delay = .fromSeconds(60);
+    const blp = try log_processor.BatchLogProcessor.create(gpa, io, rejecting.exporter(), .{ .config = config });
+    defer blp.destroy();
+    const p = try LoggerProvider.create(gpa, io, .{ .processors = &.{blp.processor()} });
+    defer p.destroy();
+    p.logger(.{ .name = "t" }).emit(.background, .{});
+
+    const proc = blp.processor();
+    try testing.expectError(error.ExportFailed, proc.shutdown(deadline.after(io, .fromSeconds(5))));
+    // As the batch span processor, the tracer provider and the periodic
+    // reader do, a later call reports what the first one found.
+    try testing.expectError(error.ExportFailed, proc.shutdown(deadline.after(io, .fromSeconds(5))));
+}
+
 test "forceFlush exports what is queued without waiting for the delay" {
     var exporter: InMemoryLogExporter = .init(gpa, io);
     defer exporter.deinit();

@@ -179,6 +179,21 @@ pub const LogPipeline = struct {
     /// Emits a log record to all configured legs, returning `error.CanaryRejected`
     /// if the console writer or any extra sink rejects the record.
     pub fn emitFallible(self: *LogPipeline, level: Level, ctx: Context, msg: []const u8, raw_attrs: []const log_record.KeyValue) error{CanaryRejected}!void {
+        return self.emitScoped(level, ctx, msg, raw_attrs, null);
+    }
+
+    /// Emits like `emitFallible`, under the instrumentation scope
+    /// `scope_name` when it is set. The OTLP leg exports the record under
+    /// that scope. The console and the extra sinks have no scope, so they
+    /// carry the name as the semconv attribute `otel.scope.name`.
+    fn emitScoped(
+        self: *LogPipeline,
+        level: Level,
+        ctx: Context,
+        msg: []const u8,
+        raw_attrs: []const log_record.KeyValue,
+        scope_name: ?[]const u8,
+    ) error{CanaryRejected}!void {
         if (!self.enabled(ctx, level)) return;
 
         var stack_buf: [4096]u8 = undefined;
@@ -190,12 +205,19 @@ pub const LogPipeline = struct {
         const now = span_mod.nowUnixNano(self.io);
         var walk: ProcessWalk = .{};
         const processed = self.processAttrs(arena, &.{}, raw_attrs, 0, &walk);
+        // What the legs without a scope of their own see.
+        const unscoped: []const log_record.KeyValue = if (scope_name) |name| blk: {
+            const with_scope = arena.alloc(log_record.KeyValue, processed.len + 1) catch break :blk processed;
+            @memcpy(with_scope[0..processed.len], processed);
+            with_scope[processed.len] = log_record.kv(scope_name_key, name);
+            break :blk with_scope;
+        } else processed;
 
         var rejected = false;
 
         // 1. Console leg: classify independently, correlate, format, write.
         if (self.console_enabled) {
-            const classified = self.policy.classifyLogAttrs(processed, arena);
+            const classified = self.policy.classifyLogAttrs(unscoped, arena);
             self.writeConsole(now, level, msg, ctx.span_context, classified, arena) catch {
                 rejected = true;
             };
@@ -203,7 +225,11 @@ pub const LogPipeline = struct {
 
         // 2. OTLP log leg: native trace correlation; LoggerProvider runs
         // policy.applyLog once on the OTLP leg.
-        if (self.otlp_logger) |otlp| {
+        if (self.otlp_logger) |default_logger| {
+            const otlp = if (scope_name) |name|
+                (if (default_logger.provider) |p| p.logger(.{ .name = name }) else default_logger)
+            else
+                default_logger;
             otlp.emit(ctx, .{
                 .timestamp = now,
                 .observed_timestamp = now,
@@ -217,7 +243,7 @@ pub const LogPipeline = struct {
         // 3. Extra log sinks: classify independently per sink and correlate.
         for (self.extra_sinks) |sink| {
             if (!ctx.force_emit and !sink.enabled(ctx, level)) continue;
-            const classified = self.policy.classifyLogAttrs(processed, arena);
+            const classified = self.policy.classifyLogAttrs(unscoped, arena);
             const correlated = prependCorrelation(arena, ctx.span_context, classified);
             sink.emit(ctx, .{
                 .time_unix_nano = now,
@@ -384,6 +410,10 @@ pub const LogPipeline = struct {
         try self.console_writer.writeAll(self.io, buf.written());
     }
 };
+
+/// The semconv attribute that carries an instrumentation scope name where
+/// the format has no scope of its own.
+const scope_name_key = "otel.scope.name";
 
 /// Reports whether `key` is one of the top-level keys only the correlation
 /// layer may write (SPEC section 4).
@@ -561,31 +591,33 @@ fn formatTextLine(
         try w.writeAll(&sid);
     }
     for (attrs) |kv| {
-        try writeTextAttr(w, "", kv, 0);
+        var path: TextPath = .{};
+        try writeTextAttr(w, &path, kv);
     }
     try w.writeByte('\n');
 }
 
-fn writeTextAttr(w: *Io.Writer, prefix: []const u8, kv: log_record.KeyValue, depth: usize) Io.Writer.Error!void {
-    if (depth > policy_runtime.max_composite_depth) return;
+/// The group keys above the attribute being written.
+const TextPath = struct {
+    keys: [policy_runtime.max_composite_depth + 1][]const u8 = undefined,
+    len: usize = 0,
+};
+
+/// Writes one attribute as ` key=value`. A group is written as one
+/// ` group.member=value` per leaf at every depth, as Go's
+/// `slog.TextHandler` writes groups.
+fn writeTextAttr(w: *Io.Writer, path: *TextPath, kv: log_record.KeyValue) Io.Writer.Error!void {
     if (kv.value == .map) {
-        for (kv.value.map) |child| {
-            try w.writeByte(' ');
-            if (prefix.len > 0) {
-                try w.writeAll(prefix);
-                try w.writeByte('.');
-            }
-            try w.writeAll(kv.key);
-            try w.writeByte('.');
-            try w.writeAll(child.key);
-            try w.writeByte('=');
-            try writeTextLogVal(w, child.value);
-        }
+        if (path.len == path.keys.len) return;
+        path.keys[path.len] = kv.key;
+        path.len += 1;
+        defer path.len -= 1;
+        for (kv.value.map) |child| try writeTextAttr(w, path, child);
         return;
     }
     try w.writeByte(' ');
-    if (prefix.len > 0) {
-        try w.writeAll(prefix);
+    for (path.keys[0..path.len]) |key| {
+        try w.writeAll(key);
         try w.writeByte('.');
     }
     try w.writeAll(kv.key);
@@ -840,18 +872,13 @@ pub fn stdLogFn(
     const msg = w.buffered();
 
     const ctx = bound_context orelse Context.background;
-    if (scope == .default) {
-        const attrs = [_]log_record.KeyValue{
-            log_record.kv(spec.LogSource.key, spec.LogSource.logger.asStr()),
-        };
-        pl.emit(Level.fromStdLog(level), ctx, msg, &attrs);
-    } else {
-        const attrs = [_]log_record.KeyValue{
-            log_record.kv(spec.LogSource.key, spec.LogSource.logger.asStr()),
-            log_record.kv("scope", @tagName(scope)),
-        };
-        pl.emit(Level.fromStdLog(level), ctx, msg, &attrs);
-    }
+    const attrs = [_]log_record.KeyValue{
+        log_record.kv(spec.LogSource.key, spec.LogSource.logger.asStr()),
+    };
+    // A std.log scope is the record's instrumentation scope, as log
+    // bridges map a logger name.
+    const scope_name: ?[]const u8 = if (scope == .default) null else @tagName(scope);
+    pl.emitScoped(Level.fromStdLog(level), ctx, msg, &attrs, scope_name) catch {};
 }
 
 const testing = std.testing;
@@ -1027,7 +1054,10 @@ test "stdLogFn correlates only inside bindThread and prevents re-entrancy" {
     stdLogFn(.info, .my_scope, "hello {d}", .{7});
     try testing.expect(std.mem.indexOf(u8, rw.buf.items, "\"msg\":\"hello 7\"") != null);
     try testing.expect(std.mem.indexOf(u8, rw.buf.items, "\"o11y.log.source\":\"logger\"") != null);
-    try testing.expect(std.mem.indexOf(u8, rw.buf.items, "\"scope\":\"my_scope\"") != null);
+    // The std.log scope is the instrumentation scope. The console has no
+    // scope of its own, so it shows the name under semconv's key for that.
+    try testing.expect(std.mem.indexOf(u8, rw.buf.items, "\"otel.scope.name\":\"my_scope\"") != null);
+    try testing.expect(std.mem.indexOf(u8, rw.buf.items, "\"scope\":") == null);
     try testing.expect(std.mem.indexOf(u8, rw.buf.items, "trace_id") == null);
     try testing.expect(std.mem.indexOf(u8, rw.buf.items, "recursive log") == null);
 
@@ -1080,4 +1110,60 @@ test "processAttrs with replacer fails closed on cyclic LogValue.map without ove
 
     try testing.expect(std.mem.indexOf(u8, cap.buf.items, "\"kept\":\"ok\"") != null);
     try testing.expect(std.mem.indexOf(u8, cap.buf.items, "\"cycle\"") == null);
+}
+
+test "a scoped std.log record goes to OTLP under its own instrumentation scope" {
+    const deadline_mod = @import("pipeline/deadline.zig");
+    const log_processor = @import("pipeline/log_processor.zig");
+
+    var policy = try policy_runtime.Policy.init(testing.allocator, .drop, "", .empty, null);
+    defer policy.deinit();
+
+    var exporter: log_processor.InMemoryLogExporter = .init(testing.allocator, testing.io);
+    defer exporter.deinit();
+    var simple: log_processor.SimpleLogProcessor = .init(testing.io, exporter.exporter(), .{});
+    const provider = try pipeline_logger.LoggerProvider.create(testing.allocator, testing.io, .{
+        .processors = &.{simple.processor()},
+    });
+    defer provider.destroy();
+    defer provider.shutdown(deadline_mod.after(testing.io, .fromSeconds(5))) catch {};
+
+    var pl = try LogPipeline.init(testing.allocator, testing.io, .info, false, .json, .stdout, null, provider.logger(.{ .name = "libo11y" }), &.{}, &policy);
+    defer pl.deinit();
+    installStdLogTarget(&pl);
+    defer clearStdLogTarget(&pl);
+
+    stdLogFn(.info, .db, "scoped", .{});
+    stdLogFn(.info, .default, "plain", .{});
+
+    try testing.expectEqual(@as(usize, 2), exporter.records.items.len);
+    const scoped = exporter.records.items[0];
+    try testing.expectEqualStrings("db", scoped.scope.name);
+    try testing.expect(log_record.find(scoped.attributes, "otel.scope.name") == null);
+    try testing.expect(log_record.find(scoped.attributes, "scope") == null);
+    try testing.expectEqualStrings("libo11y", exporter.records.items[1].scope.name);
+}
+
+test "the text console writes a nested group as dotted keys at every depth" {
+    var policy = try policy_runtime.Policy.init(testing.allocator, .drop, "", .empty, null);
+    defer policy.deinit();
+
+    var cap: TestBufferWriter = .{ .gpa = testing.allocator };
+    defer cap.deinit();
+
+    var pl = try LogPipeline.init(testing.allocator, testing.io, .info, true, .text, cap.writer(), null, null, &.{}, &policy);
+    defer pl.deinit();
+
+    const log: Logger = .{ .pipeline = &pl };
+    log.info(.background, "req", .{
+        .http = .{ .request = .{ .method = "GET", .size = 12 }, .route = "/a" },
+        .ok = true,
+    });
+    const line = cap.buf.items;
+    // As Go's slog.TextHandler writes groups: one key=value per leaf.
+    try testing.expect(std.mem.indexOf(u8, line, " http.request.method=GET") != null);
+    try testing.expect(std.mem.indexOf(u8, line, " http.request.size=12") != null);
+    try testing.expect(std.mem.indexOf(u8, line, " http.route=/a") != null);
+    try testing.expect(std.mem.indexOf(u8, line, " ok=true") != null);
+    try testing.expect(std.mem.indexOf(u8, line, "{") == null);
 }
