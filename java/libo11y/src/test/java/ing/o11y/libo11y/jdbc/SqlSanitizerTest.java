@@ -219,7 +219,7 @@ class SqlSanitizerTest {
     private static final String MARKER = "SECRET";
     private static final String NUM_MARKER = "8675309";
     private static final String[] NOISE = {
-        "a", "Z", " ", "'", "\"", "`", "\\", "-", "/", "*", "$", "#", "\n", ":", "?", "1", "e", "é", "(", ";",
+        "a", "Z", " ", "'", "\"", "`", "\\", "-", "/", "*", "$", "#", "\n", ":", "?", "1", "e", "\u00e9", "(", ";",
         "*/", "/*", "--", "$t$", "[", "]"
     };
 
