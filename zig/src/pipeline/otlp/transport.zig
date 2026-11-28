@@ -29,8 +29,9 @@
 //! deadline. When the deadline passes, the caller cancels the attempt
 //! and waits for it to end, so nothing runs after `send` returns. When
 //! the Io has no concurrency left (`error.ConcurrencyUnavailable`), the
-//! attempt runs inline and the deadline only bounds the waits between
-//! attempts.
+//! attempt does not run, because an inline read could outlive the
+//! deadline. It counts as a retryable failure, so the retry loop tries
+//! again until the deadline.
 
 const std = @import("std");
 const tls = @import("tls");
@@ -379,7 +380,10 @@ pub const Transport = struct {
         if (!t.register(&attempt.done)) return .shutdown;
         defer t.unregister();
         var future = t.io.concurrent(Attempt.run, .{&attempt}) catch |err| switch (err) {
-            error.ConcurrencyUnavailable => return t.attemptOnce(payload),
+            error.ConcurrencyUnavailable => {
+                t.setError("no concurrent task available to bound the request to {s}", .{t.url});
+                return .{ .failure = true };
+            },
         };
         const waited = attempt.done.waitTimeout(t.io, deadline.timeout(limit));
         if (attempt.finished.load(.acquire)) return future.await(t.io);

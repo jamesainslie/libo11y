@@ -32,12 +32,18 @@ Requires Zig 0.17.1.
 
 ### Fixed
 
-- `o11y.redact.Struct` no longer prints a union field in the clear. `{f}`
-  formatting passed a union to `{any}`, which printed the payload without
-  applying its field tags. A tagged union now renders as its live variant
-  with the tags applied, on `std.fmt`, `std.json` and the logger alike, and
-  its own `o11y_tags` can name variants. An untagged union, an error union
-  and any other type the walk cannot look inside render as `REDACTED`.
+- `Telemetry.shutdown` and `Telemetry.forceFlush` report a trace or log
+  batch the exporter rejects while they run. The batch processors handed a
+  failed export to the error handler only, so a shutdown whose final batch
+  the collector rejected returned a clean report. The error handler still
+  receives each failure.
+- A second `Telemetry.shutdown` caller stops waiting when its own timeout
+  passes and gets `error.Timeout` for every signal. It waited for the first
+  caller without a bound.
+- The OTLP/HTTP and OTLP/gRPC transports no longer run a network attempt
+  inline when the `Io` has no concurrent task left. An inline read could
+  outlive the export deadline. The attempt now counts as a retryable
+  failure, so the send ends by its deadline.
 
 ## [0.1.0] - 2026-11-26
 

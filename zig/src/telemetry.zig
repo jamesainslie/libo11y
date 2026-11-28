@@ -266,17 +266,29 @@ pub const Telemetry = struct {
     }
 
     /// Shuts down logs, metrics, and traces concurrently under one shared
-    /// timeout (default 5 seconds). Idempotent: concurrent and later callers
-    /// wait and receive the same `ShutdownReport`.
+    /// timeout (default 5 seconds). Idempotent: the first call performs the
+    /// shutdown, and concurrent and later callers receive its
+    /// `ShutdownReport`. A caller whose own timeout passes while the first
+    /// call is still running stops waiting and gets `error.Timeout` for every
+    /// signal.
     pub fn shutdown(self: *Telemetry, timeout: ?Io.Duration) ShutdownReport {
         const dl = deadline_mod.after(self.io, timeout orelse signals_mod.default_shutdown_timeout);
         return self.shutdownBy(dl);
     }
 
     /// Shuts down logs, metrics, and traces concurrently under `deadline`.
+    /// See `shutdown` for what a concurrent or later caller receives.
     pub fn shutdownBy(self: *Telemetry, deadline: Deadline) ShutdownReport {
         if (self.shutdown_started.swap(true, .acq_rel)) {
-            self.shutdown_done.waitUncancelable(self.io);
+            // A finished shutdown wins over an expired deadline: the event
+            // is checked before the clock.
+            self.shutdown_done.waitTimeout(self.io, deadline_mod.timeout(deadline)) catch |err| {
+                const waiting: processor.ExportError = switch (err) {
+                    error.Timeout => error.Timeout,
+                    error.Canceled => error.Canceled,
+                };
+                return .{ .logs = waiting, .metrics = waiting, .traces = waiting };
+            };
             return self.shutdown_report;
         }
         defer self.shutdown_done.set(self.io);
@@ -1419,6 +1431,127 @@ test "event contract validation increments o11y.schema.violations and Record emi
     });
     try testing.expect(std.mem.indexOf(u8, console.buf.items, "\"http.request.method\":\"GET\"") != null);
     try testing.expect(std.mem.indexOf(u8, console.buf.items, "\"db.queries\":3") != null);
+}
+
+test "shutdown and forceFlush report a trace or log batch the exporter rejects" {
+    // Exporters that reject every batch but shut down cleanly, as a
+    // collector that answers every request with an error does.
+    const RejectingSpans = struct {
+        fn exporter(self: *@This()) processor.SpanExporter {
+            return .{ .ptr = self, .vtable = &.{ .exportSpans = exportSpans, .shutdown = shutdownFn } };
+        }
+        fn exportSpans(_: *anyopaque, _: []const *const span_mod.SpanData, _: Deadline) processor.ExportError!void {
+            return error.ExportFailed;
+        }
+        fn shutdownFn(_: *anyopaque, _: Deadline) processor.ExportError!void {}
+    };
+    const RejectingLogs = struct {
+        fn exporter(self: *@This()) log_processor.LogExporter {
+            return .{ .ptr = self, .vtable = &.{ .exportLogs = exportLogs, .forceFlush = flushFn, .shutdown = shutdownFn } };
+        }
+        fn exportLogs(_: *anyopaque, _: []const *const log_record.LogData, _: Deadline) processor.ExportError!void {
+            return error.ExportFailed;
+        }
+        fn flushFn(_: *anyopaque, _: Deadline) processor.ExportError!void {}
+        fn shutdownFn(_: *anyopaque, _: Deadline) processor.ExportError!void {}
+    };
+    var bad_spans: RejectingSpans = .{};
+    var bad_logs: RejectingLogs = .{};
+    var reader = metric_reader.ManualReader.init(testing.io, .{});
+
+    const t = try init(testing.allocator, testing.io, .{
+        .service_name = "svc",
+        .environment = "test",
+        .metric_reader = reader.reader(),
+        .span_exporter = bad_spans.exporter(),
+        .log_exporter = bad_logs.exporter(),
+        .console_enabled = false,
+        .runtime_metrics = false,
+        // The rejections are the point of the test, so keep them off stderr.
+        .error_handler = .ignore,
+    });
+    defer t.deinit();
+
+    var sp = t.tracer("svc").start(.background, "op", .{});
+    t.logger().info(Context.background.withSpan(&sp), "first", .{});
+    sp.end();
+
+    const flushed = t.forceFlush(null);
+    try testing.expectEqual(@as(?processor.ExportError, error.ExportFailed), flushed.traces);
+    try testing.expectEqual(@as(?processor.ExportError, error.ExportFailed), flushed.logs);
+    try testing.expectEqual(@as(?processor.ExportError, null), flushed.metrics);
+
+    var sp2 = t.tracer("svc").start(.background, "op", .{});
+    t.logger().info(Context.background.withSpan(&sp2), "second", .{});
+    sp2.end();
+
+    const report = t.shutdown(null);
+    try testing.expectEqual(@as(?processor.ExportError, error.ExportFailed), report.traces);
+    try testing.expectEqual(@as(?processor.ExportError, error.ExportFailed), report.logs);
+    try testing.expectEqual(@as(?processor.ExportError, null), report.metrics);
+}
+
+test "a later shutdown caller stops waiting at its own deadline" {
+    // An exporter whose export hangs until the test releases it.
+    const HungSpans = struct {
+        entered: Io.Event = .unset,
+        release: Io.Event = .unset,
+
+        fn exporter(self: *@This()) processor.SpanExporter {
+            return .{ .ptr = self, .vtable = &.{ .exportSpans = exportSpans, .shutdown = shutdownFn } };
+        }
+        fn exportSpans(ptr: *anyopaque, _: []const *const span_mod.SpanData, _: Deadline) processor.ExportError!void {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            self.entered.set(testing.io);
+            self.release.wait(testing.io) catch return error.Canceled;
+        }
+        fn shutdownFn(_: *anyopaque, _: Deadline) processor.ExportError!void {}
+    };
+    var hung: HungSpans = .{};
+    var reader = metric_reader.ManualReader.init(testing.io, .{});
+
+    const t = try init(testing.allocator, testing.io, .{
+        .service_name = "svc",
+        .environment = "test",
+        .metric_reader = reader.reader(),
+        .span_exporter = hung.exporter(),
+        .log_export = false,
+        .console_enabled = false,
+        .runtime_metrics = false,
+    });
+    defer t.deinit();
+
+    var sp = t.tracer("svc").start(.background, "op", .{});
+    sp.end();
+
+    var first = try testing.io.concurrent(struct {
+        fn run(sdk: *Telemetry) ShutdownReport {
+            return sdk.shutdown(.fromSeconds(30));
+        }
+    }.run, .{t});
+    var first_done = false;
+    defer if (!first_done) {
+        hung.release.set(testing.io);
+        _ = first.await(testing.io);
+    };
+    try hung.entered.wait(testing.io);
+
+    // The first call is still draining. A second caller with a short
+    // deadline gets a timeout for every signal instead of waiting for it.
+    const started = Io.Clock.awake.now(testing.io);
+    const late = t.shutdown(.fromMilliseconds(20));
+    const waited = started.durationTo(Io.Clock.awake.now(testing.io));
+    try testing.expect(waited.toMilliseconds() < 10_000);
+    try testing.expectEqual(@as(?processor.ExportError, error.Timeout), late.traces);
+    try testing.expectEqual(@as(?processor.ExportError, error.Timeout), late.metrics);
+    try testing.expectEqual(@as(?processor.ExportError, error.Timeout), late.logs);
+
+    // Once the first call finishes, every caller gets its report.
+    hung.release.set(testing.io);
+    const report = first.await(testing.io);
+    first_done = true;
+    try testing.expect(report.ok());
+    try testing.expectEqual(report, t.shutdown(.fromMilliseconds(20)));
 }
 
 test "concurrent shutdown races emits safely and shares the same ShutdownReport" {

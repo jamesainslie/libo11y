@@ -418,16 +418,27 @@ test "TLS: mutual TLS needs the client certificate" {
     try testing.expectEqual(1, r.requestCount());
 }
 
-test "an Io without concurrency runs the attempt inline" {
+test "an Io without concurrency fails the send inside its deadline" {
+    // Socket reads cannot time out, so an attempt that ran inline could
+    // outlive the deadline. Without a concurrent task the send fails as a
+    // retryable failure and never touches the network.
     var r = try Receiver.start(testing.allocator, testing.io, .{});
     defer r.stop();
     var threaded: Io.Threaded = .init(testing.allocator, .{ .concurrent_limit = .nothing });
     defer threaded.deinit();
     const url = try r.url(testing.allocator, "/v1/traces");
     defer testing.allocator.free(url);
-    var t = try Transport.create(testing.allocator, threaded.io(), .{ .endpoint = url, .content_type = "application/x-protobuf" });
-    defer t.destroy();
-    var resp = try t.send("inline", deadline.after(threaded.io(), .fromSeconds(10)));
-    resp.deinit(testing.allocator);
-    try testing.expectEqualStrings("inline", r.request(0).body);
+
+    var once = try Transport.create(testing.allocator, threaded.io(), .{ .endpoint = url, .content_type = "application/x-protobuf", .retry = .{ .enabled = false } });
+    defer once.destroy();
+    try testing.expectError(error.Unreachable, once.send("x", deadline.after(threaded.io(), .fromSeconds(10))));
+    try testing.expect(std.mem.indexOf(u8, once.lastError(), "no concurrent task") != null);
+
+    // With retries on, the failure is retried until the deadline.
+    var retried = try Transport.create(testing.allocator, threaded.io(), .{ .endpoint = url, .content_type = "application/x-protobuf", .retry = fast_retry });
+    defer retried.destroy();
+    const start = now();
+    try testing.expectError(error.Timeout, retried.send("x", deadline.after(threaded.io(), .fromMilliseconds(150))));
+    try testing.expect(elapsedMs(start) < 1500);
+    try testing.expectEqual(0, r.requestCount());
 }
