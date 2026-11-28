@@ -19,8 +19,11 @@ Workspace MSRV is Rust 1.88 (Rust 1.94 for `libo11y-sqlx`).
 - `libo11y-http`: `ServerLayer::with_server_timing()` emitting W3C
   `Server-Timing: traceparent;desc="..."` on HTML responses matching Go's
   `o11yhttp.WithServerTiming`.
-- `libo11y-sqlx`: read-only getters on `DbConfig` (`record_unparented_spans`,
-  `query_text_enabled`, `server_address`, `server_port`, `namespace`).
+- `libo11y-sqlx`: read-only getters on `DbConfig` (`db_system`, `db_namespace`,
+  `pool_name`, `server_address`, `server_port`, `include_query_text`,
+  `record_unparented_spans`).
+- `libo11y-cli`: `run_os` accepting `OsStr` arguments so non-UTF-8 paths and
+  arguments exit cleanly instead of panicking.
 
 ### Changed
 
@@ -42,8 +45,13 @@ Workspace MSRV is Rust 1.88 (Rust 1.94 for `libo11y-sqlx`).
   response body in `ServerBody<B>` so server spans, `http.server.request.duration`,
   and canonical `o11y.request.summary` lines finish when the response body ends
   or drops instead of when headers are returned.
+- `libo11y-tonic` and `libo11y-connect`: **Breaking**: server and client
+  service error type parameters now require `'static` so transport and body
+  errors can be classified by downcast (`tonic::Status`, `ConnectError`,
+  connect, timeout, `h2`, `hyper`, and `std::io::Error`) instead of collapsing
+  every error to a fixed status code.
 - `libo11y-sqlx`: **Breaking**: `DbConfig` fields are now private behind its
-  builder methods and read-only getters, so `query_text_enabled` can only be
+  builder methods and read-only getters, so `include_query_text` can only be
   turned off via `DbConfig::without_query_text()`.
 - `libo11y-cli`: **Breaking**: `libo11y registry check` validates each input
   file independently, matching Go's `go/cmd/libo11y` and TypeScript's
@@ -57,27 +65,54 @@ Workspace MSRV is Rust 1.88 (Rust 1.94 for `libo11y-sqlx`).
 ### Fixed
 
 - `libo11y`: queue `Sdk::shutdown` behind an active `force_flush` under one
-  shared deadline so in-flight flushes cannot race shutdown, and bound
-  `o11y.telemetry.dropped` reporting within the remaining shutdown deadline.
-- `libo11y`: make libo11y-built OTLP headers authoritative over ambient
-  `OTEL_EXPORTER_OTLP_*HEADERS` on both HTTP and gRPC exporters (including
-  hermetic mode), validate malformed HTTP metrics endpoints at init with
-  sanitized error text, and surface OTLP HTTP/gRPC metrics partial-success
-  responses through the diagnostics handler.
+  shared deadline so in-flight flushes cannot race shutdown, open the
+  failure-recording window before waiting on an active flush (with an RAII drop
+  guard so panics never leak windows), and keep `o11y.telemetry.dropped`
+  reporting strictly within the remaining shutdown deadline.
+- `libo11y`: make libo11y-built OTLP headers (both ASCII and `*-bin` binary
+  metadata) authoritative over ambient `OTEL_EXPORTER_OTLP_*HEADERS` on HTTP
+  and gRPC exporters (including hermetic mode), validate malformed OTLP/HTTP
+  endpoints at init across all three signals with sanitized error text, strip
+  URL credentials from OTLP/HTTP metric transport errors, and deliver OTLP
+  HTTP/gRPC metrics partial-success diagnostics directly to `ErrorHandler` even
+  without a global `tracing` subscriber.
 - `libo11y`: include instrumentation scope attributes in exemplar `ScopeKey`
-  so meters with distinct scope attributes do not collide.
+  so meters with distinct scope attributes do not collide, and skip exemplar
+  attachment on view-renamed streams so colliding original instrument names do
+  not misattach.
 - `libo11y`: correlate `tracing` events with explicit `parent: &span` to the
   named span's OpenTelemetry context and leave `parent: None` events
   uncorrelated, re-strip reserved keys (`trace_id`, `span_id`, and `event.name`
-  for `Sdk::event`) after `AttrReplacer`, and preserve the carrier link at
-  index 0 in `start_linked_with` even when `configure` sets custom links.
+  for `Sdk::event`) after `AttrReplacer`, strip raw SQL (`db.statement`,
+  `summary`) from `sqlx::query` tracing events on both logs and spans, and
+  preserve the carrier link at index 0 in `start_linked_with` even when
+  `configure` sets custom links.
+- `libo11y-macros` and `libo11y-redact`: hide enum variant names when an enum
+  or its container/field/caller floor is `mask` or `confidential`, and support
+  recursive generic types (such as `Node<T>`) in `#[derive(Redact)]` without
+  hitting overflow errors.
 - `libo11y-http` and `libo11y-reqwest`: percent-decode query keys before
-  redaction and percent-decode request paths before `with_ignore_paths`
-  matching; record canceled server futures with `error.type="canceled"` and
-  canonical status `499`.
+  redaction, redact `X-Amz-Security-Token`, `X-Amz-Credential`, and
+  `X-Amz-Signature`, strip URL fragments from `url.full`, percent-decode
+  request paths before `with_ignore_paths` matching (matching Go's `path.Match`
+  for `/` inside `[...]`), clamp `url.scheme` to `http`/`https`, shorten
+  `error.type` type names (mapping trait objects and boxed errors to `_OTHER`),
+  and record canceled server and client futures with `error.type="canceled"`
+  (and canonical status `499` on the server).
+- `libo11y-tonic` and `libo11y-connect`: classify HTTP 200 gRPC responses
+  missing `grpc-status` as `UNKNOWN`, collapse `UNIMPLEMENTED` server spans and
+  `rpc.method` attributes to `_OTHER` (recorded once per span), map Connect
+  HTTP 409/499/501 fallbacks to `Unknown`, and normalize canonical
+  `http.request.method` values.
 - `libo11y-sqlx`: record canceled and panicking query futures and panicking
-  result streams as failed spans/metrics, handle `Dialect::Other` in
-  `collapse_in_lists`, and document SQL sanitizer limits and transaction usage.
+  result streams as failed spans/metrics, fall back to `db.system.name` when
+  both operation and collection are empty (matching Go), handle
+  `Dialect::Other` in `collapse_in_lists`, and document SQL sanitizer limits,
+  SQLx statement logging, and transaction drop behavior.
+- `libo11y-cli` and `libo11y`: handle non-UTF-8 OS arguments without panicking,
+  normalize uncommon OS read errors, verify all 46 `conformance/appregistry`
+  `.want` outputs in CLI tests, and fail loudly if `conformance/` is missing
+  inside a repository checkout.
 - Packaging and docs: replace `LICENSE` symlinks in `libo11y-spec`,
   `libo11y-redact`, and `libo11y-macros` with regular files, remove stale
   unpublished notices from crate READMEs, compile workspace README snippets as

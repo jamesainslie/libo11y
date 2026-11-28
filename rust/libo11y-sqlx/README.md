@@ -10,6 +10,11 @@ OpenTelemetry instrumentation for [`sqlx`](https://crates.io/crates/sqlx) follow
 - Connection pool observable metrics (`db.client.connection.count` by `idle`/`used` state and `db.client.connection.max`) bound to `Sdk::meter`.
 - Implements `sqlx::Executor` on `&O11yPool<DB>`, `&mut O11yConnection<DB>`, and `&mut O11yTransaction<'_, DB>` so standard `sqlx::query(...)` calls work unchanged.
 - A query or transaction call that is cancelled before it completes, for example under `tokio::time::timeout` or `tokio::select!`, still records its span and duration, with `error.type` `canceled`. A call that panics records `error.type` `panic`. A row stream dropped before its end is recorded as finished, with the first error it yielded or as a success.
+- Dropping an uncommitted `O11yTransaction` relies on `sqlx::Transaction`'s asynchronous drop rollback without emitting a `ROLLBACK` span; call `tx.rollback().await` explicitly when you want a traced `ROLLBACK` span and duration metric.
+
+## SQLx statement logging
+
+`sqlx` 0.9 logs slow statements at `WARN` by default under the `sqlx::query` tracing target, including raw SQL in `db.statement` and `summary`. `libo11y`'s log and span layers strip `db.statement` and `summary` from `sqlx::query` events automatically, while keeping timing and row-count fields. If your application also installs another `tracing` subscriber alongside `libo11y`, call `ConnectOptions::disable_statement_logging()` on your `sqlx` connection options so raw SQL is never emitted to that subscriber either.
 
 ## Configuration
 

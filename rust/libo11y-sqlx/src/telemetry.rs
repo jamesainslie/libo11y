@@ -404,11 +404,7 @@ impl Instrumenter {
                 ));
                 collection.to_owned()
             }
-            (true, true) => self
-                .config
-                .db_namespace
-                .clone()
-                .unwrap_or_else(|| self.config.db_system.clone()),
+            (true, true) => self.config.db_system.clone(),
         };
 
         StatementInfo {
@@ -592,5 +588,14 @@ mod tests {
         assert_eq!(cfg.server_port, Some(5432));
         assert!(!cfg.include_query_text);
         assert!(cfg.record_unparented_spans);
+    }
+
+    #[test]
+    fn empty_operation_and_collection_fall_back_to_db_system_name() {
+        let rec = libo11y_test::Recorder::start("sqlx-fallback-name");
+        let cfg = DbConfig::new("postgresql").with_db_namespace("orders");
+        let ins = Instrumenter::new(rec.sdk(), cfg);
+        let info = ins.named("", "");
+        assert_eq!(info.span_name, "postgresql");
     }
 }

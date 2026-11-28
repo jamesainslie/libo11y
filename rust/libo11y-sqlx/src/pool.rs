@@ -293,6 +293,12 @@ impl<DB: Database> O11yConnection<DB> {
 /// Implements [`sqlx::Executor`] on `&mut O11yTransaction<'_, DB>`, and
 /// instruments [`O11yTransaction::commit`] and [`O11yTransaction::rollback`]
 /// with `COMMIT` and `ROLLBACK` spans and duration metrics.
+///
+/// Dropping an uncommitted `O11yTransaction` delegates to
+/// [`sqlx::Transaction`]'s asynchronous rollback on drop and does not emit a
+/// `ROLLBACK` span or duration metric because neither the rollback duration nor
+/// its outcome is available synchronously in `Drop`. Call
+/// [`O11yTransaction::rollback`] explicitly when you want a traced `ROLLBACK`.
 pub struct O11yTransaction<'c, DB: Database> {
     tx: Transaction<'c, DB>,
     ins: Arc<Instrumenter>,

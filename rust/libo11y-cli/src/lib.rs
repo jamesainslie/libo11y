@@ -8,15 +8,17 @@
 //! Exit status: `0` when every file is valid, `1` when a file breaks a policy
 //! rule, `2` on a usage, read, or parse error (the highest status wins).
 
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::{self, Write};
+use std::path::Path;
 
 use libo11y::appregistry::Registry;
 
 /// Usage line printed on `--help` or usage errors.
 pub const USAGE: &str = "usage: libo11y registry check FILE...";
 
-/// Runs the CLI against `args`, writing output to `stdout` and errors to
+/// Runs the CLI against UTF-8 `args`, writing output to `stdout` and errors to
 /// `stderr`, and returns the process exit status (`0`, `1`, or `2`).
 #[must_use]
 pub fn run<I, S, Out, Err>(args: I, stdout: &mut Out, stderr: &mut Err) -> i32
@@ -26,24 +28,46 @@ where
     Out: Write,
     Err: Write,
 {
-    let args: Vec<String> = args.into_iter().map(|s| s.as_ref().to_owned()).collect();
-    if args.len() == 1 && matches!(args[0].as_str(), "-h" | "--help" | "help") {
+    run_os(
+        args.into_iter().map(|s| OsString::from(s.as_ref())),
+        stdout,
+        stderr,
+    )
+}
+
+/// Runs the CLI against OS-native `args` (including non-UTF-8 paths on Unix),
+/// writing output to `stdout` and errors to `stderr`, and returns the process
+/// exit status (`0`, `1`, or `2`).
+#[must_use]
+pub fn run_os<I, S, Out, Err>(args: I, stdout: &mut Out, stderr: &mut Err) -> i32
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+    Out: Write,
+    Err: Write,
+{
+    let args: Vec<OsString> = args
+        .into_iter()
+        .map(|s| s.as_ref().to_os_string())
+        .collect();
+    if args.len() == 1 && matches!(args[0].to_str(), Some("-h" | "--help" | "help")) {
         let _ = writeln!(stdout, "{USAGE}");
         return 0;
     }
-    if args.len() < 3 || args[0] != "registry" || args[1] != "check" {
+    if args.len() < 3 || args[0] != OsStr::new("registry") || args[1] != OsStr::new("check") {
         let _ = writeln!(stderr, "{USAGE}");
         return 2;
     }
 
     args[2..]
         .iter()
-        .map(|path| check_file(path, stdout, stderr))
+        .map(|arg| check_file(Path::new(arg), stdout, stderr))
         .fold(0, i32::max)
 }
 
 /// Validates one registry file and returns its exit status (`0`, `1`, or `2`).
-fn check_file<Out: Write, Err: Write>(path: &str, stdout: &mut Out, stderr: &mut Err) -> i32 {
+fn check_file<Out: Write, Err: Write>(path: &Path, stdout: &mut Out, stderr: &mut Err) -> i32 {
+    let display = path.display();
     let raw = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(err) => {
@@ -55,7 +79,7 @@ fn check_file<Out: Write, Err: Write>(path: &str, stdout: &mut Out, stderr: &mut
     let reg = match Registry::parse(&raw) {
         Ok(reg) => reg,
         Err(err) => {
-            let _ = writeln!(stderr, "{path}: {err}");
+            let _ = writeln!(stderr, "{display}: {err}");
             return 2;
         }
     };
@@ -63,7 +87,7 @@ fn check_file<Out: Write, Err: Write>(path: &str, stdout: &mut Out, stderr: &mut
     let violations = reg.validate();
     if !violations.is_empty() {
         for violation in &violations {
-            let _ = writeln!(stdout, "{path}: {violation}");
+            let _ = writeln!(stdout, "{display}: {violation}");
         }
         return 1;
     }
@@ -76,19 +100,38 @@ fn check_file<Out: Write, Err: Write>(path: &str, stdout: &mut Out, stderr: &mut
     };
     let _ = writeln!(
         stdout,
-        "{path}: ok ({count} {noun} in namespace {})",
+        "{display}: ok ({count} {noun} in namespace {})",
         reg.namespace
     );
     0
 }
 
 /// Formats an I/O read error to match Go's `os.ReadFile` message text.
-fn format_read_error(path: &str, err: &io::Error) -> String {
+fn format_read_error(path: &Path, err: &io::Error) -> String {
+    let display = path.display();
     match err.kind() {
-        io::ErrorKind::NotFound => format!("open {path}: no such file or directory"),
-        io::ErrorKind::PermissionDenied => format!("open {path}: permission denied"),
-        io::ErrorKind::IsADirectory => format!("read {path}: is a directory"),
-        _ => format!("open {path}: {err}"),
+        io::ErrorKind::NotFound => format!("open {display}: no such file or directory"),
+        io::ErrorKind::PermissionDenied => format!("open {display}: permission denied"),
+        io::ErrorKind::IsADirectory => format!("read {display}: is a directory"),
+        io::ErrorKind::NotADirectory => format!("open {display}: not a directory"),
+        io::ErrorKind::InvalidInput => format!("open {display}: invalid argument"),
+        _ => {
+            let raw = err.to_string();
+            let detail = raw
+                .find(" (os error ")
+                .map_or(raw.as_str(), |pos| &raw[..pos]);
+            let mut chars = detail.chars();
+            let normalized = match chars.next() {
+                Some(first) if first.is_ascii_uppercase() => {
+                    let mut out = String::with_capacity(detail.len());
+                    out.push(first.to_ascii_lowercase());
+                    out.push_str(chars.as_str());
+                    out
+                }
+                _ => detail.to_owned(),
+            };
+            format!("open {display}: {normalized}")
+        }
     }
 }
 
@@ -254,5 +297,71 @@ mod tests {
             assert!(stdout.is_empty(), "{stdout}");
             assert!(stderr.contains("usage:"), "{stderr}");
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_os_arguments_and_paths_do_not_panic() {
+        use std::os::unix::ffi::OsStrExt as _;
+
+        let dir = TempDir::new();
+        let valid_path = dir.0.join(OsStr::from_bytes(b"reg-\xff.yaml"));
+        fs::write(
+            &valid_path,
+            "schema: libo11y.app-registry/v1\nnamespace: lor\nattributes:\n  lor.user.id: {type: string, sensitivity: internal, cardinality: unbounded}\n",
+        )
+        .expect("write non-utf8 file");
+
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let code = run_os(
+            [
+                OsStr::new("registry"),
+                OsStr::new("check"),
+                valid_path.as_os_str(),
+            ],
+            &mut stdout,
+            &mut stderr,
+        );
+        assert_eq!(code, 0, "stderr: {}", String::from_utf8_lossy(&stderr));
+        assert!(
+            String::from_utf8_lossy(&stdout).contains("ok (1 attribute in namespace lor)"),
+            "{}",
+            String::from_utf8_lossy(&stdout)
+        );
+        assert!(stderr.is_empty());
+
+        let missing = dir.0.join(OsStr::from_bytes(b"missing-\xfe.yaml"));
+        stdout.clear();
+        stderr.clear();
+        let code = run_os(
+            [
+                OsStr::new("registry"),
+                OsStr::new("check"),
+                missing.as_os_str(),
+            ],
+            &mut stdout,
+            &mut stderr,
+        );
+        assert_eq!(code, 2);
+        assert!(stdout.is_empty());
+        assert!(String::from_utf8_lossy(&stderr).contains("no such file or directory"));
+    }
+
+    #[test]
+    fn format_read_error_normalizes_uncommon_os_errors() {
+        let dir = TempDir::new();
+        let file = dir.write("plain.yaml", "x");
+        let not_a_dir = PathBuf::from(&file).join("child.yaml");
+        let err = fs::read(&not_a_dir).expect_err("not a dir");
+        let msg = format_read_error(&not_a_dir, &err);
+        assert!(msg.starts_with("open "), "{msg}");
+        assert!(!msg.contains("(os error"), "{msg}");
+
+        let fallback = io::Error::other("Too many levels of symbolic links (os error 40)");
+        assert_eq!(
+            format_read_error(Path::new("loop.yaml"), &fallback),
+            "open loop.yaml: too many levels of symbolic links"
+        );
     }
 }
