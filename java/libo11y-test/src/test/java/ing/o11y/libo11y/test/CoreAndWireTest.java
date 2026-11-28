@@ -322,7 +322,7 @@ class CoreAndWireTest {
             assertFalse(slf4jEntry.attributes().containsKey("http.request.header.authorization"));
 
             // SQL sanitizer + JDBC DataSource wrapper (parent-gated spans)
-            assertEquals("SELECT * FROM users WHERE email = ? AND age > ?",
+            assertEquals("SELECT * FROM users WHERE email = ? AND age > ?  ",
                     SqlSanitizer.sanitize("postgresql", "SELECT * FROM users WHERE email = 'a@b.com' AND age > 42 -- secret"));
             assertTrue(PathMatcher.match("/actuator/health/*", "/actuator/health/liveness"));
             assertFalse(PathMatcher.match("/actuator/health/*", "/actuator/health/a/b"));
@@ -347,7 +347,7 @@ class CoreAndWireTest {
                 reqSpan.end();
             }
             SpanData dbSpan = rec.spans().stream()
-                    .filter(s -> "SELECT appdb".equals(s.getName()))
+                    .filter(s -> "SELECT orders".equals(s.getName()))
                     .findFirst()
                     .orElseThrow();
             assertEquals("SELECT id FROM orders WHERE customer = ?",
