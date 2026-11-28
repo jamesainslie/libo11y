@@ -7,6 +7,7 @@ import io
 import json
 import logging
 import os
+import sys
 import threading
 import time
 from collections.abc import Sequence
@@ -505,8 +506,14 @@ def test_runtime_metrics_registered() -> None:
         assert "cpython.gc.collected_objects" in names
         assert "cpython.gc.uncollectable_objects" in names
         assert "process.cpu.time" in names
-        assert "process.memory.usage" in names
-        assert "process.thread.count" in names
+        if sys.platform != "win32":
+            assert "process.unix.file_descriptor.count" in names
+        if sys.platform.startswith("linux"):
+            assert "process.memory.usage" in names
+            assert "process.thread.count" in names
+        else:
+            assert "process.memory.usage" not in names
+            assert "process.thread.count" not in names
 
 
 def test_hostile_environment_ignored_in_hermetic_mode(monkeypatch: pytest.MonkeyPatch) -> None:
