@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "openssl"
+require "uri"
 require "opentelemetry/sdk"
 require "opentelemetry-logs-sdk"
 require_relative "../errors"
@@ -99,13 +100,30 @@ module Libo11y
         proto
       end
 
+      # The URL a signal's OTLP exporter sends to: the signal's own variable
+      # as given, else the general endpoint with the signal's path after its
+      # own, else the default.
+      #
+      # @raise [ExporterError] for an endpoint that is not an absolute http
+      #   or https URL. The message names the variable and never the value,
+      #   which may hold credentials.
       def signal_endpoint(env_map, signal_var, path_suffix)
-        specific = env_map[signal_var]
-        return specific.strip unless specific.nil? || specific.strip.empty?
+        specific = value(env_map, signal_var)
+        return checked_endpoint(specific, signal_var) if specific
 
-        base = env_map["OTEL_EXPORTER_OTLP_ENDPOINT"]
-        base = "http://localhost:4318" if base.nil? || base.strip.empty?
-        "#{base.strip.sub(%r{/+\z}, "")}#{path_suffix}"
+        base = value(env_map, "OTEL_EXPORTER_OTLP_ENDPOINT")
+        return "http://localhost:4318#{path_suffix}" if base.nil?
+
+        "#{checked_endpoint(base, "OTEL_EXPORTER_OTLP_ENDPOINT").sub(%r{/+\z}, "")}#{path_suffix}"
+      end
+
+      def checked_endpoint(raw, variable)
+        uri = URI.parse(raw)
+        raise URI::InvalidURIError unless uri.is_a?(URI::HTTP) && !uri.host.to_s.empty?
+
+        raw
+      rescue URI::InvalidURIError
+        raise ExporterError, "o11y: #{variable} is not an absolute http or https URL"
       end
 
       def signal_headers(env_map, signal_var)

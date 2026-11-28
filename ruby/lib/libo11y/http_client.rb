@@ -56,9 +56,11 @@ module Libo11y
           span.record_exception(e)
           failed(span, metric_attrs, e.class.name)
           raise
+        ensure
+          # Inside the client span's context, so the measurement's exemplar names this span.
+          duration.record(Internal::HttpCommon.monotonic - started, attributes: metric_attrs)
         end
       ensure
-        duration.record(Internal::HttpCommon.monotonic - started, attributes: metric_attrs)
         span.finish
       end
     end

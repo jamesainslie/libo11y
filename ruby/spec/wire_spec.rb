@@ -38,6 +38,28 @@ RSpec.describe "What reaches the wire and the SDK" do
     end
   end
 
+  describe "a metric exemplar" do
+    it "reaches OTLP with the ids of the span the measurement was made in" do
+      receiver = Libo11y::Testing::OtlpHttpReceiver.new
+      begin
+        tel = Libo11y.init(service_name: "wire", environment: "test", env: { "OTEL_EXPORTER_OTLP_ENDPOINT" => receiver.endpoint },
+                           console_enabled: false, runtime_metrics: false)
+        context = nil
+        tel.tracer("t").in_span("s") do |span|
+          context = span.context
+          tel.meter("m").create_counter("jobs").add(1)
+        end
+        expect(tel.shutdown(timeout: 5)).to be_ok
+
+        metrics = receiver.metric_requests.flat_map(&:resource_metrics).flat_map(&:scope_metrics).flat_map(&:metrics)
+        exemplars = metrics.find { |m| m.name == "jobs" }.sum.data_points.flat_map(&:exemplars)
+        expect(exemplars.map { |ex| [ex.trace_id, ex.span_id] }).to include([context.trace_id, context.span_id])
+      ensure
+        receiver.stop
+      end
+    end
+  end
+
   describe "histogram boundaries" do
     it "are the latency boundaries for the HTTP and DB duration histograms" do
       Libo11y::Testing.start_recorder do |rec|

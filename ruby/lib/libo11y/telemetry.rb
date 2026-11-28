@@ -91,7 +91,9 @@ module Libo11y
     # Stops logs, metrics and traces concurrently under one deadline, and
     # returns a ShutdownReport with one error per signal that failed, missed
     # the deadline, or had its final export rejected. It runs once: every
-    # later and concurrent caller gets the first call's report. For each
+    # later caller gets the first call's report. A caller that arrives while
+    # the shutdown is running waits for it until its own deadline, and then
+    # gets a report that says the shutdown is still in progress. For each
     # signal in the report an o11y.telemetry.dropped event goes to the
     # console and the extra sinks.
     #
@@ -100,8 +102,14 @@ module Libo11y
     # @raise [ArgumentError] when timeout is not a number
     def shutdown(timeout: nil)
       secs = resolve_timeout(timeout)
+      deadline = monotonic + secs
       @shutdown_mutex.synchronize do
-        @shutdown_cv.wait(@shutdown_mutex) while @shutdown_in_progress
+        while @shutdown_in_progress
+          remaining = deadline - monotonic
+          return in_progress_report(secs) unless remaining.positive?
+
+          @shutdown_cv.wait(@shutdown_mutex, remaining)
+        end
         return @shutdown_report if @shutdown_done
 
         @shutdown_in_progress = true
@@ -109,7 +117,7 @@ module Libo11y
 
       report = nil
       begin
-        report = run_shutdown(secs)
+        report = run_shutdown(secs, deadline)
       ensure
         @shutdown_mutex.synchronize do
           # An unexpected error leaves no report, and the next caller runs it again.
@@ -130,13 +138,24 @@ module Libo11y
     # @raise [ArgumentError] when timeout is not a number
     def force_flush(timeout: nil)
       secs = resolve_timeout(timeout)
-      each_signal("flush", secs) { |provider| provider.force_flush(timeout: secs) }.empty?
+      each_signal("flush", secs, monotonic + secs) { |provider| provider.force_flush(timeout: secs) }.empty?
+    end
+
+    def inspect
+      "#<#{self.class.name} #{@effective_config}>"
     end
 
     private
 
     SIGNALS = %i[logs metrics traces].freeze
-    private_constant :SIGNALS
+    # How long a shutdown that has used up its deadline still waits for the
+    # o11y.telemetry.dropped events to be written, in seconds.
+    DROPPED_EVENT_GRACE = 0.05
+    private_constant :SIGNALS, :DROPPED_EVENT_GRACE
+
+    def monotonic
+      Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    end
 
     def resolve_timeout(timeout)
       secs = timeout.nil? ? @shutdown_timeout : Float(timeout)
@@ -145,18 +164,36 @@ module Libo11y
       raise ArgumentError, "libo11y: timeout must be a number of seconds, got #{timeout.inspect}"
     end
 
-    def run_shutdown(secs)
-      errors = each_signal("shutdown", secs) { |provider| provider.shutdown(timeout: secs) }
-      # The OTLP log leg is already down, so these reach the console and the
-      # extra sinks only.
-      errors.each { |signal, error| emit_dropped(signal, error) }
+    def run_shutdown(secs, deadline)
+      errors = each_signal("shutdown", secs, deadline) { |provider| provider.shutdown(timeout: secs) }
+      report_dropped(errors, deadline)
       @on_global_shutdown&.call if @is_global
+      ShutdownReport.new(traces_error: errors[:traces], metrics_error: errors[:metrics], logs_error: errors[:logs])
+    end
+
+    # Writes one o11y.telemetry.dropped event per failed signal. The OTLP log
+    # leg is already down, so they reach the console and the extra sinks
+    # only. A slow sink does not hold the shutdown past its deadline: the
+    # events are written on their own thread, which the shutdown waits for
+    # until the deadline, or for a short grace when the deadline has passed.
+    def report_dropped(errors, deadline)
+      return if errors.empty?
+
+      writer = Thread.new { errors.each { |signal, error| emit_dropped(signal, error) } }
+      writer.report_on_exception = false
+      writer.join([deadline - monotonic, DROPPED_EVENT_GRACE].max)
+    end
+
+    def in_progress_report(secs)
+      errors = SIGNALS.to_h do |signal|
+        [signal, ExporterError.new("o11y: shutdown #{signal}: shutdown is still in progress after #{secs}s")]
+      end
       ShutdownReport.new(traces_error: errors[:traces], metrics_error: errors[:metrics], logs_error: errors[:logs])
     end
 
     # Runs the block for each signal's provider on its own thread, under one
     # deadline. Returns the error of each signal that failed.
-    def each_signal(action, secs)
+    def each_signal(action, secs, deadline)
       providers = { logs: @logger_provider, metrics: @meter_provider, traces: @tracer_provider }
       errors = {}
       lock = Mutex.new
@@ -172,10 +209,8 @@ module Libo11y
         [signal, thread]
       end
 
-      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + secs
       threads.each do |signal, thread|
-        remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
-        next if thread.join([remaining, 0].max)
+        next if thread.join([deadline - monotonic, 0].max)
 
         lock.synchronize { errors[signal] ||= ExporterError.new("o11y: #{action} #{signal}: timed out after #{secs}s") }
       end
@@ -301,14 +336,36 @@ module Libo11y
         raise CanaryRejected, "o11y: startup canary rejected by log pipeline: #{e.message}"
       end
 
+      GLOBALS = %i[tracer_provider meter_provider logger_provider propagation].freeze
+      private_constant :GLOBALS
+
+      # Installs the providers and the propagator as OpenTelemetry's globals.
+      # When one of them cannot be installed, the ones already replaced are
+      # put back, so a failed setup leaves the globals as it found them.
       def install_globals(pipeline, propagator)
+        ours = {
+          tracer_provider: pipeline.tracer_provider, meter_provider: pipeline.meter_provider,
+          logger_provider: pipeline.logger_provider, propagation: propagator
+        }
         @global_mutex.synchronize do
+          previous = {}
+          begin
+            GLOBALS.each do |name|
+              previous[name] = OpenTelemetry.public_send(name)
+              OpenTelemetry.public_send(:"#{name}=", ours.fetch(name))
+            end
+          rescue StandardError
+            previous.each { |name, value| restore_global(name, value) }
+            raise
+          end
           @global_state = :active
-          OpenTelemetry.tracer_provider = pipeline.tracer_provider
-          OpenTelemetry.meter_provider = pipeline.meter_provider if OpenTelemetry.respond_to?(:meter_provider=)
-          OpenTelemetry.logger_provider = pipeline.logger_provider if OpenTelemetry.respond_to?(:logger_provider=)
-          OpenTelemetry.propagation = propagator
         end
+      end
+
+      def restore_global(name, value)
+        OpenTelemetry.public_send(:"#{name}=", value)
+      rescue StandardError
+        nil
       end
     end
   end

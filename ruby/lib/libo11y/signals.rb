@@ -4,44 +4,62 @@ module Libo11y
   module Signals
     module_function
 
-    # Block until SIGINT or SIGTERM arrives, restore default handlers, run optional
-    # before_shutdown callback, and flush telemetry under one shared deadline.
+    # Blocks until SIGINT or SIGTERM arrives, restores the previous handlers,
+    # then runs before_shutdown and the telemetry shutdown under one shared
+    # deadline, and returns the ShutdownReport.
+    #
+    # before_shutdown is where the application stops taking work, such as
+    # stopping its HTTP server. When it is still running at the deadline,
+    # telemetry shuts down without waiting for it. When it raises, telemetry
+    # still shuts down, and the error is raised afterwards.
+    #
+    # @param timeout [Numeric, nil] seconds for both steps together. nil
+    #   uses the handle's shutdown_timeout.
     def shutdown_on_signals(telemetry, timeout: nil, signals: %w[INT TERM], before_shutdown: nil)
-      deadline_secs = timeout || telemetry.shutdown_timeout
+      secs = Float(timeout || telemetry.shutdown_timeout)
+      wait_for_signal(signals)
+
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + secs
+      error = run_before_shutdown(before_shutdown, secs)
+      remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      report = telemetry.shutdown(timeout: [remaining, 0.001].max)
+      raise error if error
+
+      report
+    end
+
+    # Signal handlers may not take locks, so they write one byte to a pipe
+    # that this method reads.
+    def wait_for_signal(signals)
       read_io, write_io = IO.pipe
-      previous = {}
-
-      signals.each do |sig|
-        previous[sig] = Signal.trap(sig) do
+      previous = signals.to_h do |name|
+        handler = Signal.trap(name) do
           write_io.write_nonblock("x")
-        rescue StandardError
+        rescue IOError, SystemCallError
           nil
         end
+        [name, handler]
       end
+      read_io.read(1)
+    ensure
+      previous&.each { |name, handler| Signal.trap(name, handler || "DEFAULT") }
+      read_io&.close
+      write_io&.close
+    end
 
-      begin
-        read_io.read(1)
-      ensure
-        previous.each do |sig, handler|
-          Signal.trap(sig, handler || "DEFAULT")
-        rescue StandardError
-          nil
-        end
-        read_io.close unless read_io.closed?
-        write_io.close unless write_io.closed?
-      end
+    # Runs the callback for at most secs seconds. Returns the error it raised, if any.
+    def run_before_shutdown(callback, secs)
+      return nil if callback.nil?
 
-      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-      if before_shutdown
-        begin
-          before_shutdown.call
-        rescue StandardError
-          nil
-        end
+      error = nil
+      worker = Thread.new do
+        callback.call
+      rescue StandardError => e
+        error = e
       end
-      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
-      remaining = [deadline_secs - elapsed, 0.05].max
-      telemetry.shutdown(timeout: remaining)
+      worker.report_on_exception = false
+      worker.join(secs)
+      error
     end
   end
 end

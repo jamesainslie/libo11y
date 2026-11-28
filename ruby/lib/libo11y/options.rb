@@ -78,6 +78,18 @@ module Libo11y
       new(**options.to_h, **kwargs)
     end
 
+    # The options as text, with the PII hash key left out.
+    def inspect
+      shown = to_h.compact
+      shown[:pii_hash_key] = "[FILTERED]" if shown.key?(:pii_hash_key)
+      "#<#{self.class.name} #{shown.map { |name, value| "#{name}=#{value.inspect}" }.join(", ")}>"
+    end
+    alias_method :to_s, :inspect
+
+    def pretty_print(printer)
+      printer.text(inspect)
+    end
+
     def initialize(**kwargs)
       unknown = kwargs.keys - self.class.members
       raise ArgumentError, "libo11y: unknown option#{"s" if unknown.length > 1} #{unknown.join(", ")}" unless unknown.empty?

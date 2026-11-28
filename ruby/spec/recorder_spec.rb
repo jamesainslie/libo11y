@@ -95,4 +95,19 @@ RSpec.describe Libo11y::Testing::Recorder do
       end
     end
   end
+
+  describe ".new" do
+    it "refuses the options that would replace the recorder's own environment and sinks" do
+      %i[env span_exporter metric_reader log_exporter console_writer].each do |option|
+        expect { described_class.new(option => nil) }
+          .to raise_error(ArgumentError, /the recorder sets #{option} itself/)
+      end
+    end
+
+    it "passes every other option to the handle" do
+      Libo11y::Testing.start_recorder(service_name: "orders", log_level: :warn) do |rec|
+        expect(rec.telemetry.effective_config).to include("service.name=orders", "o11y.config.level=WARN")
+      end
+    end
+  end
 end

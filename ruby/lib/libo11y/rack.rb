@@ -5,6 +5,7 @@ require "opentelemetry"
 require_relative "record"
 require_relative "spec"
 require_relative "internal/http_common"
+require_relative "internal/path_match"
 
 module Libo11y
   # Rack middleware (Rails, Sinatra, Hanami, Roda). It records a server span
@@ -23,9 +24,12 @@ module Libo11y
     end
 
     # Matches a path against an ignore pattern as Go's path.Match does: `*`
-    # stays within one path segment and also matches a leading dot.
+    # stays within one path segment, also when it is written twice, and it
+    # matches a leading dot. A malformed pattern matches nothing.
     def self.match_glob?(pattern, path)
-      File.fnmatch?(pattern, path, File::FNM_PATHNAME | File::FNM_DOTMATCH)
+      Internal::PathMatch.match?(pattern, path)
+    rescue Internal::PathMatch::BadPattern
+      false
     end
 
     class Middleware
@@ -184,9 +188,10 @@ module Libo11y
         [status, headers, body]
       end
 
+      # Whether the Content-Type's media type is text/html, whatever its parameters.
       def html?(headers)
         key = header_key(headers, "content-type")
-        !key.nil? && Array(headers[key]).first.to_s.strip.downcase.start_with?("text/html")
+        !key.nil? && Array(headers[key]).first.to_s.split(";", 2).first.to_s.strip.casecmp?("text/html")
       end
 
       # Rack 3 header names are lower case. Rack 2 applications use any case.

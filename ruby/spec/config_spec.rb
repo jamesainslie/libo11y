@@ -175,4 +175,33 @@ RSpec.describe "Resolved configuration" do
       expect(Libo11y::Internal::Env.signal_tls(map, "OTEL_EXPORTER_OTLP_TRACES")).to include(certificate_file: "/ca.pem")
     end
   end
+
+  describe "an OTLP endpoint from the environment" do
+    def init_with_endpoint(variable, value)
+      Libo11y.init(service_name: "s", environment: "test", env: { variable => value }, console_enabled: false, runtime_metrics: false)
+    end
+
+    it "must be an absolute http or https URL with a host, or setup fails with a libo11y error that does not repeat it" do
+      {
+        "OTEL_EXPORTER_OTLP_ENDPOINT" => ["http://user:placeholder@[bad", "/relative/path", "collector:4318", "ftp://collector.test", "http://"],
+        "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT" => ["not a url placeholder"]
+      }.each do |variable, values|
+        values.each do |value|
+          expect { init_with_endpoint(variable, value) }.to raise_error(Libo11y::ExporterError) do |error|
+            expect(error.message).to eq("o11y: #{variable} is not an absolute http or https URL")
+            expect(error.message).not_to include("placeholder")
+          end
+        end
+      end
+    end
+
+    it "gets the signal's path after its own path" do
+      map = { "OTEL_EXPORTER_OTLP_ENDPOINT" => "https://collector.test:4318/otlp/" }
+
+      expect(Libo11y::Internal::Env.signal_endpoint(map, "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "/v1/traces"))
+        .to eq("https://collector.test:4318/otlp/v1/traces")
+      expect(Libo11y::Internal::Env.signal_endpoint({}, "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "/v1/traces"))
+        .to eq("http://localhost:4318/v1/traces")
+    end
+  end
 end

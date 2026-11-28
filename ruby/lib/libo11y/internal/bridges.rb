@@ -160,62 +160,66 @@ module Libo11y
         end
       end
 
-      # Wraps an injected SpanProcessor so on_finish receives redacted span data.
+      # Hands the injected span processors each finished span as a redacted
+      # snapshot. on_start gets the live span. The span is classified once,
+      # before any processor sees it, so its violations are counted once
+      # whichever processor reads it.
       class PolicySpanProcessor
-        def initialize(inner, policy)
-          @inner = inner
+        def initialize(processors, policy)
+          @processors = processors
           @policy = policy
         end
 
         def on_start(span, parent_context)
-          @inner.on_start(span, parent_context)
+          @processors.each { |processor| processor.on_start(span, parent_context) }
         end
 
         def on_finish(span)
-          redacted = RedactedSpanView.new(span, @policy)
-          @inner.on_finish(redacted)
+          finished = FinishedSpan.new(PolicySpanExporter.redact_span_data(span.to_span_data, @policy), span.context)
+          @processors.each { |processor| processor.on_finish(finished) }
         end
 
         def force_flush(timeout: nil)
-          @inner.force_flush(timeout: timeout)
+          @processors.map { |processor| processor.force_flush(timeout: timeout) }.grep(Integer).max || OpenTelemetry::SDK::Trace::Export::SUCCESS
         end
 
         def shutdown(timeout: nil)
-          @inner.shutdown(timeout: timeout)
+          @processors.map { |processor| processor.shutdown(timeout: timeout) }.grep(Integer).max || OpenTelemetry::SDK::Trace::Export::SUCCESS
         end
       end
 
-      # A finished span as an injected processor sees it. Every accessor that
-      # carries attributes (attributes, events, links, to_span_data) returns
-      # the redacted values, and the rest delegate to the span.
-      class RedactedSpanView
-        def initialize(span, policy)
-          @span = span
-          @policy = policy
+      # A finished span as an injected processor sees it: the redacted span
+      # data and the span context, and nothing else. It holds neither the
+      # live span nor the policy, so inspecting it shows no value the policy
+      # removed.
+      class FinishedSpan
+        attr_reader :context
+
+        def initialize(span_data, context)
+          @span_data = span_data
+          @context = context
         end
 
         def to_span_data
-          @to_span_data ||= PolicySpanExporter.redact_span_data(@span.to_span_data, @policy)
+          @span_data
         end
 
-        def attributes
-          to_span_data.attributes
+        def recording?
+          false
         end
 
-        def events
-          to_span_data.events
+        def inspect
+          "#<#{self.class.name} name=#{@span_data.name.inspect} trace_id=#{@context.hex_trace_id} span_id=#{@context.hex_span_id}>"
         end
 
-        def links
-          to_span_data.links
-        end
-
+        # The readers of a span: name, kind, status, attributes, events, links,
+        # the timestamps, resource and instrumentation_scope.
         def method_missing(name, ...)
-          @span.public_send(name, ...)
+          @span_data.respond_to?(name) ? @span_data.public_send(name, ...) : super
         end
 
         def respond_to_missing?(name, include_private = false)
-          @span.respond_to?(name, include_private)
+          @span_data.respond_to?(name, include_private) || super
         end
       end
 
@@ -308,47 +312,29 @@ module Libo11y
           @policy = policy
         end
 
-        def create_counter(name, unit: nil, description: nil)
-          PolicySyncInstrument.new(@inner.create_counter(name, unit: unit, description: description), @policy)
+        # The factories take what the SDK meter's take and pass it on, so
+        # that OpenTelemetry can upgrade an instrument that was created on
+        # its proxy before setup: it calls them with exemplar_filter,
+        # exemplar_reservoir and advisory.
+        %i[create_counter create_up_down_counter create_gauge].each do |factory|
+          define_method(factory) do |name, **options|
+            PolicySyncInstrument.new(@inner.public_send(factory, name, **options), @policy)
+          end
         end
 
-        def create_up_down_counter(name, unit: nil, description: nil)
-          PolicySyncInstrument.new(@inner.create_up_down_counter(name, unit: unit, description: description), @policy)
-        end
-
-        def create_histogram(name, unit: nil, description: nil, explicit_bucket_boundaries: nil)
-          inst = if explicit_bucket_boundaries
-                   @inner.create_histogram(
-                     name,
-                     unit: unit,
-                     description: description,
-                     advisory: { explicit_bucket_boundaries: explicit_bucket_boundaries }
-                   )
-                 else
-                   @inner.create_histogram(name, unit: unit, description: description)
-                 end
-          PolicySyncInstrument.new(inst, @policy)
-        end
-
-        def create_gauge(name, unit: nil, description: nil)
-          PolicySyncInstrument.new(@inner.create_gauge(name, unit: unit, description: description), @policy)
+        # explicit_bucket_boundaries is shorthand for the advisory of that name.
+        def create_histogram(name, explicit_bucket_boundaries: nil, **options)
+          options[:advisory] = (options[:advisory] || {}).merge(explicit_bucket_boundaries: explicit_bucket_boundaries) if explicit_bucket_boundaries
+          PolicySyncInstrument.new(@inner.create_histogram(name, **options), @policy)
         end
 
         # An observable instrument's callbacks take no argument and return a
         # number, so its attributes come only through add_attributes and
         # observe, which the wrapper classifies.
-        def create_observable_counter(name, callback: nil, unit: nil, description: nil)
-          PolicyAsyncInstrument.new(@inner.create_observable_counter(name, callback: callback, unit: unit, description: description), @policy)
-        end
-
-        def create_observable_up_down_counter(name, callback: nil, unit: nil, description: nil)
-          PolicyAsyncInstrument.new(
-            @inner.create_observable_up_down_counter(name, callback: callback, unit: unit, description: description), @policy
-          )
-        end
-
-        def create_observable_gauge(name, callback: nil, unit: nil, description: nil)
-          PolicyAsyncInstrument.new(@inner.create_observable_gauge(name, callback: callback, unit: unit, description: description), @policy)
+        %i[create_observable_counter create_observable_up_down_counter create_observable_gauge].each do |factory|
+          define_method(factory) do |name, **options|
+            PolicyAsyncInstrument.new(@inner.public_send(factory, name, **options), @policy)
+          end
         end
 
         def method_missing(name, ...)
