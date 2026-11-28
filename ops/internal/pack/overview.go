@@ -30,21 +30,21 @@ func overview(t thresholds.Thresholds) dash.Dashboard {
 		{
 			Type: "stat", Title: "Errors per 100 views", W: 4, H: 4, Datasource: &dash.Prometheus,
 			Description: "Errors over the time range for every 100 views.",
-			Targets:     []dash.Target{promValue("A", per100(errs), "")},
+			Targets:     []dash.Target{promValue(per100(errs), "")},
 			Unit:        "short", Options: statOptions("lastNotNull"),
 		},
 		{
 			Type: "stat", Title: "Frustrations per 100 views", W: 4, H: 4, Datasource: &dash.Prometheus,
 			Description: "Frustration signals (rage, dead and error clicks) over the time range for every 100 views.",
-			Targets:     []dash.Target{promValue("A", per100(frus), "")},
+			Targets:     []dash.Target{promValue(per100(frus), "")},
 			Unit:        "short", Options: statOptions("lastNotNull"),
 		},
 	}
 	for _, v := range vitalDefs[:3] {
 		row1 = append(row1, dash.Panel{
 			Type: "stat", Title: v.Label + " p75", W: 4, H: 4, Datasource: &dash.Prometheus,
-			Description: "The 75th percentile of " + v.Label + " over the time range, colored by the specification's rating thresholds.",
-			Targets:     []dash.Target{promValue("A", `histogram_quantile(0.75, sum by (le) (increase(`+v.Family+`_bucket{`+selApp+`}[$__range])))`, "")},
+			Description: "The 75th percentile of " + v.Label + " over the time range, colored by the specification's rating thresholds. Vitals carry no platform label, so this panel ignores the platform picker.",
+			Targets:     []dash.Target{promValue(`histogram_quantile(0.75, sum by (le) (increase(`+v.Family+`_bucket{`+selApp+`}[$__range])))`, "")},
 			Unit:        v.Unit, Thresholds: vitalSteps(t, v.Key), Options: statOptions("lastNotNull"),
 		})
 	}
@@ -53,20 +53,20 @@ func overview(t thresholds.Thresholds) dash.Dashboard {
 		{
 			Type: "timeseries", Title: "Views by platform", W: 8, Datasource: &dash.Prometheus,
 			Targets: []dash.Target{dash.PromRange("A", byRate("o11y_rum_platform", views), "{{o11y_rum_platform}}")},
-			Unit:    "reqps", Options: legendBottom,
+			Unit:    "short", Options: legendBottom(),
 		},
 		{
 			Type: "timeseries", Title: "Views by kind", W: 8, Datasource: &dash.Prometheus,
 			Targets: []dash.Target{dash.PromRange("A", byRate("o11y_rum_view_kind", views), "{{o11y_rum_view_kind}}")},
-			Unit:    "reqps", Options: legendBottom,
+			Unit:    "short", Options: legendBottom(),
 		},
 		{
 			Type: "timeseries", Title: "Long animation frames per view", W: 8, Datasource: &dash.Prometheus,
-			Description: "Long animation frames (50 ms or longer) for each view, a sign of a busy main thread.",
+			Description: "Long animation frames (50 ms or longer) for each browser view, a sign of a busy main thread. Only browsers report them, and the metric has no platform label, so this panel ignores the platform picker.",
 			Targets: []dash.Target{dash.PromRange("A",
-				`sum(rate(o11y_rum_browser_long_animation_frames_total{`+selApp+`}[$__rate_interval])) / sum(rate(o11y_rum_views_total{`+selApp+`}[$__rate_interval]))`,
+				`sum(rate(o11y_rum_browser_long_animation_frames_total{`+selApp+`}[$__rate_interval])) / sum(rate(o11y_rum_views_total{`+selApp+`, `+selBrowser+`}[$__rate_interval]))`,
 				"frames per view")},
-			Unit: "short", Options: legendBottom,
+			Unit: "short", Options: legendBottom(),
 		},
 	}
 
@@ -74,12 +74,12 @@ func overview(t thresholds.Thresholds) dash.Dashboard {
 		{
 			Type: "timeseries", Title: "Errors by source", W: 12, Datasource: &dash.Prometheus,
 			Targets: []dash.Target{dash.PromRange("A", byRate("o11y_rum_error_source", errs), "{{o11y_rum_error_source}}")},
-			Unit:    "short", Options: legendBottom,
+			Unit:    "short", Options: legendBottom(),
 		},
 		{
 			Type: "timeseries", Title: "Frustrations by type", W: 12, Datasource: &dash.Prometheus,
 			Targets: []dash.Target{dash.PromRange("A", byRate("o11y_rum_frustration_type", frus), "{{o11y_rum_frustration_type}}")},
-			Unit:    "short", Options: legendBottom,
+			Unit:    "short", Options: legendBottom(),
 		},
 	}
 
@@ -88,11 +88,11 @@ func overview(t thresholds.Thresholds) dash.Dashboard {
 		count := v.Family + `_count{` + selApp + `}`
 		row4 = append(row4, dash.Panel{
 			Type: "bargauge", Title: v.Label + " rating share", W: 8, Datasource: &dash.Prometheus,
-			Description: "The share of " + v.Label + " samples the gateway rated good, needs-improvement and poor over the time range.",
-			Targets: []dash.Target{promValue("A",
+			Description: "The share of " + v.Label + " samples the gateway rated good, needs-improvement and poor over the time range. Vitals carry no platform label, so this panel ignores the platform picker.",
+			Targets: []dash.Target{promValue(
 				`sum by (o11y_rum_vital_rating) (increase(`+count+`[$__range])) / scalar(sum(increase(`+count+`[$__range])))`,
 				"{{o11y_rum_vital_rating}}")},
-			Unit: "percentunit", Overrides: ratingColors,
+			Unit: "percentunit", Overrides: ratingColors(),
 			Options: map[string]any{
 				"orientation":   "horizontal",
 				"displayMode":   "basic",
@@ -107,11 +107,11 @@ func overview(t thresholds.Thresholds) dash.Dashboard {
 		Description: "The 20 busiest views over the time range. Open a row for that view's web vitals.",
 		Targets:     []dash.Target{dash.PromInstant("A", `topk(20, sum by (service_name, o11y_rum_view_name) (increase(`+views+`[$__range])))`, "")},
 		Overrides:   []any{rename("Value", "views")},
-		Transforms:  []any{hideTime},
+		Transforms:  []any{hideTime()},
 		Options:     sortedTable("views"),
 		Links: []dash.Link{{
 			Title: "Vitals of this view",
-			URL:   "/d/libo11y-rum-vitals?var-app=${__data.fields.service_name}&var-view=${__data.fields.o11y_rum_view_name}&${__url_time_range}",
+			URL:   "/d/libo11y-rum-vitals?var-app=${__data.fields.service_name:percentencode}&var-view=${__data.fields.o11y_rum_view_name:percentencode}&${__url_time_range}",
 		}},
 	}
 

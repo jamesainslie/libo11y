@@ -267,6 +267,18 @@ func TestOverview(t *testing.T) {
 			t.Errorf("the overview does not link to %s: %q", uid, linked)
 		}
 	}
+	// Long animation frames exist only on the browser platforms, so the
+	// ratio counts only their views.
+	loaf := queryOf(panelByTitle(t, d, "Long animation frames per view").Targets[0])
+	if !strings.Contains(loaf, `o11y_rum_views_total{service_name=~"$app", o11y_rum_platform=~"web|webext"}`) {
+		t.Errorf("Long animation frames per view divides by views of every platform: %s", loaf)
+	}
+	// The vital and long animation frame metrics carry no platform label.
+	for _, title := range []string{"LCP p75", "INP p75", "CLS p75", "LCP rating share", "INP rating share", "CLS rating share", "Long animation frames per view"} {
+		if p := panelByTitle(t, d, title); !strings.Contains(p.Description, "platform") {
+			t.Errorf("%q does not say it ignores the platform picker", title)
+		}
+	}
 	for _, key := range []string{"LCP", "INP", "CLS"} {
 		p := panelByTitle(t, d, key+" rating share")
 		if p.Type != "bargauge" || p.Unit != "percentunit" || len(p.Overrides) != 3 {
@@ -327,7 +339,7 @@ func TestVitals(t *testing.T) {
 		if p := section[1]; !stepsEqual(p.Thresholds, wantVitalSteps(t, v.Key)) || p.Unit != v.Unit {
 			t.Errorf("%s: thresholds %+v unit %s, want the default vital thresholds and %s", p.Title, p.Thresholds, p.Unit, v.Unit)
 		}
-		if p := section[2]; !stepsEqual(p.Thresholds, wantVitalSteps(t, v.Key)) || fmt.Sprint(p.Custom["thresholdsStyle"]) != "map[mode:line]" {
+		if p := section[2]; !stepsEqual(p.Thresholds, wantVitalSteps(t, v.Key)) || !drawsThresholdLines(p) {
 			t.Errorf("%s: thresholds %+v custom %v, want the vital thresholds drawn as lines", p.Title, p.Thresholds, p.Custom)
 		}
 		byView := section[4]
@@ -427,7 +439,9 @@ func TestExplorer(t *testing.T) {
 			switch kind {
 			case "loki":
 				sel, rest, _ := strings.Cut(q, "}")
-				if strings.Contains(sel, "session_id") || !strings.Contains(rest, `| session_id="$session_id"`) {
+				// A label filter treats a missing field as "", so an empty text box
+				// would match every line without a session; the != "" guard stops it.
+				if strings.Contains(sel, "session_id") || !strings.Contains(rest, `| session_id!="" | session_id="$session_id"`) {
 					t.Errorf("%q: %s does not filter session_id after the stream selector", p.Title, q)
 				}
 			case "tempo":
@@ -451,6 +465,9 @@ func TestExplorer(t *testing.T) {
 			t.Errorf("%q does not filter by $view_id", title)
 		}
 	}
+	if q := queryOf(panelByTitle(t, d, "Events of the selected view").Targets[0]); !strings.Contains(q, `| o11y_rum_view_id!="" | o11y_rum_view_id="$view_id"`) {
+		t.Errorf("Events of the selected view: %s matches events without a view while view_id is empty", q)
+	}
 	views := panelByTitle(t, d, "Views in this session")
 	if urls := linkURLs(views); len(urls) != 1 || !strings.Contains(urls[0], "var-view_id=") || !strings.HasPrefix(urls[0], "/d/libo11y-rum-session-explorer?") {
 		t.Errorf("views links %q, want one link back to the explorer setting var-view_id", urls)
@@ -468,4 +485,11 @@ func TestDashboardsInUIDOrder(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Errorf("dashboards %q, want them in UIDs order %q", got, want)
 	}
+}
+
+// drawsThresholdLines reports whether a time series panel draws its
+// thresholds as lines.
+func drawsThresholdLines(p dash.Panel) bool {
+	style, _ := p.Custom["thresholdsStyle"].(map[string]any)
+	return style["mode"] == "line"
 }

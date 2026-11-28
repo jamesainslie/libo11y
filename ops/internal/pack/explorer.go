@@ -11,7 +11,9 @@ const selectedView = " Empty until view_id (o11y.rum.view.id) is set."
 // session.id, and one of its views by o11y.rum.view.id. Both IDs are
 // structured metadata in Loki, read only after the stream selector.
 func explorer() dash.Dashboard {
-	session := lokiApp + ` | session_id="$session_id"`
+	// A LogQL label filter treats a missing field as "", so each ID is
+	// guarded with != "" and an empty text box matches nothing.
+	session := lokiApp + ` | session_id!="" | session_id="$session_id"`
 	return dash.Dashboard{
 		UID:         "libo11y-rum-session-explorer",
 		Title:       "libo11y RUM: session explorer",
@@ -30,10 +32,10 @@ func explorer() dash.Dashboard {
 					Description: "The session's views, from their view summaries. Open a row to show that view below.",
 					Targets: []dash.Target{dash.LokiInstant("A",
 						`sum by (o11y_rum_view_id, o11y_rum_view_name, o11y_rum_view_kind) (count_over_time(`+session+` | event_name="o11y.rum.view.summary" [$__range]))`)},
-					Overrides: []any{rename("Value #A", "summaries")}, Transforms: []any{hideTime},
+					Overrides: []any{rename("Value #A", "summaries")}, Transforms: []any{hideTime()},
 					Links: []dash.Link{{
 						Title: "Select this view",
-						URL:   "/d/libo11y-rum-session-explorer?var-session_id=${session_id}&var-view_id=${__data.fields.o11y_rum_view_id}&${app:queryparam}&${__url_time_range}",
+						URL:   "/d/libo11y-rum-session-explorer?${session_id:queryparam}&var-view_id=${__data.fields.o11y_rum_view_id:percentencode}&${app:queryparam}&${__url_time_range}",
 					}},
 				},
 				{
@@ -57,7 +59,7 @@ func explorer() dash.Dashboard {
 				{
 					Type: "logs", Title: "Events of the selected view", W: 12, H: 10, Datasource: &dash.Loki,
 					Description: "The events of the selected view, oldest first." + selectedView,
-					Targets:     []dash.Target{dash.LokiLogs("A", session+` | o11y_rum_view_id="$view_id"`)},
+					Targets:     []dash.Target{dash.LokiLogs("A", session+` | o11y_rum_view_id!="" | o11y_rum_view_id="$view_id"`)},
 					Options:     logOptions("Ascending"),
 				},
 			},

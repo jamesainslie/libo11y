@@ -38,7 +38,7 @@ var UIDs = []string{
 // Dashboards returns the pack's dashboards, in the order the kustomization
 // lists them.
 func Dashboards(t thresholds.Thresholds) []dash.Dashboard {
-	return []dash.Dashboard{overview(t), vitals(t), errorsDashboard(t), explorer()}
+	return []dash.Dashboard{overview(t), vitals(t), errorsDashboard(), explorer()}
 }
 
 // RuleFiles returns the pack's Prometheus rule files by path. version goes

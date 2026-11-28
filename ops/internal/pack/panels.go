@@ -1,11 +1,17 @@
 package pack
 
-import "github.com/jamesainslie/libo11y/ops/internal/dash"
+import (
+	"maps"
+	"slices"
+
+	"github.com/jamesainslie/libo11y/ops/internal/dash"
+)
 
 // promValue is an instant Prometheus query returned as series, for stat
-// and bar gauge panels, which show one value for each series.
-func promValue(ref, expr, legend string) dash.Target {
-	t := dash.PromInstant(ref, expr, legend)
+// and bar gauge panels, which show one value for each series. It is the
+// panel's only target, so its refId is A.
+func promValue(expr, legend string) dash.Target {
+	t := dash.PromInstant("A", expr, legend)
 	t["format"] = "time_series"
 	return t
 }
@@ -21,14 +27,19 @@ func statOptions(calc string) map[string]any {
 	}
 }
 
-// legendBottom is the legend of every time series panel.
-var legendBottom = map[string]any{
-	"legend":  map[string]any{"displayMode": "list", "placement": "bottom", "showLegend": true},
-	"tooltip": map[string]any{"mode": "multi", "sort": "desc"},
+// legendBottom is the legend of every time series panel. Each call
+// returns fresh maps, so no two panels share one.
+func legendBottom() map[string]any {
+	return map[string]any{
+		"legend":  map[string]any{"displayMode": "list", "placement": "bottom", "showLegend": true},
+		"tooltip": map[string]any{"mode": "multi", "sort": "desc"},
+	}
 }
 
 // hideTime drops the Time column an instant query adds to a table.
-var hideTime = map[string]any{"id": "organize", "options": map[string]any{"excludeByName": map[string]any{"Time": true}}}
+func hideTime() map[string]any {
+	return map[string]any{"id": "organize", "options": map[string]any{"excludeByName": map[string]any{"Time": true}}}
+}
 
 // rename is a field override that gives a column a display name.
 func rename(field, name string) map[string]any {
@@ -47,7 +58,9 @@ func fieldColor(field, color string) map[string]any {
 }
 
 // ratingColors paint the three vital ratings of the specification.
-var ratingColors = []any{fieldColor("good", "green"), fieldColor("needs-improvement", "orange"), fieldColor("poor", "red")}
+func ratingColors() []any {
+	return []any{fieldColor("good", "green"), fieldColor("needs-improvement", "orange"), fieldColor("poor", "red")}
+}
 
 // logOptions are the options of a logs panel.
 func logOptions(order string) map[string]any {
@@ -66,9 +79,10 @@ func sortedTable(column string) map[string]any {
 	return map[string]any{"showHeader": true, "sortBy": []any{map[string]any{"displayName": column, "desc": true}}}
 }
 
-// withUnit adds a unit to a field override.
+// withUnit returns a copy of a field override that also sets a unit.
 func withUnit(override map[string]any, unit string) map[string]any {
+	out := maps.Clone(override)
 	props, _ := override["properties"].([]any)
-	override["properties"] = append(props, map[string]any{"id": "unit", "value": unit})
-	return override
+	out["properties"] = append(slices.Clone(props), map[string]any{"id": "unit", "value": unit})
+	return out
 }

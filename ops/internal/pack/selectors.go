@@ -12,6 +12,9 @@ const (
 	selApp      = `service_name=~"$app"`
 	selPlatform = `o11y_rum_platform=~"$platform"`
 	selView     = `o11y_rum_view_name=~"$view"`
+	// selBrowser keeps the platforms that report browser-only metrics, such
+	// as long animation frames.
+	selBrowser  = `o11y_rum_platform=~"web|webext"`
 	selVitalDim = `o11y_rum_device_class=~"$device", o11y_rum_browser_family=~"$browser", geo_country_iso_code=~"$country", o11y_rum_connection_effective=~"$connection"`
 )
 

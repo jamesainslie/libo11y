@@ -193,7 +193,7 @@
         "type": "prometheus",
         "uid": "${prometheus}"
       },
-      "description": "The 75th percentile of LCP over the time range, colored by the specification's rating thresholds.",
+      "description": "The 75th percentile of LCP over the time range, colored by the specification's rating thresholds. Vitals carry no platform label, so this panel ignores the platform picker.",
       "fieldConfig": {
         "defaults": {
           "thresholds": {
@@ -260,7 +260,7 @@
         "type": "prometheus",
         "uid": "${prometheus}"
       },
-      "description": "The 75th percentile of INP over the time range, colored by the specification's rating thresholds.",
+      "description": "The 75th percentile of INP over the time range, colored by the specification's rating thresholds. Vitals carry no platform label, so this panel ignores the platform picker.",
       "fieldConfig": {
         "defaults": {
           "thresholds": {
@@ -327,7 +327,7 @@
         "type": "prometheus",
         "uid": "${prometheus}"
       },
-      "description": "The 75th percentile of CLS over the time range, colored by the specification's rating thresholds.",
+      "description": "The 75th percentile of CLS over the time range, colored by the specification's rating thresholds. Vitals carry no platform label, so this panel ignores the platform picker.",
       "fieldConfig": {
         "defaults": {
           "thresholds": {
@@ -396,7 +396,7 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "reqps"
+          "unit": "short"
         },
         "overrides": []
       },
@@ -442,7 +442,7 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "reqps"
+          "unit": "short"
         },
         "overrides": []
       },
@@ -486,7 +486,7 @@
         "type": "prometheus",
         "uid": "${prometheus}"
       },
-      "description": "Long animation frames (50 ms or longer) for each view, a sign of a busy main thread.",
+      "description": "Long animation frames (50 ms or longer) for each browser view, a sign of a busy main thread. Only browsers report them, and the metric has no platform label, so this panel ignores the platform picker.",
       "fieldConfig": {
         "defaults": {
           "unit": "short"
@@ -517,7 +517,7 @@
             "type": "prometheus",
             "uid": "${prometheus}"
           },
-          "expr": "sum(rate(o11y_rum_browser_long_animation_frames_total{service_name=~\"$app\"}[$__rate_interval])) / sum(rate(o11y_rum_views_total{service_name=~\"$app\"}[$__rate_interval]))",
+          "expr": "sum(rate(o11y_rum_browser_long_animation_frames_total{service_name=~\"$app\"}[$__rate_interval])) / sum(rate(o11y_rum_views_total{service_name=~\"$app\", o11y_rum_platform=~\"web|webext\"}[$__rate_interval]))",
           "instant": false,
           "legendFormat": "frames per view",
           "range": true,
@@ -625,7 +625,7 @@
         "type": "prometheus",
         "uid": "${prometheus}"
       },
-      "description": "The share of LCP samples the gateway rated good, needs-improvement and poor over the time range.",
+      "description": "The share of LCP samples the gateway rated good, needs-improvement and poor over the time range. Vitals carry no platform label, so this panel ignores the platform picker.",
       "fieldConfig": {
         "defaults": {
           "unit": "percentunit"
@@ -720,7 +720,7 @@
         "type": "prometheus",
         "uid": "${prometheus}"
       },
-      "description": "The share of INP samples the gateway rated good, needs-improvement and poor over the time range.",
+      "description": "The share of INP samples the gateway rated good, needs-improvement and poor over the time range. Vitals carry no platform label, so this panel ignores the platform picker.",
       "fieldConfig": {
         "defaults": {
           "unit": "percentunit"
@@ -815,7 +815,7 @@
         "type": "prometheus",
         "uid": "${prometheus}"
       },
-      "description": "The share of CLS samples the gateway rated good, needs-improvement and poor over the time range.",
+      "description": "The share of CLS samples the gateway rated good, needs-improvement and poor over the time range. Vitals carry no platform label, so this panel ignores the platform picker.",
       "fieldConfig": {
         "defaults": {
           "unit": "percentunit"
@@ -916,7 +916,7 @@
           "links": [
             {
               "title": "Vitals of this view",
-              "url": "/d/libo11y-rum-vitals?var-app=${__data.fields.service_name}&var-view=${__data.fields.o11y_rum_view_name}&${__url_time_range}"
+              "url": "/d/libo11y-rum-vitals?var-app=${__data.fields.service_name:percentencode}&var-view=${__data.fields.o11y_rum_view_name:percentencode}&${__url_time_range}"
             }
           ]
         },

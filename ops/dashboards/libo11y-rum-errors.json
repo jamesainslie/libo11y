@@ -392,7 +392,7 @@
           "links": [
             {
               "title": "Open in the session explorer",
-              "url": "/d/libo11y-rum-session-explorer?var-session_id=${__data.fields.session_id}&${app:queryparam}&${__url_time_range}"
+              "url": "/d/libo11y-rum-session-explorer?var-session_id=${__data.fields.session_id:percentencode}&${app:queryparam}&${__url_time_range}"
             }
           ]
         },

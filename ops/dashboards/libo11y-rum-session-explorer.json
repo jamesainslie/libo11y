@@ -59,7 +59,7 @@
           "links": [
             {
               "title": "Select this view",
-              "url": "/d/libo11y-rum-session-explorer?var-session_id=${session_id}&var-view_id=${__data.fields.o11y_rum_view_id}&${app:queryparam}&${__url_time_range}"
+              "url": "/d/libo11y-rum-session-explorer?${session_id:queryparam}&var-view_id=${__data.fields.o11y_rum_view_id:percentencode}&${app:queryparam}&${__url_time_range}"
             }
           ]
         },
@@ -92,7 +92,7 @@
             "type": "loki",
             "uid": "${loki}"
           },
-          "expr": "sum by (o11y_rum_view_id, o11y_rum_view_name, o11y_rum_view_kind) (count_over_time({service_name=~\"$app\"} | session_id=\"$session_id\" | event_name=\"o11y.rum.view.summary\" [$__range]))",
+          "expr": "sum by (o11y_rum_view_id, o11y_rum_view_name, o11y_rum_view_kind) (count_over_time({service_name=~\"$app\"} | session_id!=\"\" | session_id=\"$session_id\" | event_name=\"o11y.rum.view.summary\" [$__range]))",
           "queryType": "instant",
           "refId": "A"
         }
@@ -176,7 +176,7 @@
             "type": "loki",
             "uid": "${loki}"
           },
-          "expr": "{service_name=~\"$app\"} | session_id=\"$session_id\"",
+          "expr": "{service_name=~\"$app\"} | session_id!=\"\" | session_id=\"$session_id\"",
           "queryType": "range",
           "refId": "A"
         }
@@ -251,7 +251,7 @@
             "type": "loki",
             "uid": "${loki}"
           },
-          "expr": "{service_name=~\"$app\"} | session_id=\"$session_id\" | o11y_rum_view_id=\"$view_id\"",
+          "expr": "{service_name=~\"$app\"} | session_id!=\"\" | session_id=\"$session_id\" | o11y_rum_view_id!=\"\" | o11y_rum_view_id=\"$view_id\"",
           "queryType": "range",
           "refId": "A"
         }
@@ -291,7 +291,7 @@
             "type": "loki",
             "uid": "${loki}"
           },
-          "expr": "{service_name=~\"$app\"} | session_id=\"$session_id\" | event_name=~\"o11y\\\\.rum\\\\.(error|frustration)\"",
+          "expr": "{service_name=~\"$app\"} | session_id!=\"\" | session_id=\"$session_id\" | event_name=~\"o11y\\\\.rum\\\\.(error|frustration)\"",
           "queryType": "range",
           "refId": "A"
         }
