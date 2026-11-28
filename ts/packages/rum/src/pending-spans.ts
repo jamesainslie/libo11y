@@ -6,12 +6,17 @@
  * while it is still recording, and on export once it has ended. An export whose batch holds a span
  * still waiting waits for the session. A revoke closes the window, and the spans that waited go out
  * with no session, so the retention router drops them.
+ *
+ * Ended spans get their attributes in RUM's forwarding span exporter, so an app that injects only
+ * its own span processor (and so exports spans itself) sees ended held spans without them.
  */
 import type { Attributes } from "@opentelemetry/api";
 import type { ReadableSpan, Span } from "@opentelemetry/sdk-trace";
 
 /** At most this many ended spans keep the attributes they are to get on export. */
 const STAMPED_LIMIT = 512;
+/** At most this many spans wait for one session; later ones go out without it. */
+const HELD_LIMIT = 1024;
 
 export interface PendingSpans {
   /** Opens the window: spans that start without a session are held until resolve or discard. */
@@ -92,7 +97,7 @@ export function createPendingSpans(): PendingSpans {
     },
     isOpen: () => opened,
     hold(span, load) {
-      if (opened) held.set(span.spanContext().spanId, { span, load });
+      if (opened && held.size < HELD_LIMIT) held.set(span.spanContext().spanId, { span, load });
     },
     resolve(stamp) {
       for (const [id, { span, load }] of held) {

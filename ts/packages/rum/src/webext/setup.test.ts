@@ -6,8 +6,9 @@ import { defaultContentDeps, defaultWorkerDeps } from "@libo11y/webext/internal"
 import { CONSENT_STORAGE_KEY } from "../../../webext/src/consent-sync.ts";
 import { type ExportMessage, isExportMessage } from "../../../webext/src/protocol.ts";
 import { createFakeExtension, type FakeExtension } from "../../../webext/src/test-support/fake-chrome.ts";
+import { installRumBootstrapOn, takeBootstrap } from "../bootstrap/buffer.ts";
 import { CONFIG_STORAGE_KEY, remoteConfig } from "../config/remote.ts";
-import type { CollectorName } from "../contracts/runtime.ts";
+import type { CollectorName, RumRuntime } from "../contracts/runtime.ts";
 import { errorsWith } from "../errors/collector.ts";
 import { SESSION_STORAGE_KEY } from "../session/local-store.ts";
 import { runtimeOf } from "../setup.ts";
@@ -459,4 +460,82 @@ test("a revoke while the configuration cache loads still removes the cache", asy
   await t.consent.revoke();
   await until(() => !ext.stored.has(CONFIG_STORAGE_KEY), "the cache removed");
   assert.equal(t.rum.sessionId(), undefined);
+});
+
+test("an error whose message holds a URL is judged by its stack frames, not the message", () => {
+  const scope = contentScope({ base: BASE_URL, host: "host.test" });
+  const rejection = (stack: string): Event =>
+    ({ type: "unhandledrejection", target: null, reason: { stack } }) as unknown as Event;
+  // V8 frames.
+  assert.equal(
+    scope.error?.(
+      rejection(`Error: GET https://api.example.com/x failed\n    at load (${BASE_URL}content.js:3:9)`),
+    ),
+    true,
+  );
+  assert.equal(
+    scope.error?.(rejection(`Error: see ${BASE_URL}help\n    at main (https://host.test/app.js:1:2)`)),
+    false,
+  );
+  // Firefox frames.
+  assert.equal(scope.error?.(rejection(`load@moz-extension://uuid/content.js:3:9\n`)), false);
+  assert.equal(
+    contentScope({ base: "moz-extension://uuid/", host: "host.test" }).error?.(
+      rejection("load@moz-extension://uuid/content.js:3:9\n"),
+    ),
+    true,
+  );
+  const uncaught = {
+    type: "error",
+    target: null,
+    filename: "",
+    error: { stack: `TypeError: bad https://x.test/\n    at f (${BASE_URL}content.js:1:1)` },
+  } as unknown as Event;
+  assert.equal(errorSourceUrl(uncaught), `${BASE_URL}content.js:1:1`);
+});
+
+test("two extension contexts that create the first session at once send one session.start", async () => {
+  const ext = createFakeExtension(EXT_ID);
+  ext.stored.set(CONSENT_STORAGE_KEY, "granted");
+  const received = fakeWorker(ext);
+  const [a, b] = await Promise.all([
+    start({ ...OPTS, context: "page" }, rig(ext, "page").deps),
+    start({ ...OPTS, context: "page" }, rig(ext, "page").deps),
+  ]);
+  await until(
+    () => a.rum.sessionId() !== undefined && a.rum.sessionId() === b.rum.sessionId(),
+    "the contexts to agree on a session",
+  );
+  await new Promise((r) => setTimeout(r, 700));
+  await Promise.all([a.forceFlush(), b.forceFlush()]);
+  await ext.settle();
+  const starts = logs(received).filter((l) => l["event.name"] === "o11y.rum.session.start");
+  assert.equal(starts.length, 1);
+  assert.equal(starts[0]?.["session.id"], a.rum.sessionId());
+});
+
+test("a content script discards what a bootstrap in its world buffered", async () => {
+  const ext = createFakeExtension(EXT_ID);
+  ext.stored.set(CONSENT_STORAGE_KEY, "granted");
+  fakeWorker(ext);
+  const target = new EventTarget();
+  installRumBootstrapOn(
+    target,
+    { consent: "granted" },
+    { now: () => performance.now(), setTimeout: () => 0 },
+  );
+  const e = new Event("error");
+  Object.defineProperty(e, "error", { value: new Error("host page") });
+  target.dispatchEvent(e);
+  const replayed: string[] = [];
+  const recorder = {
+    name: "errors" as const,
+    start: (rt: RumRuntime) =>
+      rt.bus.subscribe((s) => {
+        if (s.type === "bootstrap") replayed.push(s.entry.kind);
+      }),
+  };
+  await start({ ...OPTS, context: "content", rum: { collectors: [recorder] } }, rig(ext, "content").deps);
+  assert.deepEqual(replayed, []);
+  assert.equal(takeBootstrap(), undefined, "the buffer was taken and dropped");
 });

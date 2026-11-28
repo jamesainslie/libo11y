@@ -6,11 +6,18 @@
  */
 import type { RumScope } from "../contracts/runtime.ts";
 
-/** The first extension or web URL in a stack trace. */
-const FRAME_URL = /\b(?:(?:chrome|moz|safari-web)-extension|https?|file):\/\/[^\s)'"]+/;
+/** An extension or web URL. */
+const URL_IN = /\b(?:(?:chrome|moz|safari-web)-extension|https?|file):\/\/[^\s)'"]+/;
+/** A stack frame line: V8's "    at ..." or Firefox and Safari's "name@url". */
+const FRAME_LINE = /^\s+at\s|^[^\s@]*@/;
 
+/** The URL of the first frame of a stack trace, skipping the message lines above the frames. */
 function firstFrame(stack: unknown): string | undefined {
-  return typeof stack === "string" ? FRAME_URL.exec(stack)?.[0] : undefined;
+  if (typeof stack !== "string") return undefined;
+  for (const line of stack.split("\n")) {
+    if (FRAME_LINE.test(line)) return URL_IN.exec(line)?.[0];
+  }
+  return undefined;
 }
 
 function stackOf(v: unknown): unknown {

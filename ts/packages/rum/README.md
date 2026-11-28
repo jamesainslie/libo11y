@@ -423,6 +423,7 @@ const telemetry = await setupRumExtension({
 
 A content script shares the host page's document, so RUM records only
 what is the extension's own:
+
 - One view, named `content.viewName` or `content-script`, never named
   from the URL. It starts when RUM starts and its span ends at the next
   paint. The span carries the host page's `url.domain` and no other URL.
@@ -442,4 +443,10 @@ Every context records with platform `webext` and shares consent with the
 whole extension, as `@libo11y/webext` does. Remote configuration works in
 every context. Pass `remoteConfig({ url })` with an absolute URL, because
 an extension context has no gateway origin of its own. Its cache is in
-`chrome.storage.local`, never a page's `localStorage`.
+`chrome.storage.local`, never a page's `localStorage`, so every context
+reads the document any of them fetched. An extension page fetches it under
+the extension's host permissions, so list the gateway's host in
+`host_permissions`. A content script's request carries the host page's
+origin, without a referrer, so the gateway answers it only when that
+origin is in its CORS list. Otherwise the content script keeps the cached
+document the extension's pages fetched.

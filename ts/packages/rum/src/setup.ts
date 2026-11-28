@@ -206,9 +206,16 @@ function forwardingSpanExporter(target: () => SpanExporter | undefined, pending:
         if (t === undefined) done(SUCCESS);
         else t.export(batch, done);
       };
+      const send = (batch: typeof spans): void => {
+        try {
+          go(batch);
+        } catch (err) {
+          done({ code: ExportResultCode.FAILED, error: err instanceof Error ? err : new Error(String(err)) });
+        }
+      };
       const ready = pending.prepare(spans);
-      if (Array.isArray(ready)) go(ready);
-      else ready.then(go, () => done(SUCCESS));
+      if (Array.isArray(ready)) send(ready);
+      else ready.then(send, () => done(SUCCESS));
     },
     forceFlush: async () => {
       await target()?.forceFlush?.();
@@ -731,24 +738,30 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
     const gen = generation;
     pending.open();
     starting ??= (async () => {
-      if (remote === undefined) {
-        const opened = opening ?? openRemote();
-        if (opened instanceof Promise) {
-          opening = opened;
-          const connection = await opened;
-          remote ??= connection;
-          if (opening === opened) opening = undefined;
-          // Revoked while the cache loaded: the revoke found no connection to clear.
-          if (gen !== generation) {
-            if (!gate.recording()) remote?.clear();
-            return;
-          }
-        } else remote = opened;
+      try {
+        if (remote === undefined) {
+          const opened = opening ?? openRemote();
+          if (opened instanceof Promise) {
+            opening = opened;
+            const connection = await opened;
+            remote ??= connection;
+            if (opening === opened) opening = undefined;
+            // Revoked while the cache loaded: the revoke found no connection to clear.
+            if (gen !== generation) {
+              if (!gate.recording()) remote?.clear();
+              return;
+            }
+          } else remote = opened;
+        }
+        killed = remote?.current()?.enabled === false;
+        await activate(gen);
+        if (gen !== generation || !gate.recording()) return;
+        stopRemote = remote?.start(onRemote);
+      } catch (err) {
+        // A start that failed releases the spans waiting for its session, so no export stalls.
+        if (gen === generation) pending.discard();
+        throw err;
       }
-      killed = remote?.current()?.enabled === false;
-      await activate(gen);
-      if (gen !== generation || !gate.recording()) return;
-      stopRemote = remote?.start(onRemote);
     })();
     return starting;
   };
@@ -953,7 +966,9 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
   const early = takeBootstrap();
   if (gate.recording()) {
     await startAll();
-    if (!killed) replayBootstrap(runtime, early);
+    // A scoped context (a content script) shares its world with no page bootstrap of its own: what
+    // a bootstrap there buffered may be the host page's, so it is dropped.
+    if (!killed && deps.scope === undefined) replayBootstrap(runtime, early);
   }
   return handle;
 }

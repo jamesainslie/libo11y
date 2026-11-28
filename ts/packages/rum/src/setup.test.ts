@@ -1634,3 +1634,25 @@ test("a page that hides before the session.start election sends its start at onc
   await open.forceFlush();
   assert.ok(sentEvents(h.transport).includes("o11y.rum.session.start"));
 });
+
+test("a start that fails releases the spans waiting for its session, so a flush never stalls", async () => {
+  const h = harness();
+  const base = h.deps.sessionStore;
+  const deps: RumDeps = {
+    ...h.deps,
+    sessionStore: () => ({
+      ...base(),
+      onChange: () => {
+        throw new Error("the extension context is gone");
+      },
+    }),
+  };
+  open = await setupRumWith(OPTS, deps);
+  open.consent.grant();
+  open.tracerProvider.getTracer("app").startSpan("orphan").end();
+  const flushed = await Promise.race([
+    open.forceFlush().then(() => "flushed"),
+    new Promise((r) => setTimeout(() => r("stalled"), 2000)),
+  ]);
+  assert.equal(flushed, "flushed");
+});

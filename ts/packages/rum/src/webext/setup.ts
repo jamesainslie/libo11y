@@ -181,6 +181,7 @@ export async function setupRumExtensionWith(
   }
 
   let cache: (ConfigStorage & { close(): void }) | undefined;
+  let shutDown = false;
   const extensionBase = chrome.runtime.getURL?.("") ?? `chrome-extension://${chrome.runtime.id}/`;
   const rumDeps: RumDeps = {
     ...deps.rum,
@@ -188,8 +189,11 @@ export async function setupRumExtensionWith(
     bind: contentBinding(deps.content, deps.install !== false),
     sessionStore: () => chromeSessionStore(chrome),
     storage: async () => {
-      cache ??= await chromeConfigStorage(chrome);
-      return cache;
+      const opened = cache ?? (await chromeConfigStorage(chrome));
+      // A cache that finished loading after shutdown stops listening at once.
+      if (shutDown) opened?.close();
+      else cache = opened;
+      return opened;
     },
     ...(inContent
       ? {
@@ -216,6 +220,7 @@ export async function setupRumExtensionWith(
   const handle = t as unknown as RumExtensionTelemetry & { shutdown: RumExtensionTelemetry["shutdown"] };
   const rumShutdown = handle.shutdown.bind(handle);
   handle.shutdown = async (opts) => {
+    shutDown = true;
     const report = await rumShutdown(opts);
     cache?.close();
     return report;
