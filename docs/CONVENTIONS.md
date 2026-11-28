@@ -235,7 +235,9 @@ container (`O11Y_PG_TEST_DSN`).
      newer.
   3. Set `O11YRUM_RELEASE_VERSION` in the `Makefile` and the default in
      `scripts/o11yrum-release-check.sh` to `vX.Y.Z`.
-  4. Run `make o11yrum-release-check` (or `make release-check`) and
+  4. Run `git fetch --tags origin`, because the check looks for the
+     parent's `go/` tag locally. Then run `make o11yrum-release-check` (or
+     `make release-check`) and
      `make o11yrum-image` on the committed tree, then merge the release
      PR.
   5. Tag the merge commit and push the tag on its own:

@@ -36,7 +36,7 @@ git config --file "$GIT_CONFIG_GLOBAL" gc.auto 0
 git config --file "$GIT_CONFIG_GLOBAL" maintenance.auto false
 export GIT_ALLOW_PROTOCOL="file:https:ssh"
 
-repo_root="$(git rev-parse --show-toplevel)"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 if [[ -n "$(git -C "$repo_root" status --porcelain)" ]]; then
 	echo "o11yrum-release-check: commit or stash changes first; the check releases HEAD" >&2
 	exit 1

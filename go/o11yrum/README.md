@@ -23,8 +23,10 @@ Or run the container image, built for `linux/amd64` and `linux/arm64`:
 docker pull ghcr.io/jamesainslie/o11yrum-gateway:0.1.0
 ```
 
-Each release tags the image `X.Y.Z`, `X.Y` and `latest`. Pin it by
-digest in production. The release job summary prints the digest. Every
+Each release tags the image `X.Y.Z`. A release without a `-prerelease`
+suffix also tags `X.Y` and `latest`. Pin the image by digest in
+production. The summary of the release workflow's `image` job prints the
+digest. Every
 image carries build provenance, which you can check before you mirror it:
 
 ```sh
@@ -44,7 +46,9 @@ o11yrum-gateway -version
 ```
 
 [`cmd/o11yrum-gateway/testdata/gateway.yaml`](cmd/o11yrum-gateway/testdata/gateway.yaml)
-is a complete configuration. `environment` is required and takes
+is a complete configuration. It listens on `127.0.0.1:0` for tests, so
+remove `listen` or set it to `:8080` before you use it in the container.
+`environment` is required and takes
 `production`, `staging`, `development` or `test`. The gateway's own
 telemetry follows the standard `OTEL_*` variables.
 
@@ -67,8 +71,8 @@ same variables its own telemetry uses:
 - `OTEL_EXPORTER_OTLP_HEADERS` adds its headers. A header the
   configuration sets wins.
 - `OTEL_EXPORTER_OTLP_PROTOCOL` must be unset or `http/protobuf`, because
-  that is what the sink speaks. Any other value stops the gateway at
-  startup. Set `sinks.otlp.endpoint` to send the gateway's own telemetry
+  that is what the sink speaks. When the endpoint comes from the
+  environment, any other value stops the gateway at startup. Set `sinks.otlp.endpoint` to send the gateway's own telemetry
   over gRPC and the batches over HTTP.
 
 With neither set, the gateway accepts and validates batches but forwards
@@ -163,7 +167,7 @@ The script path is the URL's path, so one upload serves every origin and
 unknown app and an app without uploads all answer 401, and each failed
 attempt spends the client's rate limit. Authenticated uploads are not
 rate limited. `@libo11y/sourcemaps` and its `libo11y-sourcemaps` command
-upload a build's maps.
+upload a build's maps. That package is not on npm yet.
 
 Each frame is looked up by the resource's `service.version` and
 `o11y.rum.app.update_id` (a record's own update ID wins). A resolved frame
@@ -198,8 +202,10 @@ failing store is logged at most once a minute.
 
 The image holds one static binary on `gcr.io/distroless/static-debian12`.
 It runs as user and group 65532, a numeric ID, so Kubernetes can enforce
-`runAsNonRoot`. Its entry point reads `/etc/o11yrum/config.yaml`, and it
-listens on port 8080, the default `listen` address. It writes nothing at
+`runAsNonRoot`. Its default arguments are `-config
+/etc/o11yrum/config.yaml`. Setting `args` in Kubernetes replaces them, so
+keep `-config` when you do. It listens on port 8080, the default `listen`
+address. It writes nothing at
 runtime, so it runs with a read-only root filesystem and every capability
 dropped. A `filesystem` object store is the one exception: mount a
 writable volume at its `root`. The image has no shell and no `sleep`, so
@@ -207,8 +213,11 @@ an `exec` probe or hook cannot work. Probe over HTTP.
 
 ### Kubernetes
 
-Mount the configuration from a ConfigMap, and each upload token from a
-Secret at the path its `upload_token_file` names. On EKS, give the
+Mount the configuration from a ConfigMap under the key `config.yaml`, and
+each upload token from a Secret at the path its `upload_token_file`
+names. `OTEL_EXPORTER_OTLP_ENDPOINT` names the collector for the
+gateway's own telemetry, and for the batches too unless the configuration
+sets `sinks.otlp.endpoint`. On EKS, give the
 service account an S3 role through Pod Identity or IRSA when the object
 store is `s3`.
 
@@ -225,6 +234,8 @@ spec:
       image: ghcr.io/jamesainslie/o11yrum-gateway@sha256:<digest>
       ports:
         - {name: http, containerPort: 8080}
+      env:
+        - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://otel-collector:4318"}
       securityContext:
         allowPrivilegeEscalation: false
         readOnlyRootFilesystem: true

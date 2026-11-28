@@ -89,7 +89,8 @@ v0.3.0 or later.
   reports `v0.1.0`.
 - The container image `ghcr.io/jamesainslie/o11yrum-gateway`: a static
   binary on distroless for `linux/amd64` and `linux/arm64`, running as
-  user 65532 with nothing to write at runtime, published by the release
+  user 65532 with nothing to write at runtime unless a `filesystem` object
+  store is configured, published by the release
   workflow with attested build provenance.
 
 [Unreleased]: https://github.com/jamesainslie/libo11y/compare/go/o11yrum/v0.1.0...HEAD

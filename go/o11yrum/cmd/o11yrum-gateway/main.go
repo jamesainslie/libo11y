@@ -2,13 +2,14 @@
 // configuration file, and the standard OTEL_* environment variables for
 // its own telemetry.
 //
-//	o11yrum-gateway -config /etc/o11yrum/gateway.yaml
+//	o11yrum-gateway -config /etc/o11yrum/config.yaml
 //
 // It serves the gateway under /_o11y/v1/, liveness at /healthz and
 // readiness at /readyz, and drains in-flight requests on SIGINT or
 // SIGTERM. Once shutdown begins /readyz answers 503, and the gateway keeps
-// serving for the configuration's shutdown_delay before it drains. When the configuration sets no sinks.otlp.endpoint, batches go
-// to OTEL_EXPORTER_OTLP_ENDPOINT if that is set.
+// serving for the configuration's shutdown_delay before it drains. When
+// the configuration sets no sinks.otlp.endpoint, batches go to
+// OTEL_EXPORTER_OTLP_ENDPOINT if that is set.
 //
 // The metrics the gateway derives leave with its own metrics, through the
 // reader OTEL_METRICS_EXPORTER selects. When OTEL_METRICS_PRODUCERS is
@@ -69,8 +70,9 @@ func buildVersion() string {
 	return resolveVersion(version, info)
 }
 
-// Shutdown budget. Together they stay inside Kubernetes' default 30s
-// termination grace period, so the final telemetry flush is not killed.
+// Shutdown budget. With shutdown_delay 0 and no preStop sleep, they stay
+// inside Kubernetes' default 30s termination grace period, so the final
+// telemetry flush is not killed. A delay or a sleep adds to the budget.
 const (
 	serverDrain    = 15 * time.Second // in-flight requests and their exports
 	telemetryFlush = 10 * time.Second // the gateway's own telemetry
