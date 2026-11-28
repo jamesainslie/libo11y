@@ -292,9 +292,11 @@ The gateway's own metrics: `o11yrum.replay.segments` counts uploads by
 app, `o11yrum.outcome` (`accepted` or `rejected`) and `o11yrum.reason`.
 `o11yrum.replay.bytes` counts the bytes stored by app.
 `o11yrum.replay.events.dropped` counts the events scrubbing removed by app
-and reason: `input`, `canvas`, `font`, `log`, `type`, `source` (another
-incremental source) and `invalid`. `o11yrum.replay.store.duration` times
-each store write by `o11yrum.operation` and `o11yrum.outcome`.
+and reason: `input`, `canvas`, `font`, `log`, `type`, `stylesheet` (a CSSOM
+edit of a style or link element whose stylesheet is not allowed), `source`
+(another incremental source) and `invalid`.
+`o11yrum.replay.store.duration` times each store write by
+`o11yrum.operation` and `o11yrum.outcome`.
 
 ## Deploying
 

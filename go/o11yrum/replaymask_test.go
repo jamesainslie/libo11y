@@ -161,6 +161,9 @@ func TestStripCSSURLs(t *testing.T) {
 
 func TestStripCSSURLsBareValues(t *testing.T) {
 	for in, want := range map[string]string{
+		// U+017F does not fold to "s": both stay text, as in the collector.
+		"--u:java\u017fcript:x?t=1": "--u:java\u017fcript:x?t=1",
+		`--u:java\17f cript:x?t=1`:  `--u:java\17f cript:x?t=1`,
 		// The collector's css.test.ts cases.
 		"--bg: https://cdn.example/a.png?token=SECRET1&page=2;color:red": `--bg: "https://cdn.example/a.png?page=2";color:red`,
 		":root{--api:/v1/me?session=SECRET2}":                            `:root{--api:"/v1/me"}`,
@@ -212,9 +215,76 @@ func TestStripCSSURLsBareValues(t *testing.T) {
 		"--u:about:blank?t=1":       "--u:about:blank?t=1",
 		"--u:https\\3a //a/?t=1 x":  `--u:"https://a/" x`,
 		"--u:datA:x,y;z!important ": `--u:""!important `,
+		// At the edge of the 11-byte prefix that decides whether a run is
+		// a URL, with escapes decoded.
+		`--u:javascrip\74:x`:  `--u:""`,
+		`--u:\6a avascript:x`: `--u:""`,
+		// A run whose first byte is a digit, "-", "_" or non-ASCII is not
+		// a URL, whatever follows.
+		"--u:-/x?t=1":                "--u:-/x?t=1",
+		"--u:1/x?t=1":                "--u:1/x?t=1",
+		"--u:_https://x/?t=1":        "--u:_https://x/?t=1",
+		"--u:\u00e9https://x/?t=1":   "--u:\u00e9https://x/?t=1",
+		"--u:DATA:x;y,z ,/b?page=1":  `--u:"" ,/b?page=1`,
+		"--u: /a?t=1!\tImPoRtAnT":    "--u: \"/a\"!\tImPoRtAnT",
+		"--u: /a?t=1!importan":       `--u: "/a"`,
+		"--u: data:x,y!important;/b": `--u: ""!important;/b`,
 	} {
 		if got := stripCSSURLs(in, testAllow); got != want {
 			t.Errorf("stripCSSURLs(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestStripCSSValue(t *testing.T) {
+	for in, want := range map[string]string{
+		// The value is read as if it followed "property:".
+		"/api/avatar?sig=SECRET":                 `"/api/avatar"`,
+		"  /x?t=1":                               `  "/x"`,
+		"x https://cdn.example/a?sig=SECRET":     `x "https://cdn.example/a"`,
+		"url(/a.png?token=SECRET&page=2) repeat": `url("/a.png?page=2") repeat`,
+		"\"/x?t=1\"":                             `"/x"`,
+		"/*c*//x?t=1":                            `"/x"`,
+		"/v1/me":                                 "/v1/me",
+		"red":                                    "red",
+		"x/y?t=1":                                "x/y?t=1",
+		"":                                       "",
+		// After ";" the scanner is outside a value again, as in a
+		// declaration list.
+		"/x?t=1;/y?t=1":   `"/x";/y?t=1`,
+		"a;b:/x?t=1":      `a;b:"/x"`,
+		"a{b}/x?t=1":      "a{b}/x?t=1",
+		"/x?t=1{c:/y?t=1": `"/x"{c:"/y"`,
+	} {
+		if got := stripCSSValue(in, testAllow); got != want {
+			t.Errorf("stripCSSValue(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestBareRunIsURLDoesNotAllocate checks the prefix read at every value
+// boundary stays on the stack.
+func TestBareRunIsURLDoesNotAllocate(t *testing.T) {
+	for _, c := range []struct {
+		css  string
+		want bool
+	}{
+		{"javascript:alert(1)", true},
+		{"JavaScript:x", true},
+		{"DATA:x;y,z", true},
+		{"/a?t=1", true},
+		{"abc def", false},
+		{"important!important", false},
+		{"a;b", false},
+		{"verylongnamewithnocolon", false},
+		{`javascrip\74:x`, true},
+	} {
+		var got bool
+		if allocs := testing.AllocsPerRun(100, func() { got = bareRunIsURL(c.css, 0) }); allocs != 0 {
+			t.Errorf("bareRunIsURL(%q): %v allocations", c.css, allocs)
+		}
+		if got != c.want {
+			t.Errorf("bareRunIsURL(%q) = %v, want %v", c.css, got, c.want)
 		}
 	}
 }
@@ -232,7 +302,9 @@ func TestStripCSSURLsLongValuesAreCheap(t *testing.T) {
 	} {
 		start := time.Now()
 		got := stripCSSURLs(css, testAllow)
-		if d := time.Since(start); d > 2*time.Second {
+		// Linear takes milliseconds and the quadratic scan minutes; the
+		// slack covers -race -cover on a loaded machine.
+		if d := time.Since(start); d > 10*time.Second {
 			t.Errorf("%s: took %v", name, d)
 		}
 		if got != css {
