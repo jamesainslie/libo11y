@@ -62,9 +62,12 @@ adhere to [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - `@libo11y/rum`: a view summary emitted on a navigation away was lost when
-  other records were already waiting to be sent. Chromium fires `pagehide`
+  other records were already waiting to be sent. Browsers fire `pagehide`
   before `visibilitychange`, and the web flush on hide had already started
-  without the summary. RUM now emits its summaries before that flush.
+  without the summary. RUM now emits its summaries before that flush and
+  leaves the export to it, so the summary goes out with the unload send in
+  Firefox and WebKit too, which fire `pagehide` while the page still
+  reports visible.
 - `@libo11y/rum`: when two tabs rotated an expired session at the same
   moment, the tab whose new session lost still sent
   `o11y.rum.session.start` for it. Only the winning session's start is

@@ -24,10 +24,45 @@ class FakeDocument extends EventTarget {
   }
 }
 
+/**
+ * A window whose fire dispatches like the browser does: listeners run in order, and the microtask
+ * queue drains after each one, so a promise chain a listener starts runs before the next listener.
+ * EventTarget.dispatchEvent from script drains nothing until every listener returned.
+ */
+class FakeWindow extends EventTarget {
+  readonly #listeners: { type: string; listener: EventListenerOrEventListenerObject }[] = [];
+  override addEventListener(
+    type: string,
+    listener: EventListenerOrEventListenerObject | null,
+    options?: AddEventListenerOptions | boolean,
+  ): void {
+    super.addEventListener(type, listener, options);
+    if (listener !== null) this.#listeners.push({ type, listener });
+  }
+  override removeEventListener(
+    type: string,
+    listener: EventListenerOrEventListenerObject | null,
+    options?: EventListenerOptions | boolean,
+  ): void {
+    super.removeEventListener(type, listener, options);
+    const i = this.#listeners.findIndex((l) => l.type === type && l.listener === listener);
+    if (i >= 0) this.#listeners.splice(i, 1);
+  }
+  async fire(type: string): Promise<void> {
+    const event = new Event(type);
+    for (const { listener } of this.#listeners.filter((l) => l.type === type)) {
+      if (typeof listener === "function") listener.call(this, event);
+      else listener.handleEvent(event);
+      await new Promise((r) => setImmediate(r));
+    }
+  }
+}
+
 interface Harness {
   readonly transport: FakeTransport;
   readonly storage: ReturnType<typeof createFakeStorage>;
   readonly document: FakeDocument;
+  readonly window: FakeWindow;
   readonly transportOptions: HttpTransportOptions[];
   readonly deps: RumDeps;
 }
@@ -44,7 +79,7 @@ function harness(shared: Shared = {}): Harness {
   const storage = shared.storage ?? createFakeStorage();
   const hub = shared.hub ?? createChannelHub();
   const document = new FakeDocument();
-  const window = new EventTarget();
+  const window = new FakeWindow();
   const transportOptions: HttpTransportOptions[] = [];
   const base = defaultSetupDeps();
   const web: SetupDeps = {
@@ -64,6 +99,7 @@ function harness(shared: Shared = {}): Harness {
     transport,
     storage,
     document,
+    window,
     transportOptions,
     deps: {
       web,
@@ -881,6 +917,24 @@ for (const [how, hide] of [
     assert.equal(summary?.["o11y.rum.summary.cls.value"], 0.1);
   });
 }
+
+test("a pagehide while the document still reports visible sends the summary in unload mode", async () => {
+  // Firefox and WebKit fire pagehide on a navigation while visibilityState is still "visible".
+  // Only an unload-mode send (keepalive fetch or beacon) is issued before the document goes away.
+  const h = harness();
+  open = await setupRumWith({ ...OPTS, consent: { initial: "granted" } }, h.deps);
+  await open.forceFlush();
+  const before = h.transport.requests.length;
+  await h.window.fire("pagehide");
+  await open.forceFlush();
+  const sent = h.transport.requests.slice(before).filter((r) => r.signal === "logs");
+  const withSummary = sent.filter((r) => r.body.includes("o11y.rum.view.summary"));
+  assert.equal(withSummary.length, 1);
+  assert.deepEqual(
+    sent.map((r) => r.mode),
+    sent.map(() => "unload"),
+  );
+});
 
 test("a rotated session's start goes out when the page is hidden before the election ends", async () => {
   let now = 1_000_000;

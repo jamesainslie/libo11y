@@ -350,13 +350,18 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
     installXhrInstrumentation: (o) => deps.web.installXhrInstrumentation({ ...o, onStart }),
   };
 
-  // Hide handling. On a navigation, Chromium fires pagehide before visibilitychange, and web's
+  // Hide handling. On a navigation, every engine fires pagehide before visibilitychange, and web's
   // flush on hide runs once per hide and exports whatever is pending at that moment; a flush
   // started after it waits for its export, which never completes once the page is gone. So RUM's
   // listeners are registered before web's: on the first of pagehide or visibilitychange (hidden)
   // they run the hide hooks (vitals commit their values) and emit the summaries, and web's flush
   // then exports them with the detail already pending. web-vitals listens in the capture phase on
   // window, so its own hide reports land before either listener runs.
+  //
+  // RUM never exports on hide itself. Firefox and WebKit fire pagehide while the document still
+  // reports visible, so the send mode is "unload" only once web's own pagehide listener has run,
+  // and the microtasks after each listener would carry an export RUM started to the transport
+  // before that: a normal send, which the browser drops with the page.
   const doc = deps.document;
   const win = deps.window;
   const hideHooks = new Set<() => void>();
@@ -631,7 +636,6 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
   afterHide = () => {
     settleStarts();
     summary.flush();
-    void t.forceFlush();
   };
   const onActivity = (): void => session.touch();
   const ACTIVITY = ["pointerdown", "keydown", "scroll", "touchstart"] as const;
