@@ -35,7 +35,7 @@ gh attestation verify oci://ghcr.io/jamesainslie/o11yrum-gateway:0.1.0 --repo ja
 
 Use the module as a library with `go get
 github.com/jamesainslie/libo11y/go/o11yrum@v0.1.0`. It requires
-`github.com/jamesainslie/libo11y/go` v0.3.0 or later.
+`github.com/jamesainslie/libo11y/go` v0.4.0 or later.
 
 ## Running the gateway
 

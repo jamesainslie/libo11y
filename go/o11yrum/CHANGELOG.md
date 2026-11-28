@@ -11,7 +11,7 @@ adheres to [Semantic Versioning](https://semver.org/).
 ## [0.1.0] - 2026-11-27
 
 The first release. It requires `github.com/jamesainslie/libo11y/go`
-v0.3.0 or later.
+v0.4.0 or later.
 
 ### Added
 
