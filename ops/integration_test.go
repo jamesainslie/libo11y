@@ -47,6 +47,16 @@ const (
 	browserViewID  = "v2 a&b/c"
 )
 
+// client bounds every call to a backend, so one hung request fails the
+// test long before go test's own timeout.
+var client = &http.Client{Timeout: 15 * time.Second}
+
+// grafanaBuiltins are the built-in variables Grafana fills in itself when
+// it runs a query. The test leaves them for Grafana, so the windows a
+// panel really gets, such as $__rate_interval from the scrape interval, are
+// the ones tested.
+var grafanaBuiltins = []string{"__rate_interval", "__interval", "__interval_ms", "__range", "__range_s", "__range_ms"}
+
 // The datasource UIDs ops/datasources/example.yaml provisions.
 var datasourceUIDs = map[string]string{"prometheus": "prometheus", "loki": "loki", "tempo": "tempo"}
 
@@ -103,14 +113,18 @@ func TestIntegration(t *testing.T) {
 	// point. The counters must move between scrapes for rates and
 	// quantiles to have a value, so the first session is scraped before
 	// the others are sent. The last session is the one the explorer opens;
-	// it ends before now, so every record is inside the query range.
+	// it ends before now, so every record is inside the query range. The
+	// gateway serves its Prometheus reader on every interface, because
+	// Prometheus scrapes it from a container through host-gateway; a host
+	// firewall that blocks the Docker bridge makes the first wait time out.
 	now := time.Now()
 	send(t, gw.Addr, fixture.TrafficFor(now.Add(-2*time.Minute), newSessionID(t)))
 	first := waitForValue(t, `sum(o11y_rum_views_total{service_name="shop-web"})`, 0)
 	send(t, gw.Addr, fixture.TrafficFor(now.Add(-time.Minute), newSessionID(t)))
 	send(t, gw.Addr, fixture.TrafficFor(now.Add(-15*time.Second), fixture.SessionID))
 	send(t, gw.Addr, []fixture.Request{fixture.ViewSummary(now.Add(-10*time.Second), browserSession, browserViewID)})
-	waitForValue(t, `sum(o11y_rum_views_total{service_name="shop-web"})`, first)
+	// Two more sessions with as many views as the first, and one more view.
+	waitForValue(t, `sum(o11y_rum_views_total{service_name="shop-web"})`, 3*first)
 
 	waitFor(t, "the session's events in Loki", 90*time.Second, func() (bool, string) {
 		n, detail := lokiLines(t, fmt.Sprintf(`{service_name="shop-web"} | session_id=%q`, fixture.SessionID), now)
@@ -180,6 +194,9 @@ func TestIntegration(t *testing.T) {
 	for name, uid := range datasourceUIDs {
 		vars[name] = uid
 	}
+	for _, name := range grafanaBuiltins {
+		vars[name] = "$" + name
+	}
 	t.Run("every panel query answers through grafana", func(t *testing.T) {
 		for _, d := range dashboards {
 			for _, v := range d.Templating.List {
@@ -190,10 +207,14 @@ func TestIntegration(t *testing.T) {
 			want := mustHaveData[d.UID]
 			seen := map[string]bool{}
 			for _, p := range d.Panels {
+				if len(p.Panels) > 0 {
+					t.Errorf("%s: row %q is collapsed; the test walks only top-level panels", d.UID, p.Title)
+				}
 				if len(p.Targets) == 0 {
 					continue
 				}
 				hasData := false
+				var sent []string
 				for _, target := range p.Targets {
 					res, err := dsQuery(t, p, target, vars)
 					if err != nil {
@@ -201,6 +222,7 @@ func TestIntegration(t *testing.T) {
 						continue
 					}
 					hasData = hasData || res.hasData()
+					sent = append(sent, res.diagnose())
 					if d.UID == "libo11y-rum-session-explorer" && p.Title == "Views in this session" {
 						if got := res.labelValues("o11y_rum_view_id"); !slices.Equal(got, []string{fixture.View0, fixture.View1}) {
 							t.Errorf("%s: %q: views %v, want %v and %v", d.UID, p.Title, got, fixture.View0, fixture.View1)
@@ -210,7 +232,7 @@ func TestIntegration(t *testing.T) {
 				if slices.Contains(want, p.Title) {
 					seen[p.Title] = true
 					if !hasData {
-						t.Errorf("%s: %q answered with no data; the fixture traffic should fill it", d.UID, p.Title)
+						t.Errorf("%s: %q answered with no data; the fixture traffic should fill it\n%s", d.UID, p.Title, strings.Join(sent, "\n"))
 					}
 				}
 			}
@@ -375,6 +397,8 @@ type panel struct {
 	Title      string           `json:"title"`
 	Datasource *datasource      `json:"datasource"`
 	Targets    []map[string]any `json:"targets"`
+	// Panels holds the panels of a collapsed row.
+	Panels []json.RawMessage `json:"panels"`
 }
 
 type datasource struct {
@@ -453,6 +477,41 @@ type queryResult struct {
 			Values [][]any `json:"values"`
 		} `json:"data"`
 	} `json:"frames"`
+
+	// sent and raw are the query as sent and Grafana's answer, for failure
+	// messages.
+	sent, raw string
+}
+
+// diagnose describes the query and its answer, and for Prometheus what
+// Prometheus itself answers to the query with the built-in intervals
+// fixed, so an empty panel shows whether Grafana or the data is short.
+func (r queryResult) diagnose() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "  sent: %s\n  grafana: %s", r.sent, trim(r.raw, 1500))
+	var q struct {
+		Datasource struct {
+			Type string `json:"type"`
+		} `json:"datasource"`
+		Expr string `json:"expr"`
+	}
+	if json.Unmarshal([]byte(r.sent), &q) == nil && q.Datasource.Type == "prometheus" {
+		expr := strings.NewReplacer("$__rate_interval", "5m", "$__interval", "1m", "$__range", "1h").Replace(q.Expr)
+		var direct any
+		detail, err := getJSON(prometheusURL+"/api/v1/query?"+url.Values{"query": {expr}}.Encode(), &direct)
+		if err != nil {
+			detail = err.Error()
+		}
+		fmt.Fprintf(&b, "\n  prometheus %s: %s", expr, trim(detail, 1500))
+	}
+	return b.String()
+}
+
+func trim(s string, n int) string {
+	if len(s) > n {
+		return s[:n] + "..."
+	}
+	return s
 }
 
 // hasData reports whether any frame has at least one row or point.
@@ -532,14 +591,22 @@ func dsQuery(t *testing.T, p panel, target map[string]any, vars map[string]strin
 		return queryResult{}, fmt.Errorf("HTTP %d, not JSON: %s", status, resp)
 	}
 	res, ok := r.Results[ref]
+	if sent, err := json.Marshal(q); err == nil {
+		res.sent = string(sent)
+	}
+	res.raw = string(resp)
 	if status != http.StatusOK || !ok || res.Error != "" {
-		return res, fmt.Errorf("HTTP %d for %s %q: %s", status, ds.Type, q["expr"], resp)
+		query := q["expr"]
+		if query == nil {
+			query = q["query"]
+		}
+		return res, fmt.Errorf("HTTP %d for %s %q: %s", status, ds.Type, query, resp)
 	}
 	return res, nil
 }
 
 func get(u string) (int, []byte, error) {
-	resp, err := http.Get(u) //nolint:noctx // a short poll against loopback
+	resp, err := client.Get(u) //nolint:noctx // client bounds the call
 	if err != nil {
 		return 0, nil, err
 	}
@@ -549,7 +616,7 @@ func get(u string) (int, []byte, error) {
 }
 
 func post(u string, body []byte) (int, []byte, error) {
-	resp, err := http.Post(u, "application/json", bytes.NewReader(body)) //nolint:noctx // a short call against loopback
+	resp, err := client.Post(u, "application/json", bytes.NewReader(body)) //nolint:noctx // client bounds the call
 	if err != nil {
 		return 0, nil, err
 	}

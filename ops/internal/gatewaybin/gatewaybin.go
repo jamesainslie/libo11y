@@ -79,7 +79,8 @@ type Options struct {
 	PromHost string
 	PromPort int
 	// Budget bounds the whole life of the process, so a hung test cannot
-	// leave it running. Zero means three minutes.
+	// leave it running. Zero means three minutes. Start also ends it 30
+	// seconds before the test's own deadline.
 	Budget time.Duration
 }
 
@@ -94,12 +95,25 @@ type Process struct {
 	budget time.Duration
 	done   chan struct{} // closed when stderr is fully read
 	log    *syncBuffer
+
+	stopOnce sync.Once
+	stopErr  error
 }
 
 // Start launches the gateway and stops it when the test ends, failing the
-// test when it cannot start or does not exit cleanly.
+// test when it cannot start or does not exit cleanly. The budget ends
+// before the test's deadline, because a test binary that times out never
+// runs its cleanups.
 func Start(t testing.TB, bin string, o Options) *Process {
 	t.Helper()
+	if dl, ok := t.(interface{ Deadline() (time.Time, bool) }); ok {
+		if d, ok := dl.Deadline(); ok {
+			left := max(time.Until(d)-30*time.Second, time.Second)
+			if o.Budget == 0 || left < o.Budget {
+				o.Budget = left
+			}
+		}
+	}
 	p, err := Launch(bin, o)
 	if err != nil {
 		t.Fatal(err)
@@ -130,6 +144,7 @@ func Launch(bin string, o Options) (*Process, error) {
 		"OTEL_TRACES_EXPORTER=none",
 		"OTEL_LOGS_EXPORTER=none",
 	)
+	killWithParent(cmd)
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		cancel()
@@ -181,14 +196,30 @@ func (p *Process) read(stderr io.Reader, listening chan<- string) {
 // Log is everything the gateway wrote to stderr so far.
 func (p *Process) Log() string { return p.log.String() }
 
+// stopGrace is how long Stop waits after SIGINT before it kills the
+// gateway.
+const stopGrace = 30 * time.Second
+
 // Stop sends SIGINT, waits for the gateway to drain and exit, and reports
-// an unclean exit or a kill by the process budget.
+// an unclean exit or a kill by the process budget. A gateway that has not
+// exited stopGrace after SIGINT is killed. Later calls return the first
+// call's result.
 func (p *Process) Stop() error {
+	p.stopOnce.Do(func() { p.stopErr = p.stop() })
+	return p.stopErr
+}
+
+func (p *Process) stop() error {
 	defer p.cancel()
 	_ = p.cmd.Process.Signal(os.Interrupt) // an exited process is reported by Wait
-	<-p.done
+	select {
+	case <-p.done:
+	case <-time.After(stopGrace):
+		_ = p.cmd.Process.Kill() // Wait reports the kill
+		<-p.done
+	}
 	err := p.cmd.Wait()
-	if p.ctx.Err() != nil {
+	if err != nil && p.ctx.Err() != nil {
 		return fmt.Errorf("the gateway outlived its %s budget and was killed:\n%s", p.budget, p.log.String())
 	}
 	if err != nil {

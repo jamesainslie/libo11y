@@ -42,7 +42,7 @@ func checkInBrowser(t *testing.T) {
 	if err := chromedp.Do(browser); err != nil {
 		t.Fatalf("start Chrome or Chromium: %v", err)
 	}
-	ctx, cancelTimeout := context.WithTimeout(browser, 2*time.Minute)
+	ctx, cancelTimeout := context.WithTimeout(browser, time.Minute)
 	defer cancelTimeout()
 
 	explorer := grafanaURL + "/d/libo11y-rum-session-explorer?" + url.Values{
@@ -55,12 +55,30 @@ func checkInBrowser(t *testing.T) {
 		t.Fatalf("open %s: %v", explorer, err)
 	}
 
+	t.Run("the loki app variable lists the app", func(t *testing.T) {
+		vctx, cancelV := context.WithTimeout(browser, 45*time.Second)
+		defer cancelV()
+		err := chromedp.Do(vctx,
+			chromedp.Click(fmt.Sprintf(pickerValue, "All")),
+			chromedp.WaitVisible(fmt.Sprintf(pickerOption, fixture.Service)),
+		)
+		if err != nil {
+			t.Errorf("the app variable's options do not include %q: %v", fixture.Service, err)
+		}
+		// Close the picker, so it does not cover the panels.
+		_ = chromedp.Do(vctx, chromedp.KeyEvent("\x1b")) // best effort
+	})
+
 	t.Run("the view link percent-encodes the view ID once", func(t *testing.T) {
+		lctx, cancelL := context.WithTimeout(browser, 75*time.Second)
+		defer cancelL()
+		// Only the data links carry a view ID; the page's own links keep
+		// var-view_id empty.
 		var hrefs []string
 		waitFor(t, "the explorer's view links", 60*time.Second, func() (bool, string) {
 			var err error
-			hrefs, err = chromedp.Run(ctx, chromedp.Evaluate[[]string](
-				`Array.from(document.querySelectorAll('a[href*="var-view_id="]')).map(a => a.getAttribute('href'))`))
+			hrefs, err = chromedp.Run(lctx, chromedp.Evaluate[[]string](
+				`Array.from(document.querySelectorAll('a[href*="var-view_id="]')).map(a => a.getAttribute('href')).filter(h => /[?&]var-view_id=[^&]/.test(h))`))
 			if err != nil {
 				return false, err.Error()
 			}
@@ -79,23 +97,32 @@ func checkInBrowser(t *testing.T) {
 		}
 	})
 
-	t.Run("the loki app variable lists the app", func(t *testing.T) {
-		err := chromedp.Do(ctx,
-			chromedp.Click(fmt.Sprintf(pickerValue, "All")),
-			chromedp.WaitVisible(fmt.Sprintf(pickerOption, fixture.Service)),
-		)
-		if err != nil {
-			options, _ := chromedp.Run(ctx, chromedp.Evaluate[[]string](
-				`Array.from(document.querySelectorAll('[data-testid^="data-testid Dashboard template variables Variable Value DropDown option text"]')).map(e => e.textContent)`)) // best effort, for the message
-			t.Fatalf("the app variable's options do not include %q: %v (options seen: %v)", fixture.Service, err, options)
-		}
-	})
-
 	if t.Failed() {
-		html, _ := chromedp.Run(ctx, chromedp.OuterHTML("body")) // best effort, for the message
-		if len(html) > 20000 {
-			html = html[:20000] + "..."
+		// A fresh timeout, because a failed wait may have used up its own.
+		dump, cancelDump := context.WithTimeout(browser, 15*time.Second)
+		defer cancelDump()
+		state, err := chromedp.Run(dump, chromedp.Evaluate[string](pageState))
+		if err != nil {
+			state = err.Error()
 		}
-		t.Logf("explorer page body:\n%s", html)
+		t.Logf("explorer page state:\n%s", state)
 	}
 }
+
+// pageState describes the explorer page for a failure message: the
+// dashboard's variables as Grafana's scene holds them, the links on the
+// page, and the visible text.
+const pageState = `(() => {
+  const out = {};
+  try {
+    const vars = window.__grafanaSceneContext?.state?.$variables?.state?.variables ?? [];
+    out.variables = vars.map(v => ({
+      name: v.state.name, value: v.state.value, text: v.state.text,
+      options: (v.state.options ?? []).map(o => o.value), error: v.state.error ? String(v.state.error) : undefined,
+      loading: v.state.loading, query: v.state.query,
+    }));
+  } catch (e) { out.variables = String(e); }
+  out.links = Array.from(document.querySelectorAll('a[href]')).map(a => a.getAttribute('href')).filter(h => h.includes('var-')).slice(0, 40);
+  out.text = (document.body?.innerText ?? '').slice(0, 6000);
+  return JSON.stringify(out, null, 2);
+})()`
