@@ -39,6 +39,18 @@ pub fn build(b: *std.Build) !void {
     const o11y_mod = zig_dep.module("o11y");
     const o11ytest_mod = zig_dep.module("o11ytest");
 
+    const is_linux = target.result.os.tag == .linux;
+    const is_darwin = target.result.os.tag.isDarwin();
+    const is_windows = target.result.os.tag == .windows;
+    const is_elf = !is_darwin and !is_windows;
+    const use_llvm_linux: ?bool = if (is_linux) true else null;
+    const abi_ver = if (version.major == 0)
+        b.fmt("0.{d}", .{version.minor})
+    else
+        b.fmt("{d}", .{version.major});
+
+    const metadata = b.addWriteFiles();
+
     // The libraries hold no C code, so they need no UBSan runtime of their
     // own, and leaving it out keeps `__ubsan_*` out of their symbols. A
     // consumer built with -fsanitize=undefined links its own runtime.
@@ -58,31 +70,99 @@ pub fn build(b: *std.Build) !void {
         .name = "o11y",
         .linkage = .static,
         .root_module = core_static_mod,
+        .use_llvm = use_llvm_linux,
     });
     libo11y_static.bundle_compiler_rt = true;
     libo11y_static.bundle_ubsan_rt = false;
     b.installArtifact(libo11y_static);
 
-    // Shared C11 library: libo11y.so.X.Y.Z or libo11y.X.Y.Z.dylib, with the
-    // unversioned name as a link.
+    // Shared C11 library: libo11y.so.X.Y.Z or libo11y.X.Y.Z.dylib, with a
+    // pre-1.0 minor-versioned SONAME/install_name and symlink chain.
     const core_shared_mod = b.createModule(.{
         .root_source_file = b.path("src/abi.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
+        .pic = if (is_elf) true else null,
         .imports = &.{
             .{ .name = "o11y", .module = o11y_mod },
             .{ .name = "c_build_options", .module = build_options_mod },
         },
     });
-    const libo11y_shared = b.addLibrary(.{
-        .name = "o11y",
-        .linkage = .dynamic,
-        .root_module = core_shared_mod,
-        .version = version,
-    });
-    libo11y_shared.bundle_ubsan_rt = false;
-    b.installArtifact(libo11y_shared);
+    if (is_elf) {
+        const libo11y_pic = b.addLibrary(.{
+            .name = "o11y_pic",
+            .linkage = .static,
+            .root_module = core_shared_mod,
+            .use_llvm = use_llvm_linux,
+        });
+        libo11y_pic.bundle_compiler_rt = true;
+        libo11y_pic.bundle_ubsan_rt = false;
+
+        const ver_script = metadata.add("o11y.ver",
+            \\{
+            \\  global: o11y_*;
+            \\  local: *;
+            \\};
+            \\
+        );
+        const so_name = b.fmt("libo11y.so.{s}", .{version_text});
+        const so_abi_name = b.fmt("libo11y.so.{s}", .{abi_ver});
+        const link_shared = b.addRunFile(.zig_exe);
+        link_shared.addArg("cc");
+        if (!target.query.isNative()) {
+            link_shared.addArgs(&.{ "-target", try target.result.zigTriple(b.allocator) });
+        }
+        link_shared.addArg("-shared");
+        link_shared.addArg(b.fmt("-Wl,-soname,{s}", .{so_abi_name}));
+        link_shared.addPrefixedFileArg("-Wl,--version-script=", ver_script);
+        link_shared.addArgs(&.{ "-Wl,-z,noexecstack", "-Wl,-z,relro", "-Wl,--whole-archive" });
+        link_shared.addArtifactArg(libo11y_pic);
+        link_shared.addArgs(&.{ "-Wl,--no-whole-archive", "-lpthread", "-lm", "-o" });
+        const shared_out = link_shared.addOutputFileArg(so_name);
+
+        const install_so = b.addInstallLibFile(shared_out, so_name);
+        b.getInstallStep().dependOn(&install_so.step);
+
+        const ln_abi = b.addSystemCommand(&.{ "ln", "-sfn", so_name, so_abi_name });
+        ln_abi.setCwd(.{ .relative = .{ .base = .install_lib } });
+        ln_abi.has_side_effects = true;
+        ln_abi.step.dependOn(&install_so.step);
+
+        const ln_plain = b.addSystemCommand(&.{ "ln", "-sfn", so_abi_name, "libo11y.so" });
+        ln_plain.setCwd(.{ .relative = .{ .base = .install_lib } });
+        ln_plain.has_side_effects = true;
+        ln_plain.step.dependOn(&ln_abi.step);
+        b.getInstallStep().dependOn(&ln_plain.step);
+    } else {
+        const libo11y_shared = b.addLibrary(.{
+            .name = "o11y",
+            .linkage = .dynamic,
+            .root_module = core_shared_mod,
+            .version = version,
+        });
+        libo11y_shared.bundle_ubsan_rt = false;
+        if (is_darwin) {
+            const dylib_name = b.fmt("libo11y.{s}.dylib", .{version_text});
+            const dylib_abi_name = b.fmt("libo11y.{s}.dylib", .{abi_ver});
+            libo11y_shared.install_name = b.fmt("@rpath/{s}", .{dylib_abi_name});
+            const install_dylib = b.addInstallArtifact(libo11y_shared, .{ .dylib_symlinks = false });
+            b.getInstallStep().dependOn(&install_dylib.step);
+
+            const ln_abi = b.addSystemCommand(&.{ "ln", "-sfn", dylib_name, dylib_abi_name });
+            ln_abi.setCwd(.{ .relative = .{ .base = .install_lib } });
+            ln_abi.has_side_effects = true;
+            ln_abi.step.dependOn(&install_dylib.step);
+
+            const ln_plain = b.addSystemCommand(&.{ "ln", "-sfn", dylib_abi_name, "libo11y.dylib" });
+            ln_plain.setCwd(.{ .relative = .{ .base = .install_lib } });
+            ln_plain.has_side_effects = true;
+            ln_plain.step.dependOn(&ln_abi.step);
+            b.getInstallStep().dependOn(&ln_plain.step);
+        } else {
+            b.installArtifact(libo11y_shared);
+        }
+    }
 
     // Self-contained test harness library: libo11ytest.a
     const test_lib_mod = b.createModule(.{
@@ -100,6 +180,7 @@ pub fn build(b: *std.Build) !void {
         .name = "o11ytest",
         .linkage = .static,
         .root_module = test_lib_mod,
+        .use_llvm = use_llvm_linux,
     });
     libo11ytest.bundle_compiler_rt = true;
     libo11ytest.bundle_ubsan_rt = false;
@@ -128,8 +209,7 @@ pub fn build(b: *std.Build) !void {
     });
 
     // pkg-config and CMake metadata, generated with the manifest version.
-    const system_libs: []const u8 = if (target.result.os.tag == .linux) "-lpthread -lm" else "";
-    const metadata = b.addWriteFiles();
+    const system_libs: []const u8 = if (is_linux) "-lpthread -lm" else "";
     const core_pc = metadata.add("libo11y.pc", pkgConfig(b, .{
         .name = "libo11y",
         .description = "OpenTelemetry traces, metrics and logs for C11",
@@ -147,15 +227,21 @@ pub fn build(b: *std.Build) !void {
         .system_libs = system_libs,
         .static_only_system_libs = false,
     }));
+    const ptr_bytes = target.result.ptrBitWidth() / 8;
+    const version_match_rule = if (version.major == 0)
+        b.fmt("\"${{PACKAGE_FIND_VERSION_MAJOR}}\" STREQUAL \"0\" AND \"${{PACKAGE_FIND_VERSION_MINOR}}\" STREQUAL \"{d}\"", .{version.minor})
+    else
+        b.fmt("\"${{PACKAGE_FIND_VERSION_MAJOR}}\" STREQUAL \"{d}\"", .{version.major});
     const cmake_version = metadata.add("libo11yConfigVersion.cmake", b.fmt(
         \\# Version file for find_package(libo11y). Before 1.0 a minor release may
-        \\# change the API, so a request matches only the same major and minor.
+        \\# change the API and ABI, so 0.x matches the same major and minor; from
+        \\# 1.0 onward, compatibility follows SameMajorVersion.
         \\set(PACKAGE_VERSION "{s}")
         \\if("${{PACKAGE_FIND_VERSION}}" STREQUAL "")
         \\    set(PACKAGE_VERSION_COMPATIBLE TRUE)
         \\elseif(PACKAGE_VERSION VERSION_LESS PACKAGE_FIND_VERSION)
         \\    set(PACKAGE_VERSION_COMPATIBLE FALSE)
-        \\elseif("${{PACKAGE_FIND_VERSION_MAJOR}}" STREQUAL "{d}" AND "${{PACKAGE_FIND_VERSION_MINOR}}" STREQUAL "{d}")
+        \\elseif({s})
         \\    set(PACKAGE_VERSION_COMPATIBLE TRUE)
         \\    if(PACKAGE_FIND_VERSION VERSION_EQUAL PACKAGE_VERSION)
         \\        set(PACKAGE_VERSION_EXACT TRUE)
@@ -163,8 +249,13 @@ pub fn build(b: *std.Build) !void {
         \\else()
         \\    set(PACKAGE_VERSION_COMPATIBLE FALSE)
         \\endif()
+        \\if(CMAKE_SIZEOF_VOID_P AND NOT CMAKE_SIZEOF_VOID_P EQUAL {d})
+        \\    set(PACKAGE_VERSION "{s}")
+        \\    set(PACKAGE_VERSION_COMPATIBLE FALSE)
+        \\    set(PACKAGE_VERSION_UNSUITABLE TRUE)
+        \\endif()
         \\
-    , .{ version_text, version.major, version.minor }));
+    , .{ version_text, version_match_rule, ptr_bytes, version_text }));
     b.getInstallStep().dependOn(&b.addInstallFile(core_pc, "lib/pkgconfig/libo11y.pc").step);
     b.getInstallStep().dependOn(&b.addInstallFile(test_pc, "lib/pkgconfig/libo11ytest.pc").step);
     b.getInstallStep().dependOn(&b.addInstallFile(cmake_version, "lib/cmake/libo11y/libo11yConfigVersion.cmake").step);
@@ -226,7 +317,7 @@ pub fn build(b: *std.Build) !void {
         []const u8,
         "conformance-dir",
         "Path to shared conformance/ directory (default: ../conformance)",
-    ) orelse "../conformance";
+    );
 
     const test_suites = [_]struct {
         name: []const u8,
@@ -241,6 +332,7 @@ pub fn build(b: *std.Build) !void {
         .{ .name = "test-propagation", .src = "tests/test_propagation.c" },
         .{ .name = "test-conformance", .src = "tests/test_conformance.c", .needs_conformance_dir = true },
         .{ .name = "test-wire", .src = "tests/test_wire.c" },
+        .{ .name = "test-concurrency", .src = "tests/test_concurrency.c" },
     };
 
     for (test_suites) |suite| {
@@ -262,7 +354,11 @@ pub fn build(b: *std.Build) !void {
         });
         const run = b.addRunArtifact(exe);
         if (suite.needs_conformance_dir) {
-            run.addArg(conformance_dir);
+            if (conformance_dir) |dir| {
+                run.addArg(dir);
+            } else {
+                run.addDirectoryArg(b.path("../conformance"));
+            }
             run.has_side_effects = true;
         }
         test_step.dependOn(&run.step);

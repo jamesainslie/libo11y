@@ -410,9 +410,44 @@ c-check:
 	C_SANITIZE_J=$(C_SANITIZE_J) c/tests/run_sanitized.sh c/zig-out conformance
 	cd c && zig build -j$(ZIG_BUILD_J) -Doptimize=ReleaseSafe && zig build test -j$(ZIG_BUILD_J) -Doptimize=ReleaseSafe
 	c/tests/test_cli.sh c/zig-out/bin/libo11y
-	@tmp="$$(mktemp)"; \
-	cc -std=c11 -Wall -Wextra -Werror -Wpedantic -Ic/zig-out/include c/examples/quickstart.c c/zig-out/lib/libo11y.a -lpthread -lm -o "$$tmp" && "$$tmp"; \
-	rc=$$?; rm -f "$$tmp"; exit $$rc
+	@tmp="$$(mktemp -d)"; \
+	trap 'rm -rf "$$tmp"' EXIT; \
+	set -eu; \
+	cc -std=c11 -Wall -Wextra -Werror -Wpedantic -Ic/zig-out/include c/examples/quickstart.c c/zig-out/lib/libo11y.a -lpthread -lm -o "$$tmp/qs-static" && "$$tmp/qs-static"; \
+	cc -std=c11 -Wall -Wextra -Werror -Wpedantic -Ic/zig-out/include c/examples/quickstart.c -Lc/zig-out/lib -Wl,-rpath,"$$(pwd)/c/zig-out/lib" -lo11y -lpthread -lm -o "$$tmp/qs-shared" && "$$tmp/qs-shared"; \
+	printf '%s\n' \
+		'#include "o11y/o11y.h"' \
+		'#include "o11y/test.h"' \
+		'int main() {' \
+		'    o11y_options_t opts = o11y_options_default();' \
+		'    opts.env_mode = O11Y_ENV_HERMETIC;' \
+		'    opts.service_name = "cpp-smoke";' \
+		'    opts.environment = O11Y_ENVIRONMENT_TEST;' \
+		'    opts.console_enabled = false;' \
+		'    opts.runtime_metrics = false;' \
+		'    o11y_sdk_t *sdk = nullptr;' \
+		'    if (o11y_init(&opts, &sdk, nullptr) != O11Y_OK) return 1;' \
+		'    o11y_span_t *sp = o11y_tracer_start(o11y_tracer(sdk, "cpp"), nullptr, "op", nullptr);' \
+		'    o11y_ctx_t *ctx = o11y_ctx_with_span(nullptr, sp);' \
+		'    o11y_log_info(sdk, ctx, "cpp ok", nullptr, 0);' \
+		'    o11y_counter_i64_t c = o11y_meter_counter_i64(o11y_meter(sdk, "cpp"), "cpp.n", nullptr);' \
+		'    o11y_counter_i64_add(c, ctx, 1, nullptr, 0);' \
+		'    o11y_ctx_destroy(ctx);' \
+		'    o11y_span_end(sp);' \
+		'    o11y_shutdown_report_t report{};' \
+		'    o11y_err_t serr = o11y_shutdown(sdk, 5000, &report);' \
+		'    o11y_destroy(sdk);' \
+		'    return (serr == O11Y_OK && o11y_shutdown_report_ok(report)) ? 0 : 2;' \
+		'}' >"$$tmp/cpp_smoke.cc"; \
+	c++ -std=c++17 -Wall -Wextra -Werror -Wpedantic -Ic/zig-out/include "$$tmp/cpp_smoke.cc" -Lc/zig-out/lib -Wl,-rpath,"$$(pwd)/c/zig-out/lib" -lo11y -lpthread -lm -o "$$tmp/qs-cpp" && "$$tmp/qs-cpp"; \
+	if [ "$$(uname -s)" = "Linux" ]; then \
+		readelf -dW c/zig-out/lib/libo11y.so | grep -Eq 'SONAME.*libo11y\.so\.[0-9]+\.[0-9]+' || { echo "c-check: bad ELF SONAME"; exit 1; }; \
+		! readelf -lW c/zig-out/lib/libo11y.so | grep -q 'GNU_STACK.*RWE' || { echo "c-check: executable GNU_STACK on libo11y.so"; exit 1; }; \
+		bad="$$(nm -D --defined-only c/zig-out/lib/libo11y.so | awk '$$2 ~ /[TWDBR]/ && $$3 !~ /^o11y_/ {print $$3}')"; \
+		[ -z "$$bad" ] || { echo "c-check: non-o11y exported symbols: $$bad"; exit 1; }; \
+	elif [ "$$(uname -s)" = "Darwin" ]; then \
+		otool -D c/zig-out/lib/libo11y.dylib | grep -Eq 'libo11y\.[0-9]+\.[0-9]+\.dylib' || { echo "c-check: bad Mach-O install_name"; exit 1; }; \
+	fi
 
 # The C11 suites under AddressSanitizer (with leak detection on Linux) and
 # UndefinedBehaviorSanitizer, against a Debug build of the library.
