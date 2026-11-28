@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any, Final, cast
 
 from libo11y._internal.pii import (
-    CANONICAL_TRUNCATED,
     MAX_COMPOSITE_DEPTH,
     MAX_COMPOSITE_NODES,
     MIN_PII_HASH_KEY_LEN,
@@ -183,16 +182,24 @@ class SensitivityPolicy:
         attrs: Mapping[str, Any],
         replacer: AttrReplacer | None = None,
     ) -> dict[str, Any]:
-        """Apply capture-time redaction, user replacer, and policy walk to log attributes.
+        """Apply capture-time redaction, the user replacer and the policy to log attributes.
 
-        Walks nested mappings/sequences up to depth 16, detects cycles, and enforces
-        a 2048-node budget, failing closed to 'truncated'.
+        Nested mappings and sequences are walked so every member is judged on
+        its dotted effective key, as go/logredact.go does. The walk fails
+        closed: one budget of 2048 nodes is shared by the whole call and spent
+        before a node is examined, a mapping whose effective key has more than
+        16 parts or a sequence nested 16 deep is not entered, and a reference
+        back into the current path (the root mapping included) is cut. What
+        the walk did not examine is dropped, and so is a mapping or sequence
+        that classification emptied.
         """
         budget = [MAX_COMPOSITE_NODES]
-        active: set[int] = set()
-        return self._walk_mapping(attrs, (), 0, budget, active, replacer)
+        active = {id(attrs)}
+        out, _ = self._walk_mapping(attrs, (), budget, active, replacer)
+        return out
 
     def _spend(self, budget: list[int]) -> bool:
+        """Take one node from the walk's budget and report whether any remained."""
         if budget[0] <= 0:
             return False
         budget[0] -= 1
@@ -202,66 +209,96 @@ class SensitivityPolicy:
         self,
         mapping: Mapping[str, Any],
         groups: tuple[str, ...],
-        depth: int,
         budget: list[int],
         active: set[int],
         replacer: AttrReplacer | None,
-    ) -> dict[str, Any]:
+    ) -> tuple[dict[str, Any], bool]:
+        """Classify the members of one mapping, returning what survives and whether any was dropped."""
         out: dict[str, Any] = {}
+        changed = False
         for raw_k, raw_v in mapping.items():
+            if not self._spend(budget):
+                return out, True  # the budget is spent: drop the remaining members
             k = str(raw_k)
-            # Capture-time redaction first so user replacer cannot see raw Secret/Masked.
+            # Capture-time redaction first so the user replacer never sees a raw Secret or Masked.
             val: Any = render_redacted(raw_v) if contains_redactable(raw_v) else raw_v
 
             if replacer is not None:
                 replaced = replacer(groups, k, val)
-                if replaced is None:
+                if replaced is None or not replaced[0]:
+                    changed = True
                     continue
                 k, val = replaced
-                if not k:
-                    continue
 
-            full_key = ".".join((*groups, k)) if groups else k
+            full_key = ".".join((*groups, k))
             act = self.decide(Signal.LOGS, full_key)
             if act is Action.DROP:
+                changed = True
                 continue
             if act is Action.REWRITE:
                 out[k] = self.tokenize(val)
                 continue
 
-            out[k] = self._walk_value(val, (*groups, k), depth + 1, budget, active, replacer)
-        return out
+            member, keep, member_changed = self._walk_value(
+                val, (*groups, k), 0, budget, active, replacer
+            )
+            changed = changed or member_changed
+            if keep:
+                out[k] = member
+        return out, changed
 
     def _walk_value(
         self,
         value: Any,
-        groups: tuple[str, ...],
+        path: tuple[str, ...],
         depth: int,
         budget: list[int],
         active: set[int],
         replacer: AttrReplacer | None,
-    ) -> Any:
-        if depth > MAX_COMPOSITE_DEPTH or not self._spend(budget):
-            return CANONICAL_TRUNCATED
+    ) -> tuple[Any, bool, bool]:
+        """Classify one value held under the effective key path.
+
+        Returns the classified value, whether to keep it, and whether
+        classification dropped anything. depth counts sequence nesting, and a
+        mapping member starts again at zero, so mappings are bounded by the
+        length of their effective key and sequences by their nesting.
+        """
         if contains_redactable(value):
             value = render_redacted(value)
         if isinstance(value, (bool, int, float, str)) or value is None:
-            return value
+            return value, True, False
         if isinstance(value, (bytes, bytearray)):
-            return bytes(value)
+            return bytes(value), True, False
+        if not isinstance(value, (Mapping, Sequence)):
+            return str(value), True, False
+
         oid = id(value)
-        if oid in active:
-            return CANONICAL_TRUNCATED
+        if (
+            depth >= MAX_COMPOSITE_DEPTH
+            or len(path) > MAX_COMPOSITE_DEPTH
+            or not self._spend(budget)
+            or oid in active
+        ):
+            return None, False, True
         active.add(oid)
         try:
             if isinstance(value, Mapping):
                 m = cast(Mapping[str, Any], value)
-                return self._walk_mapping(m, groups, depth, budget, active, replacer)
-            if isinstance(value, Sequence):
-                seq = cast(Sequence[Any], value)
-                return [
-                    self._walk_value(el, groups, depth + 1, budget, active, replacer) for el in seq
-                ]
+                out, changed = self._walk_mapping(m, path, budget, active, replacer)
+                return out, bool(out) or not changed, changed
+            seq = cast(Sequence[Any], value)
+            kept: list[Any] = []
+            changed = False
+            for el in seq:
+                if not self._spend(budget):
+                    changed = True  # the budget is spent: drop the remaining elements
+                    break
+                member, keep, member_changed = self._walk_value(
+                    el, path, depth + 1, budget, active, replacer
+                )
+                changed = changed or member_changed
+                if keep:
+                    kept.append(member)
+            return kept, bool(kept) or not changed, changed
         finally:
             active.discard(oid)
-        return str(value)
