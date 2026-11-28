@@ -21,7 +21,7 @@ everything is correlated and exported over OTLP.
 | Rust | Implemented for Rust 1.88+ (`rust/v0.1.0`; `libo11y-sqlx` requires 1.94) | [`rust/`](rust/) |
 | Ruby | Implemented for Ruby 3.3 and 3.4 | [`ruby/`](ruby/) |
 | .NET | Implemented for .NET 10 (C#) | [`dotnet/`](dotnet/) |
-| Java | Planned | [`java/`](java/) |
+| Java | Implemented for Java 21+ (OpenTelemetry, Micrometer, Spring Boot 4) | [`java/`](java/) |
 
 ## Design principles
 
@@ -90,13 +90,14 @@ validation tables the runtime and test harness share. See [`docs/SPEC.md`](docs/
 specification and [`docs/taxonomy/`](docs/taxonomy/) for the generated
 attribute tables.
 
-The registry generates Go, TypeScript, Rust, Zig, Python, C, Ruby, and .NET outputs:
+The registry generates Go, TypeScript, Rust, Zig, Python, C, Ruby, .NET, and Java outputs:
 `go/spec` and `go/internal/spectables`, `@libo11y/spec` in
 [`ts/packages/spec`](ts/packages/spec), `rust/libo11y-spec/src/generated`,
 `zig/src/spec/generated`, `python/src/libo11y/spec/_generated`,
 [`c/include/o11y/spec.h`](c/include/o11y/spec.h),
-`ruby/lib/libo11y/spec/generated`, and
-`dotnet/src/Libo11y.Spec/Generated`.
+`ruby/lib/libo11y/spec/generated`,
+`dotnet/src/Libo11y.Spec/Generated`, and
+`java/libo11y-spec/src/main/java/ing/o11y/libo11y/spec/generated`.
 Spec 1.1.0 adds the conventions for libo11y RUM, the real-user-monitoring
 product, which [`docs/RUM.md`](docs/RUM.md) describes.
 
@@ -592,6 +593,52 @@ the egress-filtered W3C propagator, then runs the startup canary. Disposing
 signals. Use `O11y.Init` for non-global handles in tests and dependency
 injection. See [`dotnet/README.md`](dotnet/README.md) for the full .NET
 documentation.
+
+## Installation (Java)
+
+```xml
+<dependency>
+    <groupId>ing.o11y</groupId>
+    <artifactId>libo11y-spring-boot-starter</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+</dependency>
+```
+
+Requires Java 21+ and aligns on Spring Boot 4.2.0, OpenTelemetry Java SDK 1.68.0,
+Micrometer 1.18.0, and Micrometer Tracing 1.8.0. Seven Maven artifacts ship
+together (`libo11y-bom`, `libo11y-spec`, `libo11y`, `libo11y-micrometer`,
+`libo11y-spring-boot-starter`, `libo11y-test`, and `libo11y-cli`). It implements
+spec 1.3.0.
+
+## Quick start (Java)
+
+```java
+try (Telemetry telemetry = O11y.setup(O11yOptions.builder()
+        .serviceName("checkout")
+        .environment(Spec.DeploymentEnvironment.PRODUCTION)
+        .build())) {
+    Span span = telemetry.tracer("checkout").spanBuilder("checkout.place")
+            .setAttribute("order.id", "ord-42")
+            .startSpan();
+    try (Scope ignored = span.makeCurrent()) {
+        telemetry.logger().info("order placed", Map.of("order.id", "ord-42"));
+        telemetry.meter("checkout").counterBuilder("checkout.orders")
+                .setUnit("{order}")
+                .build()
+                .add(1L, Attributes.of(AttributeKey.stringKey("payment.method"), "card"), Context.current());
+    } finally {
+        span.end();
+    }
+}
+```
+
+In Spring Boot applications, add `libo11y-spring-boot-starter` and set
+`spring.application.name` and `libo11y.environment`: auto-configuration wires a
+single OTLP pipeline for OpenTelemetry, Micrometer (`O11yMeterRegistry` with
+sensitivity filtering and trace-based exemplars), `ObservationRegistry`, SLF4J/Logback,
+Spring MVC (`Server-Timing` and `o11y.request.summary` canonical lines),
+`RestClient`, JDBC `DataSource`, and `SmartLifecycle` graceful shutdown. See
+[`java/README.md`](java/README.md) for the full Java documentation.
 
 ## Versioning
 

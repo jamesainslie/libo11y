@@ -15,8 +15,8 @@ libo11y/
   conformance/   shared cases and vectors every implementation must
                  reproduce exactly
   scripts/       release and schema checks, with their tests
-  rust/          Rust workspace (in development)
-  java/          Java/Maven module (planned)
+  rust/          Rust workspace (rust/v0.1.0)
+  java/          Java 21+ Maven reactor (OpenTelemetry, Micrometer, Spring Boot 4)
   zig/           Zig package (zig/v0.1.0), published through the
                  root build.zig and build.zig.zon shim
   python/        Python package (python/v0.1.0), published to PyPI as

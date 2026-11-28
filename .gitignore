@@ -35,6 +35,9 @@ ruby/*.gem
 dotnet/**/bin/
 dotnet/**/obj/
 
+# Java Maven build artifacts
+java/**/target/
+
 # The fixture Expo app's packed tarballs, Expo state and export outputs
 ts/fixtures/expo-app/.packs/
 ts/fixtures/expo-app/.expo/

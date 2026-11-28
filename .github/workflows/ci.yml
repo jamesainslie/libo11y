@@ -459,6 +459,25 @@ jobs:
           dotnet-version: "10.0.x"
       - run: make dotnet-check
 
+  # The Java Maven reactor on Linux and macOS (JDK 21, Spring Boot 4.2, Micrometer).
+  java:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - run: make java-check
+
   vuln:
     runs-on: ubuntu-latest
     timeout-minutes: 15
