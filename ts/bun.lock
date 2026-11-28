@@ -35,10 +35,9 @@
     },
     "packages/core": {
       "name": "@libo11y/core",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "dependencies": {
         "@libo11y/spec": "workspace:*",
-        "@opentelemetry/api": "1.10.0",
         "@opentelemetry/core": "3.1.1",
         "@opentelemetry/otlp-transformer": "0.301.1",
         "@opentelemetry/resources": "3.1.1",
@@ -47,12 +46,16 @@
         "@opentelemetry/sdk-trace": "3.1.1",
       },
       "devDependencies": {
+        "@opentelemetry/api": "1.10.0",
         "@opentelemetry/context-async-hooks": "3.1.1",
+      },
+      "peerDependencies": {
+        "@opentelemetry/api": ">=1.10.0 <1.11.0",
       },
     },
     "packages/react-native": {
       "name": "@libo11y/react-native",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "dependencies": {
         "@libo11y/core": "workspace:*",
         "@libo11y/spec": "workspace:*",
@@ -83,7 +86,7 @@
     },
     "packages/rum": {
       "name": "@libo11y/rum",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "dependencies": {
         "@libo11y/core": "workspace:*",
         "@libo11y/spec": "workspace:*",
@@ -102,7 +105,7 @@
     },
     "packages/rum-connect": {
       "name": "@libo11y/rum-connect",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "devDependencies": {
         "@bufbuild/protobuf": "2.17.0",
         "@connectrpc/connect": "2.3.0",
@@ -121,7 +124,7 @@
     },
     "packages/rum-react": {
       "name": "@libo11y/rum-react",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "devDependencies": {
         "@libo11y/rum": "workspace:*",
         "@types/react": "19.3.0",
@@ -136,7 +139,7 @@
     },
     "packages/rum-react-native": {
       "name": "@libo11y/rum-react-native",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "dependencies": {
         "@libo11y/core": "workspace:*",
         "@libo11y/react-native": "workspace:*",
@@ -160,7 +163,7 @@
     },
     "packages/rum-replay": {
       "name": "@libo11y/rum-replay",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "dependencies": {
         "@libo11y/core": "workspace:*",
         "@libo11y/spec": "workspace:*",
@@ -178,7 +181,7 @@
     },
     "packages/rum-tanstack-router": {
       "name": "@libo11y/rum-tanstack-router",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "devDependencies": {
         "@libo11y/rum": "workspace:*",
         "@tanstack/history": "1.162.5",
@@ -199,15 +202,13 @@
     },
     "packages/server": {
       "name": "@libo11y/server",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "dependencies": {
         "@libo11y/core": "workspace:*",
         "@libo11y/spec": "workspace:*",
-        "@opentelemetry/api": "1.10.0",
         "@opentelemetry/context-async-hooks": "3.1.1",
         "@opentelemetry/core": "3.1.1",
         "@opentelemetry/exporter-metrics-otlp-http": "0.301.1",
-        "@opentelemetry/instrumentation": "0.301.1",
         "@opentelemetry/instrumentation-runtime-node": "0.38.0",
         "@opentelemetry/otlp-exporter-base": "0.301.1",
         "@opentelemetry/otlp-transformer": "0.301.1",
@@ -219,11 +220,15 @@
       },
       "devDependencies": {
         "@libo11y/test": "workspace:*",
+        "@opentelemetry/api": "1.10.0",
+      },
+      "peerDependencies": {
+        "@opentelemetry/api": ">=1.10.0 <1.11.0",
       },
     },
     "packages/sourcemaps": {
       "name": "@libo11y/sourcemaps",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "bin": {
         "libo11y-sourcemaps": "./src/cli.ts",
       },
@@ -233,7 +238,7 @@
     },
     "packages/spec": {
       "name": "@libo11y/spec",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "bin": {
         "libo11y": "./src/cli.ts",
       },
@@ -243,27 +248,29 @@
     },
     "packages/test": {
       "name": "@libo11y/test",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "dependencies": {
         "@libo11y/core": "workspace:*",
         "@libo11y/spec": "workspace:*",
-        "@opentelemetry/api": "1.10.0",
         "@opentelemetry/context-async-hooks": "3.1.1",
         "@opentelemetry/sdk-logs": "3.1.1",
         "@opentelemetry/sdk-metrics": "3.1.1",
         "@opentelemetry/sdk-trace": "3.1.1",
       },
       "devDependencies": {
+        "@opentelemetry/api": "1.10.0",
         "@opentelemetry/otlp-transformer": "0.301.1",
+      },
+      "peerDependencies": {
+        "@opentelemetry/api": ">=1.10.0 <1.11.0",
       },
     },
     "packages/web": {
       "name": "@libo11y/web",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "dependencies": {
         "@libo11y/core": "workspace:*",
         "@libo11y/spec": "workspace:*",
-        "@opentelemetry/api": "1.10.0",
         "@opentelemetry/core": "3.1.1",
         "@opentelemetry/otlp-transformer": "0.301.1",
         "@opentelemetry/resources": "3.1.1",
@@ -273,24 +280,31 @@
       },
       "devDependencies": {
         "@libo11y/test": "workspace:*",
+        "@opentelemetry/api": "1.10.0",
         "fake-indexeddb": "6.2.7",
+      },
+      "peerDependencies": {
+        "@opentelemetry/api": ">=1.10.0 <1.11.0",
       },
     },
     "packages/webext": {
       "name": "@libo11y/webext",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "dependencies": {
         "@libo11y/core": "workspace:*",
         "@libo11y/spec": "workspace:*",
         "@libo11y/web": "workspace:*",
-        "@opentelemetry/api": "1.10.0",
         "@opentelemetry/sdk-logs": "3.1.1",
         "@opentelemetry/sdk-metrics": "3.1.1",
         "@opentelemetry/sdk-trace": "3.1.1",
       },
       "devDependencies": {
         "@libo11y/test": "workspace:*",
+        "@opentelemetry/api": "1.10.0",
         "fake-indexeddb": "6.2.7",
+      },
+      "peerDependencies": {
+        "@opentelemetry/api": ">=1.10.0 <1.11.0",
       },
     },
   },

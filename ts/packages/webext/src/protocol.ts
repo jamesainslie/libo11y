@@ -5,7 +5,8 @@
  * Every libo11y message is a plain JSON object with `libo11y: 1`, so it survives Chrome's JSON
  * serialization of runtime messages and other listeners can tell it apart.
  */
-import { OTLP_SIGNALS, type OtlpSignal } from "@libo11y/web/internal";
+import type { OtlpSignal } from "@libo11y/web";
+import { OTLP_SIGNALS } from "@libo11y/web/internal";
 
 /** The protocol version every message carries. A listener ignores any other value. */
 export const PROTOCOL_VERSION = 1;

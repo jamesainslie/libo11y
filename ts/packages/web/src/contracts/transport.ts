@@ -75,7 +75,7 @@ export interface DeliveryOptions {
   readonly persistFirst?: boolean;
   /** Decides the mode of each attempt. Default: always "normal". The web platform passes visibility. */
   readonly mode?: () => SendMode;
-  /** Whether the runtime believes it is online. Default () => navigator.onLine !== false. */
+  /** Whether the runtime believes it is online. Defaults to `navigator.onLine !== false`. */
   readonly isOnline?: () => boolean;
   /** Where to listen for "online" to drain the queue. Default globalThis when it has addEventListener. */
   readonly events?: EventTarget;

@@ -18,6 +18,7 @@ export {
 } from "@libo11y/core";
 export { createContextManager } from "./context.ts";
 export type { Consent, ConsentOptions, ConsentState } from "./contracts/consent.ts";
+export type { OtlpSignal } from "./contracts/otlp.ts";
 export { recordDocumentLoad } from "./instrumentation/document-load.ts";
 export { installFetchInstrumentation, instrumentFetch } from "./instrumentation/fetch.ts";
 export { installXhrInstrumentation } from "./instrumentation/xhr.ts";

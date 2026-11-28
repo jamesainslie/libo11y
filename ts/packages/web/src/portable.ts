@@ -3,8 +3,7 @@
  * @libo11y/rum/core and the React Native platform. Nothing reachable from here imports a
  * browser-only module or reads a browser global at module evaluation (portable.test.ts enforces
  * both), so a bundler that does not tree-shake, such as Metro, pulls in nothing a phone cannot run.
- * For libo11y packages only: it follows the package version, carries no compatibility promise and
- * has no API report.
+ * For libo11y packages only. It follows the package version and carries no compatibility promise.
  */
 
 export { flushInBackground, reportFlush } from "./background-flush.ts";

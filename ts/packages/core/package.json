@@ -22,7 +22,6 @@
   },
   "dependencies": {
     "@libo11y/spec": "workspace:*",
-    "@opentelemetry/api": "1.10.0",
     "@opentelemetry/core": "3.1.1",
     "@opentelemetry/otlp-transformer": "0.301.1",
     "@opentelemetry/resources": "3.1.1",
@@ -30,7 +29,11 @@
     "@opentelemetry/sdk-metrics": "3.1.1",
     "@opentelemetry/sdk-trace": "3.1.1"
   },
+  "peerDependencies": {
+    "@opentelemetry/api": ">=1.10.0 <1.11.0"
+  },
   "devDependencies": {
+    "@opentelemetry/api": "1.10.0",
     "@opentelemetry/context-async-hooks": "3.1.1"
   }
 }

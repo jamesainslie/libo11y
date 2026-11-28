@@ -4,6 +4,9 @@
  *   bun scripts/release.ts version X.Y.Z
  *   bun scripts/release.ts pack OUTDIR [--allow-unreleased]
  *
+ * `version` also sets the package workspaces' versions in bun.lock. `bun install --frozen-lockfile`
+ * does not compare them with the package.json files, so a stale one would otherwise go unnoticed.
+ *
  * `pack` stages each package with a publishable package.json (exact versions in place of workspace:
  * ranges, exports and bin pointed at dist) and runs `npm pack` in the staging directory. Bun's own
  * pack writes stale versions on 1.3.13 (oven-sh/bun#18906), and changesets packs workspace: ranges
@@ -152,15 +155,49 @@ function writePackageJson(path: string, pkg: PackageJson): void {
 // A package that reports its own version at runtime keeps it in src/version.ts as one constant.
 const VERSION_CONSTANT = /^export const VERSION = ".*";$/m;
 
+// A package workspace in bun.lock as bun 1.3.13 writes it: the path, then the name and version lines.
+const LOCK_WORKSPACE = /^ {4}"(packages\/[^"]+)": \{\n {6}"name": "([^"]*)",\n {6}"version": "([^"]*)",$/gm;
+
+/** The name and version bun.lock records for each package workspace, keyed by its path. */
+export function lockfileWorkspaces(text: string): Map<string, { name: string; version: string }> {
+  const workspaces = new Map<string, { name: string; version: string }>();
+  for (const [, path, name, version] of text.matchAll(LOCK_WORKSPACE)) {
+    workspaces.set(path ?? "", { name: name ?? "", version: version ?? "" });
+  }
+  return workspaces;
+}
+
+// setLockfileVersions returns bun.lock's text with each package workspace recorded at version.
+function setLockfileVersions(text: string, paths: readonly string[], version: string): string {
+  const locked = lockfileWorkspaces(text);
+  for (const path of paths) {
+    if (!locked.has(path)) throw new Error(`release: bun.lock has no workspace ${path}; run bun install`);
+  }
+  return text.replace(LOCK_WORKSPACE, (entry, path: string, name: string) =>
+    paths.includes(path)
+      ? `    "${path}": {\n      "name": "${name}",\n      "version": "${version}",`
+      : entry,
+  );
+}
+
 /**
- * Sets version in every packages/* package.json under the workspace root, and in the VERSION constant
- * of each package's src/version.ts where it has one.
+ * Sets version in every packages/* package.json under the workspace root, in the VERSION constant
+ * of each package's src/version.ts where it has one, and in the package workspaces of bun.lock.
  */
 export function setVersion(root: string, version: string): void {
   if (!SEMVER.test(version)) {
     throw new Error(`release: version ${JSON.stringify(version)} is not semver X.Y.Z`);
   }
-  for (const { dir, json } of readPackages(root)) {
+  const pkgs = readPackages(root);
+  const lockPath = join(root, "bun.lock");
+  const lock = existsSync(lockPath)
+    ? setLockfileVersions(
+        readFileSync(lockPath, "utf8"),
+        pkgs.map((p) => relative(root, p.dir).split(sep).join("/")),
+        version,
+      )
+    : undefined;
+  for (const { dir, json } of pkgs) {
     json.version = version;
     writePackageJson(join(dir, "package.json"), json);
     const versionFile = join(dir, "src", "version.ts");
@@ -170,6 +207,7 @@ export function setVersion(root: string, version: string): void {
       writeFileSync(versionFile, text.replace(VERSION_CONSTANT, `export const VERSION = "${version}";`));
     }
   }
+  if (lock !== undefined) writeFileSync(lockPath, lock);
 }
 
 // keep reports whether a path inside a package directory belongs in the staging copy.
@@ -184,16 +222,25 @@ function keep(pkgDir: string, path: string): boolean {
   return true;
 }
 
-// staleOutputs finds a dist JavaScript file left by a source that has since been removed or renamed,
-// which a build without a clean would leave in the tarball.
-function staleOutputs(pkgDir: string): { js: string; ts: string } | undefined {
+// The kinds of file tsc emits into dist for a source module, longest suffix first.
+const OUTPUT_SUFFIXES = [".d.ts.map", ".js.map", ".d.ts", ".js"];
+
+// staleOutputs finds a dist file tsc emitted (JavaScript, a declaration or a source map of either)
+// for a source that has since been removed or renamed, which a build without a clean would leave in
+// the tarball.
+function staleOutputs(pkgDir: string): { output: string; source: string } | undefined {
   const dist = join(pkgDir, "dist");
   for (const entry of readdirSync(dist, { recursive: true, withFileTypes: true })) {
-    if (!entry.isFile() || !entry.name.endsWith(".js")) continue;
+    if (!entry.isFile()) continue;
+    const suffix = OUTPUT_SUFFIXES.find((s) => entry.name.endsWith(s));
+    if (suffix === undefined) continue;
     const rel = relative(dist, join(entry.parentPath, entry.name));
-    const source = `${rel.slice(0, -".js".length)}.ts`;
+    const source = `${rel.slice(0, -suffix.length)}.ts`;
     if (!existsSync(join(pkgDir, "src", source))) {
-      return { js: ["dist", ...rel.split(sep)].join("/"), ts: ["src", ...source.split(sep)].join("/") };
+      return {
+        output: ["dist", ...rel.split(sep)].join("/"),
+        source: ["src", ...source.split(sep)].join("/"),
+      };
     }
   }
   return undefined;
@@ -212,7 +259,7 @@ export function pack(root: string, outDir: string, opts: PackOptions): string[] 
     const stale = staleOutputs(dir);
     if (stale !== undefined) {
       throw new Error(
-        `release: ${json.name}: ${stale.js} has no source ${stale.ts}; rebuild with bun run build`,
+        `release: ${json.name}: ${stale.output} has no source ${stale.source}; rebuild with bun run build`,
       );
     }
     if ((json.version ?? UNRELEASED) === UNRELEASED && !opts.allowUnreleased) {

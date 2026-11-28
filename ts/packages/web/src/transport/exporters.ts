@@ -29,12 +29,12 @@ export interface ExporterOptions {
    * The mode the next attempt will use, so an export that would be sent in "unload" mode is split
    * into bodies of at most UNLOAD_BODY_LIMIT uncompressed bytes (halving the item list until each
    * part fits; a single item that does not fit is still delivered alone, and queues). Default
-   * () => "normal", which never splits.
+   * is a function that returns "normal", which never splits.
    */
   readonly mode?: () => SendMode;
   /**
    * The aggregation temporality of every exported metric. Default "cumulative". The RUM gateway
-   * accepts only delta sums and histograms, so @libo11y/rum asks for "delta".
+   * accepts only delta sums and histograms, so `@libo11y/rum` asks for "delta".
    */
   readonly metricTemporality?: "cumulative" | "delta";
 }

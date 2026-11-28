@@ -11,7 +11,27 @@ import { sha1 } from "./sha1.ts";
 import type { Telemetry } from "./telemetry.ts";
 import { hexEncode } from "./utf8.ts";
 
-export type { Platform } from "./platform.ts";
+export type { BatchOptions, ResolvedConfig, SignalRoute } from "./config.ts";
+export type {
+  ExemplarFilter,
+  ExemplarKind,
+  ExemplarMeasurement,
+  ExemplarStore,
+  ExemplarStoreOptions,
+  ResourceMetricsWithExemplars,
+} from "./exemplars.ts";
+export type { LogAttributes, LogLevel, LogValue } from "./log-values.ts";
+export type { Logger } from "./logger.ts";
+export type {
+  ExporterRequest,
+  ExporterSet,
+  Platform,
+  PlatformConsole,
+  RecordingGate,
+  ResourceLayers,
+  RuntimeMetrics,
+} from "./platform.ts";
+export type { LifecycleOptions, Signal, SignalReport, Telemetry } from "./telemetry.ts";
 
 /** A Platform whose console and diagnostic lines land in arrays. */
 export interface TestPlatform extends Platform {

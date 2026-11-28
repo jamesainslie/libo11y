@@ -1,7 +1,6 @@
 /**
  * @libo11y/web/internal: the building blocks @libo11y/webext and @libo11y/rum compose. For
- * libo11y packages only; it follows the package version but carries no compatibility promise and
- * has no API report.
+ * libo11y packages only. It follows the package version and carries no compatibility promise.
  *
  * Scaffold, frozen. Changing it needs the architect's sign-off.
  */
@@ -39,6 +38,18 @@ export { installFetchInstrumentation, instrumentFetch } from "../instrumentation
 export { isIgnored, shouldPropagate } from "../instrumentation/origins.ts";
 export { remoteParentFromTraceparent } from "../instrumentation/server-timing.ts";
 export { installFlushOnHide, type VisibilitySource } from "../lifecycle.ts";
+export type {
+  BrowserExportOptions,
+  DocumentLoadOptions,
+  HttpInstrumentationOptions,
+  HttpRequestInfo,
+  OriginMatcher,
+  TransportOptions,
+  UrlMatcher,
+  WebInstrumentationOptions,
+  WebSetupOptions,
+  WebTelemetry,
+} from "../options.ts";
 export { browserEnv, type WebPlatformOptions, webPlatform } from "../platform.ts";
 export { createMemoryQueue } from "../queue/memory.ts";
 export { openQueue } from "../queue/open.ts";

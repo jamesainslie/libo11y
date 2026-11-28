@@ -20,35 +20,241 @@ import { TextMapPropagator } from '@opentelemetry/api';
 import { TracerProvider } from '@opentelemetry/api';
 
 // @public
+export interface BatchOptions {
+    // (undocumented)
+    readonly exportTimeoutMillis: number;
+    // (undocumented)
+    readonly maxExportBatchSize: number;
+    // (undocumented)
+    readonly maxQueueSize: number;
+    // (undocumented)
+    readonly scheduledDelayMillis: number;
+}
+
+// @public
 export function createTestPlatform(overrides: TestPlatformOptions): TestPlatform;
 
-// Warning: (ae-forgotten-export) The symbol "Telemetry" needs to be exported by the entry point testing.d.ts
-// Warning: (ae-forgotten-export) The symbol "ExemplarStore" needs to be exported by the entry point testing.d.ts
-//
+// @public
+export type ExemplarFilter = "trace_based" | "always_on" | "always_off";
+
+// @public
+export type ExemplarKind = "histogram" | "sum" | "gauge";
+
+// @public
+export interface ExemplarMeasurement {
+    readonly attributes: Attributes;
+    // (undocumented)
+    readonly context: Context;
+    // (undocumented)
+    readonly instrument: string;
+    // (undocumented)
+    readonly kind: ExemplarKind;
+    readonly scope: string;
+    readonly time?: HrTime;
+    // (undocumented)
+    readonly value: number;
+}
+
+// @public
+export class ExemplarStore {
+    constructor(opts: ExemplarStoreOptions);
+    attach(rm: ResourceMetrics): ResourceMetricsWithExemplars;
+    // @internal
+    offer(m: ExemplarMeasurement): void;
+}
+
 // @public
 export function exemplarStoreOf(telemetry: Telemetry): ExemplarStore;
 
 // @public
+export interface ExemplarStoreOptions {
+    // (undocumented)
+    readonly filter: ExemplarFilter;
+    readonly maxSeries?: number;
+}
+
+// @public
+export interface ExporterRequest {
+    // (undocumented)
+    readonly config: ResolvedConfig;
+    readonly exemplars: ExemplarStore;
+}
+
+// @public
+export interface ExporterSet {
+    // (undocumented)
+    readonly logExporter?: LogRecordExporter;
+    // (undocumented)
+    readonly metricReader?: IMetricReader;
+    // (undocumented)
+    readonly spanExporter?: SpanExporter;
+}
+
+// @public
+export interface LifecycleOptions {
+    readonly timeoutMillis?: number;
+}
+
+// @public
+export type LogAttributes = {
+    readonly [key: string]: LogValue;
+};
+
+// @public
+export interface Logger {
+    child(attrs: LogAttributes): Logger;
+    // (undocumented)
+    debug(msg: string, attrs?: LogAttributes): void;
+    // (undocumented)
+    error(msg: string, attrsOrError?: LogAttributes | Error): void;
+    // (undocumented)
+    fatal(msg: string, attrsOrError?: LogAttributes | Error): void;
+    // (undocumented)
+    info(msg: string, attrs?: LogAttributes): void;
+    // (undocumented)
+    trace(msg: string, attrs?: LogAttributes): void;
+    // (undocumented)
+    warn(msg: string, attrs?: LogAttributes): void;
+}
+
+// @public
+export type LogLevel = "trace" | "debug" | "info" | "warn" | "error" | "fatal";
+
+// @public
+export type LogValue = string | number | boolean | bigint | null | undefined | Uint8Array | Error | readonly LogValue[] | {
+    readonly [key: string]: LogValue;
+};
+
+// @public
 export interface Platform {
-    // Warning: (ae-forgotten-export) The symbol "ExporterRequest" needs to be exported by the entry point testing.d.ts
-    // Warning: (ae-forgotten-export) The symbol "ExporterSet" needs to be exported by the entry point testing.d.ts
     buildExporters(req: ExporterRequest): ExporterSet;
-    // Warning: (ae-forgotten-export) The symbol "PlatformConsole" needs to be exported by the entry point testing.d.ts
     console?: PlatformConsole;
     contextManager(): ContextManager;
-    // Warning: (ae-forgotten-export) The symbol "ResourceLayers" needs to be exported by the entry point testing.d.ts
     detectResource(hermetic: boolean): Promise<ResourceLayers>;
     env(): Readonly<Record<string, string | undefined>>;
-    // Warning: (ae-forgotten-export) The symbol "RecordingGate" needs to be exported by the entry point testing.d.ts
     readonly gate?: RecordingGate;
     hmacSha256?(key: Uint8Array, data: Uint8Array): Uint8Array;
     readonly name: string;
     randomUUID(): string;
     sha1(data: Uint8Array): Promise<Uint8Array>;
-    // Warning: (ae-forgotten-export) The symbol "RuntimeMetrics" needs to be exported by the entry point testing.d.ts
     startRuntimeMetrics?(meterProvider: MeterProvider): RuntimeMetrics;
     writeConsoleLine(line: string): void;
     writeDiagnosticLine(line: string): void;
+}
+
+// @public
+export interface PlatformConsole {
+    // (undocumented)
+    debug(...args: unknown[]): void;
+    // (undocumented)
+    error(...args: unknown[]): void;
+    // (undocumented)
+    info(...args: unknown[]): void;
+    // (undocumented)
+    log(...args: unknown[]): void;
+    // (undocumented)
+    trace(...args: unknown[]): void;
+    // (undocumented)
+    warn(...args: unknown[]): void;
+}
+
+// @public
+export interface RecordingGate {
+    recording(): boolean;
+    subscribe(listener: (recording: boolean) => void): () => void;
+}
+
+// @public
+export interface ResolvedConfig {
+    // (undocumented)
+    readonly batch: {
+        readonly spans: BatchOptions;
+        readonly logs: BatchOptions;
+    };
+    // (undocumented)
+    readonly console: "json" | "text" | "off";
+    readonly endpoints: Readonly<Record<"endpoint" | "traces_endpoint" | "metrics_endpoint" | "logs_endpoint", string | undefined>>;
+    // (undocumented)
+    readonly exemplarFilter: "trace_based" | "always_on" | "always_off";
+    // (undocumented)
+    readonly hermetic: boolean;
+    // (undocumented)
+    readonly logLevel: LogLevel;
+    readonly logs: SignalRoute;
+    // (undocumented)
+    readonly metricExport: {
+        readonly intervalMillis: number;
+        readonly timeoutMillis: number;
+    };
+    // (undocumented)
+    readonly metrics: SignalRoute;
+    readonly protocol: {
+        readonly traces: string;
+        readonly metrics: string;
+        readonly logs: string;
+    };
+    // (undocumented)
+    readonly runtimeMetrics: boolean;
+    readonly sampler: {
+        readonly name: string;
+        readonly instance: Sampler;
+    };
+    // (undocumented)
+    readonly sdkDisabled: boolean;
+    // (undocumented)
+    readonly startupSummary: boolean;
+    // (undocumented)
+    readonly traces: SignalRoute;
+}
+
+// @public
+export interface ResourceLayers {
+    readonly detected: Attributes;
+    readonly fromEnv: Attributes;
+}
+
+// @public
+export type ResourceMetricsWithExemplars = ResourceMetrics;
+
+// @public
+export interface RuntimeMetrics {
+    // (undocumented)
+    stop(): void;
+}
+
+// @public
+export type Signal = "traces" | "metrics" | "logs";
+
+// @public
+export interface SignalReport {
+    // (undocumented)
+    readonly errors: readonly {
+        readonly signal: Signal | "lifecycle";
+        readonly error: unknown;
+    }[];
+    // (undocumented)
+    readonly ok: boolean;
+}
+
+// @public
+export type SignalRoute = "otlp" | "console" | "none" | "injected";
+
+// @public
+export interface Telemetry {
+    effectiveConfig(): string;
+    event(name: string, attrs?: LogAttributes, ctx?: Context): void;
+    forceFlush(opts?: LifecycleOptions): Promise<SignalReport>;
+    // (undocumented)
+    readonly logger: Logger;
+    // (undocumented)
+    readonly loggerProvider: LoggerProvider;
+    readonly meterProvider: MeterProvider;
+    readonly propagator: TextMapPropagator;
+    // (undocumented)
+    readonly resource: Resource;
+    shutdown(opts?: LifecycleOptions): Promise<SignalReport>;
+    // (undocumented)
+    readonly tracerProvider: TracerProvider;
 }
 
 // @public

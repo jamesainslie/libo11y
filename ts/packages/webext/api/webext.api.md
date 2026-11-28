@@ -10,7 +10,7 @@ import { ConsentOptions } from '@libo11y/web';
 import { ConsentState } from '@libo11y/web';
 import type { ContextManager } from '@opentelemetry/api';
 import type { HttpInstrumentationOptions } from '@libo11y/web';
-import { OtlpSignal } from '@libo11y/web/internal';
+import type { OtlpSignal } from '@libo11y/web';
 import type { TelemetryOptions } from '@libo11y/web';
 import type { WebInstrumentationOptions } from '@libo11y/web';
 import { WebTelemetry } from '@libo11y/web';
