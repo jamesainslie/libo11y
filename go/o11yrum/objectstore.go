@@ -300,13 +300,19 @@ func (s *FileStore) Delete(_ context.Context, key string) error {
 	if err := os.Remove(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("o11yrum: file store: %w", err)
 	}
+	s.removeEmptyParents(filepath.Dir(p))
+	return nil
+}
+
+// removeEmptyParents removes dir and its parents below the root while they
+// are empty. Removing a directory that still holds anything, such as
+// another object or a Put's temporary file, fails and ends the walk; that
+// is the expected way out, not an error.
+func (s *FileStore) removeEmptyParents(dir string) {
 	root := filepath.Clean(s.root)
-	for dir := filepath.Dir(p); dir != root && strings.HasPrefix(dir, root+string(filepath.Separator)); dir = filepath.Dir(dir) {
-		// Remove fails on a directory that still holds anything, such as
-		// another object or a Put's temporary file, and that ends the walk.
+	for ; dir != root && strings.HasPrefix(dir, root+string(filepath.Separator)); dir = filepath.Dir(dir) {
 		if os.Remove(dir) != nil {
-			break
+			return
 		}
 	}
-	return nil
 }

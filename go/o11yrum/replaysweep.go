@@ -54,11 +54,12 @@ func (h *Handler) sweepReplay(ctx context.Context) (deleted int, err error) {
 		if o.Modified.After(cutoff) {
 			return nil
 		}
-		if err := h.deleteReplay(ctx, o.Key); err != nil {
+		// A failed delete is counted, and the pass goes on.
+		if h.deleteReplay(ctx, o.Key) == nil {
+			deleted++
+		} else {
 			failed++
-			return nil
 		}
-		deleted++
 		return nil
 	})
 	h.tel.replaySwept(ctx, sinkOK, int64(deleted))
