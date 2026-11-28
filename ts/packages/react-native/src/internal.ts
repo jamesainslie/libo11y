@@ -5,7 +5,15 @@
  * enforces that), so node tests can load it; the binding takes the real env from ./env.
  */
 
-export type { AppLifecycle, AppStateLike, ReactNativeEnv } from "./contracts/env.ts";
+export type {
+  AppLifecycle,
+  AppStateLike,
+  ErrorUtilsLike,
+  GlobalErrorHandler,
+  HermesInternalLike,
+  PromiseRejectionTrackerOptions,
+  ReactNativeEnv,
+} from "./contracts/env.ts";
 export type { KeyValueStorage } from "./contracts/storage.ts";
 export { deviceClassOf } from "./device-class.ts";
 export { type ExpoAppInfo, type ExpoModulesLike, expoAppInfoFrom } from "./expo/app-info.ts";
@@ -17,6 +25,7 @@ export {
   type NetworkInstrumentationOptions,
   RN_SCOPE,
 } from "./instrumentation/network.ts";
+export { jsGlobals } from "./js-globals.ts";
 export { appStateLifecycle } from "./lifecycle.ts";
 export { MOBILE_ENV_DEFAULTS, type ReactNativePlatformOptions, reactNativePlatform } from "./platform.ts";
 export { uuidCrypto } from "./random.ts";
