@@ -505,3 +505,26 @@ func TestReplayConcurrencyCap(t *testing.T) {
 		t.Errorf("busy not recorded: %d", got)
 	}
 }
+
+func TestReplaySlowUploadHoldsNoSlot(t *testing.T) {
+	f := newReplayFixture(t, strings.Replace(replayConfig, "max_events: 50}", "max_events: 50, max_concurrent: 1}", 1), nil)
+	pr, pw := io.Pipe()
+	r := httptest.NewRequest(http.MethodPost, "/_o11y/v1/replay?"+replayQuery("shop-web").Encode(), pr)
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Origin", "https://shop.example")
+	r.RemoteAddr = "203.0.113.7:1000"
+	done := make(chan int)
+	go func() {
+		w := httptest.NewRecorder()
+		f.h.ServeHTTP(w, r)
+		done <- w.Code
+	}()
+	_, _ = pw.Write([]byte(`{"format":1,`)) // the upload has started and stalls
+	if w := postReplay(t, f.h, replayQuery("shop-web"), sampleEnvelope(), true); w.Code != http.StatusNoContent {
+		t.Errorf("a slow upload blocked another: %d", w.Code)
+	}
+	_ = pw.Close()
+	if code := <-done; code != http.StatusBadRequest {
+		t.Errorf("truncated upload: %d", code)
+	}
+}

@@ -865,7 +865,16 @@ func scrubSegment(events []any, mode scrubMode, allow map[string]bool) ([]any, s
 // maxModelHops bounds the ancestor walk of the segment model. A longer
 // chain, or a cycle, fails closed: masked, editable, blocked and in
 // conflict.
-const maxModelHops = 4096
+const maxModelHops = maxScrubDepth
+
+// Every ancestor walk of one segment shares a budget of
+// hopBudgetPerNode hops per recorded node plus hopBudgetBase. A segment
+// that spends it, which only a crafted one can, is answered fail closed
+// from then on, so its cost stays linear in its size.
+const (
+	hopBudgetPerNode = 64
+	hopBudgetBase    = 1 << 16
+)
 
 // modelNode is what a segment says about one node. Its flags are its own
 // (from its tag and attributes) and only ever turn on: a node moved to a
@@ -899,9 +908,11 @@ var failClosed = resolved{masked: true, editable: true, blocked: true, conflict:
 // question walks the ancestors as they stand, so a mask set later, or a
 // parent added after its child, still counts.
 type segmentModel struct {
-	mode  scrubMode
-	nodes map[float64]*modelNode
-	cache map[float64]resolved // valid until the model next changes
+	mode      scrubMode
+	nodes     map[float64]*modelNode
+	cache     map[float64]resolved // valid until the model next changes
+	hops      int                  // ancestor hops walked so far
+	exhausted bool                 // the hop budget is spent
 }
 
 func newSegmentModel(mode scrubMode) *segmentModel {
@@ -930,7 +941,6 @@ func (m *segmentModel) observe(e any) {
 		if source, ok := toNum(data["source"]); !ok || source != 0 {
 			return
 		}
-		clear(m.cache)
 		for _, v := range jsonList(data["adds"]) {
 			if a, ok := isObj(v); ok {
 				if parentID, ok := toNum(a["parentId"]); ok {
@@ -979,22 +989,30 @@ func (m *segmentModel) markAttributes(id float64, attrs obj) {
 		}
 		return false
 	}
+	editable := isContentEditable(attrs)
+	masked := editable || set("data-o11y-mask")
+	blocked := set("data-o11y-block")
+	if !masked && !blocked {
+		return
+	}
 	n := m.nodes[id]
 	if n == nil {
 		n = &modelNode{stub: true}
 		m.nodes[id] = n
 	}
-	if n.text {
+	if n.text || (n.masked || !masked) && (n.editable || !editable) && (n.blocked || !blocked) {
 		return
 	}
-	if isContentEditable(attrs) {
-		n.editable, n.masked = true, true
-	}
-	if set("data-o11y-mask") {
-		n.masked = true
-	}
-	if set("data-o11y-block") {
-		n.blocked = true
+	n.masked = n.masked || masked
+	n.editable = n.editable || editable
+	n.blocked = n.blocked || blocked
+	m.changed()
+}
+
+// changed drops the memoized answers after the model changed.
+func (m *segmentModel) changed() {
+	if len(m.cache) > 0 {
+		clear(m.cache)
 	}
 }
 
@@ -1041,21 +1059,25 @@ func (m *segmentModel) record(id float64, n modelNode) {
 	old := m.nodes[id]
 	switch {
 	case old == nil:
+		// A new node can be the missing parent of one already answered.
 		m.nodes[id] = &n
+		m.changed()
 		return
 	case old.stub:
 		n.masked = n.masked || old.masked
 		n.editable = n.editable || old.editable
 		n.blocked = n.blocked || old.blocked
 		*old = n
+		m.changed()
 		return
 	}
+	before := *old
 	if old.text != n.text || old.tag != n.tag {
 		old.conflict = true
 	}
 	if old.hasParent != n.hasParent || old.parent != n.parent {
 		// A move: the node keeps what its old place masked.
-		r := m.resolveUncached(id)
+		r := m.walkUp(id)
 		old.masked = old.masked || r.masked
 		old.editable = old.editable || r.editable
 		old.blocked = old.blocked || r.blocked
@@ -1065,17 +1087,32 @@ func (m *segmentModel) record(id float64, n modelNode) {
 	old.masked = old.masked || n.masked
 	old.editable = old.editable || n.editable
 	old.blocked = old.blocked || n.blocked
+	if *old != before {
+		m.changed()
+	}
+}
+
+// spend charges hops to the segment's budget and reports whether any is
+// left.
+func (m *segmentModel) spend(hops int) bool {
+	m.hops += hops
+	if m.hops > hopBudgetPerNode*len(m.nodes)+hopBudgetBase {
+		m.exhausted = true
+	}
+	return !m.exhausted
 }
 
 // resolve returns id's flags with its ancestors' folded in, memoized
 // until the model next changes. The walk stops at a node with no known
 // parent.
 func (m *segmentModel) resolve(id float64) resolved {
+	if m.exhausted {
+		return failClosed
+	}
 	if r, ok := m.cache[id]; ok {
 		return r
 	}
 	var path []float64
-	onPath := map[float64]bool{}
 	cur := id
 	base := resolved{}
 	for {
@@ -1087,19 +1124,21 @@ func (m *segmentModel) resolve(id float64) resolved {
 		if n == nil {
 			break
 		}
-		if onPath[cur] || len(path) >= maxModelHops {
-			base = failClosed
+		if len(path) >= maxModelHops {
+			// Too deep, or a cycle.
 			for _, p := range path {
 				m.cache[p] = failClosed
 			}
 			return failClosed
 		}
 		path = append(path, cur)
-		onPath[cur] = true
 		if !n.hasParent {
 			break
 		}
 		cur = n.parent
+	}
+	if !m.spend(len(path)) {
+		return failClosed
 	}
 	for i := len(path) - 1; i >= 0; i-- {
 		n := m.nodes[path[i]]
@@ -1114,12 +1153,35 @@ func (m *segmentModel) resolve(id float64) resolved {
 	return m.cache[id]
 }
 
-// resolveUncached is resolve for use while the model is changing.
-func (m *segmentModel) resolveUncached(id float64) resolved {
-	saved := m.cache
-	m.cache = map[float64]resolved{}
-	r := m.resolve(id)
-	m.cache = saved
+// walkUp is resolve without the cache, for use while the model changes.
+func (m *segmentModel) walkUp(id float64) resolved {
+	if m.exhausted {
+		return failClosed
+	}
+	var r resolved
+	cur, hops := id, 0
+	for {
+		n := m.nodes[cur]
+		if n == nil {
+			break
+		}
+		if hops >= maxModelHops {
+			r = failClosed
+			break
+		}
+		hops++
+		r.masked = r.masked || n.masked
+		r.editable = r.editable || n.editable
+		r.blocked = r.blocked || n.blocked
+		r.conflict = r.conflict || n.conflict
+		if !n.hasParent {
+			break
+		}
+		cur = n.parent
+	}
+	if !m.spend(hops) {
+		return failClosed
+	}
 	return r
 }
 

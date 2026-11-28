@@ -98,6 +98,15 @@ func (h *Handler) serveReplay(w http.ResponseWriter, r *http.Request) {
 		refuse(a.origins, rejection{status: http.StatusUnsupportedMediaType, reason: "content_type"})
 		return
 	}
+	rc := h.cfg.Replay
+	raw, inflate, err := readRaw(r.Body, r.Header.Get("Content-Encoding"), rc.MaxBodyBytes)
+	if err != nil {
+		refuse(a.origins, decodeRejection(err))
+		return
+	}
+	// The body as sent is capped and read before a slot is taken, so a
+	// slow upload holds none. Inflating and decoding, where the memory
+	// goes, happen inside one.
 	select {
 	case h.replaySlots <- struct{}{}:
 		defer func() { <-h.replaySlots }()
@@ -105,8 +114,7 @@ func (h *Handler) serveReplay(w http.ResponseWriter, r *http.Request) {
 		refuse(a.origins, rejection{status: http.StatusServiceUnavailable, reason: "busy", retryAfter: time.Second})
 		return
 	}
-	rc := h.cfg.Replay
-	body, err := readCapped(r.Body, r.Header.Get("Content-Encoding"), rc.MaxBodyBytes, rc.MaxDecompressedBytes)
+	body, err := inflateCapped(raw, inflate, rc.MaxDecompressedBytes)
 	if err != nil {
 		refuse(a.origins, decodeRejection(err))
 		return

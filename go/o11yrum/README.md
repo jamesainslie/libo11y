@@ -232,7 +232,8 @@ does a segment with more than `max_events` events. A malformed envelope
 answers 400. A failing store answers 503 with `Retry-After: 5`. A
 decoded segment takes many times its size in memory, up to about 30 times
 for a body of small events, so `max_concurrent` bounds how many the
-gateway holds at once. A segment past it answers 503 with
+gateway inflates and decodes at once. The body as sent is read before a
+slot is taken, so a slow upload holds none. A segment past it answers 503 with
 `Retry-After: 1`. The
 gateway keeps no session state, so it cannot tell a kept session from
 another. The collector uploads only for kept sessions and only with
@@ -260,7 +261,9 @@ snapshot's tree, the nodes later mutations add, and the mask, block and
 contenteditable attributes later mutations set. A mask, once seen, stays,
 and a node moved to a new parent keeps the masks of the old one. A node
 the segment serializes twice with a different tag or parent allows no
-text, and neither do its children. In both modes a hostile client can
+text, and neither do its children. A chain of more than 1000 ancestors,
+a parent cycle, or a segment that makes the model walk too far in total
+is answered as masked and blocked. In both modes a hostile client can
 still put text in the attributes the allow-list keeps as they are, such
 as `class` and `id`, and in stylesheets. The scrubber protects against
 a client that records too much, not one that lies.

@@ -571,3 +571,59 @@ func jsString(v any) string {
 		return "[object Object]"
 	}
 }
+
+// chainEvents is a snapshot and one mutation adding a chain of n
+// elements, each under the previous one, starting under node 1.
+func chainEvents(n int) []string {
+	var adds strings.Builder
+	for i := range n {
+		if i > 0 {
+			adds.WriteByte(',')
+		}
+		fmt.Fprintf(&adds, `{"parentId":%d,"nextId":null,"node":{"type":2,"id":%d,"tagName":"div","attributes":{},"childNodes":[]}}`, i+1, i+2)
+	}
+	return []string{
+		snapshot(`{"type":0,"id":1,"childNodes":[]}`),
+		`{"type":3,"timestamp":2,"data":{"source":0,"texts":[],"attributes":[],"removes":[],"adds":[` + adds.String() + `]}}`,
+	}
+}
+
+// scrubWithin scrubs evs in both modes and fails when either takes longer
+// than limit. The limit is loose, for the race detector on a loaded
+// host; the quadratic cost this guards against took tens of seconds.
+func scrubWithin(t *testing.T, evs []string, limit time.Duration) {
+	t.Helper()
+	in := events(t, "["+strings.Join(evs, ",")+"]")
+	for _, mode := range []scrubMode{scrubStrict, scrubTrust} {
+		start := time.Now()
+		scrubSegment(in, mode, nil)
+		if d := time.Since(start); d > limit {
+			t.Fatalf("mode %d: scrubbing took %v", mode, d)
+		}
+	}
+}
+
+func TestScrubSegmentDeepChainTextEventsAreCheap(t *testing.T) {
+	evs := chainEvents(4000)
+	for range 20000 {
+		evs = append(evs, `{"type":3,"timestamp":3,"data":{"source":0,"texts":[{"id":4001,"value":""}],"attributes":[],"removes":[],"adds":[]}}`)
+	}
+	scrubWithin(t, evs, 5*time.Second)
+}
+
+func TestScrubSegmentDeepChainMovesAreCheap(t *testing.T) {
+	evs := chainEvents(4000)
+	var adds strings.Builder
+	for i := range 20000 {
+		if i > 0 {
+			adds.WriteByte(',')
+		}
+		parent := 4001
+		if i%2 == 1 {
+			parent = 1
+		}
+		fmt.Fprintf(&adds, `{"parentId":%d,"nextId":null,"node":{"type":3,"id":9999999,"textContent":""}}`, parent)
+	}
+	evs = append(evs, `{"type":3,"timestamp":3,"data":{"source":0,"texts":[],"attributes":[],"removes":[],"adds":[`+adds.String()+`]}}`)
+	scrubWithin(t, evs, 5*time.Second)
+}
