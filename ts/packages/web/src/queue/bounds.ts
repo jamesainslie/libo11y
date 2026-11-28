@@ -3,7 +3,7 @@
  * ids, and the eviction plan put follows, so both queues bound, expire and order alike.
  */
 import type { NewQueueEntry, QueueEntry, QueueOptions } from "../contracts/queue.ts";
-import { randomBytes } from "../ids.ts";
+import { randomUuid } from "../ids.ts";
 
 /** The default byte bound, 5 MiB. */
 export const DEFAULT_MAX_BYTES = 5_242_880;
@@ -54,8 +54,9 @@ export function dueAt(entry: Pick<QueueEntry, "notBefore" | "leaseUntil">): numb
 
 let seq = 0;
 
+/** 12 random hex digits: the first 12 of a random v4 UUID, before its version digit. */
 function randomSuffix(): string {
-  return Array.from(randomBytes(6), (b) => b.toString(16).padStart(2, "0")).join("");
+  return randomUuid().replace("-", "").slice(0, 12);
 }
 
 /**

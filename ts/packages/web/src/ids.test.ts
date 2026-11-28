@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { randomBytes, randomUuid } from "./ids.ts";
+import { randomUuid } from "./ids.ts";
 
 const V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
@@ -22,11 +22,10 @@ test("calls getRandomValues on its crypto, as Web Crypto requires", () => {
   assert.match(randomUuid(c), V4);
 });
 
-test("falls back to random without crypto, as on Hermes", () => {
-  let n = 0;
-  const id = randomUuid({}, () => ((n++ * 37) % 256) / 256);
-  assert.match(id, V4);
-  assert.equal(n, 16);
+test("falls back to Math.random without getRandomValues, as on Hermes", () => {
+  const a = randomUuid({});
+  assert.match(a, V4);
+  assert.notEqual(randomUuid({}), a);
 });
 
 test("the default crypto is read when called, so a runtime without one still gets IDs", (t) => {
@@ -38,10 +37,4 @@ test("the default crypto is read when called, so a runtime without one still get
   const a = randomUuid();
   assert.match(a, V4);
   assert.notEqual(randomUuid(), a);
-  assert.equal(randomBytes(6).length, 6);
-});
-
-test("randomBytes fills from getRandomValues, else from random", () => {
-  assert.deepEqual([...randomBytes(3, { getRandomValues: (a) => a.fill(7) })], [7, 7, 7]);
-  assert.deepEqual([...randomBytes(2, {}, () => 0.5)], [128, 128]);
 });

@@ -37,7 +37,7 @@ export type {
   SendResult,
   Transport,
 } from "./contracts/transport.ts";
-export { randomBytes, randomUuid, type UuidCrypto } from "./ids.ts";
+export { randomUuid, type UuidCrypto } from "./ids.ts";
 export {
   installFetchInstrumentation,
   instrumentFetch,
