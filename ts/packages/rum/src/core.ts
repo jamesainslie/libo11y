@@ -4,8 +4,8 @@
  * blocks it composes are here for the binding's own collectors and stores. Nothing reachable from
  * here imports a browser-only module or reads a browser global at module evaluation (core.test.ts
  * enforces both), so a bundler that does not tree-shake, such as Metro, pulls in nothing a phone
- * cannot run. For libo11y packages only: it follows the package version, carries no compatibility
- * promise and has no API report.
+ * cannot run. For libo11y packages only: it follows the package version and carries no
+ * compatibility promise.
  */
 
 export { actionSpanName, actionSpanStart, recordInstantAction } from "./actions/record.ts";
@@ -16,18 +16,26 @@ export {
   type SettleTracker,
 } from "./actions/settle.ts";
 export { ATTR_SESSION_ID, ATTR_USER_ID, summaryCountKey, summaryVitalKey } from "./attrs.ts";
+export type { BootstrapEntry } from "./bootstrap/buffer.ts";
 export { createBus } from "./bus.ts";
 export {
   clampConfig,
   parseRemoteConfig,
   type RemoteConfigDocument,
+  type RemoteConfigLimits,
+  type ResolvedLimits,
   resolveLimits,
 } from "./config/clamp.ts";
 export {
   CONFIG_STORAGE_KEY,
   createRemoteConfig,
   type RemoteConfig,
+  type RemoteConfigClient,
+  type RemoteConfigClientOptions,
   type RemoteConfigConnection,
+  type RemoteConfigOpenOptions,
+  type RemoteConfigOptions,
+  type RemoteConfigTimers,
   remoteConfig,
 } from "./config/remote.ts";
 export { rumContextManager } from "./context-manager.ts";
@@ -67,14 +75,23 @@ export {
   SESSION_END_ELECTION_MILLIS,
   setupRumCore,
 } from "./core-setup.ts";
-export { createBreadcrumbs } from "./errors/breadcrumbs.ts";
-export { normalizeError } from "./errors/normalize.ts";
-export { recordError, wasRecorded } from "./errors/record.ts";
-export { createFrustrationDetector } from "./frustration/detect.ts";
+export { type Breadcrumbs, createBreadcrumbs } from "./errors/breadcrumbs.ts";
+export { type NormalizedError, normalizeError } from "./errors/normalize.ts";
+export { type ErrorExtra, recordError, wasRecorded } from "./errors/record.ts";
+export {
+  createFrustrationDetector,
+  type FrustrationDetector,
+  type FrustrationDetectorOptions,
+} from "./frustration/detect.ts";
 export { randomUuid } from "./ids.ts";
 export type { AddErrorOptions, Rum, RumOptions } from "./options.ts";
+export type { PendingSpans } from "./pending-spans.ts";
 export { stripQuery } from "./query.ts";
-export { createRetentionBuffer, RETENTION_QUEUE_DEFAULTS } from "./retention/buffer.ts";
+export {
+  createRetentionBuffer,
+  RETENTION_QUEUE_DEFAULTS,
+  type RetentionBufferOptions,
+} from "./retention/buffer.ts";
 export { retainingLogExporter, retainingSpanExporter, withRetention } from "./retention/exporters.ts";
 export { sessionsIn } from "./retention/sessions.ts";
 export { createSessionManager, type SessionManagerOptions } from "./session/manager.ts";
@@ -91,6 +108,7 @@ export {
   type ViewsOptions,
   viewsWith,
 } from "./views/collector.ts";
+export type { HistoryHost } from "./views/history.ts";
 export { afterNextPaint, type PaintHost } from "./views/paint.ts";
 export { createViewTracker, type ViewTrackerOptions } from "./views/tracker.ts";
 export { gatewayTransportOptions, withWireParams } from "./wire.ts";

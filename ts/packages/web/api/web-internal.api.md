@@ -13,7 +13,7 @@ import { Platform } from '@libo11y/core';
 import { PushMetricExporter } from '@opentelemetry/sdk-metrics';
 import type { ReadableLogRecord } from '@opentelemetry/sdk-logs';
 import type { ReadableSpan } from '@opentelemetry/sdk-trace';
-import type { RecordingGate } from '@libo11y/core';
+import { RecordingGate } from '@libo11y/core';
 import type { ResourceLayers } from '@libo11y/core';
 import type { ResourceMetrics } from '@opentelemetry/sdk-metrics';
 import { ResourceMetricsWithExemplars } from '@libo11y/core';

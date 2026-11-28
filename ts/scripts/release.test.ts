@@ -397,11 +397,10 @@ test("the repository's bun.lock records every package at its package.json versio
 });
 
 // The packages that take the OpenTelemetry API as a peer, as every upstream SDK package does, so an
-// application and libo11y share the one process-wide API. The RUM and React Native packages belong to
-// another program and are not listed yet.
-const API_PEERS = ["core", "server", "test", "web", "webext"];
+// application and libo11y share the one process-wide API.
+const API_PEERS = ["core", "server", "test", "web", "webext", "rum", "react-native", "rum-react-native"];
 
-test("the platform packages take @opentelemetry/api as a peer in upstream's range and lock it for development", () => {
+test("the platform and RUM packages take @opentelemetry/api as a peer in upstream's range and lock it for development", () => {
   const packagesDir = join(import.meta.dirname, "..", "packages");
   const upstream = JSON.parse(
     readFileSync(
@@ -411,13 +410,19 @@ test("the platform packages take @opentelemetry/api as a peer in upstream's rang
   ) as PackageJson;
   const range = upstream.peerDependencies?.["@opentelemetry/api"];
   assert.ok(range !== undefined, "@opentelemetry/sdk-trace has no @opentelemetry/api peer");
-  for (const dir of API_PEERS) {
-    const pkg = JSON.parse(readFileSync(join(packagesDir, dir, "package.json"), "utf8")) as PackageJson;
+  for (const entry of readdirSync(packagesDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const pkg = JSON.parse(
+      readFileSync(join(packagesDir, entry.name, "package.json"), "utf8"),
+    ) as PackageJson;
     assert.equal(
       pkg.dependencies?.["@opentelemetry/api"],
       undefined,
       `${pkg.name} depends on @opentelemetry/api`,
     );
+  }
+  for (const dir of API_PEERS) {
+    const pkg = JSON.parse(readFileSync(join(packagesDir, dir, "package.json"), "utf8")) as PackageJson;
     assert.equal(
       pkg.peerDependencies?.["@opentelemetry/api"],
       range,

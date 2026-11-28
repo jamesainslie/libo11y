@@ -14,7 +14,7 @@ export interface StartupTimingLike {
 export interface RumReactNativeEnv {
   /** performance.rnStartupTiming, where the runtime has it. */
   readonly startupTiming?: StartupTimingLike;
-  /** performance.now() when @libo11y/rum-react-native was first evaluated: the app start fallback. */
+  /** performance.now() when `@libo11y/rum-react-native` was first evaluated: the app start fallback. */
   readonly loadedAt: number;
   /** False while the app is in the background, or inactive on iOS. */
   visible(): boolean;
