@@ -59,9 +59,9 @@ function setup(
   return { up, sent, clock };
 }
 
-/** Lets compression, allocation and fetch settle. */
+/** Lets compression, allocation and fetch settle: CompressionStream runs on real tasks, so this waits on timers. */
 async function settle(): Promise<void> {
-  for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+  for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 2));
 }
 
 test("gzipJson round-trips through gunzip", async () => {

@@ -91,9 +91,10 @@ function world(o: { kept?: boolean; sampled?: boolean; session?: string } = {}):
 }
 
 async function settle(w: World): Promise<void> {
+  // CompressionStream runs on real tasks, so this waits on timers.
   for (let i = 0; i < 30; i++) {
     w.rt.fakeEnv().clock.advance(0);
-    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setTimeout(r, 2));
   }
 }
 
