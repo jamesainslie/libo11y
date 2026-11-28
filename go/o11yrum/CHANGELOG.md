@@ -8,6 +8,11 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-27
+
+The first release. It requires `github.com/jamesainslie/libo11y/go`
+v0.3.0 or later.
+
 ### Added
 
 - The `o11yrum` module: `NewHandler`, the configuration file format, edge
@@ -74,3 +79,18 @@ adheres to [Semantic Versioning](https://semver.org/).
   WebKit stack formats are parsed.
 - Self-telemetry: `o11yrum.sourcemaps.uploads` by outcome and
   `o11yrum.symbolication.frames` by result.
+- `/readyz` answers 503 from the moment the `o11yrum-gateway` command
+  begins shutting down. The new top-level `shutdown_delay` setting
+  (default 0) keeps the gateway serving for that long, with `/readyz`
+  failing, before it stops accepting connections and drains.
+- `o11yrum-gateway -version` reports the module version Go records in the
+  binary when no version was linked in, so `go install
+  github.com/jamesainslie/libo11y/go/o11yrum/cmd/o11yrum-gateway@v0.1.0`
+  reports `v0.1.0`.
+- The container image `ghcr.io/jamesainslie/o11yrum-gateway`: a static
+  binary on distroless for `linux/amd64` and `linux/arm64`, running as
+  user 65532 with nothing to write at runtime, published by the release
+  workflow with attested build provenance.
+
+[Unreleased]: https://github.com/jamesainslie/libo11y/compare/go/o11yrum/v0.1.0...HEAD
+[0.1.0]: https://github.com/jamesainslie/libo11y/releases/tag/go/o11yrum/v0.1.0
