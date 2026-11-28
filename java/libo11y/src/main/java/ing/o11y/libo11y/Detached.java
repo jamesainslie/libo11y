@@ -238,14 +238,15 @@ public final class Detached {
      * span and the merged baggage are made current until the returned value is closed. The empty
      * carrier starts an unlinked root span.
      *
-     * @param telemetry the SDK whose tracer starts the span
+     * @param telemetry the SDK whose tracer starts the span, under libo11y's own instrumentation
+     *     scope {@code libo11y}, as Go starts it under its library scope
      * @param context the context whose baggage the work keeps, or null for the current context
      * @param spanName the span name
      * @param carrier the captured operation, or null
      * @return the started span and the scope that made it current
      */
     public static LinkedSpan startLinked(Telemetry telemetry, Context context, String spanName, Carrier carrier) {
-        return startLinked(context, telemetry.tracer("libo11y.detached"), spanName, carrier);
+        return startLinked(context, telemetry.tracer("libo11y"), spanName, carrier);
     }
 
     /**
