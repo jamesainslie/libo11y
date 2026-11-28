@@ -133,6 +133,11 @@ export interface RumCoreDeps<O extends RumPlatformOptions, T extends Telemetry> 
    */
   readonly viewKind?: RUMViewKind;
   /**
+   * performance.now() when the first view starts, for a platform whose clock does not start at the
+   * page's navigation, as React Native's counts from the device's boot. Default 0, navigation start.
+   */
+  readonly initialViewStart?: () => number;
+  /**
    * Called once with the runtime, before consent is wired, so the platform's own recorders (React
    * Native's app_load) see the first grant's session start and load view, even at setup.
    */
@@ -349,7 +354,11 @@ export async function setupRumCore<O extends RumPlatformOptions, T extends Telem
     now: deps.perfNow,
     prerendered: deps.prerendered,
     ...(deps.window === undefined ? {} : { window: deps.window }),
-    ...(deps.scope?.fixedView === true ? { initialStart: deps.perfNow } : {}),
+    ...(deps.scope?.fixedView === true
+      ? { initialStart: deps.perfNow }
+      : deps.initialViewStart === undefined
+        ? {}
+        : { initialStart: deps.initialViewStart }),
     ...(deps.viewKind === undefined ? {} : { viewKind: deps.viewKind }),
   });
   views.subscribe((e) => {

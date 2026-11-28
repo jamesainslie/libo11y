@@ -279,3 +279,10 @@ test("onRuntime gets the runtime before a grant at setup begins the load view", 
   assert.deepEqual(seen, [undefined, "initial"]);
   assert.equal(runtimeOf(t)?.views.current()?.kind, "initial", "the web's kinds without viewKind");
 });
+
+test("initialViewStart places the first view where the platform's clock says the app started", async () => {
+  const h = harness();
+  const t = await setupRumCore(OPTS, RUM, { ...h.deps, perfNow: () => 5000, initialViewStart: () => 4200 });
+  open = t;
+  assert.equal(runtimeOf(t)?.views.current()?.startTime, 4200);
+});
