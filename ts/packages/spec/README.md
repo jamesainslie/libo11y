@@ -51,6 +51,11 @@ if (!result.ok) for (const v of result.violations) console.error(v.toString());
 const compiled = compileAppRegistry(registry); // throws AppRegistryError when invalid
 ```
 
+`validateCompiledAppRegistry` checks a compiled registry that was built by
+hand or read from JSON. It applies the rules that still apply to that form,
+the namespace, each key's namespace and name, and each class, with the same
+rule IDs and messages.
+
 The `@libo11y/spec/yaml` subpath reads a registry file. It decodes the
 YAML exactly as the Go implementation does, and it is the only module that
 depends on a YAML parser:

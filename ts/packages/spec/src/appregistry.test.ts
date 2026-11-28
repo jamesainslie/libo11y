@@ -6,8 +6,10 @@ import {
   type AppRegistry,
   AppRegistryError,
   AppRegistryViolation,
+  type CompiledAppRegistry,
   compileAppRegistry,
   validateAppRegistry,
+  validateCompiledAppRegistry,
 } from "./appregistry.ts";
 import { AppRegistryParseError, parseAppRegistryBytes } from "./yaml.ts";
 
@@ -133,4 +135,77 @@ test("compileAppRegistry throws AppRegistryError with the violations", () => {
       return true;
     },
   );
+});
+
+// compiledOutcome renders what validateCompiledAppRegistry makes of reg, one violation per line.
+function compiledOutcome(reg: unknown): string {
+  const result = validateCompiledAppRegistry(reg as CompiledAppRegistry);
+  if (result.ok) return `ok ${result.registry.namespace}`;
+  return result.violations.map((v) => v.toString()).join("\n");
+}
+
+test("validateCompiledAppRegistry accepts what compileAppRegistry returns", () => {
+  const compiled = compileAppRegistry({
+    schema: "libo11y.app-registry/v1",
+    namespace: "lor",
+    attributes: { "lor.user.email": { type: "string", sensitivity: "pii", cardinality: "unbounded" } },
+  });
+  const result = validateCompiledAppRegistry(compiled);
+  assert.equal(result.ok, true);
+  assert.equal(result.ok && result.registry, compiled);
+});
+
+test("validateCompiledAppRegistry refuses a reserved or malformed namespace", () => {
+  assert.equal(
+    compiledOutcome({ namespace: "http", classes: { "http.request.method": "public" } }),
+    'libo11y_app_namespace_reserved: namespace "http" belongs to libo11y, OpenTelemetry, or semconv',
+  );
+  assert.equal(
+    compiledOutcome({ namespace: "Lor.x", classes: { "lor.a": "public" } }),
+    [
+      'libo11y_app_namespace_invalid: namespace "Lor.x" is not one snake_case segment',
+      "libo11y_app_attr_outside_namespace: attribute lor.a: not under the Lor.x namespace",
+    ].join("\n"),
+  );
+  assert.equal(
+    compiledOutcome({ classes: { "lor.a": "public" } }),
+    [
+      'libo11y_app_namespace_invalid: namespace "" is not one snake_case segment',
+      "libo11y_app_attr_outside_namespace: attribute lor.a: not under the  namespace",
+    ].join("\n"),
+  );
+});
+
+test("validateCompiledAppRegistry refuses keys outside the namespace or badly named", () => {
+  assert.equal(
+    compiledOutcome({
+      namespace: "lor",
+      classes: { "user.email": "public", "lor.Bad": "public", "lor.ok": "pii" },
+    }),
+    [
+      "libo11y_attr_naming: attribute lor.Bad: not a dotted snake_case name with at least two segments",
+      "libo11y_app_attr_outside_namespace: attribute user.email: not under the lor namespace",
+    ].join("\n"),
+  );
+});
+
+test("validateCompiledAppRegistry refuses an unknown or missing class", () => {
+  assert.equal(
+    compiledOutcome({ namespace: "lor", classes: { "lor.a": "secretish", "lor.b": "", "lor.c": 3 } }),
+    [
+      'libo11y_sensitivity_unknown: attribute lor.a: sensitivity "secretish"',
+      "libo11y_sensitivity_missing: attribute lor.b: no sensitivity class",
+      'libo11y_sensitivity_unknown: attribute lor.c: sensitivity "3"',
+    ].join("\n"),
+  );
+});
+
+test("validateCompiledAppRegistry refuses classes that are not an object, or empty", () => {
+  for (const classes of [undefined, null, "public", ["lor.a"], {}]) {
+    assert.equal(
+      compiledOutcome({ namespace: "lor", classes }),
+      "libo11y_app_attributes_empty: the registry declares no attributes",
+      `classes ${JSON.stringify(classes)}`,
+    );
+  }
 });
