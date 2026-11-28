@@ -141,7 +141,12 @@ func lintPack(dashboards [][]byte, files map[string]rules.File, c catalog.Catalo
 			}
 		}
 	}
+	// Links may name any dashboard of the pack, including one another
+	// milestone adds.
 	uids := map[string]bool{}
+	for _, u := range UIDs {
+		uids[u] = true
+	}
 	var parsed []rendered
 	for _, raw := range dashboards {
 		var d rendered
