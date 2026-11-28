@@ -18,6 +18,8 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.yaml.snakeyaml.DumperOptions;
 import org.yaml.snakeyaml.LoaderOptions;
+import org.yaml.snakeyaml.error.Mark;
+import org.yaml.snakeyaml.error.MarkedYAMLException;
 import org.yaml.snakeyaml.error.YAMLException;
 import org.yaml.snakeyaml.events.AliasEvent;
 import org.yaml.snakeyaml.events.DocumentEndEvent;
@@ -416,9 +418,25 @@ final class YamlV3Parser {
         } catch (SyntaxException ex) {
             throw ex;
         } catch (YAMLException ex) {
-            throw new SyntaxException(ex.getMessage(), ex);
+            throw new SyntaxException(describe(ex), ex);
         }
         return docs;
+    }
+
+    /**
+     * Renders a SnakeYAML error on one line as {@code line N: problem}, the shape of a yaml.v3 error,
+     * since SnakeYAML's own message spans several lines with a source excerpt.
+     */
+    private static String describe(YAMLException ex) {
+        String text = ex.getMessage();
+        if (ex instanceof MarkedYAMLException marked) {
+            Mark mark = marked.getProblemMark() != null ? marked.getProblemMark() : marked.getContextMark();
+            String problem = marked.getProblem() != null ? marked.getProblem() : marked.getContext();
+            if (mark != null && problem != null) {
+                text = "line " + (mark.getLine() + 1) + ": " + problem;
+            }
+        }
+        return text == null ? "the file is not valid YAML" : text.strip().replaceAll("\\s*\\R\\s*", " ");
     }
 
     private static Node composeNode(

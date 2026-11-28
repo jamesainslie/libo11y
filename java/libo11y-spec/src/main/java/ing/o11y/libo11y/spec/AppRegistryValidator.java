@@ -68,8 +68,19 @@ public final class AppRegistryValidator {
         }
 
         public AppRegistryParseException(String kind, String detail, Throwable cause) {
-            super("parsing application registry: " + kind + ": " + (detail != null ? detail : MESSAGES.get(kind)), cause);
+            super(message(kind, detail), cause);
             this.kind = kind;
+        }
+
+        // An empty file and a second document read as the Go reference's errors do. The other kinds name
+        // the kind and a detail.
+        private static String message(String kind, String detail) {
+            return switch (kind) {
+                case "empty" -> "application registry is empty";
+                case "second-document" -> "parsing application registry: " + MESSAGES.get(kind);
+                default -> "parsing application registry: " + kind + ": "
+                        + (detail != null ? detail : MESSAGES.get(kind));
+            };
         }
 
         public String kind() {
