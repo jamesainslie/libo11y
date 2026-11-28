@@ -95,7 +95,7 @@ if [[ "$(uname -s)" == "Linux" ]]; then
 	nm -g --defined-only "$prefix/lib/libo11ytest.a" | awk 'NF == 3 && $2 ~ /[TWDBRS]/ && $3 == "o11y_test_start" {found=1} END {exit !found}' ||
 		fail "libo11ytest.a missing o11y_test_start"
 elif [[ "$(uname -s)" == "Darwin" ]]; then
-	otool -D "$prefix/lib/libo11y.dylib" | tail -n 1 | grep -qx "@rpath/libo11y\.$abi_ver\.dylib" ||
+	otool -D "$prefix/lib/libo11y.dylib" | tail -n 1 | grep -qxF "@rpath/libo11y.$abi_ver.dylib" ||
 		fail "libo11y.dylib missing expected install_name @rpath/libo11y.$abi_ver.dylib"
 	bad_syms="$(nm -gU "$prefix/lib/libo11y.dylib" | awk 'NF >= 3 && $3 !~ /^(_o11y_|__mh_dylib_header$|___dso_handle$)/ {print $3}')"
 	[[ -z "$bad_syms" ]] || fail "libo11y.dylib exports non-_o11y_ symbols: $bad_syms"
@@ -110,6 +110,8 @@ for pc in libo11y libo11ytest; do
 	grep -qx "Version: $plain" "$prefix/lib/pkgconfig/$pc.pc" || fail "$pc.pc does not carry Version: $plain"
 	grep -qxF 'prefix=${pcfiledir}/../..' "$prefix/lib/pkgconfig/$pc.pc" || fail "$pc.pc is not relocatable"
 done
+grep -qxF "Requires: libo11y = $plain" "$prefix/lib/pkgconfig/libo11ytest.pc" ||
+	fail "libo11ytest.pc does not pin Requires: libo11y = $plain"
 grep -qxF "set(PACKAGE_VERSION \"$plain\")" "$prefix/lib/cmake/libo11y/libo11yConfigVersion.cmake" ||
 	fail "libo11yConfigVersion.cmake does not carry version $plain"
 echo "c-release-check: installed prefix artifacts verified"
@@ -256,6 +258,21 @@ int main(void) {
 }
 EOF
 
+cat >"$tmp/recorder_only.c" <<'EOF'
+#include "o11y/test.h"
+
+int main(void) {
+    o11y_test_recorder_t *rec = NULL;
+    if (o11y_test_start(NULL, &rec, NULL) != O11Y_OK || rec == NULL) return 1;
+    o11y_test_destroy(rec);
+    return 0;
+}
+EOF
+
+cc -std=c11 -Wall -Wextra -Werror -Wpedantic \
+	-I"$prefix/include" "$tmp/recorder_only.c" "$prefix/lib/libo11ytest.a" "$prefix/lib/libo11y.a" -lpthread -lm \
+	-o "$tmp/recorder_only"
+"$tmp/recorder_only"
 cc -std=c11 -Wall -Wextra -Werror -Wpedantic \
 	-I"$prefix/include" "$tmp/consumer.c" "$prefix/lib/libo11ytest.a" "$prefix/lib/libo11y.a" -lpthread -lm \
 	-o "$tmp/consumer"
@@ -297,9 +314,13 @@ if command -v pkg-config >/dev/null; then
 	read -r -a pc_flags < <(PKG_CONFIG_PATH="$prefix/lib/pkgconfig" pkg-config --cflags --libs libo11ytest)
 	cc -std=c11 -Wall -Wextra -Werror -Wpedantic "$tmp/consumer.c" "${pc_flags[@]}" -Wl,-rpath,"$prefix/lib" -o "$tmp/consumer-pc"
 	"$tmp/consumer-pc"
+	cc -std=c11 -Wall -Wextra -Werror -Wpedantic "$tmp/recorder_only.c" "${pc_flags[@]}" -Wl,-rpath,"$prefix/lib" -o "$tmp/recorder-only-pc"
+	"$tmp/recorder-only-pc"
 	read -r -a pc_test_static_flags < <(PKG_CONFIG_PATH="$tmp/static-only/lib/pkgconfig" pkg-config --cflags --libs --static libo11ytest)
 	cc -std=c11 -Wall -Wextra -Werror -Wpedantic "$tmp/consumer.c" "${pc_test_static_flags[@]}" -o "$tmp/consumer-pc-test-static"
 	"$tmp/consumer-pc-test-static"
+	cc -std=c11 -Wall -Wextra -Werror -Wpedantic "$tmp/recorder_only.c" "${pc_test_static_flags[@]}" -o "$tmp/recorder-only-pc-static"
+	"$tmp/recorder-only-pc-static"
 	echo "c-release-check: pkg-config consumer passed"
 else
 	echo "c-release-check: pkg-config not on PATH, skipping its consumer"
@@ -322,6 +343,7 @@ if command -v cmake >/dev/null; then
 	mkdir "$tmp/cmake-src"
 	cp "$tmp/consumer.c" "$tmp/cmake-src/consumer.c"
 	cp "$tmp/shared_consumer.c" "$tmp/cmake-src/shared_consumer.c"
+	cp "$tmp/recorder_only.c" "$tmp/cmake-src/recorder_only.c"
 	cat >"$tmp/cmake-src/CMakeLists.txt" <<'EOF'
 cmake_minimum_required(VERSION 3.16)
 project(libo11y_consumer C)
@@ -334,6 +356,10 @@ add_executable(consumer_explicit consumer.c)
 target_link_libraries(consumer_explicit PRIVATE libo11y::o11y libo11y::o11ytest)
 add_executable(consumer_static consumer.c)
 target_link_libraries(consumer_static PRIVATE libo11y::o11y_static libo11y::o11ytest_static)
+add_executable(recorder_only recorder_only.c)
+target_link_libraries(recorder_only PRIVATE libo11y::o11ytest)
+add_executable(recorder_only_static recorder_only.c)
+target_link_libraries(recorder_only_static PRIVATE libo11y::o11y_static libo11y::o11ytest_static)
 add_executable(shared_default shared_consumer.c)
 target_link_libraries(shared_default PRIVATE libo11y::o11y)
 add_executable(shared_explicit shared_consumer.c)
@@ -350,6 +376,8 @@ EOF
 	"$tmp/cmake-build/consumer"
 	"$tmp/cmake-build/consumer_explicit"
 	"$tmp/cmake-build/consumer_static"
+	"$tmp/cmake-build/recorder_only"
+	"$tmp/cmake-build/recorder_only_static"
 	"$tmp/cmake-build/shared_default"
 	"$tmp/cmake-build/shared_explicit"
 	"$tmp/cmake-build/static_explicit"

@@ -4,6 +4,7 @@
 //! `libo11y.a` or `libo11y.so`/`.dylib` never introduces duplicate symbols.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 const o11y = @import("o11y");
@@ -13,6 +14,62 @@ const rt = @import("runtime.zig");
 const gpa = rt.gpa;
 
 extern "c" fn o11y_ctx_destroy(ctx: ?*CtxHandle) void;
+
+/// Compile-time ABI layout and build-mode fingerprint shared between `libo11y`
+/// and `libo11ytest.a` so `o11y_test_start` detects mismatched builds.
+pub fn abiFingerprint() u64 {
+    return comptime blk: {
+        var h = std.hash.Wyhash.init(0x6f3131795f616269);
+        const tags = [_][]const u8{
+            rt.c_version,
+            @tagName(builtin.mode),
+            @tagName(builtin.cpu.arch),
+            @tagName(builtin.os.tag),
+        };
+        for (tags) |t| {
+            h.update(t);
+            h.update(&.{0});
+        }
+        const metrics = [_]usize{
+            @sizeOf(SdkHandle),
+            @alignOf(SdkHandle),
+            @offsetOf(SdkHandle, "telemetry"),
+            @offsetOf(SdkHandle, "owns_telemetry"),
+            @offsetOf(SdkHandle, "io_kind"),
+            @offsetOf(SdkHandle, "arena"),
+            @offsetOf(SdkHandle, "effective_config_z"),
+            @sizeOf(CtxHandle),
+            @alignOf(CtxHandle),
+            @offsetOf(CtxHandle, "arena"),
+            @offsetOf(CtxHandle, "ctx"),
+            @sizeOf(AttrReplacementHandle),
+            @alignOf(AttrReplacementHandle),
+            @offsetOf(AttrReplacementHandle, "key"),
+            @offsetOf(AttrReplacementHandle, "value"),
+            @sizeOf(o11y.Telemetry),
+            @alignOf(o11y.Telemetry),
+            @offsetOf(o11y.Telemetry, "policy"),
+            @offsetOf(o11y.Telemetry, "meter_provider"),
+            @offsetOf(o11y.Telemetry, "tracer_provider"),
+            @offsetOf(o11y.Telemetry, "logger_provider"),
+            @offsetOf(o11y.Telemetry, "log_pipeline"),
+            @sizeOf(o11y.SpanData),
+            @alignOf(o11y.SpanData),
+            @sizeOf(o11y.Context),
+            @alignOf(o11y.Context),
+            @sizeOf(o11y.LogAttribute),
+            @alignOf(o11y.LogAttribute),
+            @sizeOf(o11y.LogValue),
+            @alignOf(o11y.LogValue),
+        };
+        for (metrics) |m| {
+            var buf: [8]u8 = undefined;
+            std.mem.writeInt(u64, &buf, @as(u64, m), .little);
+            h.update(&buf);
+        }
+        break :blk h.final();
+    };
+}
 
 // =========================================================================
 // Internal Handle Wrappers

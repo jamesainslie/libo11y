@@ -234,7 +234,7 @@ pub fn build(b: *std.Build) !void {
         .description = "libo11y test harness and in-process OTLP receivers for C11",
         .version = version_text,
         .lib = "o11ytest",
-        .requires = "libo11y",
+        .requires = b.fmt("libo11y = {s}", .{version_text}),
         .system_libs = system_libs,
         .static_only_system_libs = false,
     }));

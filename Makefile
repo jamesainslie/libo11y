@@ -488,7 +488,7 @@ c-check:
 		[ -z "$$bad_test" ] || { echo "c-check: libo11ytest.a exports core o11y_ symbols: $$bad_test"; exit 1; }; \
 		nm -g --defined-only c/zig-out/lib/libo11ytest.a | awk 'NF == 3 && $$2 ~ /[TWDBRS]/ && $$3 == "o11y_test_start" {found=1} END {exit !found}' || { echo "c-check: libo11ytest.a missing o11y_test_start"; exit 1; }; \
 	elif [ "$$(uname -s)" = "Darwin" ]; then \
-		otool -D c/zig-out/lib/libo11y.dylib | tail -n 1 | grep -qx "@rpath/libo11y\.$$abi_ver\.dylib" || { echo "c-check: bad Mach-O install_name (expected @rpath/libo11y.$$abi_ver.dylib)"; exit 1; }; \
+		otool -D c/zig-out/lib/libo11y.dylib | tail -n 1 | grep -qxF "@rpath/libo11y.$$abi_ver.dylib" || { echo "c-check: bad Mach-O install_name (expected @rpath/libo11y.$$abi_ver.dylib)"; exit 1; }; \
 		bad="$$(nm -gU c/zig-out/lib/libo11y.dylib | awk 'NF >= 3 && $$3 !~ /^(_o11y_|__mh_dylib_header$$|___dso_handle$$)/ {print $$3}')"; \
 		[ -z "$$bad" ] || { echo "c-check: non-_o11y_ exported symbols on libo11y.dylib: $$bad"; exit 1; }; \
 		nm -gU c/zig-out/lib/libo11y.dylib | awk 'NF >= 3 && $$3 == "_o11y_version" {found=1} END {exit !found}' || { echo "c-check: libo11y.dylib missing _o11y_version"; exit 1; }; \

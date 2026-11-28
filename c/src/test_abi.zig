@@ -21,6 +21,10 @@ pub const std_options: std.Options = .{
 
 const gpa = rt.gpa;
 
+extern "c" fn o11y_version() [*:0]const u8;
+extern "c" fn o11y__abi_fingerprint() u64;
+extern "c" fn o11y__runtime_acquire_net_signals() void;
+extern "c" fn o11y__runtime_release_net_signals() void;
 extern "c" fn o11y_shutdown(sdk: ?*abi.SdkHandle, timeout_ms: u64, out_report: ?*c.ShutdownReport) c.Err;
 
 // =========================================================================
@@ -98,6 +102,13 @@ export fn o11y_test_start(
         }
         break :blk p.*;
     } else c.TestOptions{};
+
+    if (!std.mem.eql(u8, std.mem.span(o11y_version()), rt.c_version) or
+        o11y__abi_fingerprint() != abi.abiFingerprint())
+    {
+        abi.writeDiagnosticText(diag_out, "o11ytest: libo11ytest.a does not match linked libo11y version or build mode; rebuild both from the same install");
+        return .invalid_argument;
+    }
 
     out.* = startRecorder(opts, diag_out) catch |err| return abi.mapBuildError(err);
     return .ok;
@@ -545,7 +556,12 @@ export fn o11y_test_console_output(rec: ?*RecorderHandle, out_len: ?*usize) [*:0
 
 export fn o11y_test_otlp_log_count(rec: ?*RecorderHandle) usize {
     const h = rec orelse return 0;
-    return h.rec.otlpLogs().len;
+    if (!h.rec.t.shutdown_started.load(.acquire)) {
+        _ = h.rec.t.forceFlush(null);
+    }
+    h.rec.otlp_log_capture.mutex.lockUncancelable(h.rec.io);
+    defer h.rec.otlp_log_capture.mutex.unlock(h.rec.io);
+    return h.rec.otlp_log_capture.records.items.len;
 }
 
 // =========================================================================
@@ -798,8 +814,10 @@ fn startHttpReceiver(opts: c.TestHttpReceiverOptions) ReceiverError!*HttpReceive
     }
 
     const tls = try tlsOptions(o11ytest.HttpTlsOptions, opts.tls);
-    const io = rt.acquireIo();
-    errdefer rt.releaseIo();
+    o11y__runtime_acquire_net_signals();
+    errdefer o11y__runtime_release_net_signals();
+    const io = rt.acquireHermeticIo();
+    errdefer rt.releaseHermeticIo();
 
     const rx = o11ytest.HttpReceiver.start(gpa, io, .{
         .replies = replies,
@@ -819,12 +837,11 @@ fn startHttpReceiver(opts: c.TestHttpReceiverOptions) ReceiverError!*HttpReceive
 
 export fn o11y_test_http_receiver_destroy(rx: ?*HttpReceiverHandle) void {
     const h = rx orelse return;
-    const sig_guard = rt.enterCancelSignalGuard();
     h.rx.deinit();
-    sig_guard.leave();
     rt.freeZ(gpa, h.url_z);
     gpa.destroy(h);
-    rt.releaseIo();
+    rt.releaseHermeticIo();
+    o11y__runtime_release_net_signals();
 }
 
 export fn o11y_test_http_receiver_url(rx: ?*const HttpReceiverHandle) [*:0]const u8 {
@@ -921,8 +938,10 @@ fn startGrpcReceiver(opts: c.TestGrpcReceiverOptions) ReceiverError!*GrpcReceive
     }
 
     const tls = try tlsOptions(o11ytest.GrpcTlsOptions, opts.tls);
-    const io = rt.acquireIo();
-    errdefer rt.releaseIo();
+    o11y__runtime_acquire_net_signals();
+    errdefer o11y__runtime_release_net_signals();
+    const io = rt.acquireHermeticIo();
+    errdefer rt.releaseHermeticIo();
 
     const rx = o11ytest.GrpcReceiver.start(gpa, io, .{
         .replies = replies,
@@ -942,12 +961,11 @@ fn startGrpcReceiver(opts: c.TestGrpcReceiverOptions) ReceiverError!*GrpcReceive
 
 export fn o11y_test_grpc_receiver_destroy(rx: ?*GrpcReceiverHandle) void {
     const h = rx orelse return;
-    const sig_guard = rt.enterCancelSignalGuard();
     h.rx.deinit();
-    sig_guard.leave();
     rt.freeZ(gpa, h.endpoint_z);
     gpa.destroy(h);
-    rt.releaseIo();
+    rt.releaseHermeticIo();
+    o11y__runtime_release_net_signals();
 }
 
 export fn o11y_test_grpc_receiver_endpoint(rx: ?*const GrpcReceiverHandle) [*:0]const u8 {

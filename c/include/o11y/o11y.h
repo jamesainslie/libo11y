@@ -583,8 +583,9 @@ o11y_err_t o11y_attr_replacement_set_key(o11y_attr_replacement_t *dst, const cha
 /**
  * Sets the replacement attribute value inside o11y_attr_replacer_fn, deep-copying
  * strings, bytes, arrays, and maps immediately into pipeline storage before
- * returning. Returns O11Y_OK, O11Y_ERR_INVALID_ARGUMENT on NULL or cyclic inputs,
- * or O11Y_ERR_OUT_OF_MEMORY.
+ * returning. Returns O11Y_OK, O11Y_ERR_INVALID_ARGUMENT on NULL, cyclic,
+ * over-depth (depth >= 16), over-budget, or emptied composite inputs, or
+ * O11Y_ERR_OUT_OF_MEMORY.
  */
 o11y_err_t o11y_attr_replacement_set_value(o11y_attr_replacement_t *dst, const o11y_log_value_t *value);
 
@@ -597,8 +598,9 @@ o11y_err_t o11y_attr_replacement_set_value(o11y_attr_replacement_t *dst, const o
  * out_replacement.
  * To rename the key or replace the value, call o11y_attr_replacement_set_key
  * and/or o11y_attr_replacement_set_value with out_replacement before returning
- * true. All data is deep-copied synchronously during the setter call. If a
- * setter fails, the attribute is dropped even if the callback returns true.
+ * true. All data is deep-copied synchronously during the setter call. Setter
+ * failures are sticky: if any setter call fails, the attribute is dropped
+ * even if a later setter succeeds or the callback returns true.
  */
 typedef bool (*o11y_attr_replacer_fn)(
     void *userdata,

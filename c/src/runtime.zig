@@ -28,50 +28,65 @@ var installed_sig_io: bool = false;
 var old_sig_io: if (have_sig_io) std.posix.Sigaction else void = undefined;
 var installed_sig_pipe: bool = false;
 var old_sig_pipe: if (have_sig_pipe) std.posix.Sigaction else void = undefined;
-var cancel_guard_depth: usize = 0;
-var cancel_installed_sig_io: bool = false;
-var cancel_old_sig_io: if (have_sig_io) std.posix.Sigaction else void = undefined;
+var net_sig_mutex: Mutex = .{};
+var net_sig_refcount: usize = 0;
 
-pub const CancelSignalGuard = struct {
-    pub fn leave(_: CancelSignalGuard) void {
-        leaveCancelSignalGuard();
-    }
-};
-
-/// Ensures `SIGIO` has a no-op handler during receiver teardown even if another
-/// copy of the runtime in `libo11y` destroyed the last SDK first and restored
-/// `SIG_DFL`.
-pub fn enterCancelSignalGuard() CancelSignalGuard {
-    io_mutex.lock();
-    defer io_mutex.unlock();
-    cancel_guard_depth += 1;
-    if (cancel_guard_depth == 1 and have_sig_io) {
-        std.posix.sigaction(.IO, null, &cancel_old_sig_io);
-        if (isDefaultHandler(cancel_old_sig_io)) {
-            const act: std.posix.Sigaction = .{
-                .handler = .{ .handler = noOpSigHandler },
-                .mask = std.posix.sigemptyset(),
-                .flags = 0,
-            };
-            std.posix.sigaction(.IO, &act, null);
-            cancel_installed_sig_io = true;
+/// Acquires one reference to the process-wide networked POSIX signal handlers
+/// (`SIGIO`, plus `SIGPIPE` on non-Linux POSIX targets). Shared by both `libo11y`
+/// and `libo11ytest.a` through `libo11y` exports so `SIG_DFL` is never restored
+/// while any networked SDK or receiver remains live in either library.
+pub fn acquireNetSignals() void {
+    net_sig_mutex.lock();
+    defer net_sig_mutex.unlock();
+    if (net_sig_refcount == 0 and (have_sig_io or have_sig_pipe)) {
+        const act: std.posix.Sigaction = .{
+            .handler = .{ .handler = noOpSigHandler },
+            .mask = std.posix.sigemptyset(),
+            .flags = 0,
+        };
+        if (have_sig_io) {
+            std.posix.sigaction(.IO, null, &old_sig_io);
+            if (isDefaultHandler(old_sig_io)) {
+                std.posix.sigaction(.IO, &act, null);
+                installed_sig_io = true;
+            }
+        }
+        if (have_sig_pipe) {
+            std.posix.sigaction(.PIPE, null, &old_sig_pipe);
+            if (isDefaultHandler(old_sig_pipe)) {
+                std.posix.sigaction(.PIPE, &act, null);
+                installed_sig_pipe = true;
+            }
         }
     }
-    return .{};
+    net_sig_refcount += 1;
 }
 
-fn leaveCancelSignalGuard() void {
-    io_mutex.lock();
-    defer io_mutex.unlock();
-    if (cancel_guard_depth == 0) return;
-    cancel_guard_depth -= 1;
-    if (cancel_guard_depth == 0 and have_sig_io and cancel_installed_sig_io) {
-        var cur: std.posix.Sigaction = undefined;
-        std.posix.sigaction(.IO, null, &cur);
-        if (isOurHandler(cur)) {
-            std.posix.sigaction(.IO, &cancel_old_sig_io, null);
+/// Releases one reference to the process-wide networked POSIX signal handlers,
+/// restoring prior dispositions only when the last reference drops and the
+/// handler remains ours.
+pub fn releaseNetSignals() void {
+    net_sig_mutex.lock();
+    defer net_sig_mutex.unlock();
+    if (net_sig_refcount == 0) return;
+    net_sig_refcount -= 1;
+    if (net_sig_refcount == 0) {
+        if (have_sig_io and installed_sig_io) {
+            var cur: std.posix.Sigaction = undefined;
+            std.posix.sigaction(.IO, null, &cur);
+            if (isOurHandler(cur)) {
+                std.posix.sigaction(.IO, &old_sig_io, null);
+            }
+            installed_sig_io = false;
         }
-        cancel_installed_sig_io = false;
+        if (have_sig_pipe and installed_sig_pipe) {
+            var cur: std.posix.Sigaction = undefined;
+            std.posix.sigaction(.PIPE, null, &cur);
+            if (isOurHandler(cur)) {
+                std.posix.sigaction(.PIPE, &old_sig_pipe, null);
+            }
+            installed_sig_pipe = false;
+        }
     }
 }
 
@@ -159,72 +174,35 @@ pub const Mutex = struct {
 /// Acquires a reference to the shared networked `std.Io` runtime, initializing
 /// it on the first live handle. Every `acquireIo` must be paired with `releaseIo`.
 ///
-/// Only touches POSIX signal dispositions when `SIG_DFL` is currently installed
-/// (`SIGIO` on POSIX for syscall cancellation, and `SIGPIPE` on non-Linux
-/// POSIX targets). On Linux `std.Io.Threaded` uses `MSG_NOSIGNAL`, so `SIGPIPE`
-/// is left untouched.
+/// Acquires the shared process-wide signal refcount (`acquireNetSignals`) first
+/// so `SIGIO` (and non-Linux `SIGPIPE`) stay guarded across both `libo11y` and
+/// `libo11ytest.a` while any networked handle is live.
 pub fn acquireIo() Io {
+    acquireNetSignals();
     io_mutex.lock();
     defer io_mutex.unlock();
     if (io_refcount == 0) {
         io_threaded = initNoSignalThreaded();
-        if (have_sig_io or have_sig_pipe) {
-            const act: std.posix.Sigaction = .{
-                .handler = .{ .handler = noOpSigHandler },
-                .mask = std.posix.sigemptyset(),
-                .flags = 0,
-            };
-            if (have_sig_io) {
-                std.posix.sigaction(.IO, null, &old_sig_io);
-                if (isDefaultHandler(old_sig_io)) {
-                    std.posix.sigaction(.IO, &act, null);
-                    installed_sig_io = true;
-                }
-            }
-            if (have_sig_pipe) {
-                std.posix.sigaction(.PIPE, null, &old_sig_pipe);
-                if (isDefaultHandler(old_sig_pipe)) {
-                    std.posix.sigaction(.PIPE, &act, null);
-                    installed_sig_pipe = true;
-                }
-            }
-        }
     }
     io_refcount += 1;
     return io_threaded.io();
 }
 
 /// Releases a reference to the shared networked `std.Io` runtime. When the
-/// last handle is destroyed, waits for internal worker threads to finish and
-/// restores only handlers installed by `acquireIo` that remain unchanged.
+/// last local reference drops, waits for internal worker threads to finish
+/// while signal handlers remain guarded, then releases the shared signal
+/// refcount (`releaseNetSignals`).
 pub fn releaseIo() void {
-    io_mutex.lock();
-    defer io_mutex.unlock();
-    if (io_refcount == 0) return;
-    io_refcount -= 1;
-    if (io_refcount == 0) {
-        io_threaded.deinit();
-        if (have_sig_io) {
-            if (installed_sig_io) {
-                var cur: std.posix.Sigaction = undefined;
-                std.posix.sigaction(.IO, null, &cur);
-                if (isOurHandler(cur)) {
-                    std.posix.sigaction(.IO, &old_sig_io, null);
-                }
-                installed_sig_io = false;
-            }
-        }
-        if (have_sig_pipe) {
-            if (installed_sig_pipe) {
-                var cur: std.posix.Sigaction = undefined;
-                std.posix.sigaction(.PIPE, null, &cur);
-                if (isOurHandler(cur)) {
-                    std.posix.sigaction(.PIPE, &old_sig_pipe, null);
-                }
-                installed_sig_pipe = false;
-            }
+    {
+        io_mutex.lock();
+        defer io_mutex.unlock();
+        if (io_refcount == 0) return;
+        io_refcount -= 1;
+        if (io_refcount == 0) {
+            io_threaded.deinit();
         }
     }
+    releaseNetSignals();
 }
 
 pub fn cStrOpt(p: ?[*:0]const u8) ?[]const u8 {

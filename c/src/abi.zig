@@ -77,7 +77,6 @@ export fn o11y_attr_replacement_set_key(dst: ?*AttrReplacementHandle, key: ?[*:0
     };
     h.key = duped;
     h.has_key = true;
-    h.key_failed = false;
     return .ok;
 }
 
@@ -97,8 +96,23 @@ export fn o11y_attr_replacement_set_value(dst: ?*AttrReplacementHandle, value: ?
     };
     h.value = converted;
     h.has_value = true;
-    h.val_failed = false;
     return .ok;
+}
+
+// =========================================================================
+// Internal companion-archive bridges (reserved for libo11ytest.a)
+// =========================================================================
+
+export fn o11y__abi_fingerprint() u64 {
+    return abi.abiFingerprint();
+}
+
+export fn o11y__runtime_acquire_net_signals() void {
+    rt.acquireNetSignals();
+}
+
+export fn o11y__runtime_release_net_signals() void {
+    rt.releaseNetSignals();
 }
 
 // =========================================================================
