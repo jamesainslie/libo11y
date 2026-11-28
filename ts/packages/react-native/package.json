@@ -1,6 +1,6 @@
 {
   "name": "@libo11y/react-native",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "The libo11y React Native platform for TypeScript: setup over the OpenTelemetry JS 3.x providers on Hermes, the mobile resource, an OTLP/HTTP transport with a persistent retry queue on device storage, AppState flushing, the consent gate, and fetch and XHR spans.",
   "license": "Apache-2.0",

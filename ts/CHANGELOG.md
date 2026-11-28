@@ -11,10 +11,27 @@ adhere to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-27
+
+This release adds session replay, `@libo11y/rum-replay`, and a preview of
+the React Native platform, `@libo11y/react-native` with its `./expo`
+entry point. It also makes revoking consent clear the offline queue at
+once, and reports export failures that happen outside a flush, which
+0.3.0 lost without a word. The RUM gateway stores replay from
+`go/o11yrum/v0.2.0` on.
+
+The two new packages are not on npm yet, and neither are `@libo11y/rum`,
+`@libo11y/rum-react`, `@libo11y/rum-tanstack-router`,
+`@libo11y/rum-connect` and `@libo11y/sourcemaps`. Until their first npm
+publish they install from the tarballs attached to the GitHub Release
+for `ts/v0.4.0`, whose notes end with the exact `npm install` URLs. The
+React Native packages are a preview: their API can change in a minor
+release.
+
 ### Added
 
 - `@libo11y/rum-replay`, privacy-first session replay for `@libo11y/rum`.
-  In development; it is not on npm yet. Installing the `replay()`
+  It is not on npm yet. Installing the `replay()`
   collector is the opt-in, and it records only while consent is granted.
   Every rrweb event passes through libo11y's own scrubber, an allow-list
   of event types, sources, node fields and attributes, before anything is
@@ -45,8 +62,8 @@ adhere to [Semantic Versioning](https://semver.org/).
   the collector to clamp.
 - `conformance/rum-replay/`, the replay scrubbing vectors that the
   collector and the RUM gateway both run.
-- `@libo11y/react-native`, the platform for React Native apps on Hermes.
-  In development; it is not released and not on npm. `setupReactNative`
+- `@libo11y/react-native`, the platform for React Native apps on Hermes,
+  as a preview. It is not on npm yet. `setupReactNative`
   builds telemetry over the OpenTelemetry JS providers with a mobile
   resource (`o11y.rum.platform` `react_native`, `os.name` and
   `o11y.rum.device.class`) and batch settings suited to a phone. Every
@@ -695,7 +712,8 @@ with the exact `npm install` URLs. Every package now implements spec
   protobuf. `decodeOtlpProtobuf` and `normalizeOtlp` decode and compare
   bodies directly.
 
-[Unreleased]: https://github.com/jamesainslie/libo11y/compare/ts/v0.3.0...HEAD
+[Unreleased]: https://github.com/jamesainslie/libo11y/compare/ts/v0.4.0...HEAD
+[0.4.0]: https://github.com/jamesainslie/libo11y/compare/ts/v0.3.0...ts/v0.4.0
 [0.3.0]: https://github.com/jamesainslie/libo11y/compare/ts/v0.2.1...ts/v0.3.0
 [0.2.1]: https://github.com/jamesainslie/libo11y/compare/ts/v0.2.0...ts/v0.2.1
 [0.2.0]: https://github.com/jamesainslie/libo11y/compare/ts/v0.1.2...ts/v0.2.0

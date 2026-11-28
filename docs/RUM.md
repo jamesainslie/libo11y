@@ -6,7 +6,8 @@ its conventions. The conventions are part of the specification from spec
 registry under [`spec/registry`](../spec/registry). Where this document and
 the registry disagree, the registry wins. Every RUM group has development
 stability. The first RUM libraries, `@libo11y/rum` and its adapters, ship
-in `ts/v0.3.0`.
+in `ts/v0.3.0`, and session replay in `ts/v0.4.0` and
+`go/o11yrum/v0.2.0`.
 
 ## Charter
 
@@ -33,9 +34,10 @@ a set of new platforms under both products, not a third product.
 | Core (setup) | `go` | `@libo11y/server` | `@libo11y/web` | `@libo11y/webext` | `@libo11y/react-native` | `Libo11y` Swift package | `libo11y-android` |
 | RUM (experience) | gateway `go/o11yrum` | none | `@libo11y/rum` | `@libo11y/rum/webext` | `@libo11y/rum-react-native` | `Libo11yRUM` | `libo11y-rum-android` |
 
-Seven cells exist today: the Go core (`go`), the Bun and Node core
+Eight cells exist today: the Go core (`go`), the Bun and Node core
 (`@libo11y/server`), the browser core (`@libo11y/web`), the MV3
-extension core (`@libo11y/webext`), the RUM gateway (`go/o11yrum`), the
+extension core (`@libo11y/webext`), the React Native core
+(`@libo11y/react-native`), the RUM gateway (`go/o11yrum`), the
 browser RUM cell (`@libo11y/rum`) and the MV3 extension RUM cell (its
 `@libo11y/rum/webext` entry point). The two browser cores first ship in
 `ts/v0.2.1`. The gateway first ships in `go/o11yrum/v0.1.0`, with the
@@ -44,15 +46,16 @@ browser RUM cell (`@libo11y/rum`) and the MV3 extension RUM cell (its
 deployment. The two RUM cells first ship in `ts/v0.3.0`, together with
 the adapters for React (`@libo11y/rum-react`), TanStack Router
 (`@libo11y/rum-tanstack-router`) and Connect (`@libo11y/rum-connect`) and
-the source map uploader `@libo11y/sourcemaps`. These five packages are not
-on npm yet. Until their first npm publish, they install from the tarballs
-attached to the `ts/v0.3.0` GitHub Release. Session replay
+the source map uploader `@libo11y/sourcemaps`. Session replay
 (`@libo11y/rum-replay`) is a collector for the browser RUM cell: installed
 with `replay()`, it records kept sessions with rrweb behind libo11y's own
-scrubber, masks all text by default and never records input values. It is
-in development in `ts/packages/rum-replay` and has not shipped. It first
-ships in the next TypeScript release, with the gateway's replay storage in
-the next `go/o11yrum` release. Every other named cell is planned.
+scrubber, masks all text by default and never records input values. It
+first ships in `ts/v0.4.0`, with the gateway's replay storage in
+`go/o11yrum/v0.2.0`; see [Session replay](#session-replay). The React
+Native core first ships in `ts/v0.4.0` as a preview. None of these packages
+is on npm yet. Until their first npm publish, they install from the
+tarballs attached to the `ts/v0.4.0` GitHub Release. Every other named
+cell is planned.
 
 ## Data model
 

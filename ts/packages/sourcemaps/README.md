@@ -11,12 +11,12 @@ npm install --save-dev @libo11y/sourcemaps
 
 The package first ships in `ts/v0.3.0`. It is not on npm yet. Until its
 first npm publish, install it from the tarball attached to the
-[`ts/v0.3.0` GitHub Release](https://github.com/jamesainslie/libo11y/releases/tag/ts/v0.3.0),
+[`ts/v0.4.0` GitHub Release](https://github.com/jamesainslie/libo11y/releases/tag/ts/v0.4.0),
 whose notes list the exact URL:
 
 ```sh
 npm install --save-dev \
-  https://github.com/jamesainslie/libo11y/releases/download/ts/v0.3.0/libo11y-sourcemaps-0.3.0.tgz
+  https://github.com/jamesainslie/libo11y/releases/download/ts/v0.4.0/libo11y-sourcemaps-0.4.0.tgz
 ```
 
 The gateway stores each map under the app's `service.name`, the release's

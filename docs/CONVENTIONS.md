@@ -291,8 +291,10 @@ container (`O11Y_PG_TEST_DSN`).
   0.2.1. `@libo11y/rum`, `@libo11y/rum-react`,
   `@libo11y/rum-tanstack-router`, `@libo11y/rum-connect` and
   `@libo11y/sourcemaps` first ship in `ts/v0.3.0`, which implements spec
-  1.3.0. They are new to npm, so they install from the tarballs attached
-  to that GitHub Release until their first npm publish. Every package keeps
+  1.3.0, and `@libo11y/rum-replay` and `@libo11y/react-native` in
+  `ts/v0.4.0`. They are new to npm, so they install from the tarballs
+  attached to the latest `ts/` GitHub Release until their first npm
+  publish. Every package keeps
   `"private": true` in the source tree, and `release.ts pack` drops it
   from each packed `package.json`, so only packed tarballs publish.
   `make release-check` also runs `scripts/ts-release-check.sh` for

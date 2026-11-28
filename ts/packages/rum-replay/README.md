@@ -10,12 +10,22 @@ are never recorded.
 
 ## Status
 
-The package is in development and has not shipped yet. It is not part of
-`ts/v0.3.0` and first ships in the next TypeScript release, at the same
-version as `@libo11y/rum`. The RUM gateway stores what it uploads once an
-app enables replay; see
+The package first ships in `ts/v0.4.0`, and it releases with
+`@libo11y/rum` at the same version. Neither is on npm yet. Until their
+first npm publish, install both from the tarballs attached to the
+[`ts/v0.4.0` GitHub Release](https://github.com/jamesainslie/libo11y/releases/tag/ts/v0.4.0),
+whose notes list the exact URLs:
+
+```sh
+npm install \
+  https://github.com/jamesainslie/libo11y/releases/download/ts/v0.4.0/libo11y-rum-0.4.0.tgz \
+  https://github.com/jamesainslie/libo11y/releases/download/ts/v0.4.0/libo11y-rum-replay-0.4.0.tgz
+```
+
+The RUM gateway stores what it uploads from `go/o11yrum/v0.2.0` on, once
+an app enables replay; see
 [Session replay](../../../go/o11yrum/README.md#session-replay) in the
-gateway's README. The gateway's replay support is not released yet either.
+gateway's README.
 
 ## Usage
 

@@ -1,6 +1,6 @@
 {
   "name": "@libo11y/rum-tanstack-router",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "TanStack Router adapter for @libo11y/rum: names views by route template and times soft navigations to the first paint after the new route rendered.",
   "license": "Apache-2.0",

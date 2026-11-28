@@ -52,7 +52,7 @@ shipping `Libo11y.Spec`, `Libo11y`, `Libo11y.AspNetCore`, `Libo11y.Db`,
 `conformance/` suite (instance-id, endpoint-sanitize, PII hash, and all 46
 application registry cases).
 
-The matrix describes the latest releases: `go/v0.4.0`, `ts/v0.3.0`,
+The matrix describes the latest releases: `go/v0.4.0`, `ts/v0.4.0`,
 `zig/v0.1.0`, `python/v0.1.0`, `c/v0.1.0`, and `rust/v0.1.0`.
 
 A status describes how a capability is designed and built. It does not say
