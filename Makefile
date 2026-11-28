@@ -8,7 +8,7 @@ GO_TEST_P ?= 4
 # gate runs on each module separately.
 GO_MODULES := go go/o11ygin go/o11yconnect go/o11ysql go/o11yrum ops
 
-.PHONY: spec-check spec-generate spec-drift ops-generate ops-check test lint vet tidy-check vuln release-check zig-release-check python-release-check rust-release-check rust-release-check-test c-release-check o11yrum-release-check print-o11yrum-release-version o11yrum-image schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-npm-plan-test ts-install ts-check ts-size ts-browser-test rum-e2e rust-check rust-msrv zig-check zig-integrations-check zig-hygiene-test python-check python-hygiene-test c-check ci
+.PHONY: spec-check spec-generate spec-drift ops-generate ops-check test lint vet tidy-check vuln release-check zig-release-check python-release-check rust-release-check rust-release-check-test c-release-check o11yrum-release-check print-o11yrum-release-version o11yrum-image schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-npm-plan-test ts-install ts-check ts-size ts-browser-test rum-e2e rust-check rust-msrv zig-check zig-integrations-check zig-hygiene-test python-check python-hygiene-test c-check ruby-check dotnet-check ci
 
 # Validate the spec registry against the libo11y policy suite (naming,
 # ownership, sensitivity, cardinality, events, units).
@@ -16,7 +16,7 @@ spec-check:
 	cd go && go run ./internal/specgen -root .. -check
 
 # Directories holding generated artifacts.
-GENERATED := go/spec go/internal/spectables docs/taxonomy spec/schemas ts/packages/spec/src/generated rust/libo11y-spec/src/generated zig/src/spec/generated python/src/libo11y/spec/_generated c/include/o11y/spec.h go/o11yrum/internal/rumspec
+GENERATED := go/spec go/internal/spectables docs/taxonomy spec/schemas ts/packages/spec/src/generated rust/libo11y-spec/src/generated zig/src/spec/generated python/src/libo11y/spec/_generated c/include/o11y/spec.h ruby/lib/libo11y/spec/generated dotnet/src/Libo11y.Spec/Generated go/o11yrum/internal/rumspec
 
 # Validate the registry, then regenerate go/spec, go/internal/spectables,
 # docs/taxonomy, spec/schemas, ts/packages/spec/src/generated,
@@ -313,6 +313,22 @@ c-check:
 	cc -std=c11 -Wall -Wextra -Werror -Wpedantic -Ic/zig-out/include c/examples/quickstart.c c/zig-out/lib/libo11y.a -lpthread -lm -o "$$tmp" && "$$tmp"; \
 	rc=$$?; rm -f "$$tmp"; exit $$rc
 
+# Ruby gem (ruby/): install locked/bundle deps, RSpec (including shared
+# conformance, integrations, and OTLP wire suites), RuboCop, and hygiene check.
+ruby-check:
+	cd ruby && bundle check || bundle install
+	cd ruby && bundle exec rspec
+	cd ruby && bundle exec rubocop --format simple
+	scripts/ruby-hygiene.sh ruby/lib
+
+# .NET solution (dotnet/): build with TreatWarningsAsErrors, xUnit suites
+# (including shared conformance, integrations, and OTLP wire tests), CLI check,
+# and hygiene check.
+dotnet-check:
+	cd dotnet && dotnet test Libo11y.sln --configuration Release
+	cd dotnet && dotnet run --project src/Libo11y.Cli -- registry check ../conformance/appregistry/valid.yaml
+	scripts/dotnet-hygiene.sh dotnet/src
+
 # vuln runs last: it depends on the advisory database and the toolchain's
 # patch level, so local runs exercise every other gate first.
-ci: lint vet test tidy-check spec-check spec-drift ops-check ts-check ts-size ts-browser-test rum-e2e o11yrum-image rust-check rust-msrv zig-check python-check c-check schema-published-test release-notes-test release-tag-test rust-release-check-test ts-browser-bundle-test ts-npm-plan-test release-check vuln
+ci: lint vet test tidy-check spec-check spec-drift ops-check ts-check ts-size ts-browser-test rum-e2e o11yrum-image rust-check rust-msrv zig-check python-check c-check ruby-check dotnet-check schema-published-test release-notes-test release-tag-test rust-release-check-test ts-browser-bundle-test ts-npm-plan-test release-check vuln

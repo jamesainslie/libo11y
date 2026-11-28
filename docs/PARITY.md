@@ -41,6 +41,17 @@ The Rust columns describe the eleven-crate `rust/` workspace (`rust/v0.1.0`:
 1.88; `libo11y-sqlx` requires 1.94), `tracing` 0.1.44, and OpenTelemetry Rust
 0.33.1.
 
+Ruby (`ruby/`, unreleased, targeting `ruby/v0.1.0`) targets Ruby 3.3+ over
+OpenTelemetry Ruby (`opentelemetry-sdk`, `opentelemetry-metrics-sdk`,
+`opentelemetry-logs-sdk`), shipping Rack, `Net::HTTP`, DB, `Detached`,
+`Proc`, `Redact`, `exe/libo11y`, and `Libo11y::Testing` (`Recorder` and
+`OtlpHttpReceiver`). .NET (`dotnet/`, unreleased, targeting `dotnet/v0.1.0`)
+targets .NET 10 over `OpenTelemetry` 1.21.0 (`Activity`, `Meter`, `ILogger`),
+shipping `Libo11y.Spec`, `Libo11y`, `Libo11y.AspNetCore`, `Libo11y.Db`,
+`Libo11y.Testing`, and `Libo11y.Cli`. Both pass the full shared
+`conformance/` suite (instance-id, endpoint-sanitize, PII hash, and all 46
+application registry cases).
+
 The matrix describes the latest releases: `go/v0.4.0`, `ts/v0.2.1`,
 `zig/v0.1.0`, `python/v0.1.0`, `c/v0.1.0`, and `rust/v0.1.0`.
 

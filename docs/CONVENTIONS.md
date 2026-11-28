@@ -436,7 +436,7 @@ OTEL specification catches up.
 ## Commit messages
 
 `<area>: <type>: <description>` all lowercase, where area is one of `go`,
-`ts`, `spec`, `rust`, `java`, `zig`, `python`, `c`, `docs`, `general`, and type follows
+`ts`, `spec`, `rust`, `java`, `zig`, `python`, `c`, `ruby`, `dotnet`, `docs`, `general`, and type follows
 Conventional Commits (`feat`, `fix`, `docs`, `refactor`, `test`, `chore`,
 `build`, `ci`, `perf`, `revert`) or names a Keep a Changelog category
 (`change`, `removed`).

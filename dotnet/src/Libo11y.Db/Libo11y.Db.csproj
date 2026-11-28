@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Libo11y.Db</RootNamespace>
+    <AssemblyName>Libo11y.Db</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Libo11y\Libo11y.csproj" />
+  </ItemGroup>
+</Project>

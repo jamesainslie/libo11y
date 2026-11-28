@@ -25,3 +25,12 @@ __pycache__/
 .ruff_cache/
 .coverage
 .coverage.*
+
+# Ruby bundler and build artifacts
+ruby/vendor/bundle/
+ruby/.bundle/
+ruby/*.gem
+
+# .NET build artifacts
+dotnet/**/bin/
+dotnet/**/obj/

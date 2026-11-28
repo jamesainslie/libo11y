@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Libo11y.Spec\Libo11y.Spec.csproj" />
+    <ProjectReference Include="..\..\src\Libo11y\Libo11y.csproj" />
+    <ProjectReference Include="..\..\src\Libo11y.AspNetCore\Libo11y.AspNetCore.csproj" />
+    <ProjectReference Include="..\..\src\Libo11y.Db\Libo11y.Db.csproj" />
+    <ProjectReference Include="..\..\src\Libo11y.Testing\Libo11y.Testing.csproj" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.0.2" />
+  </ItemGroup>
+</Project>

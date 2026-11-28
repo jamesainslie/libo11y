@@ -505,6 +505,28 @@ func render(m *model) (map[string]string, error) {
 		return nil, err
 	}
 	outputs[cSpecHeaderPath] = cSpec
+	rbSpec, err := genRbSpec(m)
+	if err != nil {
+		return nil, err
+	}
+	rbTables, err := genRbTables(m)
+	if err != nil {
+		return nil, err
+	}
+	outputs[rbSpecPath] = rbSpec
+	outputs[rbTablesPath] = rbTables
+	outputs[rbGoPrintPath] = genRbGoPrint()
+	csSpec, err := genCsSpec(m)
+	if err != nil {
+		return nil, err
+	}
+	csTables, err := genCsTables(m)
+	if err != nil {
+		return nil, err
+	}
+	outputs[csSpecPath] = csSpec
+	outputs[csTablesPath] = csTables
+	outputs[csGoPrintPath] = genCsGoPrint()
 	goSources := []struct{ rel, src string }{
 		{"go/spec/spec.go", genSpec(m)},
 		{"go/internal/spectables/tables.go", tables},

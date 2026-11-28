@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>Libo11y.Cli</RootNamespace>
+    <AssemblyName>Libo11y.Cli</AssemblyName>
+    <ToolCommandName>libo11y</ToolCommandName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Libo11y.Spec\Libo11y.Spec.csproj" />
+  </ItemGroup>
+</Project>

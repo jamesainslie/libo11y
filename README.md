@@ -19,6 +19,8 @@ everything is correlated and exported over OTLP.
 | Python | Implemented for Python 3.12, 3.13, and 3.14 (`python/v0.1.0`) | [`python/`](python/) |
 | C | Implemented for C11 (`c/v0.1.0`, pure C11 ABI backed by `zig/`) | [`c/`](c/) |
 | Rust | Implemented for Rust 1.88+ (`rust/v0.1.0`; `libo11y-sqlx` requires 1.94) | [`rust/`](rust/) |
+| Ruby | Implemented for Ruby 3.3 and 3.4 | [`ruby/`](ruby/) |
+| .NET | Implemented for .NET 10 (C#) | [`dotnet/`](dotnet/) |
 | Java | Planned | [`java/`](java/) |
 
 ## Design principles
@@ -88,11 +90,13 @@ validation tables the runtime and test harness share. See [`docs/SPEC.md`](docs/
 specification and [`docs/taxonomy/`](docs/taxonomy/) for the generated
 attribute tables.
 
-The registry generates Go, TypeScript, Rust, Zig, Python, and C outputs:
+The registry generates Go, TypeScript, Rust, Zig, Python, C, Ruby, and .NET outputs:
 `go/spec` and `go/internal/spectables`, `@libo11y/spec` in
 [`ts/packages/spec`](ts/packages/spec), `rust/libo11y-spec/src/generated`,
-`zig/src/spec/generated`, `python/src/libo11y/spec/_generated`, and
-[`c/include/o11y/spec.h`](c/include/o11y/spec.h).
+`zig/src/spec/generated`, `python/src/libo11y/spec/_generated`,
+[`c/include/o11y/spec.h`](c/include/o11y/spec.h),
+`ruby/lib/libo11y/spec/generated`, and
+`dotnet/src/Libo11y.Spec/Generated`.
 Spec 1.1.0 adds the conventions for libo11y RUM, the real-user-monitoring
 product, which [`docs/RUM.md`](docs/RUM.md) describes.
 
@@ -487,6 +491,91 @@ subscriber (use `Builder::build` for a global-free handle and
 [`rust/README.md`](rust/README.md) for the full Rust documentation and
 [`rust/examples/httpserver`](rust/examples/httpserver) for a complete, tested
 HTTP service.
+
+## Installation (Ruby)
+
+```sh
+bundle add libo11y
+```
+
+Requires Ruby 3.3 or later (tested on Ruby 3.3 and 3.4). One RubyGem (`libo11y`)
+built on OpenTelemetry Ruby (`opentelemetry-sdk`, `opentelemetry-metrics-sdk`,
+`opentelemetry-logs-sdk`) ships the core SDK, generated specification tables,
+sensitivity policy, capture-time redaction, detached and child-process
+propagation, Rack middleware, instrumented `Net::HTTP`, DB instrumentation,
+`exe/libo11y`, and the hermetic test harness (`Libo11y::Testing`). It implements
+spec 1.3.0.
+
+## Quick start (Ruby)
+
+```ruby
+require "libo11y"
+
+Libo11y.setup(
+  service_name: "checkout",
+  version: "1.2.0",
+  environment: Libo11y::Spec::Environment::PRODUCTION
+) do |tel|
+  tracer = OpenTelemetry.tracer_provider.tracer("checkout")
+  tracer.in_span("POST /checkout") do
+    tel.logger.info("order accepted", { "order.id" => "ord-42" })
+  end
+end
+```
+
+`Libo11y.setup` installs the tracer, meter, and logger providers globally,
+installs the W3C TraceContext and Baggage propagator wrapped in the baggage
+egress filter, and runs the startup canary. Passing a block guarantees bounded
+concurrent shutdown across all three signals when the block exits. Use
+`Libo11y.init` for non-global handles in tests and dependency injection. See
+[`ruby/README.md`](ruby/README.md) for the full Ruby documentation.
+
+## Installation (.NET)
+
+```sh
+dotnet add package Libo11y
+dotnet add package Libo11y.AspNetCore  # only for ASP.NET Core and HttpClient
+dotnet add package Libo11y.Db          # only for ADO.NET database instrumentation
+dotnet add package Libo11y.Testing     # hermetic recorder and OTLP/HTTP receiver
+```
+
+Requires .NET 10 and builds on `OpenTelemetry` 1.21.0 (`System.Diagnostics.Activity`,
+`System.Diagnostics.Metrics`, and `Microsoft.Extensions.Logging`). Six projects
+ship together (`Libo11y.Spec`, `Libo11y`, `Libo11y.AspNetCore`, `Libo11y.Db`,
+`Libo11y.Testing`, and `Libo11y.Cli`). It implements spec 1.3.0.
+
+## Quick start (.NET)
+
+```csharp
+using System.Diagnostics;
+using Libo11y;
+using Libo11y.Spec;
+using Microsoft.Extensions.Logging;
+
+await using var telemetry = O11y.Setup(new O11yOptions
+{
+    ServiceName = "checkout",
+    Version = "1.2.0",
+    Environment = DeploymentEnvironment.Production,
+});
+
+using var source = new ActivitySource("checkout");
+using (source.StartActivity("POST /checkout"))
+{
+    telemetry.Log(LogLevel.Information, "order accepted", new Dictionary<string, object?>
+    {
+        ["order.id"] = "ord-42",
+    });
+}
+```
+
+`O11y.Setup` wires `TracerProvider`, `MeterProvider` (with trace-based exemplars
+and `.NET` runtime instrumentation), `ILoggerFactory` (JSON console + OTLP), and
+the egress-filtered W3C propagator, then runs the startup canary. Disposing
+(`using` / `await using`) runs bounded concurrent shutdown across all three
+signals. Use `O11y.Init` for non-global handles in tests and dependency
+injection. See [`dotnet/README.md`](dotnet/README.md) for the full .NET
+documentation.
 
 ## Versioning
 

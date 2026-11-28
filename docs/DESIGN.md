@@ -30,7 +30,7 @@ All three signals are first-class and OTLP-native:
   process metrics, as they have no garbage-collected runtime; Python collects
   `cpython.gc.*` and `process.*` using only the standard library).
 - **Logs**: the language's standard structured-logging facade is the front
-  door (Go: `slog`; Python: stdlib `logging`; Rust: `tracing`; Java: SLF4J). TypeScript has no such
+  door (Go: `slog`; Python: stdlib `logging`; Ruby: stdlib `::Logger`; .NET: `Microsoft.Extensions.Logging.ILogger`; Rust: `tracing`; Java: SLF4J). TypeScript has no such
   facade, so there the front door is the libo11y logger, and an option routes
   `console` calls into it. In Zig, `std.log` takes no context argument, so
   the correlated front door is `sdk.logger()` taking an explicit

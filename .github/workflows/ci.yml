@@ -361,6 +361,43 @@ jobs:
           O11Y_PG_TEST_DSN: postgresql://postgres:postgres@127.0.0.1:5432/libo11y_test
         run: cd python && uv sync --frozen --all-extras --dev && uv run --frozen --no-sync pytest tests/test_dbapi.py
 
+  # The Ruby gem on Linux and macOS (Ruby 3.3 and 3.4).
+  ruby:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        ruby: ["3.3", "3.4"]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+          bundler-cache: true
+          working-directory: ruby
+      - run: make ruby-check
+
+  # The .NET solution on Linux and macOS (.NET 10).
+  dotnet:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - run: make dotnet-check
+
   vuln:
     runs-on: ubuntu-latest
     timeout-minutes: 15

@@ -1,0 +1,32 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "libo11y/spec"
+
+def usage
+  warn "usage: libo11y registry check FILE..."
+  exit 2
+end
+
+usage if ARGV.length < 3 || ARGV[0] != "registry" || ARGV[1] != "check"
+
+files = ARGV[2..]
+exit_code = 0
+
+files.each do |file|
+  raw = File.binread(file)
+  reg = Libo11y::Spec::AppRegistry.parse_bytes(raw)
+  violations = Libo11y::Spec::AppRegistry.validate(reg)
+  if violations.empty?
+    noun = reg.attributes.size == 1 ? "attribute" : "attributes"
+    puts "#{file}: ok (#{reg.attributes.size} #{noun} in namespace #{reg.namespace})"
+  else
+    violations.each { |v| puts "#{file}: #{v}" }
+    exit_code = [exit_code, 1].max
+  end
+rescue Libo11y::Spec::AppRegistry::ParseError, SystemCallError => e
+  warn "#{file}: #{e.message}"
+  exit_code = 2
+end
+
+exit exit_code
