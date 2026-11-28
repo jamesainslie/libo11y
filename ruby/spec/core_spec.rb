@@ -209,7 +209,8 @@ RSpec.describe "Libo11y core" do
       expect(dp.attributes).not_to have_key("acme.user.email")
       expect(dp.attributes["acme.tier"]).to eq("gold")
 
-      rec.assert_conforms!
+      # The secret was redacted on every signal, and emitting it is still a conformance failure.
+      expect { rec.assert_conforms! }.to raise_error(Libo11y::Testing::AssertionError, /secrets must never be emitted/)
       rec.shutdown
     end
 
