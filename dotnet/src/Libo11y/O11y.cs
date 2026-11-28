@@ -96,11 +96,15 @@ public static class O11y
         string arg = env.TryGetValue("OTEL_TRACES_SAMPLER_ARG", out string? a) ? a.Trim() : "";
         double ParseRatio()
         {
-            if (!double.TryParse(arg, NumberStyles.Float, CultureInfo.InvariantCulture, out double r) || double.IsNaN(r) || r < 0 || r > 1)
+            if (arg.Length == 0) return 1.0;
+            if (double.TryParse(arg, NumberStyles.Float, CultureInfo.InvariantCulture, out double ratio) &&
+                ratio is >= 0 and <= 1)
             {
-                throw new ExporterException($"o11y: invalid trace ratio '{arg}'");
+                return ratio;
             }
-            return r;
+
+            Trace.TraceWarning("o11y: ignoring invalid OTEL_TRACES_SAMPLER_ARG");
+            return 1.0;
         }
         return raw.Trim().ToLowerInvariant() switch
         {
@@ -193,6 +197,7 @@ public static class O11y
                     o.Protocol = proto;
                     o.Endpoint = endpoint;
                     o.Headers = headers;
+                    o.Compression = O11yEnvParser.SignalCompression(envMap, "TRACES");
                     o.TimeoutMilliseconds = timeoutMs;
                     o.ExportProcessorType = ExportProcessorType.Batch;
                     o.BatchExportProcessorOptions = new BatchExportActivityProcessorOptions
@@ -279,6 +284,7 @@ public static class O11y
                     o.Protocol = proto;
                     o.Endpoint = endpoint;
                     o.Headers = headers;
+                    o.Compression = O11yEnvParser.SignalCompression(envMap, "METRICS");
                     o.TimeoutMilliseconds = timeoutMs;
                     readerOpts.PeriodicExportingMetricReaderOptions.ExportIntervalMilliseconds = intervalMs;
                     readerOpts.PeriodicExportingMetricReaderOptions.ExportTimeoutMilliseconds = exportTimeout;
@@ -372,6 +378,7 @@ public static class O11y
                             e.Protocol = otlpProto;
                             e.Endpoint = otlpEndpoint;
                             e.Headers = otlpHeaders;
+                            e.Compression = O11yEnvParser.SignalCompression(envMap, "LOGS");
                             e.TimeoutMilliseconds = otlpTimeoutMs;
                             e.ExportProcessorType = ExportProcessorType.Batch;
                             e.BatchExportProcessorOptions = new BatchExportActivityProcessorOptions

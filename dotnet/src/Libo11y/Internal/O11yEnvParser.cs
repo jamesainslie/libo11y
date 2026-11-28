@@ -127,6 +127,15 @@ internal static class O11yEnvParser
         return string.Join(",", merged.Select(kv => $"{kv.Key}={kv.Value}"));
     }
 
+    public static OtlpExportCompression SignalCompression(IReadOnlyDictionary<string, string> env, string signal)
+    {
+        string? value = NonBlankSetting(env, $"OTEL_EXPORTER_OTLP_{signal}_COMPRESSION") ??
+            NonBlankSetting(env, "OTEL_EXPORTER_OTLP_COMPRESSION");
+        return string.Equals(value, "gzip", StringComparison.OrdinalIgnoreCase)
+            ? OtlpExportCompression.GZip
+            : OtlpExportCompression.None;
+    }
+
     public static int SignalTimeoutMs(IReadOnlyDictionary<string, string> env, string signalVar, int defaultMs = 10_000)
     {
         string? raw = env.TryGetValue(signalVar, out string? sv) && !string.IsNullOrWhiteSpace(sv)
