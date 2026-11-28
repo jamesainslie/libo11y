@@ -75,13 +75,16 @@ export interface ReactNativeSetupOptions extends TelemetryOptions {
    * environment. Options beat them. Ignored when hermetic is true. Default: none.
    */
   readonly env?: Readonly<Record<string, string>>;
+  /** The consent the telemetry starts with. */
   readonly consent?: ReactNativeConsentOptions;
   /**
    * Where the retry queue lives. Default memoryStorage(), which is lost when the app stops.
    * AsyncStorage satisfies KeyValueStorage as it is.
    */
   readonly storage?: KeyValueStorage;
+  /** How batches are sent, queued and retried. */
   readonly transport?: ReactNativeTransportOptions;
+  /** Which requests get client spans, and which origins receive trace context. */
   readonly instrumentations?: ReactNativeInstrumentationOptions;
   /**
    * The context manager. Default upstream's StackContextManager, which carries context through
@@ -99,6 +102,7 @@ export interface ReactNativeSetupOptions extends TelemetryOptions {
  * The handle setupReactNative resolves with: core's Telemetry with the consent and traceFetch.
  */
 export interface ReactNativeTelemetry extends Telemetry {
+  /** The application's handle on consent: grant, revoke, state and subscribe. */
   readonly consent: Consent;
   /**
    * Wraps a fetch the global patch does not reach, such as expo/fetch imported directly, so its

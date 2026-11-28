@@ -12,6 +12,8 @@ export interface KeyValueStorage {
   getItem(key: string): Promise<string | null>;
   /** Stores value under key. Resolves once the value is saved. */
   setItem(key: string, value: string): Promise<void>;
+  /** Removes the value under key, if any. */
   removeItem(key: string): Promise<void>;
+  /** Every key stored, the queue's and any other's. */
   getAllKeys(): Promise<readonly string[]>;
 }
