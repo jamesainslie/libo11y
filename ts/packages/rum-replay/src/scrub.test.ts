@@ -6,12 +6,14 @@ import { type RrwebEvent, type ScrubContext, scrubEvent } from "./scrub.ts";
 const policy = resolvePolicy(undefined, new Set(["page"]));
 const none: ScrubContext = {
   textAllowed: () => false,
+  stylesheetAllowed: () => false,
   parentTag: () => "p",
   editable: () => false,
   blocked: () => false,
 };
 const all: ScrubContext = {
   textAllowed: () => true,
+  stylesheetAllowed: () => true,
   parentTag: () => "p",
   editable: () => false,
   blocked: () => false,
@@ -699,4 +701,35 @@ test("stylesheet elements never keep text attributes", () => {
     scrubEvent(snapshot(el(1, "link", { rel: "stylesheet", title: "Jane", _cssText: "a{}" })), policy, all),
   );
   assert.deepEqual(out.attributes, { rel: "stylesheet", title: "****", _cssText: "a{}" });
+});
+
+test("a kept content attribute that holds a URL is stripped like any URL", () => {
+  const meta = (id: number, property: string, content: string) => el(id, "meta", { property, content }, []);
+  const tree = el(1, "head", {}, [
+    meta(2, "og:url", "https://shop.example/p/1?token=SECRET1&page=2#SECRET2"),
+    meta(3, "og:image", "//cdn.example/i.png?sig=SECRET3"),
+    meta(4, "twitter:image", "/i.png?sig=SECRET4"),
+    meta(5, "og:video", "javascript:alert('SECRET5')"),
+    meta(6, "og:image", " data:image/png;base64,SECRET6"),
+    el(7, "meta", { "http-equiv": "refresh", content: "5; url=https://x.example/?token=SECRET7" }, []),
+    meta(8, "og:description", "Shoes: 20% off? Ask us / today"),
+  ]);
+  const out = root(scrubEvent(snapshot(tree), policy, all));
+  const content = (out.childNodes as Json[]).map((n) => (n.attributes as Json).content);
+  assert.deepEqual(content, [
+    "https://shop.example/p/1?page=2",
+    "//cdn.example/i.png",
+    "/i.png",
+    "",
+    "",
+    "5",
+    "Shoes: 20% off? Ask us / today",
+  ]);
+  const changed = mutation({
+    attributes: [{ id: 2, attributes: { content: "https://a.example/?token=SECRET8" } }],
+  });
+  assert.deepEqual((dataOf(scrubEvent(changed, policy, all)).attributes as Json[])[0], {
+    id: 2,
+    attributes: { content: "https://a.example/" },
+  });
 });

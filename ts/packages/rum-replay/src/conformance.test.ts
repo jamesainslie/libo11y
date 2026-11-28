@@ -9,7 +9,7 @@ import { stripCssUrls } from "./css.ts";
 import { maskText } from "./mask.ts";
 import { resolvePolicy } from "./policy.ts";
 import { type RrwebEvent, type ScrubContext, scrubEvent } from "./scrub.ts";
-import { stripSrcset, stripUrl } from "./urls.ts";
+import { stripContent, stripSrcset, stripUrl } from "./urls.ts";
 
 const dir = new URL("../../../../conformance/rum-replay/", import.meta.url);
 const read = <T>(name: string): T => JSON.parse(readFileSync(new URL(name, dir), "utf8")) as T;
@@ -33,13 +33,14 @@ test("mask-text vectors", () => {
   for (const c of cases) assert.equal(maskText(c.in), c.out, JSON.stringify(c.in));
 });
 
-test("url, srcset and css vectors", () => {
-  const v = read<{ allow: string[]; cases: { kind: "url" | "srcset" | "css"; in: string; out: string }[] }>(
-    "urls.json",
-  );
+test("url, srcset, css and content vectors", () => {
+  const v = read<{
+    allow: string[];
+    cases: { kind: "url" | "srcset" | "css" | "content"; in: string; out: string }[];
+  }>("urls.json");
   const allow = new Set(v.allow);
-  const strip = { url: stripUrl, srcset: stripSrcset, css: stripCssUrls };
-  for (const kind of ["url", "srcset", "css"] as const)
+  const strip = { url: stripUrl, srcset: stripSrcset, css: stripCssUrls, content: stripContent };
+  for (const kind of ["url", "srcset", "css", "content"] as const)
     assert.ok(
       v.cases.some((c) => c.kind === kind),
       kind,
@@ -62,6 +63,7 @@ function run(v: ScrubVector, allowedIds: ReadonlySet<number>): RrwebEvent[] {
   const blocked = new Set(v.blocked_ids);
   const ctx: ScrubContext = {
     textAllowed: (id) => allowedIds.has(id),
+    stylesheetAllowed: (id) => allowedIds.has(id),
     parentTag: (id) => v.parent_tags[String(id)],
     editable: (id) => editable.has(id),
     blocked: (id) => blocked.has(id),

@@ -71,6 +71,23 @@
     {"kind":"css","in":"@import \"/theme.css\\9 ?token=SECRET\";","out":"@import \"/theme.css\";"},
     {"kind":"css","in":"i{background:image-set(\"/a b.png?token=SECRET\" 1x)}","out":"i{background:image-set(\"/a b.png\" 1x)}"},
     {"kind":"css","in":"@import 'data:text/css,SECRET';","out":"@import \"\";"},
-    {"kind":"css","in":"@IMPORT 'theme.css';","out":"@IMPORT \"theme.css\";"}
+    {"kind":"css","in":"@IMPORT 'theme.css';","out":"@IMPORT \"theme.css\";"},
+    {"kind":"css","in":"--bg: https://cdn.example/a.png?token=SECRET&page=2;color:red","out":"--bg: \"https://cdn.example/a.png?page=2\";color:red"},
+    {"kind":"css","in":":root{--api:/v1/me?session=SECRET}","out":":root{--api:\"/v1/me\"}"},
+    {"kind":"css","in":"a{--u:\\68ttps://x.example/?t=SECRET }","out":"a{--u:\"https://x.example/\" }"},
+    {"kind":"css","in":"--list: //a.example/x?k=SECRET, /b?k=SECRET !important","out":"--list: \"//a.example/x\", \"/b\" !important"},
+    {"kind":"css","in":"--img: data:image/png;base64,SECRET","out":"--img: \"\""},
+    {"kind":"css","in":"--f: var(--x, /a?k=SECRET)","out":"--f: var(--x, \"/a\")"},
+    {"kind":"css","in":"--c:/*x*/https://a.example/?k=SECRET","out":"--c:\"https://a.example/\""},
+    {"kind":"css","in":".tel:hover,data:hover{grid-row:1 / 3;font:12px/1.5 a;--p:/v1/me;--h:https://a.example/x}","out":".tel:hover,data:hover{grid-row:1 / 3;font:12px/1.5 a;--p:/v1/me;--h:https://a.example/x}"},
+    {"kind":"css","in":"@media (min-width:10px){a{--u:/x?t=SECRET}}","out":"@media (min-width:10px){a{--u:\"/x\"}}"},
+    {"kind":"content","in":"https://shop.example/p/1?token=SECRET&page=2#SECRET","out":"https://shop.example/p/1?page=2"},
+    {"kind":"content","in":"//cdn.example/i.png?sig=SECRET","out":"//cdn.example/i.png"},
+    {"kind":"content","in":"/i.png?sig=SECRET","out":"/i.png"},
+    {"kind":"content","in":"javascript:alert('SECRET')","out":""},
+    {"kind":"content","in":" data:image/png;base64,SECRET","out":""},
+    {"kind":"content","in":"5; url=https://x.example/?token=SECRET","out":"5"},
+    {"kind":"content","in":"0,https://x.example/?token=SECRET","out":"0"},
+    {"kind":"content","in":"Shoes: 20% off? Ask us / today","out":"Shoes: 20% off? Ask us / today"}
   ]
 }

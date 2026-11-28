@@ -9,14 +9,24 @@
  *   LF and CR are removed) with a scheme of URL_SCHEMES, holds a "?" or "#" anywhere, or starts
  *   with "/" and holds no whitespace, as in @import or image-set(). A URL string is stripped by
  *   stripUrl and written back in double quotes. Any other string is kept exactly as written.
+ * - A bare URL in a declaration value, as in a custom property (--bg: https://x/a.png?token=1), is
+ *   stripped too. A declaration value starts after a ":" whose statement so far (since the start,
+ *   "{", "}" or ";") is one name, and ends at ";", "{" or "}". In it, a run starts at the start of
+ *   the value or after ASCII whitespace, ",", "(" or a comment, and runs, escapes decoded, up to
+ *   ASCII whitespace, a quote, ")", "{", "}", a comment, "!important", or ";" and "," except in a
+ *   run that starts with "data:". A run that starts with a scheme of URL_SCHEMES, "/" or "\\" is
+ *   a URL: it is kept as written when stripUrl leaves it unchanged, and otherwise written back as
+ *   the stripped URL in double quotes.
  * - Everything else is copied unchanged.
  */
-import { stripUrl } from "./urls.ts";
+import { stripUrl, URL_SCHEMES } from "./urls.ts";
 
-/** Schemes that make a quoted CSS string a URL even when it holds whitespace. */
-const URL_SCHEMES = /^(?:https?|data|blob|javascript|file|ftp|wss?|mailto|tel):/i;
 const HEX = /^[0-9A-Fa-f]$/;
 const WS = /^[\t\n\f\r ]$/;
+/** What follows the "!" of !important. */
+const IMPORTANT = /^[\t\n\f\r ]*important/i;
+/** A statement so far that is one property name, so a ":" after it starts a declaration value. */
+const PROPERTY = /^[\t\n\f\r ]*[-A-Za-z0-9_\u0080-\uffff]+[\t\n\f\r ]*$/;
 
 /** The code point of a hex escape, U+FFFD for zero, a surrogate or one past U+10FFFF. */
 function codePoint(hex: string): string {
@@ -125,16 +135,56 @@ function readsAsUrl(value: string): boolean {
   return !/\s/.test(t) && t.startsWith("/");
 }
 
+/** A run of text that may be a bare URL, read from css[i] with escapes decoded. See the file comment. */
+function readBareRun(css: string, i: number): { readonly value: string; readonly next: number } {
+  let j = i;
+  let value = "";
+  while (j < css.length) {
+    const c = css[j] ?? "";
+    if (c === "\\") {
+      if (!isEscape(css, j)) break;
+      const e = readEscape(css, j);
+      value += e.text;
+      j = e.next;
+      continue;
+    }
+    if (WS.test(c) || c === '"' || c === "'" || c === ")" || c === "{" || c === "}") break;
+    if (c === "/" && css[j + 1] === "*") break;
+    if (c === "!" && IMPORTANT.test(css.slice(j + 1))) break;
+    if ((c === ";" || c === ",") && !/^data:/i.test(value)) break;
+    value += c;
+    j++;
+  }
+  return { value, next: j };
+}
+
 /** css with every URL stripped by stripUrl and comments removed. See the file comment. */
 export function stripCssUrls(css: string, allow: ReadonlySet<string>): string {
   let out = "";
   let i = 0;
+  /** Where the current statement starts in out: after the start, "{", "}" or ";". */
+  let statement = 0;
+  /** Inside a declaration value. */
+  let inValue = false;
+  /** At the start of the value or after whitespace, ",", "(" or a comment in it. */
+  let boundary = false;
   while (i < css.length) {
     const c = css[i] ?? "";
     if (c === "/" && css[i + 1] === "*") {
       const end = css.indexOf("*/", i + 2);
       i = end < 0 ? css.length : end + 2;
+      boundary = inValue;
       continue;
+    }
+    if (inValue && boundary && (c === "/" || isNameChar(c) || isEscape(css, i))) {
+      const run = readBareRun(css, i);
+      if (URL_SCHEMES.test(run.value) || run.value.startsWith("/") || run.value.startsWith("\\")) {
+        const stripped = stripUrl(run.value, allow);
+        out += stripped === run.value ? css.slice(i, run.next) : quote(stripped);
+        i = run.next;
+        boundary = false;
+        continue;
+      }
     }
     if (c === '"' || c === "'") {
       const s = readString(css, i);
@@ -143,6 +193,7 @@ export function stripCssUrls(css: string, allow: ReadonlySet<string>): string {
           ? quote(stripUrl(s.value, allow))
           : css.slice(i, s.next);
       i = s.next;
+      boundary = false;
       continue;
     }
     if (isNameChar(c) || isEscape(css, i)) {
@@ -165,14 +216,32 @@ export function stripCssUrls(css: string, allow: ReadonlySet<string>): string {
         const u = readUrlArgument(css, j + 1);
         out += `url(${quote(stripUrl(u.value, allow))})`;
         i = u.next;
+        boundary = false;
         continue;
       }
       out += css.slice(i, j);
       i = j;
+      boundary = false;
+      continue;
+    }
+    if (c === ";" || c === "{" || c === "}") {
+      out += c;
+      i++;
+      statement = out.length;
+      inValue = false;
+      boundary = false;
+      continue;
+    }
+    if (c === ":" && !inValue && PROPERTY.test(out.slice(statement))) {
+      out += c;
+      i++;
+      inValue = true;
+      boundary = true;
       continue;
     }
     out += c;
     i++;
+    boundary = inValue && (WS.test(c) || c === "," || c === "(");
   }
   return out;
 }

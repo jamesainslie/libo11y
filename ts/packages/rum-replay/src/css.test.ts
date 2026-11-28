@@ -79,3 +79,32 @@ test("an @import string is a URL whatever it looks like", () => {
   assert.equal(stripCssUrls("@import 'data:text/css,SECRET';", allow), '@import "";');
   assert.equal(stripCssUrls("@IMPORT 'theme.css';", allow), '@IMPORT "theme.css";');
 });
+
+test("bare URLs in declaration values, such as custom properties, are stripped", () => {
+  assert.equal(
+    stripCssUrls("--bg: https://cdn.example/a.png?token=SECRET1&page=2;color:red", allow),
+    '--bg: "https://cdn.example/a.png?page=2";color:red',
+  );
+  assert.equal(stripCssUrls(":root{--api:/v1/me?session=SECRET2}", allow), ':root{--api:"/v1/me"}');
+  assert.equal(
+    stripCssUrls("a{--u:\\68ttps://x.example/?t=SECRET3 }", allow),
+    'a{--u:"https://x.example/" }',
+  );
+  assert.equal(
+    stripCssUrls("--list: //a.example/x?k=SECRET4, /b?k=SECRET5 !important", allow),
+    '--list: "//a.example/x", "/b" !important',
+  );
+  assert.equal(stripCssUrls("--img: data:image/png;base64,SECRET6", allow), '--img: ""');
+  assert.equal(stripCssUrls("--js:javascript:alert(SECRET7)", allow), '--js:"")');
+  assert.equal(stripCssUrls("--f: var(--x, /a?k=SECRET8)", allow), '--f: var(--x, "/a")');
+});
+
+test("bare values that need no stripping, and selectors, are left as they are", () => {
+  const css =
+    ".tel:hover,data:hover{grid-row:1 / 3;font:12px/1.5 a;--p:/v1/me;--h:https://a.example/x}a::before{content:x}";
+  assert.equal(stripCssUrls(css, allow), css);
+  assert.equal(
+    stripCssUrls("@media (min-width:10px){a{--u:/x?t=SECRET}}", allow),
+    '@media (min-width:10px){a{--u:"/x"}}',
+  );
+});
