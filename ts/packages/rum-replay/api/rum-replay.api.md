@@ -4,6 +4,11 @@
 
 ```ts
 
+import type { RumCollector } from '@libo11y/rum';
+
+// @public
+export function replay(options?: ReplayOptions): RumCollector;
+
 // @public
 export interface ReplayOptions {
     readonly limits?: {

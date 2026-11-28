@@ -14,7 +14,7 @@
  * - A closed segment is passed to onClose when it holds an incremental event (type 3) or is the
  *   recording's first.
  * - views lists the view current when the segment opened and each view started while it was open,
- *   at most MAX_VIEWS. requests keeps the first maxRequests request spans started while it was open.
+ *   at most MAX_VIEWS. A view with an ID already listed replaces it (a rename, a span context). requests keeps the first maxRequests request spans started while it was open.
  */
 import type { SegmentEnvelope, SegmentRequest, SegmentView } from "./envelope.ts";
 import type { RrwebEvent } from "./scrub.ts";
@@ -149,7 +149,10 @@ export function createSegmenter(o: SegmenterOptions): Segmenter {
     },
     view(v) {
       current = v;
-      if (open !== undefined && open.views.length < MAX_VIEWS) open.views.push(v);
+      if (open === undefined) return;
+      const i = open.views.findIndex((x) => x.id === v.id);
+      if (i >= 0) open.views[i] = v;
+      else if (open.views.length < MAX_VIEWS) open.views.push(v);
     },
     request(r) {
       if (open !== undefined && open.requests.length < o.maxRequests) open.requests.push(r);

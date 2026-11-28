@@ -209,3 +209,16 @@ test("requests and views outside a segment are not kept for the next one, except
   clock.advance(0);
   assert.equal(closed[0]?.envelope.requests.length, 0);
 });
+
+test("a view update with a known ID replaces it: a rename or a span context that came later", () => {
+  const { seg, closed } = setup();
+  seg.view({ id: "v1", name: "/users/7", at: 999 });
+  seg.push(meta(1000));
+  seg.push(full(1000));
+  seg.view({ id: "v1", name: "/users/:id", at: 999, trace_id: "a".repeat(32), span_id: "b".repeat(16) });
+  seg.push(move(1001));
+  seg.cut("hide");
+  assert.deepEqual(closed[0]?.envelope.views, [
+    { id: "v1", name: "/users/:id", at: 999, trace_id: "a".repeat(32), span_id: "b".repeat(16) },
+  ]);
+});
