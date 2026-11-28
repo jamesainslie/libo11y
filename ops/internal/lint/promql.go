@@ -15,6 +15,12 @@ import (
 // scrapeLabels are added to every series by the scrape.
 var scrapeLabels = []string{"job", "instance"}
 
+// scrapeSeries are the series Prometheus writes for every scrape target,
+// whatever the target exports. They carry only the scrape labels.
+var scrapeSeries = catalog.Catalog{
+	"up": {Name: "up", Type: "gauge"},
+}
+
 // counterFuncs need a counter, or a histogram's _bucket, _count or _sum.
 var counterFuncs = map[string]bool{"rate": true, "increase": true, "irate": true}
 
@@ -70,7 +76,7 @@ func (ck *promChecker) labelsOf(name string) ([]string, bool) {
 	if l, ok := ck.recorded[name]; ok {
 		return l, true
 	}
-	f, ok := ck.c.Resolve(name)
+	f, ok := ck.resolve(name)
 	if !ok {
 		return nil, false
 	}
@@ -79,6 +85,15 @@ func (ck *promChecker) labelsOf(name string) ([]string, bool) {
 		l = append(l, "le")
 	}
 	return l, true
+}
+
+// resolve finds a series in the gateway's catalog or among the series
+// every scrape adds.
+func (ck *promChecker) resolve(name string) (catalog.Family, bool) {
+	if f, ok := ck.c.Resolve(name); ok {
+		return f, true
+	}
+	return scrapeSeries.Resolve(name)
 }
 
 func selectorName(vs *parser.VectorSelector) string {
@@ -177,7 +192,7 @@ func (ck *promChecker) counterArg(n *parser.Call) {
 		return
 	}
 	name := selectorName(vs)
-	f, ok := ck.c.Resolve(name)
+	f, ok := ck.resolve(name)
 	if !ok {
 		if _, rec := ck.recorded[name]; rec {
 			ck.errorf("%s needs a counter, and %s is a recording rule output", n.Func.Name, name)

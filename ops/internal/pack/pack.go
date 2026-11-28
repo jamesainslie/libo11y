@@ -14,6 +14,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/prometheus/prometheus/promql/parser"
+
 	"github.com/jamesainslie/libo11y/ops/internal/dash"
 	"github.com/jamesainslie/libo11y/ops/internal/rules"
 	"github.com/jamesainslie/libo11y/ops/internal/thresholds"
@@ -38,13 +40,16 @@ var UIDs = []string{
 // Dashboards returns the pack's dashboards, in the order the kustomization
 // lists them.
 func Dashboards(t thresholds.Thresholds) []dash.Dashboard {
-	return []dash.Dashboard{overview(t), vitals(t), errorsDashboard(), explorer()}
+	return []dash.Dashboard{overview(t), vitals(t), errorsDashboard(), explorer(), gatewayDashboard(t)}
 }
 
 // RuleFiles returns the pack's Prometheus rule files by path. version goes
 // into the runbook links.
-func RuleFiles(_ thresholds.Thresholds, _ string) map[string]rules.File {
-	return nil
+func RuleFiles(t thresholds.Thresholds, version string) map[string]rules.File {
+	return map[string]rules.File{
+		rumRulesPath:     rumRules(t, version),
+		gatewayRulesPath: gatewayRules(t, version),
+	}
 }
 
 // Build renders every artifact of the pack, sorted by path.
@@ -64,14 +69,35 @@ func build(dashboards []dash.Dashboard, files map[string]rules.File) ([]Artifact
 		if err != nil {
 			return nil, err
 		}
-		arts = append(arts, Artifact{Path: "dashboards/" + d.UID + ".json", Data: b})
+		arts = append(arts, Artifact{Path: dashboardPath(d.UID), Data: b})
 	}
 	for _, p := range slices.Sorted(maps.Keys(files)) {
+		if !slices.Contains(ruleFileOrder, p) {
+			return nil, fmt.Errorf("pack: rule file %s has no place in the PrometheusRule", p)
+		}
+		if err := parseRules(files[p]); err != nil {
+			return nil, fmt.Errorf("pack: %s: %w", p, err)
+		}
 		b, err := files[p].YAML()
 		if err != nil {
 			return nil, fmt.Errorf("pack: %s: %w", p, err)
 		}
 		arts = append(arts, Artifact{Path: p, Data: b})
+	}
+	// The kustomization deploys the PrometheusRule, so the two exist only
+	// together, when the pack has rules.
+	var ordered []rules.File
+	for _, p := range ruleFileOrder {
+		if f, ok := files[p]; ok {
+			ordered = append(ordered, f)
+		}
+	}
+	if len(ordered) > 0 {
+		b, err := rules.PrometheusRule("libo11y-rum", map[string]string{partOfLabel: partOfValue}, ordered...)
+		if err != nil {
+			return nil, fmt.Errorf("pack: %s: %w", prometheusRulePath, err)
+		}
+		arts = append(arts, Artifact{Path: prometheusRulePath, Data: b}, Artifact{Path: "kustomization.yaml", Data: kustomization(dashboards)})
 	}
 	slices.SortFunc(arts, func(a, b Artifact) int { return strings.Compare(a.Path, b.Path) })
 	return arts, nil
@@ -164,4 +190,21 @@ func Stale(root string, arts []Artifact) ([]string, error) {
 	}
 	slices.Sort(out)
 	return out, nil
+}
+
+// dashboardPath is where a dashboard's JSON is written, relative to ops/.
+func dashboardPath(uid string) string { return "dashboards/" + uid + ".json" }
+
+// parseRules parses every expression of a rule file, so thresholds that
+// pass validation but still yield PromQL Prometheus would refuse, such as
+// a gateway selector ending in a comma, fail the generator instead.
+func parseRules(f rules.File) error {
+	for _, g := range f.Groups {
+		for _, r := range g.Rules {
+			if _, err := parser.NewParser(parser.Options{}).ParseExpr(r.Expr); err != nil {
+				return fmt.Errorf("%s%s: %w", r.Record, r.Alert, err)
+			}
+		}
+	}
+	return nil
 }

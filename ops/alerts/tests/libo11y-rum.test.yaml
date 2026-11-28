@@ -1,0 +1,169 @@
+# promtool unit tests of alerts/libo11y-rum.rules.yaml, written by hand.
+# They are the behavioural specification of the RUM alerts with the default
+# thresholds (ops/thresholds.yaml). Run them with
+#   scripts/ops-promtool.sh test rules ops/alerts/tests/*.test.yaml
+rule_files:
+  - ../libo11y-rum.rules.yaml
+evaluation_interval: 1m
+tests:
+  # LCP poor. Each minute adds 10 samples: 1 at or under 2.5 s, none
+  # between 2.5 s and 4 s, and 9 between 4 s and 5 s. The p75 rank is
+  # 0.75 * 10 = 7.5, inside the (4, 5] bucket, which starts after 1
+  # sample and holds 9: 4 + (7.5 - 1) / 9 * 1 = 4.72 s, above the poor
+  # bound of 4 s, with 600 samples an hour.
+  - interval: 1m
+    input_series:
+      - series: 'o11y_rum_vital_lcp_seconds_bucket{service_name="shop-web", le="2.5"}'
+        values: '0+1x180'
+      - series: 'o11y_rum_vital_lcp_seconds_bucket{service_name="shop-web", le="4"}'
+        values: '0+1x180'
+      - series: 'o11y_rum_vital_lcp_seconds_bucket{service_name="shop-web", le="5"}'
+        values: '0+10x180'
+      - series: 'o11y_rum_vital_lcp_seconds_bucket{service_name="shop-web", le="+Inf"}'
+        values: '0+10x180'
+      - series: 'o11y_rum_vital_lcp_seconds_count{service_name="shop-web"}'
+        values: '0+10x180'
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: O11yRUMVitalPoor
+        exp_alerts:
+          - exp_labels: {severity: warning, vital: lcp, service_name: shop-web}
+            exp_annotations:
+              summary: 'LCP p75 is poor for shop-web'
+              description: 'The LCP p75 over the last hour has been above 4 s for 30 minutes, with at least 200 samples an hour.'
+              runbook_url: 'https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumvitalpoor'
+              dashboard: '/d/libo11y-rum-vitals'
+      # Poor is not a regression: there is no week-old data to compare.
+      - eval_time: 2h
+        alertname: O11yRUMVitalRegression
+        exp_alerts: []
+
+  # The same latencies with one sample a minute, 60 an hour, stay silent:
+  # too little traffic for a p75 to mean anything. The p75 is
+  # 4 + 0.75 * 1 = 4.75 s.
+  - interval: 1m
+    input_series:
+      - series: 'o11y_rum_vital_lcp_seconds_bucket{service_name="shop-web", le="4"}'
+        values: '0+0x180'
+      - series: 'o11y_rum_vital_lcp_seconds_bucket{service_name="shop-web", le="5"}'
+        values: '0+1x180'
+      - series: 'o11y_rum_vital_lcp_seconds_bucket{service_name="shop-web", le="+Inf"}'
+        values: '0+1x180'
+      - series: 'o11y_rum_vital_lcp_seconds_count{service_name="shop-web"}'
+        values: '0+1x180'
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: O11yRUMVitalPoor
+        exp_alerts: []
+
+  # CLS poor carries no unit in its description. Each minute adds 10
+  # samples, all between 0.25 and 0.5: 0.25 + 0.75 * 0.25 = 0.4375, above
+  # the poor bound of 0.25.
+  - interval: 1m
+    input_series:
+      - series: 'o11y_rum_vital_cls_bucket{service_name="shop-web", le="0.25"}'
+        values: '0+0x180'
+      - series: 'o11y_rum_vital_cls_bucket{service_name="shop-web", le="0.5"}'
+        values: '0+10x180'
+      - series: 'o11y_rum_vital_cls_bucket{service_name="shop-web", le="+Inf"}'
+        values: '0+10x180'
+      - series: 'o11y_rum_vital_cls_count{service_name="shop-web"}'
+        values: '0+10x180'
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: O11yRUMVitalPoor
+        exp_alerts:
+          - exp_labels: {severity: warning, vital: cls, service_name: shop-web}
+            exp_annotations:
+              summary: 'CLS p75 is poor for shop-web'
+              description: 'The CLS p75 over the last hour has been above 0.25 for 30 minutes, with at least 200 samples an hour.'
+              runbook_url: 'https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumvitalpoor'
+              dashboard: '/d/libo11y-rum-vitals'
+
+  # INP regression. Every 5 minutes adds 30 samples, 360 an hour. For the
+  # first 7 days (2016 steps) every sample is at or under 0.2 s, so the p75
+  # is 0 + 0.75 * 0.2 = 0.15 s. On the last day every sample is between
+  # 0.2 s and 0.5 s: 0.2 + 0.75 * 0.3 = 0.425 s. That is more than
+  # 1.25 * 0.15 = 0.1875 s and above the good bound of 0.2 s, but under
+  # the poor bound of 0.5 s.
+  - interval: 5m
+    input_series:
+      - series: 'o11y_rum_vital_inp_seconds_bucket{service_name="shop-web", le="0.2"}'
+        values: '0+30x2016 60480+0x287'
+      - series: 'o11y_rum_vital_inp_seconds_bucket{service_name="shop-web", le="0.5"}'
+        values: '0+30x2016 60510+30x287'
+      - series: 'o11y_rum_vital_inp_seconds_bucket{service_name="shop-web", le="+Inf"}'
+        values: '0+30x2016 60510+30x287'
+      - series: 'o11y_rum_vital_inp_seconds_count{service_name="shop-web"}'
+        values: '0+30x2016 60510+30x287'
+    alert_rule_test:
+      - eval_time: 192h
+        alertname: O11yRUMVitalRegression
+        exp_alerts:
+          - exp_labels: {severity: warning, vital: inp, service_name: shop-web}
+            exp_annotations:
+              summary: 'INP p75 regressed for shop-web'
+              description: 'The INP p75 over the last hour is more than 1.25 times the same hour a week ago and above the good bound of 0.2 s.'
+              runbook_url: 'https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumvitalregression'
+              dashboard: '/d/libo11y-rum-vitals'
+      - eval_time: 192h
+        alertname: O11yRUMVitalPoor
+        exp_alerts: []
+      # The week before the change is steady, so nothing fires.
+      - eval_time: 167h
+        alertname: O11yRUMVitalRegression
+        exp_alerts: []
+
+  # A regression under the good bound stays silent. For the first 7 days
+  # every sample is at or under 0.1 s: 0.75 * 0.1 = 0.075 s. On the last
+  # day half are at or under 0.1 s and half between 0.1 s and 0.125 s.
+  # The rank 0.75 * 30 = 22.5 falls in (0.1, 0.125], which starts after 15
+  # and holds 15: 0.1 + (22.5 - 15) / 15 * 0.025 = 0.1125 s, 1.5 times last
+  # week but under the good bound of 0.2 s.
+  - interval: 5m
+    input_series:
+      - series: 'o11y_rum_vital_inp_seconds_bucket{service_name="shop-web", le="0.1"}'
+        values: '0+30x2016 60495+15x287'
+      - series: 'o11y_rum_vital_inp_seconds_bucket{service_name="shop-web", le="0.125"}'
+        values: '0+30x2016 60510+30x287'
+      - series: 'o11y_rum_vital_inp_seconds_bucket{service_name="shop-web", le="+Inf"}'
+        values: '0+30x2016 60510+30x287'
+      - series: 'o11y_rum_vital_inp_seconds_count{service_name="shop-web"}'
+        values: '0+30x2016 60510+30x287'
+    alert_rule_test:
+      - eval_time: 192h
+        alertname: O11yRUMVitalRegression
+        exp_alerts: []
+
+  # Error rate. Every 3 minutes adds 20 views and 3 errors: 100 views and
+  # 15 errors in 15 minutes, 0.15 errors per view, above 0.1, with more
+  # than the 50 views (200 an hour / 4) the alert needs.
+  - interval: 3m
+    input_series:
+      - series: 'o11y_rum_views_total{service_name="shop-web", o11y_rum_platform="web", o11y_rum_view_name="/products", o11y_rum_view_kind="initial", o11y_rum_device_class="desktop"}'
+        values: '0+20x40'
+      - series: 'o11y_rum_errors_total{service_name="shop-web", o11y_rum_platform="web", o11y_rum_view_name="/products", o11y_rum_error_source="uncaught"}'
+        values: '0+3x40'
+    alert_rule_test:
+      - eval_time: 1h
+        alertname: O11yRUMErrorRateHigh
+        exp_alerts:
+          - exp_labels: {severity: warning, service_name: shop-web}
+            exp_annotations:
+              summary: 'Error rate is high for shop-web'
+              description: 'The app reported more than 0.1 errors per view over the last 15 minutes, with at least 50 views.'
+              runbook_url: 'https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumerrorratehigh'
+              dashboard: '/d/libo11y-rum-errors'
+
+  # The same error rate on 40 views in 15 minutes stays silent: under the
+  # 50 views the alert needs.
+  - interval: 3m
+    input_series:
+      - series: 'o11y_rum_views_total{service_name="shop-web", o11y_rum_platform="web", o11y_rum_view_name="/products", o11y_rum_view_kind="initial", o11y_rum_device_class="desktop"}'
+        values: '0+8x40'
+      - series: 'o11y_rum_errors_total{service_name="shop-web", o11y_rum_platform="web", o11y_rum_view_name="/products", o11y_rum_error_source="uncaught"}'
+        values: '0+3x40'
+    alert_rule_test:
+      - eval_time: 1h
+        alertname: O11yRUMErrorRateHigh
+        exp_alerts: []

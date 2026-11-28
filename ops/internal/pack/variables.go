@@ -47,3 +47,10 @@ var (
 	varSession = dash.Variable{Name: "session_id", Label: "session.id", Type: "textbox"}
 	varViewID  = dash.Variable{Name: "view_id", Label: "o11y.rum.view.id", Type: "textbox"}
 )
+
+// The gateway dashboard's variables. A gateway is a scrape job exporting
+// o11yrum_batches_total, so the picker works whatever the job is named.
+var (
+	varGateway    = promVar("gateway", "Gateway", `label_values(o11yrum_batches_total, job)`, ".+")
+	varGatewayApp = promVar("app", "App", `label_values(o11yrum_batches_total{job=~"$gateway"}, o11yrum_app)`, ".+")
+)

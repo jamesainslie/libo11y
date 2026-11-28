@@ -74,3 +74,17 @@ func TestCheckPromQLBareHistogram(t *testing.T) {
 		t.Errorf("a bare histogram name was accepted: %v", errs)
 	}
 }
+
+// up is the series Prometheus writes for every scrape target, so a rule
+// may use it with the scrape's own labels and no others.
+func TestCheckPromQLScrapeSeries(t *testing.T) {
+	if errs := CheckPromQL(`up{job=~"(.*/)?o11yrum-gateway", instance!=""} == 0`, c, nil); len(errs) > 0 {
+		t.Errorf("up: %v", errs)
+	}
+	if errs := CheckPromQL(`up{service_name="x"} == 0`, c, nil); !strings.Contains(fmt.Sprint(errs), "service_name") {
+		t.Errorf("up with a label the scrape does not add was accepted: %v", errs)
+	}
+	if errs := CheckPromQL(`rate(up[5m])`, c, nil); !strings.Contains(fmt.Sprint(errs), "counter") {
+		t.Errorf("rate of the up gauge was accepted: %v", errs)
+	}
+}

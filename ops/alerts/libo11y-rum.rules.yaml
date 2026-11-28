@@ -1,0 +1,182 @@
+groups:
+  - name: libo11y-rum-recording
+    interval: 1m
+    rules:
+      - record: service_name:o11y_rum_vital_lcp_seconds:p75_rate1h
+        expr: histogram_quantile(0.75, sum by (service_name, le) (rate(o11y_rum_vital_lcp_seconds_bucket[1h])))
+      - record: service_name:o11y_rum_vital_lcp_seconds_count:increase1h
+        expr: sum by (service_name) (increase(o11y_rum_vital_lcp_seconds_count[1h]))
+      - record: service_name:o11y_rum_vital_inp_seconds:p75_rate1h
+        expr: histogram_quantile(0.75, sum by (service_name, le) (rate(o11y_rum_vital_inp_seconds_bucket[1h])))
+      - record: service_name:o11y_rum_vital_inp_seconds_count:increase1h
+        expr: sum by (service_name) (increase(o11y_rum_vital_inp_seconds_count[1h]))
+      - record: service_name:o11y_rum_vital_cls:p75_rate1h
+        expr: histogram_quantile(0.75, sum by (service_name, le) (rate(o11y_rum_vital_cls_bucket[1h])))
+      - record: service_name:o11y_rum_vital_cls_count:increase1h
+        expr: sum by (service_name) (increase(o11y_rum_vital_cls_count[1h]))
+      - record: service_name:o11y_rum_vital_fcp_seconds:p75_rate1h
+        expr: histogram_quantile(0.75, sum by (service_name, le) (rate(o11y_rum_vital_fcp_seconds_bucket[1h])))
+      - record: service_name:o11y_rum_vital_fcp_seconds_count:increase1h
+        expr: sum by (service_name) (increase(o11y_rum_vital_fcp_seconds_count[1h]))
+      - record: service_name:o11y_rum_vital_ttfb_seconds:p75_rate1h
+        expr: histogram_quantile(0.75, sum by (service_name, le) (rate(o11y_rum_vital_ttfb_seconds_bucket[1h])))
+      - record: service_name:o11y_rum_vital_ttfb_seconds_count:increase1h
+        expr: sum by (service_name) (increase(o11y_rum_vital_ttfb_seconds_count[1h]))
+      - record: service_name:o11y_rum_views:increase15m
+        expr: sum by (service_name) (increase(o11y_rum_views_total[15m]))
+      - record: service_name:o11y_rum_errors:increase15m
+        expr: sum by (service_name) (increase(o11y_rum_errors_total[15m]))
+  - name: libo11y-rum-alerts
+    rules:
+      - alert: O11yRUMVitalPoor
+        expr: |-
+          service_name:o11y_rum_vital_lcp_seconds:p75_rate1h > 4
+          and on (service_name) service_name:o11y_rum_vital_lcp_seconds_count:increase1h >= 200
+        for: 30m
+        labels:
+          severity: warning
+          vital: lcp
+        annotations:
+          dashboard: /d/libo11y-rum-vitals
+          description: The LCP p75 over the last hour has been above 4 s for 30 minutes, with at least 200 samples an hour.
+          runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumvitalpoor
+          summary: LCP p75 is poor for {{ $labels.service_name }}
+      - alert: O11yRUMVitalRegression
+        expr: |-
+          service_name:o11y_rum_vital_lcp_seconds:p75_rate1h > 1.25 * (service_name:o11y_rum_vital_lcp_seconds:p75_rate1h offset 7d)
+          and service_name:o11y_rum_vital_lcp_seconds:p75_rate1h > 2.5
+          and on (service_name) service_name:o11y_rum_vital_lcp_seconds_count:increase1h >= 200
+          and on (service_name) (service_name:o11y_rum_vital_lcp_seconds_count:increase1h offset 7d) >= 200
+        for: 1h
+        labels:
+          severity: warning
+          vital: lcp
+        annotations:
+          dashboard: /d/libo11y-rum-vitals
+          description: The LCP p75 over the last hour is more than 1.25 times the same hour a week ago and above the good bound of 2.5 s.
+          runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumvitalregression
+          summary: LCP p75 regressed for {{ $labels.service_name }}
+      - alert: O11yRUMVitalPoor
+        expr: |-
+          service_name:o11y_rum_vital_inp_seconds:p75_rate1h > 0.5
+          and on (service_name) service_name:o11y_rum_vital_inp_seconds_count:increase1h >= 200
+        for: 30m
+        labels:
+          severity: warning
+          vital: inp
+        annotations:
+          dashboard: /d/libo11y-rum-vitals
+          description: The INP p75 over the last hour has been above 0.5 s for 30 minutes, with at least 200 samples an hour.
+          runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumvitalpoor
+          summary: INP p75 is poor for {{ $labels.service_name }}
+      - alert: O11yRUMVitalRegression
+        expr: |-
+          service_name:o11y_rum_vital_inp_seconds:p75_rate1h > 1.25 * (service_name:o11y_rum_vital_inp_seconds:p75_rate1h offset 7d)
+          and service_name:o11y_rum_vital_inp_seconds:p75_rate1h > 0.2
+          and on (service_name) service_name:o11y_rum_vital_inp_seconds_count:increase1h >= 200
+          and on (service_name) (service_name:o11y_rum_vital_inp_seconds_count:increase1h offset 7d) >= 200
+        for: 1h
+        labels:
+          severity: warning
+          vital: inp
+        annotations:
+          dashboard: /d/libo11y-rum-vitals
+          description: The INP p75 over the last hour is more than 1.25 times the same hour a week ago and above the good bound of 0.2 s.
+          runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumvitalregression
+          summary: INP p75 regressed for {{ $labels.service_name }}
+      - alert: O11yRUMVitalPoor
+        expr: |-
+          service_name:o11y_rum_vital_cls:p75_rate1h > 0.25
+          and on (service_name) service_name:o11y_rum_vital_cls_count:increase1h >= 200
+        for: 30m
+        labels:
+          severity: warning
+          vital: cls
+        annotations:
+          dashboard: /d/libo11y-rum-vitals
+          description: The CLS p75 over the last hour has been above 0.25 for 30 minutes, with at least 200 samples an hour.
+          runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumvitalpoor
+          summary: CLS p75 is poor for {{ $labels.service_name }}
+      - alert: O11yRUMVitalRegression
+        expr: |-
+          service_name:o11y_rum_vital_cls:p75_rate1h > 1.25 * (service_name:o11y_rum_vital_cls:p75_rate1h offset 7d)
+          and service_name:o11y_rum_vital_cls:p75_rate1h > 0.1
+          and on (service_name) service_name:o11y_rum_vital_cls_count:increase1h >= 200
+          and on (service_name) (service_name:o11y_rum_vital_cls_count:increase1h offset 7d) >= 200
+        for: 1h
+        labels:
+          severity: warning
+          vital: cls
+        annotations:
+          dashboard: /d/libo11y-rum-vitals
+          description: The CLS p75 over the last hour is more than 1.25 times the same hour a week ago and above the good bound of 0.1.
+          runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumvitalregression
+          summary: CLS p75 regressed for {{ $labels.service_name }}
+      - alert: O11yRUMVitalPoor
+        expr: |-
+          service_name:o11y_rum_vital_fcp_seconds:p75_rate1h > 3
+          and on (service_name) service_name:o11y_rum_vital_fcp_seconds_count:increase1h >= 200
+        for: 30m
+        labels:
+          severity: warning
+          vital: fcp
+        annotations:
+          dashboard: /d/libo11y-rum-vitals
+          description: The FCP p75 over the last hour has been above 3 s for 30 minutes, with at least 200 samples an hour.
+          runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumvitalpoor
+          summary: FCP p75 is poor for {{ $labels.service_name }}
+      - alert: O11yRUMVitalRegression
+        expr: |-
+          service_name:o11y_rum_vital_fcp_seconds:p75_rate1h > 1.25 * (service_name:o11y_rum_vital_fcp_seconds:p75_rate1h offset 7d)
+          and service_name:o11y_rum_vital_fcp_seconds:p75_rate1h > 1.8
+          and on (service_name) service_name:o11y_rum_vital_fcp_seconds_count:increase1h >= 200
+          and on (service_name) (service_name:o11y_rum_vital_fcp_seconds_count:increase1h offset 7d) >= 200
+        for: 1h
+        labels:
+          severity: warning
+          vital: fcp
+        annotations:
+          dashboard: /d/libo11y-rum-vitals
+          description: The FCP p75 over the last hour is more than 1.25 times the same hour a week ago and above the good bound of 1.8 s.
+          runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumvitalregression
+          summary: FCP p75 regressed for {{ $labels.service_name }}
+      - alert: O11yRUMVitalPoor
+        expr: |-
+          service_name:o11y_rum_vital_ttfb_seconds:p75_rate1h > 1.8
+          and on (service_name) service_name:o11y_rum_vital_ttfb_seconds_count:increase1h >= 200
+        for: 30m
+        labels:
+          severity: warning
+          vital: ttfb
+        annotations:
+          dashboard: /d/libo11y-rum-vitals
+          description: The TTFB p75 over the last hour has been above 1.8 s for 30 minutes, with at least 200 samples an hour.
+          runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumvitalpoor
+          summary: TTFB p75 is poor for {{ $labels.service_name }}
+      - alert: O11yRUMVitalRegression
+        expr: |-
+          service_name:o11y_rum_vital_ttfb_seconds:p75_rate1h > 1.25 * (service_name:o11y_rum_vital_ttfb_seconds:p75_rate1h offset 7d)
+          and service_name:o11y_rum_vital_ttfb_seconds:p75_rate1h > 0.8
+          and on (service_name) service_name:o11y_rum_vital_ttfb_seconds_count:increase1h >= 200
+          and on (service_name) (service_name:o11y_rum_vital_ttfb_seconds_count:increase1h offset 7d) >= 200
+        for: 1h
+        labels:
+          severity: warning
+          vital: ttfb
+        annotations:
+          dashboard: /d/libo11y-rum-vitals
+          description: The TTFB p75 over the last hour is more than 1.25 times the same hour a week ago and above the good bound of 0.8 s.
+          runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumvitalregression
+          summary: TTFB p75 regressed for {{ $labels.service_name }}
+      - alert: O11yRUMErrorRateHigh
+        expr: |-
+          service_name:o11y_rum_errors:increase15m / service_name:o11y_rum_views:increase15m > 0.1
+          and on (service_name) service_name:o11y_rum_views:increase15m >= 50
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          dashboard: /d/libo11y-rum-errors
+          description: The app reported more than 0.1 errors per view over the last 15 minutes, with at least 50 views.
+          runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumerrorratehigh
+          summary: Error rate is high for {{ $labels.service_name }}

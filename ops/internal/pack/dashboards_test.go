@@ -130,7 +130,7 @@ func TestUIDs(t *testing.T) {
 }
 
 // TestUIDsBuilt proves every UID a link may name is a dashboard the pack
-// generates. The gateway dashboard arrives with Task R7c.1.
+// generates.
 func TestUIDsBuilt(t *testing.T) {
 	built := map[string]bool{}
 	for _, d := range Dashboards(thresholds.Default()) {
@@ -140,11 +140,7 @@ func TestUIDsBuilt(t *testing.T) {
 		}
 	}
 	for _, uid := range UIDs {
-		switch {
-		case built[uid]:
-		case uid == "libo11y-rum-gateway":
-			t.Logf("%s is not built yet; Task R7c.1 adds it", uid)
-		default:
+		if !built[uid] {
 			t.Errorf("UIDs lists %s, which the pack does not build", uid)
 		}
 	}
@@ -165,13 +161,17 @@ func TestVitalFamiliesInCatalog(t *testing.T) {
 	}
 }
 
-// TestEveryQueryFiltersByApp checks the rule every RUM dashboard keeps:
+// TestEveryQueryFiltersByApp checks the rule every RUM dashboard keeps
+// (the gateway dashboard filters by the gateway's own app label instead):
 // each Prometheus selector carries service_name=~"$app", and each Loki
 // stream selector is exactly {service_name=~"$app"}, so service_name is the
 // only stream label and every panel follows the app picker.
 func TestEveryQueryFiltersByApp(t *testing.T) {
 	const appMark = "APP_VARIABLE"
 	for _, d := range Dashboards(thresholds.Default()) {
+		if d.UID == gatewayUID {
+			continue
+		}
 		if !slices.Contains(variableNames(d), "app") {
 			t.Errorf("%s has no app variable", d.UID)
 			continue
@@ -481,9 +481,8 @@ func TestDashboardsInUIDOrder(t *testing.T) {
 	for _, d := range Dashboards(thresholds.Default()) {
 		got = append(got, d.UID)
 	}
-	want := slices.DeleteFunc(slices.Clone(UIDs), func(u string) bool { return !slices.Contains(got, u) })
-	if !slices.Equal(got, want) {
-		t.Errorf("dashboards %q, want them in UIDs order %q", got, want)
+	if !slices.Equal(got, UIDs) {
+		t.Errorf("dashboards %q, want them in UIDs order %q", got, UIDs)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -39,8 +40,12 @@ func TestGatewayExports(t *testing.T) {
 	t.Cleanup(sink.Close)
 
 	dir := t.TempDir()
+	tokenFile := filepath.Join(dir, "upload-token")
+	if err := os.WriteFile(tokenFile, []byte(uploadToken+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	config := filepath.Join(dir, "gateway.yaml")
-	if err := os.WriteFile(config, []byte(gatewayConfig(sink.URL)), 0o600); err != nil {
+	if err := os.WriteFile(config, []byte(gatewayConfig(sink.URL, filepath.Join(dir, "store"), tokenFile)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	addr, promPort := startGateway(t, bin, config)
@@ -52,6 +57,10 @@ func TestGatewayExports(t *testing.T) {
 	post(t, addr, fixture.Policy(now), nil, now, http.StatusOK)
 	bad, h := fixture.Bad(now)
 	post(t, addr, bad, h, now, http.StatusForbidden)
+	// Symbolication: upload the map, then send an error whose stack names
+	// the mapped script.
+	upload(t, addr, fixture.SourceMap())
+	post(t, addr, fixture.Symbolicated(now), nil, now, http.StatusOK)
 
 	got := scrape(t, fmt.Sprintf("http://127.0.0.1:%d/metrics", promPort))
 	if *update {
@@ -91,10 +100,14 @@ func gatewayBinary(t *testing.T) string {
 	return bin
 }
 
+// uploadToken is the fixture app's source map upload token.
+const uploadToken = "fixture-upload-token"
+
 // gatewayConfig serves the fixture app. Loopback plays the CDN in front of
 // the gateway: it forwards the client address and sets the country header,
-// so the country label is derived.
-func gatewayConfig(sink string) string {
+// so the country label is derived. A filesystem object store under store
+// turns on source map uploads and symbolication.
+func gatewayConfig(sink, store, tokenFile string) string {
 	return fmt.Sprintf(`listen: 127.0.0.1:0
 environment: test
 edge:
@@ -102,14 +115,18 @@ edge:
   country:
     header: CF-IPCountry
     trusted_from: ["127.0.0.0/8", "::1/128"]
+object_store:
+  filesystem: {root: %q}
 apps:
   - service_name: %s
     origins: [%q]
+    sourcemaps:
+      upload_token_file: %q
 sinks:
   otlp:
     endpoint: %s
     timeout: 5s
-`, fixture.Service, fixture.Origin, sink)
+`, store, fixture.Service, fixture.Origin, tokenFile, sink)
 }
 
 func freePort(t *testing.T) int {
@@ -261,8 +278,8 @@ func (g *gateway) stop() error {
 // status.
 func post(t *testing.T, addr string, r fixture.Request, h http.Header, now time.Time, want int) {
 	t.Helper()
-	url := fmt.Sprintf("http://%s%s?sent_at=%d", addr, r.Path, now.UnixMilli())
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, url, bytes.NewReader(r.Body))
+	target := fmt.Sprintf("http://%s%s?sent_at=%d", addr, r.Path, now.UnixMilli())
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, target, bytes.NewReader(r.Body))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -290,16 +307,16 @@ func post(t *testing.T, addr string, r fixture.Request, h http.Header, now time.
 
 // scrape reads the Prometheus endpoint until the derived views counter
 // appears, then parses it into a catalog.
-func scrape(t *testing.T, url string) Catalog {
+func scrape(t *testing.T, endpoint string) Catalog {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	var last string
 	for {
-		body, err := get(t, url)
+		body, err := get(t, endpoint)
 		if err == nil {
 			c, perr := Parse(bytes.NewReader(body))
 			if perr != nil {
-				t.Fatalf("parse %s: %v", url, perr)
+				t.Fatalf("parse %s: %v", endpoint, perr)
 			}
 			if _, ok := c["o11y_rum_views_total"]; ok {
 				return c
@@ -309,14 +326,14 @@ func scrape(t *testing.T, url string) Catalog {
 			last = err.Error()
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("o11y_rum_views_total did not appear on %s; last scrape:\n%s", url, last)
+			t.Fatalf("o11y_rum_views_total did not appear on %s; last scrape:\n%s", endpoint, last)
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
 }
 
-func get(t *testing.T, url string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url, nil)
+func get(t *testing.T, endpoint string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -326,7 +343,7 @@ func get(t *testing.T, url string) ([]byte, error) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET %s: %s", url, resp.Status)
+		return nil, fmt.Errorf("GET %s: %s", endpoint, resp.Status)
 	}
 	return io.ReadAll(resp.Body)
 }
@@ -355,4 +372,30 @@ func diff(want, got Catalog) string {
 		}
 	}
 	return b.String()
+}
+
+// upload stores a source map for the fixture's release and script, as a
+// build would, and checks the gateway answers 201.
+func upload(t *testing.T, addr string, sourceMap []byte) {
+	t.Helper()
+	q := url.Values{"service": {fixture.Service}, "version": {fixture.Version}, "url": {fixture.ScriptURL}}
+	target := fmt.Sprintf("http://%s%s?%s", addr, fixture.PathSourcemaps, q.Encode())
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, target, bytes.NewReader(sourceMap))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+uploadToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close() // the body is read; a close error changes nothing
+	if err != nil {
+		t.Fatalf("upload: read the response: %v", err)
+	}
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("upload: %d, want 201: %s", resp.StatusCode, body)
+	}
 }

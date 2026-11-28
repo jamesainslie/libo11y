@@ -1,0 +1,224 @@
+# promtool unit tests of alerts/libo11y-rum-gateway.rules.yaml, written by
+# hand. They are the behavioural specification of the gateway alerts with
+# the default thresholds (ops/thresholds.yaml), whose gateway selector is
+# job=~"(.*/)?o11yrum-gateway": a plain job name and a namespaced one
+# (as a PodMonitor names it) both match. Run them with
+#   scripts/ops-promtool.sh test rules ops/alerts/tests/*.test.yaml
+rule_files:
+  - ../libo11y-rum-gateway.rules.yaml
+evaluation_interval: 1m
+tests:
+  # Rejections, judged per gateway: the gateway labels a request it refuses
+  # before it knows the app (rate limiting, decoding, an unknown service)
+  # with app unknown, so a share per app would be meaningless. Each minute
+  # brings 54 accepted requests for shop-web, 3 refused for a disallowed
+  # origin, and 3 refused as undecodable before the app is known: 1 request
+  # a second, 10 percent rejected, above the 5 percent threshold and the
+  # 0.05 requests a second minimum.
+  - interval: 1m
+    input_series:
+      - series: 'o11yrum_batches_total{job="o11yrum-gateway", o11yrum_app="shop-web", o11yrum_signal="logs", o11yrum_outcome="accepted", o11yrum_reason="ok"}'
+        values: '0+54x60'
+      - series: 'o11yrum_batches_total{job="o11yrum-gateway", o11yrum_app="shop-web", o11yrum_signal="logs", o11yrum_outcome="rejected", o11yrum_reason="origin"}'
+        values: '0+3x60'
+      - series: 'o11yrum_batches_total{job="o11yrum-gateway", o11yrum_app="unknown", o11yrum_signal="logs", o11yrum_outcome="rejected", o11yrum_reason="decode"}'
+        values: '0+3x60'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: O11yRUMGatewayRejections
+        exp_alerts:
+          - exp_labels: {severity: warning, job: o11yrum-gateway}
+            exp_annotations:
+              summary: 'o11yrum-gateway is rejecting requests'
+              description: 'More than 5% of the requests to o11yrum-gateway were rejected over the last 10 minutes, for reasons other than rate limiting and sink failures.'
+              runbook_url: 'https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumgatewayrejections'
+              dashboard: '/d/libo11y-rum-gateway'
+      - eval_time: 30m
+        alertname: O11yRUMGatewayRateLimited
+        exp_alerts: []
+
+  # Rejections at 2 percent stay silent, even though every request of the
+  # unknown app is a rejection.
+  - interval: 1m
+    input_series:
+      - series: 'o11yrum_batches_total{job="o11yrum-gateway", o11yrum_app="shop-web", o11yrum_signal="logs", o11yrum_outcome="accepted", o11yrum_reason="ok"}'
+        values: '0+49x60'
+      - series: 'o11yrum_batches_total{job="o11yrum-gateway", o11yrum_app="unknown", o11yrum_signal="logs", o11yrum_outcome="rejected", o11yrum_reason="unknown_service"}'
+        values: '0+1x60'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: O11yRUMGatewayRejections
+        exp_alerts: []
+
+  # Rate limiting. A quarter of the requests are refused by the rate limit,
+  # which runs before the gateway reads the body and so counts them under
+  # app unknown. That is above the 20 percent threshold. Only
+  # O11yRUMGatewayRateLimited fires: the rejections alert leaves rate
+  # limiting out.
+  - interval: 1m
+    input_series:
+      - series: 'o11yrum_batches_total{job="o11yrum-gateway", o11yrum_app="shop-web", o11yrum_signal="traces", o11yrum_outcome="accepted", o11yrum_reason="ok"}'
+        values: '0+45x60'
+      - series: 'o11yrum_batches_total{job="o11yrum-gateway", o11yrum_app="unknown", o11yrum_signal="traces", o11yrum_outcome="rejected", o11yrum_reason="rate_limited"}'
+        values: '0+15x60'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: O11yRUMGatewayRateLimited
+        exp_alerts:
+          - exp_labels: {severity: info, job: o11yrum-gateway}
+            exp_annotations:
+              summary: 'o11yrum-gateway is rate limiting clients'
+              description: 'More than 20% of the requests to o11yrum-gateway were refused by the per-client rate limit over the last 10 minutes.'
+              runbook_url: 'https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumgatewayratelimited'
+              dashboard: '/d/libo11y-rum-gateway'
+      - eval_time: 30m
+        alertname: O11yRUMGatewayRejections
+        exp_alerts: []
+
+  # Rate limiting at 10 percent stays silent.
+  - interval: 1m
+    input_series:
+      - series: 'o11yrum_batches_total{job="o11yrum-gateway", o11yrum_app="shop-web", o11yrum_signal="traces", o11yrum_outcome="accepted", o11yrum_reason="ok"}'
+        values: '0+54x60'
+      - series: 'o11yrum_batches_total{job="o11yrum-gateway", o11yrum_app="unknown", o11yrum_signal="traces", o11yrum_outcome="rejected", o11yrum_reason="rate_limited"}'
+        values: '0+6x60'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: O11yRUMGatewayRateLimited
+        exp_alerts: []
+
+  # Sink failures. 2 of every 100 requests fail in a sink, above the 1
+  # percent threshold. The alert is pending for its first 5 minutes and
+  # fires after.
+  - interval: 1m
+    input_series:
+      - series: 'o11yrum_batches_total{job="o11yrum-gateway", o11yrum_app="shop-web", o11yrum_signal="logs", o11yrum_outcome="accepted", o11yrum_reason="ok"}'
+        values: '0+98x30'
+      - series: 'o11yrum_batches_total{job="o11yrum-gateway", o11yrum_app="shop-web", o11yrum_signal="logs", o11yrum_outcome="rejected", o11yrum_reason="sink"}'
+        values: '0+2x30'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: O11yRUMGatewaySinkFailing
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: O11yRUMGatewaySinkFailing
+        exp_alerts:
+          - exp_labels: {severity: critical, job: o11yrum-gateway}
+            exp_annotations:
+              summary: 'o11yrum-gateway cannot export to its sinks'
+              description: 'More than 1% of the requests to o11yrum-gateway failed in a sink over the last 5 minutes. The gateway answers them with 503 and Retry-After, so a short outage loses little, but a sink that stays down loses telemetry.'
+              runbook_url: 'https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumgatewaysinkfailing'
+              dashboard: '/d/libo11y-rum-gateway'
+      # Sink failures are not counted as rejections.
+      - eval_time: 15m
+        alertname: O11yRUMGatewayRejections
+        exp_alerts: []
+
+  # Sink failures at 0.5 percent stay silent.
+  - interval: 1m
+    input_series:
+      - series: 'o11yrum_batches_total{job="o11yrum-gateway", o11yrum_app="shop-web", o11yrum_signal="logs", o11yrum_outcome="accepted", o11yrum_reason="ok"}'
+        values: '0+199x30'
+      - series: 'o11yrum_batches_total{job="o11yrum-gateway", o11yrum_app="shop-web", o11yrum_signal="logs", o11yrum_outcome="rejected", o11yrum_reason="sink"}'
+        values: '0+1x30'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: O11yRUMGatewaySinkFailing
+        exp_alerts: []
+
+  # A slow sink, under a namespaced job name. Each minute adds 100 exports:
+  # 98 at or under 2 s and 2 between 2 s and 4 s. The p99 rank 99 falls in
+  # (2, 4], which starts after 98 and holds 2: 2 + (99 - 98) / 2 * 2 = 3 s,
+  # above the 2 s threshold.
+  - interval: 1m
+    input_series:
+      - series: 'o11yrum_sink_duration_seconds_bucket{job="monitoring/o11yrum-gateway", o11yrum_sink="otlp", o11yrum_outcome="ok", le="2"}'
+        values: '0+98x40'
+      - series: 'o11yrum_sink_duration_seconds_bucket{job="monitoring/o11yrum-gateway", o11yrum_sink="otlp", o11yrum_outcome="ok", le="4"}'
+        values: '0+100x40'
+      - series: 'o11yrum_sink_duration_seconds_bucket{job="monitoring/o11yrum-gateway", o11yrum_sink="otlp", o11yrum_outcome="ok", le="+Inf"}'
+        values: '0+100x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: O11yRUMGatewaySinkSlow
+        exp_alerts:
+          - exp_labels: {severity: warning, job: monitoring/o11yrum-gateway, o11yrum_sink: otlp}
+            exp_annotations:
+              summary: 'Sink otlp is slow on monitoring/o11yrum-gateway'
+              description: 'The p99 of one export to sink otlp has been above 2 s for 10 minutes.'
+              runbook_url: 'https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumgatewaysinkslow'
+              dashboard: '/d/libo11y-rum-gateway'
+
+  # A sink with a p99 of 1.5 s stays silent: 98 exports at or under 1 s and
+  # 2 between 1 s and 2 s give 1 + (99 - 98) / 2 * 1 = 1.5 s.
+  - interval: 1m
+    input_series:
+      - series: 'o11yrum_sink_duration_seconds_bucket{job="o11yrum-gateway", o11yrum_sink="otlp", o11yrum_outcome="ok", le="1"}'
+        values: '0+98x40'
+      - series: 'o11yrum_sink_duration_seconds_bucket{job="o11yrum-gateway", o11yrum_sink="otlp", o11yrum_outcome="ok", le="2"}'
+        values: '0+100x40'
+      - series: 'o11yrum_sink_duration_seconds_bucket{job="o11yrum-gateway", o11yrum_sink="otlp", o11yrum_outcome="ok", le="+Inf"}'
+        values: '0+100x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: O11yRUMGatewaySinkSlow
+        exp_alerts: []
+
+  # The aggregator holds 1900 attribute sets of one metric for 40 minutes,
+  # above the 1800 warning level; another metric at 1700 does not fire.
+  - interval: 1m
+    input_series:
+      - series: 'o11yrum_aggregator_series{job="o11yrum-gateway", o11yrum_metric="o11y.rum.views"}'
+        values: '1900x40'
+      - series: 'o11yrum_aggregator_series{job="o11yrum-gateway", o11yrum_metric="o11y.rum.errors"}'
+        values: '1700x40'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: O11yRUMAggregatorNearCap
+        exp_alerts: []
+      - eval_time: 35m
+        alertname: O11yRUMAggregatorNearCap
+        exp_alerts:
+          - exp_labels: {severity: warning, job: o11yrum-gateway, o11yrum_metric: o11y.rum.views}
+            exp_annotations:
+              summary: 'Derived metric o11y.rum.views is near its series cap on o11yrum-gateway'
+              description: 'Derived metric o11y.rum.views has held more than 1800 attribute sets for 30 minutes. Each app may hold aggregation.max_series_per_metric (default 2000) attribute sets in one metric before new ones go to the overflow series. The gauge sums every app, so with several apps it can fire before any one app reaches the cap.'
+              runbook_url: 'https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumaggregatornearcap'
+              dashboard: '/d/libo11y-rum-gateway'
+
+  # A gateway Prometheus cannot scrape for 5 minutes. A failing target of
+  # another job does not fire.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="o11yrum-gateway", instance="10.0.0.7:9464"}'
+        values: '0x15'
+      - series: 'up{job="o11yrum-gateway", instance="10.0.0.8:9464"}'
+        values: '1x15'
+      - series: 'up{job="node-exporter", instance="10.0.0.7:9100"}'
+        values: '0x15'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: O11yRUMGatewayDown
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: O11yRUMGatewayDown
+        exp_alerts:
+          - exp_labels: {severity: critical, job: o11yrum-gateway, instance: '10.0.0.7:9464'}
+            exp_annotations:
+              summary: 'Prometheus cannot scrape o11yrum-gateway'
+              description: 'The scrape of 10.0.0.7:9464 in job o11yrum-gateway has failed for 5 minutes. The alert sees only gateways Prometheus scrapes: up exists only for scrape targets, so a gateway that pushes its metrics over OTLP needs its own absence check.'
+              runbook_url: 'https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumgatewaydown'
+              dashboard: '/d/libo11y-rum-gateway'
+
+  # Sink failures at almost no traffic stay silent: one request a minute,
+  # half failing in a sink, is under the 0.05 requests a second minimum.
+  - interval: 1m
+    input_series:
+      - series: 'o11yrum_batches_total{job="o11yrum-gateway", o11yrum_app="shop-web", o11yrum_signal="logs", o11yrum_outcome="accepted", o11yrum_reason="ok"}'
+        values: '0+1x30'
+      - series: 'o11yrum_batches_total{job="o11yrum-gateway", o11yrum_app="shop-web", o11yrum_signal="logs", o11yrum_outcome="rejected", o11yrum_reason="sink"}'
+        values: '0+1x30'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: O11yRUMGatewaySinkFailing
+        exp_alerts: []

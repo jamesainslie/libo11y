@@ -8,7 +8,7 @@ GO_TEST_P ?= 4
 # gate runs on each module separately.
 GO_MODULES := go go/o11ygin go/o11yconnect go/o11ysql go/o11yrum ops
 
-.PHONY: spec-check spec-generate spec-drift ops-generate ops-check test lint vet tidy-check vuln release-check zig-release-check python-release-check rust-release-check rust-release-check-test c-release-check o11yrum-release-check print-o11yrum-release-version o11yrum-image schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-npm-plan-test ts-install ts-check ts-size ts-browser-test rum-e2e rust-check rust-msrv zig-check zig-integrations-check zig-hygiene-test python-check python-hygiene-test c-check ruby-check dotnet-check ci
+.PHONY: spec-check spec-generate spec-drift ops-generate ops-check ops-promtool-test test lint vet tidy-check vuln release-check zig-release-check python-release-check rust-release-check rust-release-check-test c-release-check o11yrum-release-check print-o11yrum-release-version o11yrum-image schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-npm-plan-test ts-install ts-check ts-size ts-browser-test rum-e2e rust-check rust-msrv zig-check zig-integrations-check zig-hygiene-test python-check python-hygiene-test c-check ruby-check dotnet-check ci
 
 # Validate the spec registry against the libo11y policy suite (naming,
 # ownership, sensitivity, cardinality, events, units).
@@ -39,15 +39,13 @@ ops-generate:
 	cd ops && go run ./cmd/opsgen -out .
 
 # Test the ops pack: generator drift, the gateway name catalog, query lint,
-# and promtool check and unit tests of the alert rules. The promtool and
-# kustomize steps run once the pack has rule files and a kustomization.
+# promtool check and unit tests of the alert rules (promtool 3.15.1, pinned
+# by checksum), and the kustomization.
 ops-check:
 	cd ops && go test -race -p $(GO_TEST_P) -count=1 ./...
-	@if ls ops/alerts/*.rules.yaml >/dev/null 2>&1; then scripts/ops-promtool.sh check rules ops/alerts/*.rules.yaml; fi
-	@if ls ops/alerts/tests/*.test.yaml >/dev/null 2>&1; then scripts/ops-promtool.sh test rules ops/alerts/tests/*.test.yaml; fi
-	@if [ ! -f ops/kustomization.yaml ]; then echo "kustomize: no kustomization yet, skipped"; \
-	elif command -v kubectl >/dev/null; then kubectl kustomize ops >/dev/null && echo "kustomize: ok"; \
-	else echo "kustomize: kubectl not found, skipped"; fi
+	scripts/ops-promtool.sh check rules ops/alerts/*.rules.yaml
+	scripts/ops-promtool.sh test rules ops/alerts/tests/*.test.yaml
+	kubectl kustomize ops >/dev/null
 
 # TypeScript workspace (ts/): install the pinned dependencies, then lint,
 # typecheck, build, check the committed API reports, and run every suite
@@ -240,6 +238,11 @@ release-notes-test:
 release-tag-test:
 	scripts/release-tag_test.sh
 
+# Test ops-promtool.sh, which installs promtool only when its tarball matches
+# the pinned checksum.
+ops-promtool-test:
+	scripts/ops-promtool_test.sh
+
 # Test ts-browser-bundle-check.sh, which the release check and the release
 # workflow use to bundle the browser packages, against fixture packages
 # (needs bun).
@@ -331,4 +334,4 @@ dotnet-check:
 
 # vuln runs last: it depends on the advisory database and the toolchain's
 # patch level, so local runs exercise every other gate first.
-ci: lint vet test tidy-check spec-check spec-drift ops-check ts-check ts-size ts-browser-test rum-e2e o11yrum-image rust-check rust-msrv zig-check python-check c-check ruby-check dotnet-check schema-published-test release-notes-test release-tag-test rust-release-check-test ts-browser-bundle-test ts-npm-plan-test release-check vuln
+ci: lint vet test tidy-check spec-check spec-drift ops-check ts-check ts-size ts-browser-test rum-e2e o11yrum-image rust-check rust-msrv zig-check python-check c-check ruby-check dotnet-check schema-published-test release-notes-test release-tag-test ops-promtool-test rust-release-check-test ts-browser-bundle-test ts-npm-plan-test release-check vuln
