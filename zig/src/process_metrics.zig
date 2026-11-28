@@ -42,9 +42,9 @@ pub const ProcessMetrics = struct {
     /// Registers all five process instruments on `mp`. Caller owns the
     /// returned pointer (allocated in `gpa`) and calls `destroy(gpa)` before
     /// destroying `mp`.
-    pub fn create(gpa: std.mem.Allocator, io: Io, mp: *metric_meter.MeterProvider) std.mem.Allocator.Error!*ProcessMetrics {
+    pub fn create(gpa: std.mem.Allocator, io: Io, mp: *metric_meter.MeterProvider, scope: []const u8) std.mem.Allocator.Error!*ProcessMetrics {
         const self = try gpa.create(ProcessMetrics);
-        const m = mp.meter(.{ .name = policy_runtime.scope_name });
+        const m = mp.meter(.{ .name = scope });
         self.* = .{
             .gpa = gpa,
             .io = io,
@@ -276,7 +276,7 @@ test "ProcessMetrics callback produces positive readings on current OS" {
     });
     defer mp.destroy();
 
-    const pm = try ProcessMetrics.create(testing.allocator, testing.io, mp);
+    const pm = try ProcessMetrics.create(testing.allocator, testing.io, mp, policy_runtime.scope_name);
     defer pm.destroy(testing.allocator);
 
     var rm = try reader.collect(testing.allocator);

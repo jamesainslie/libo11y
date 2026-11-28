@@ -93,6 +93,7 @@ pub const Options = struct {
     sdk_language: []const u8 = "zig",
     sdk_version: ?[]const u8 = null,
     emit_process_runtime: bool = true,
+    scope_name: ?[]const u8 = null,
 };
 
 /// One captured structured log record together with the span context active
@@ -270,6 +271,7 @@ pub fn start(gpa: Allocator, io: Io, options: Options) o11y.SetupError!*Recorder
         .sdk_language = options.sdk_language,
         .sdk_version = options.sdk_version,
         .emit_process_runtime = options.emit_process_runtime,
+        .scope_name = options.scope_name orelse o11y.Options.default_scope_name,
     });
 
     return r;

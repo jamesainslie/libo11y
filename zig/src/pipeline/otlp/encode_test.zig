@@ -117,6 +117,29 @@ test "a batch encodes grouped by resource and scope and decodes back" {
     try testing.expectEqual(proto.trace_v1.Status.StatusCode.STATUS_CODE_UNSET, root.status.?.code);
 }
 
+test "a trace request replaces invalid UTF-8 in schema URLs, as metrics and logs do" {
+    var mem: InMemoryExporter = .init(testing.allocator, io);
+    defer mem.deinit();
+    var simple: processor.SimpleSpanProcessor = .init(io, mem.exporter(), .{});
+    const provider = try tracer_mod.TracerProvider.create(testing.allocator, io, .{
+        .resource = .{ .attributes = &.{}, .schema_url = "https://res/\xff" },
+        .processors = &.{simple.processor()},
+    });
+    defer provider.destroy();
+    defer provider.shutdown(deadline.after(io, .fromSeconds(1))) catch {};
+    var span = provider.tracer(.{ .name = "a", .schema_url = "https://scope/\xff" }).start(.background, "op", .{});
+    span.end();
+
+    const spans = try mem.snapshot(testing.allocator);
+    defer testing.allocator.free(spans);
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const request = try encode.traceRequest(arena.allocator(), spans);
+    const rs = request.resource_spans.items[0];
+    try testing.expectEqualStrings("https://res/\u{fffd}", rs.schema_url);
+    try testing.expectEqualStrings("https://scope/\u{fffd}", rs.scope_spans.items[0].schema_url);
+}
+
 test "utf8 replaces each invalid sequence" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();

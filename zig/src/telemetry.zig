@@ -162,6 +162,13 @@ pub const Options = struct {
     sdk_language: []const u8 = "zig",
     sdk_version: ?[]const u8 = null,
     emit_process_runtime: bool = true,
+    /// The instrumentation scope of the telemetry libo11y emits itself: the
+    /// `o11y.schema.violations` counter, the process metrics, the OTLP log
+    /// leg and detached-work spans. Borrowed: it must outlive the SDK.
+    scope_name: []const u8 = default_scope_name,
+
+    /// The scope name of the Zig package.
+    pub const default_scope_name = policy_runtime.scope_name;
 };
 
 var setup_active: std.atomic.Value(bool) = .init(false);
@@ -250,6 +257,9 @@ pub const Telemetry = struct {
     logger_provider: ?*pipeline_logger.LoggerProvider = null,
     log_pipeline: log_pipeline_mod.LogPipeline,
     summary: summary_mod.Summary,
+
+    /// The instrumentation scope of libo11y's own telemetry (`Options.scope_name`).
+    scope_name: []const u8 = policy_runtime.scope_name,
 
     shutdown_started: std.atomic.Value(bool) = .init(false),
     shutdown_done: Io.Event = .unset,
@@ -686,6 +696,7 @@ fn finishBuild(
 
     // Install error handler.
     self.error_handler = options.error_handler orelse self.default_error_handler.handler();
+    self.scope_name = options.scope_name;
 
     // Check OTEL_SDK_DISABLED.
     const disabled_info = parseSdkDisabled(options.env);
@@ -800,7 +811,7 @@ fn finishBuild(
 
     // Attach violation recorder and flush resource violations recorded before
     // the meter provider existed.
-    self.policy.attachRecorder(self.meter_provider.?);
+    self.policy.attachRecorder(self.meter_provider.?, self.scope_name);
     if (self.policy.recorder) |*rec| {
         resource_violations.recordAll(rec, .resource);
     }
@@ -808,7 +819,7 @@ fn finishBuild(
     // Default semantic-convention process metrics.
     const runtime_metrics_enabled = options.runtime_metrics and !self.disabled;
     if (runtime_metrics_enabled) {
-        self.process_metrics = try process_metrics_mod.ProcessMetrics.create(gpa, io, self.meter_provider.?);
+        self.process_metrics = try process_metrics_mod.ProcessMetrics.create(gpa, io, self.meter_provider.?, self.scope_name);
     }
 
     // TracerProvider.
@@ -965,7 +976,7 @@ fn finishBuild(
             .processors = &.{self.owned_batch_log_processor.?.processor()},
             .policy = self.policy.attributePolicy(),
         });
-        otlp_logger_ptr = self.logger_provider.?.logger(.{ .name = policy_runtime.scope_name });
+        otlp_logger_ptr = self.logger_provider.?.logger(.{ .name = self.scope_name });
     }
 
     // Fan-out structured log pipeline.
@@ -1759,6 +1770,41 @@ test "a propagator that names no fields is reported as custom in the effective c
     defer t.deinit();
     // As in Go: an empty value would be easy to misread.
     try testing.expect(std.mem.indexOf(u8, t.effectiveConfig(), "o11y.config.propagators=custom") != null);
+}
+
+test "scope_name names the instrumentation scope of the SDK's own telemetry" {
+    var reader = metric_reader.ManualReader.init(testing.io, .{});
+    var log_exp = log_processor.InMemoryLogExporter.init(testing.allocator, testing.io);
+    defer log_exp.deinit();
+    const binding_scope = "github.com/jamesainslie/libo11y/c";
+
+    const t = try init(testing.allocator, testing.io, .{
+        .service_name = "svc",
+        .environment = "test",
+        .metric_reader = reader.reader(),
+        .log_exporter = log_exp.exporter(),
+        .console_enabled = false,
+        .runtime_metrics = false,
+        .scope_name = binding_scope,
+    });
+    defer t.deinit();
+
+    // A PII attribute is dropped and counted on o11y.schema.violations.
+    t.logger().info(.background, "hello", .{ .@"host.ip" = "10.0.0.1" });
+    try testing.expect(t.forceFlush(null).ok());
+    try testing.expectEqualStrings(binding_scope, log_exp.records.items[0].scope.name);
+
+    var rm = try reader.collect(testing.allocator);
+    defer rm.deinit();
+    var found = false;
+    for (rm.scope_metrics) |sm| {
+        for (sm.metrics) |m| {
+            if (!std.mem.eql(u8, m.name, spec.metric.schema_violations)) continue;
+            try testing.expectEqualStrings(binding_scope, sm.scope.name);
+            found = true;
+        }
+    }
+    try testing.expect(found);
 }
 
 test "propagator wraps custom propagator in baggage egress filter without globals" {

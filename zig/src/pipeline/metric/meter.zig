@@ -411,7 +411,10 @@ pub const Meter = struct {
         const p = inst.provider;
         p.mutex.lockUncancelable(p.io);
         defer p.mutex.unlock(p.io);
-        inst.callbacks.appendSlice(p.gpa, options.callbacks) catch {};
+        // Out of memory gives a no-op handle, as everywhere else. Returning
+        // the instrument without its callbacks would look registered and
+        // never observe anything.
+        inst.callbacks.appendSlice(p.gpa, options.callbacks) catch return null;
         return inst;
     }
 
