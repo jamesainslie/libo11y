@@ -515,22 +515,25 @@ impl OtlpHttpMetricSink {
 
     /// Builds an OTLP/HTTP metric sink from `export` and `env`.
     pub(crate) fn new(export: &SignalExport, env: &EnvLookup) -> Result<Self, BoxError> {
+        let safe_endpoint = crate::sanitize::sanitize_endpoint(&export.endpoint);
+        let parsed = reqwest::Url::parse(&export.endpoint).map_err(|err| {
+            format!(
+                "invalid OTLP/HTTP metrics endpoint {}: {err}",
+                libo11y_spec::go_quote(&safe_endpoint)
+            )
+        })?;
+        if !matches!(parsed.scheme(), "http" | "https") || !parsed.has_host() {
+            return Err(format!(
+                "invalid OTLP/HTTP metrics endpoint {}: scheme must be http or https with a host",
+                libo11y_spec::go_quote(&safe_endpoint)
+            )
+            .into());
+        }
         let tls = export.tls.load()?;
         let client = if let Some(material) = tls {
             material.blocking_client(export.timeout)?
         } else {
-            let timeout = export.timeout;
-            // reqwest::blocking cannot be built directly on a Tokio runtime
-            // thread, so always construct it on a helper thread.
-            std::thread::Builder::new()
-                .name("libo11y-metrics-http".to_owned())
-                .spawn(move || {
-                    reqwest::blocking::Client::builder()
-                        .timeout(timeout)
-                        .build()
-                })?
-                .join()
-                .map_err(|_| "the thread building the HTTP client panicked")??
+            crate::export::tls::blocking_client(None, None, export.timeout)?
         };
 
         let mut headers = reqwest::header::HeaderMap::new();
@@ -615,6 +618,7 @@ impl OtlpHttpMetricSink {
             };
             let status = response.status();
             if status.is_success() {
+                handle_http_partial_success(response, self.protocol);
                 return Ok(());
             }
             let retryable = matches!(status.as_u16(), 429 | 502 | 503 | 504);
@@ -789,7 +793,12 @@ impl MetricSink for OtlpGrpcMetricSink {
             client.export(req).await
         });
         match handle.await {
-            Ok(Ok(_)) => Ok(()),
+            Ok(Ok(response)) => {
+                if let Some(partial) = response.into_inner().partial_success {
+                    report_partial_success("TonicMetricsClient.PartialSuccess", &partial);
+                }
+                Ok(())
+            }
             Ok(Err(status)) => Err(OTelSdkError::InternalFailure(format!(
                 "OTLP/gRPC metric export failed: {status}"
             ))),
@@ -806,6 +815,73 @@ impl MetricSink for OtlpGrpcMetricSink {
 
     fn temporality(&self) -> Temporality {
         self.temporality
+    }
+}
+
+/// Maximum response body bytes read while inspecting OTLP/HTTP partial success,
+/// matching `opentelemetry-http`'s 4 MiB cap.
+#[cfg(feature = "otlp-http")]
+const MAX_PARTIAL_SUCCESS_BODY_BYTES: u64 = 4 * 1024 * 1024;
+
+/// Decodes an OTLP/HTTP `ExportMetricsServiceResponse` body and reports any
+/// non-empty `partial_success` through OpenTelemetry diagnostics without
+/// failing or retrying the export.
+#[cfg(feature = "otlp-http")]
+fn handle_http_partial_success(
+    response: reqwest::blocking::Response,
+    protocol: crate::export::Protocol,
+) {
+    use io::Read as _;
+    use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceResponse;
+    use prost::Message as _;
+
+    let mut body = Vec::new();
+    if response
+        .take(MAX_PARTIAL_SUCCESS_BODY_BYTES)
+        .read_to_end(&mut body)
+        .is_err()
+        || body.is_empty()
+    {
+        return;
+    }
+    let decoded: Result<ExportMetricsServiceResponse, String> =
+        if protocol == crate::export::Protocol::HttpJson {
+            serde_json::from_slice(&body).map_err(|err| err.to_string())
+        } else {
+            ExportMetricsServiceResponse::decode(body.as_slice()).map_err(|err| err.to_string())
+        };
+    match decoded {
+        Ok(resp) => {
+            if let Some(partial) = resp.partial_success {
+                report_partial_success("HttpMetricsClient.PartialSuccess", &partial);
+            }
+        }
+        Err(err) => {
+            tracing::debug!(
+                name: "HttpMetricsClient.ResponseParseError",
+                target: "opentelemetry-otlp",
+                error = %err,
+            );
+        }
+    }
+}
+
+/// Emits a diagnostic warning when the collector rejected data points or
+/// included a partial-success error message. `DiagnosticsLayer` routes this to
+/// the SDK's error handler without re-entering the log or span pipelines.
+#[cfg(any(feature = "otlp-http", feature = "otlp-grpc"))]
+fn report_partial_success(
+    event_name: &'static str,
+    partial: &opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsPartialSuccess,
+) {
+    if partial.rejected_data_points > 0 || !partial.error_message.is_empty() {
+        tracing::warn!(
+            name: "MetricsClient.PartialSuccess",
+            target: "opentelemetry-otlp",
+            client = event_name,
+            rejected_data_points = partial.rejected_data_points,
+            error_message = partial.error_message.as_str(),
+        );
     }
 }
 
@@ -962,5 +1038,196 @@ mod tests {
             normalize_grpc_endpoint("collector.example:4317/path://ignored", false),
             "https://collector.example:4317/path://ignored"
         );
+    }
+
+    #[cfg(feature = "otlp-http")]
+    #[test]
+    fn http_metric_sink_rejects_malformed_endpoints_at_init() {
+        for bad in [
+            "not-a-url",
+            "://missing-scheme",
+            "ftp://user:secret@collector:4318/v1/metrics?api_key=tok",
+            "http://",
+        ] {
+            let export = SignalExport {
+                route: crate::export::Route::Otlp,
+                protocol: crate::export::Protocol::HttpProtobuf,
+                endpoint: bad.to_owned(),
+                timeout: Duration::from_secs(5),
+                tls: crate::export::tls::TlsFiles::default(),
+            };
+            let err = OtlpHttpMetricSink::new(&export, &EnvLookup::empty())
+                .expect_err("malformed endpoint must fail init");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("invalid OTLP/HTTP metrics endpoint"),
+                "for {bad}: {msg}"
+            );
+            assert!(!msg.contains("secret"), "credential leaked: {msg}");
+            assert!(!msg.contains("tok"), "query token leaked: {msg}");
+        }
+    }
+
+    #[cfg(feature = "otlp-http")]
+    #[test]
+    fn http_metric_sink_reports_partial_success_through_diagnostics() {
+        use std::io::{Read as _, Write as _};
+        use std::net::TcpListener;
+
+        use opentelemetry_proto::tonic::collector::metrics::v1::{
+            ExportMetricsPartialSuccess, ExportMetricsServiceResponse,
+        };
+        use prost::Message as _;
+        use tracing_subscriber::Layer as _;
+        use tracing_subscriber::filter::filter_fn;
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        let response_proto = ExportMetricsServiceResponse {
+            partial_success: Some(ExportMetricsPartialSuccess {
+                rejected_data_points: 3,
+                error_message: "bad label".to_owned(),
+            }),
+        };
+
+        for (protocol, content_type, body) in [
+            (
+                crate::export::Protocol::HttpProtobuf,
+                "application/x-protobuf",
+                response_proto.encode_to_vec(),
+            ),
+            (
+                crate::export::Protocol::HttpJson,
+                "application/json",
+                serde_json::to_vec(&response_proto).expect("json"),
+            ),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+            let addr = listener.local_addr().expect("addr");
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().expect("accept");
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                stream.write_all(head.as_bytes()).expect("head");
+                stream.write_all(&body).expect("body");
+            });
+
+            let export = SignalExport {
+                route: crate::export::Route::Otlp,
+                protocol,
+                endpoint: format!("http://{addr}/v1/metrics"),
+                timeout: Duration::from_secs(5),
+                tls: crate::export::tls::TlsFiles::default(),
+            };
+            let sink = OtlpHttpMetricSink::new(&export, &EnvLookup::empty()).expect("sink");
+
+            let reported = Arc::new(Mutex::new(Vec::<String>::new()));
+            let capture = Arc::clone(&reported);
+            let handler: crate::diagnostics::ErrorHandler = Arc::new(move |err| {
+                capture.lock().expect("lock").push(err.message().to_owned());
+            });
+            let diagnostics =
+                crate::diagnostics::DiagnosticsLayer::new(move || Arc::clone(&handler))
+                    .with_filter(filter_fn(crate::diagnostics::reports));
+            let subscriber = tracing_subscriber::registry().with(diagnostics);
+
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .expect("rt");
+            tracing::subscriber::with_default(subscriber, || {
+                rt.block_on(sink.export(ExportMetricsServiceRequest::default()))
+                    .expect("partial success does not fail export");
+            });
+            server.join().expect("server");
+
+            let messages = reported.lock().expect("lock");
+            assert_eq!(
+                messages.len(),
+                1,
+                "expected 1 diagnostic for {protocol:?}: {messages:?}"
+            );
+            assert!(
+                messages[0].contains("rejected_data_points=3"),
+                "{messages:?}"
+            );
+            assert!(messages[0].contains("bad label"), "{messages:?}");
+        }
+    }
+
+    #[cfg(feature = "otlp-grpc")]
+    #[tokio::test]
+    async fn grpc_metric_sink_reports_partial_success_through_diagnostics() {
+        use opentelemetry_proto::tonic::collector::metrics::v1::{
+            ExportMetricsPartialSuccess, ExportMetricsServiceResponse,
+            metrics_service_server::{MetricsService, MetricsServiceServer},
+        };
+        use tracing_subscriber::Layer as _;
+        use tracing_subscriber::filter::filter_fn;
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        struct PartialService;
+
+        #[tonic::async_trait]
+        impl MetricsService for PartialService {
+            async fn export(
+                &self,
+                _request: tonic::Request<ExportMetricsServiceRequest>,
+            ) -> Result<tonic::Response<ExportMetricsServiceResponse>, tonic::Status> {
+                Ok(tonic::Response::new(ExportMetricsServiceResponse {
+                    partial_success: Some(ExportMetricsPartialSuccess {
+                        rejected_data_points: 2,
+                        error_message: "grpc partial".to_owned(),
+                    }),
+                }))
+            }
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let incoming = tonic::transport::server::TcpIncoming::from(listener);
+        let server = tokio::spawn(async move {
+            let _ = tonic::transport::Server::builder()
+                .add_service(MetricsServiceServer::new(PartialService))
+                .serve_with_incoming(incoming)
+                .await;
+        });
+
+        let export = SignalExport {
+            route: crate::export::Route::Otlp,
+            protocol: crate::export::Protocol::Grpc,
+            endpoint: format!("http://{addr}"),
+            timeout: Duration::from_secs(5),
+            tls: crate::export::tls::TlsFiles::default(),
+        };
+        let sink = OtlpGrpcMetricSink::new(&export, &EnvLookup::empty()).expect("grpc sink");
+
+        let reported = Arc::new(Mutex::new(Vec::<String>::new()));
+        let capture = Arc::clone(&reported);
+        let handler: crate::diagnostics::ErrorHandler = Arc::new(move |err| {
+            capture.lock().expect("lock").push(err.message().to_owned());
+        });
+        let diagnostics = crate::diagnostics::DiagnosticsLayer::new(move || Arc::clone(&handler))
+            .with_filter(filter_fn(crate::diagnostics::reports));
+        let subscriber = tracing_subscriber::registry().with(diagnostics);
+
+        let result = {
+            let _guard = tracing::subscriber::set_default(subscriber);
+            sink.export(ExportMetricsServiceRequest::default()).await
+        };
+        result.expect("partial success does not fail export");
+        server.abort();
+
+        let messages = reported.lock().expect("lock");
+        assert_eq!(messages.len(), 1, "{messages:?}");
+        assert!(
+            messages[0].contains("rejected_data_points=2"),
+            "{messages:?}"
+        );
+        assert!(messages[0].contains("grpc partial"), "{messages:?}");
     }
 }

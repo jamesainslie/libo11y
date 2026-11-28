@@ -92,7 +92,7 @@ keeps its own rule.
 | `environment`, `environmentValues`                  | `deployment.environment.name`, and values accepted beyond production, staging, development and test                              |
 | `strictIdentity`                                    | default `true`. With `false`, a missing or invalid identity is counted as a violation instead of thrown                          |
 | `resourceAttributes`                                | extra resource attributes. They beat every other layer and are still classified                                                  |
-| `registry`                                          | one or more application registries, raw or compiled. A raw registry is validated first                                           |
+| `registry`                                          | one or more application registries, raw or compiled. Each is validated first, a compiled one with the rules that apply to it     |
 | `piiMode`, `piiHashKey`                             | `"drop"` (default), `"hash"` or `"allow"`. Hash mode needs `piiHashKey`, a `Uint8Array` of at least 32 bytes, never a string     |
 | `logLevel`                                          | the lowest level logged: `"trace"`, `"debug"`, `"info"`, `"warn"`, `"error"` or `"fatal"`. Default `"info"`                      |
 | `console`                                           | `"json"` (default), `"text"`, or `false` for no console sink                                                                     |
@@ -380,6 +380,9 @@ itself. The meter provider offers each synchronous measurement to an
 data points of each collection. `OtlpJsonMetricsSerializer` here and
 `OtlpProtobufMetricsSerializer` in `@libo11y/server` write them to OTLP.
 With several metric readers, the first reader to collect gets each sample.
+A stream that a view in the `views` option renames gets the exemplars of
+the instrument it derives from, and so does every other stream of that
+instrument.
 
 ## Writing a platform
 

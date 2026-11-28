@@ -21,6 +21,7 @@ axum = ["dep:axum"]
 [dependencies]
 axum = { version = "0.8.9", default-features = false, features = ["matched-path"], optional = true }
 http = "1.5.0"
+http-body = "1.1.0"
 libo11y.workspace = true
 libo11y-spec.workspace = true
 opentelemetry = { version = "0.33.1", default-features = false, features = ["metrics", "trace"] }
@@ -31,7 +32,7 @@ tower-service = "0.3.3"
 [dev-dependencies]
 http-body-util = "0.1.5"
 libo11y-test.workspace = true
-tokio = { version = "1.54.1", features = ["macros", "net", "rt-multi-thread"] }
+tokio = { version = "1.54.1", features = ["macros", "net", "rt-multi-thread", "time"] }
 tower = { version = "0.5.3", features = ["util"] }
 tracing.workspace = true
 

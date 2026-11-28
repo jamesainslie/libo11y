@@ -1,6 +1,8 @@
 //! HTTP URL, scheme, query redaction, and server address/port helpers per
 //! OpenTelemetry HTTP semantic conventions 1.41.0.
 
+use std::borrow::Cow;
+
 use http::Uri;
 use http::header::HOST;
 use http::request::Parts;
@@ -30,9 +32,55 @@ fn is_sensitive_query_key(key: &str) -> bool {
     )
 }
 
+/// Percent-decodes `input` the way Go's `url.PathUnescape` does: each `%XX`
+/// escape becomes the byte it names and `+` is left alone.
+///
+/// Returns `input` borrowed and unchanged when it holds no `%`, when any
+/// escape is invalid (not followed by two hex digits), or when the decoded
+/// bytes are not valid UTF-8, so callers fall back to the raw form.
+#[must_use]
+pub fn percent_decode_or_raw(input: &str) -> Cow<'_, str> {
+    if !input.contains('%') {
+        return Cow::Borrowed(input);
+    }
+    let raw = input.as_bytes();
+    let mut decoded = Vec::with_capacity(raw.len());
+    let mut idx = 0;
+    while let Some(&byte) = raw.get(idx) {
+        if byte == b'%' {
+            let (Some(hi), Some(lo)) = (
+                raw.get(idx + 1).copied().and_then(hex_value),
+                raw.get(idx + 2).copied().and_then(hex_value),
+            ) else {
+                return Cow::Borrowed(input);
+            };
+            decoded.push((hi << 4) | lo);
+            idx += 3;
+        } else {
+            decoded.push(byte);
+            idx += 1;
+        }
+    }
+    String::from_utf8(decoded).map_or(Cow::Borrowed(input), Cow::Owned)
+}
+
+/// Returns the value of one ASCII hex digit.
+const fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
 /// Redacts credential-bearing query parameter values in `query`, replacing
 /// matched values with `REDACTED` while leaving non-sensitive parameters
 /// unchanged.
+///
+/// Keys are percent-decoded for classification only, so `%74oken=abc`
+/// becomes `%74oken=REDACTED`: the key keeps its original spelling. A key
+/// with an invalid escape or invalid UTF-8 is classified on its raw form.
 #[must_use]
 pub fn redact_query(query: &str) -> String {
     if query.is_empty() {
@@ -44,7 +92,7 @@ pub fn redact_query(query: &str) -> String {
             out.push('&');
         }
         if let Some((key, _val)) = pair.split_once('=')
-            && is_sensitive_query_key(key)
+            && is_sensitive_query_key(&percent_decode_or_raw(key))
         {
             out.push_str(key);
             out.push('=');
@@ -178,6 +226,63 @@ mod tests {
             "page=1&api_key=REDACTED&AWSAccessKeyId=REDACTED&sig=REDACTED&ok=yes"
         );
         assert_eq!(redact_query("flag&token=xyz"), "flag&token=REDACTED");
+    }
+
+    #[test]
+    fn redact_query_classifies_percent_encoded_keys_and_keeps_their_spelling() {
+        assert_eq!(redact_query("%74oken=abc"), "%74oken=REDACTED");
+        assert_eq!(
+            redact_query("page=1&api%5Fkey=s3cr3t&%41WSAccessKeyId=AKIA&q=%74oken"),
+            "page=1&api%5Fkey=REDACTED&%41WSAccessKeyId=REDACTED&q=%74oken"
+        );
+    }
+
+    #[test]
+    fn redact_query_classifies_keys_with_bad_escapes_on_their_raw_form() {
+        assert_eq!(
+            redact_query("%zztoken=abc&tok%en=x"),
+            "%zztoken=abc&tok%en=x"
+        );
+        assert_eq!(redact_query("%ff%fe=abc"), "%ff%fe=abc");
+    }
+
+    #[test]
+    fn percent_decode_borrows_unless_it_decodes() {
+        assert!(matches!(
+            percent_decode_or_raw("/healthz"),
+            Cow::Borrowed("/healthz")
+        ));
+        assert_eq!(percent_decode_or_raw("/%68ealthz"), "/healthz");
+        assert_eq!(percent_decode_or_raw("/a%2Fb"), "/a/b");
+        assert!(matches!(
+            percent_decode_or_raw("/bad%zz"),
+            Cow::Borrowed("/bad%zz")
+        ));
+        assert!(matches!(
+            percent_decode_or_raw("/trunc%6"),
+            Cow::Borrowed("/trunc%6")
+        ));
+        assert!(matches!(
+            percent_decode_or_raw("/%ff"),
+            Cow::Borrowed("/%ff")
+        ));
+        assert_eq!(percent_decode_or_raw("/caf%C3%A9"), "/caf\u{e9}");
+        assert_eq!(percent_decode_or_raw("/\u{e9}%41"), "/\u{e9}A");
+        assert_eq!(
+            percent_decode_or_raw("%2541"),
+            "%41",
+            "decodes exactly once"
+        );
+        assert_eq!(
+            percent_decode_or_raw("a+b%2Bc"),
+            "a+b+c",
+            "+ is not a space"
+        );
+        assert!(matches!(percent_decode_or_raw("/a%"), Cow::Borrowed("/a%")));
+        assert!(matches!(
+            percent_decode_or_raw("/%\u{e9}"),
+            Cow::Borrowed("/%\u{e9}")
+        ));
     }
 
     #[test]

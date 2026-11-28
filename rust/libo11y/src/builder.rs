@@ -85,6 +85,7 @@ pub(crate) struct Settings {
     metric_views: Vec<MetricView>,
     log_exporter: Option<Box<dyn PendingLogExporter>>,
     log_level: LevelHandle,
+    span_level: tracing::Level,
     console_writer: Option<Box<dyn io::Write + Send>>,
     console_format: ConsoleFormat,
     console_enabled: bool,
@@ -127,6 +128,7 @@ impl Default for Settings {
             metric_views: Vec::new(),
             log_exporter: None,
             log_level: LevelHandle::default(),
+            span_level: tracing::Level::INFO,
             console_writer: None,
             console_format: ConsoleFormat::default(),
             console_enabled: true,
@@ -156,6 +158,7 @@ impl fmt::Debug for Settings {
             .field("exemplar_filter", &self.exemplar_filter)
             .field("log_exporter", &self.log_exporter.is_some())
             .field("log_level", &self.log_level)
+            .field("span_level", &self.span_level)
             .field("console_format", &self.console_format)
             .field("console_enabled", &self.console_enabled)
             .field("log_export", &self.log_export)
@@ -407,6 +410,14 @@ impl Builder {
         self
     }
 
+    /// Sets the minimum `tracing` span level exported to OpenTelemetry.
+    /// Defaults to [`tracing::Level::INFO`], filtering out `DEBUG` and `TRACE`
+    /// spans from third-party libraries such as `h2`.
+    pub fn span_level(mut self, level: tracing::Level) -> Self {
+        self.settings.span_level = level;
+        self
+    }
+
     /// Sets a runtime-adjustable [`LevelHandle`] for libo11y's log pipeline.
     /// Updating the handle via [`LevelHandle::set`] changes filtering
     /// immediately.
@@ -457,9 +468,10 @@ impl Builder {
     }
 
     /// Sets a callback that rewrites or drops leaf log attributes once at
-    /// fan-out, before per-leg sensitivity classification. Top-level
-    /// `trace_id` and `span_id` supplied by callers are dropped before this
-    /// callback runs.
+    /// fan-out, before per-leg sensitivity classification. See [`AttrReplacer`]
+    /// for details: `groups` is always `&[]` in Rust, and reserved keys
+    /// (`trace_id`, `span_id`, and `event.name` for [`Sdk::event`]) are dropped
+    /// both before and after the callback runs.
     pub fn with_attr_replacer<F>(mut self, replacer: F) -> Self
     where
         F: Fn(&[&str], Key, AnyValue) -> Option<(Key, AnyValue)> + Send + Sync + 'static,
@@ -584,21 +596,33 @@ impl Builder {
     }
 
     /// Builds the SDK as [`Builder::build`] does and installs it as the
-    /// process default: the OpenTelemetry global tracer provider, meter
-    /// provider and text map propagator, then the global `tracing`
-    /// subscriber (unless [`Builder::without_tracing_default`]), whose
-    /// layers are [`Sdk::tracing_layer`]'s. Third-party code on the
-    /// OpenTelemetry globals and on `tracing` works untouched afterwards.
+    /// process default:
     ///
-    /// One global SDK may be active at a time. Shutting it down lets setup
-    /// run again; its providers stay installed until then. A setup that
-    /// fails installs nothing.
+    /// 1. Claims the single-active-SDK setup guard and checks that no foreign
+    ///    global `tracing` subscriber is already installed (unless
+    ///    [`Builder::without_tracing_default`] was set).
+    /// 2. Builds the SDK and its exporters and providers.
+    /// 3. Emits the startup canary event (`o11y.telemetry.configured`) through
+    ///    every configured log sink (unless [`Builder::without_startup_summary`]
+    ///    was set). If any sink rejects it synchronously, setup abandons the
+    ///    SDK, installs no globals, and returns [`Error::StartupCanary`].
+    /// 4. Installs or updates libo11y's global `tracing` subscriber (with
+    ///    [`Sdk::tracing_layer`]'s layers, unless
+    ///    [`Builder::without_tracing_default`]).
+    /// 5. Installs the OpenTelemetry global tracer provider, meter provider,
+    ///    and text map propagator.
+    ///
+    /// Third-party code on the OpenTelemetry globals and on `tracing` works
+    /// untouched afterwards. One global SDK may be active at a time. Shutting
+    /// it down lets setup run again; its providers stay installed until then.
+    /// A setup that fails installs nothing.
     ///
     /// # Errors
     ///
-    /// [`Error::AlreadySetup`] while a global SDK is active or being set
-    /// up; [`Error::ForeignTracingSubscriber`] when some other code set the
-    /// global `tracing` subscriber; and every error of [`Builder::build`].
+    /// [`Error::AlreadySetup`] while a global SDK is active or being set up;
+    /// [`Error::ForeignTracingSubscriber`] when some other code set the global
+    /// `tracing` subscriber; [`Error::StartupCanary`] when a log sink rejects
+    /// the startup canary event; and every error of [`Builder::build`].
     pub fn setup(self) -> Result<Sdk, Error> {
         crate::setup::setup(self.settings)
     }
@@ -731,6 +755,7 @@ pub(crate) fn build_sdk(mut settings: Settings) -> Result<Sdk, Error> {
 
     let parts = Arc::new(Parts {
         tracer: opentelemetry::trace::TracerProvider::tracer_with_scope(&tracer_provider, scope()),
+        span_level: settings.span_level,
         handler,
         logs: Arc::clone(&log_pipeline),
     });

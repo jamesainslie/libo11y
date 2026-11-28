@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # run_sanitized.sh: compile every C11 test suite and the quickstart with the
 # host C compiler under AddressSanitizer (with leak detection) and
-# UndefinedBehaviorSanitizer, link them against an installed libo11ytest.a,
-# and run them.
+# UndefinedBehaviorSanitizer, link them against installed libo11y.a and
+# libo11ytest.a, and run them.
 #
 # libo11y allocates with libc malloc, so the sanitizer runtime sees every
 # allocation the library makes: a leak or a double free inside the library
@@ -21,7 +21,7 @@ conformance_dir="${2:-$root/../conformance}"
 cc="${CC:-cc}"
 jobs="${C_SANITIZE_J:-4}"
 
-for rel in include/o11y/o11y.h include/o11y/test.h lib/libo11ytest.a; do
+for rel in include/o11y/o11y.h include/o11y/test.h lib/libo11y.a lib/libo11ytest.a; do
 	if [[ ! -f "$prefix/$rel" ]]; then
 		echo "run_sanitized: $prefix/$rel is missing; run zig build --prefix first" >&2
 		exit 1
@@ -44,7 +44,11 @@ compile() {
 	local src="$1"
 	local name
 	name="$(basename "$src" .c)"
-	"$cc" "${flags[@]}" "$src" "$prefix/lib/libo11ytest.a" -lpthread -lm -o "$out/$name"
+	if [[ "$name" == "quickstart" ]]; then
+		"$cc" "${flags[@]}" "$src" "$prefix/lib/libo11y.a" -lpthread -lm -o "$out/$name"
+	else
+		"$cc" "${flags[@]}" "$src" "$prefix/lib/libo11ytest.a" "$prefix/lib/libo11y.a" -lpthread -lm -o "$out/$name"
+	fi
 }
 
 sources=("$root"/tests/test_*.c "$root/examples/quickstart.c")

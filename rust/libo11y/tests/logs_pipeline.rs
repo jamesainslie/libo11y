@@ -686,3 +686,169 @@ fn shutdown_failure_emits_telemetry_dropped_to_surviving_sinks() {
         "{console_text}"
     );
 }
+
+#[test]
+fn telemetry_suppressed_context_suppresses_tracing_logs() {
+    let sink = CaptureSink::default();
+    let sdk = hermetic("logs-suppressed")
+        .without_console_log()
+        .with_extra_log_sink(sink.clone())
+        .build()
+        .expect("SDK");
+
+    traced(&sdk, || {
+        tracing::info!("before");
+        {
+            let _suppressed = Context::enter_telemetry_suppressed_scope();
+            tracing::info!("during-info");
+            tracing::error!("during-error");
+            with_force_emit(|| {
+                tracing::info!("during-forced");
+            });
+        }
+        tracing::info!("after");
+    });
+
+    let msgs: Vec<String> = sink
+        .records()
+        .into_iter()
+        .map(|r| r.message().to_owned())
+        .collect();
+    assert_eq!(msgs, ["before", "after"]);
+}
+
+#[test]
+fn explicit_parent_and_root_events_correlate_to_named_span() {
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    /// Minimal layer that keeps `DEBUG` spans alive in the registry so we can
+    /// verify ancestor walking when an explicit parent is filtered out of
+    /// OpenTelemetry export.
+    struct KeepAllSpans;
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for KeepAllSpans {}
+
+    let spans = common::Spans::default();
+    let sink = CaptureSink::default();
+    let sdk = hermetic("logs-explicit-parent")
+        .without_console_log()
+        .log_level(tracing::Level::INFO)
+        .with_span_exporter(spans.clone())
+        .with_extra_log_sink(sink.clone())
+        .build()
+        .expect("SDK");
+
+    let subscriber = tracing_subscriber::registry()
+        .with(KeepAllSpans)
+        .with(sdk.tracing_layer());
+
+    tracing::subscriber::with_default(subscriber, || {
+        let span_a = tracing::info_span!("span-a");
+        let span_b = tracing::info_span!("span-b");
+        let debug_under_b = tracing::debug_span!(parent: &span_b, "debug-under-b");
+
+        let _entered_a = span_a.enter();
+        tracing::info!("contextual-a");
+        tracing::info!(parent: &span_b, "explicit-b");
+        tracing::info!(parent: &debug_under_b, "explicit-debug-child");
+        tracing::info!(parent: None, "explicit-root");
+        with_force_emit(|| {
+            tracing::debug!(parent: &span_b, "forced-explicit-b");
+        });
+    });
+    sdk.force_flush().expect("flush");
+
+    let a_sc = spans.named("span-a").span_context;
+    let b_sc = spans.named("span-b").span_context;
+    assert_ne!(a_sc.trace_id(), b_sc.trace_id());
+
+    let recs = sink.records();
+    let find = |msg: &str| -> &LogRecord {
+        recs.iter()
+            .find(|r| r.message() == msg)
+            .unwrap_or_else(|| panic!("missing log {msg:?}: {recs:?}"))
+    };
+
+    assert_eq!(find("contextual-a").trace_id(), Some(a_sc.trace_id()));
+    assert_eq!(find("contextual-a").span_id(), Some(a_sc.span_id()));
+
+    assert_eq!(find("explicit-b").trace_id(), Some(b_sc.trace_id()));
+    assert_eq!(find("explicit-b").span_id(), Some(b_sc.span_id()));
+
+    assert_eq!(
+        find("explicit-debug-child").trace_id(),
+        Some(b_sc.trace_id())
+    );
+    assert_eq!(find("explicit-debug-child").span_id(), Some(b_sc.span_id()));
+
+    assert_eq!(find("explicit-root").trace_id(), None);
+    assert_eq!(find("explicit-root").span_id(), None);
+
+    assert_eq!(find("forced-explicit-b").trace_id(), Some(b_sc.trace_id()));
+    assert_eq!(find("forced-explicit-b").span_id(), Some(b_sc.span_id()));
+}
+
+#[test]
+fn replacer_cannot_reintroduce_reserved_trace_span_or_event_name_keys() {
+    let console = SharedBuffer::default();
+    let extra = CaptureSink::default();
+    let sdk = hermetic("logs-reserved-post-replacer")
+        .console_writer(console.clone())
+        .with_extra_log_sink(extra.clone())
+        .with_attr_replacer(|_groups, key, value| match key.as_str() {
+            "spoof.trace" => Some((Key::from_static_str("trace_id"), value)),
+            "spoof.span" => Some((Key::from_static_str("span_id"), value)),
+            "spoof.event" => Some((Key::from_static_str("event.name"), value)),
+            _ => Some((key, value)),
+        })
+        .build()
+        .expect("SDK");
+
+    let sc = SpanContext::new(
+        TraceId::from(0x0af7_6519_16cd_43dd_8448_eb21_1c80_319c_u128),
+        SpanId::from(0xb7ad_6b71_6920_3331_u64),
+        TraceFlags::SAMPLED,
+        true,
+        TraceState::default(),
+    );
+    let cx = Context::new().with_remote_span_context(sc);
+    {
+        let _guard = cx.attach();
+        traced(&sdk, || {
+            tracing::info!(
+                spoof.trace = "fake-trace",
+                spoof.span = "fake-span",
+                safe = "kept",
+                "from tracing"
+            );
+        });
+        sdk.event(
+            "checkout.completed",
+            [
+                KeyValue::new("spoof.event", "fake.event"),
+                KeyValue::new("spoof.trace", "fake-trace"),
+                KeyValue::new("safe", "kept"),
+            ],
+        );
+    }
+
+    let recs = extra.records();
+    assert_eq!(recs.len(), 2);
+    assert!(recs[0].attr("trace_id").is_none());
+    assert!(recs[0].attr("span_id").is_none());
+    assert_eq!(recs[0].attr("safe"), Some(&AnyValue::from("kept")));
+
+    let event_names: Vec<&AnyValue> = recs[1]
+        .attributes()
+        .iter()
+        .filter(|(k, _)| k.as_str() == "event.name")
+        .map(|(_, v)| v)
+        .collect();
+    assert_eq!(event_names, [&AnyValue::from("checkout.completed")]);
+    assert!(recs[1].attr("trace_id").is_none());
+    assert_eq!(recs[1].attr("safe"), Some(&AnyValue::from("kept")));
+
+    let text = console.text();
+    assert!(!text.contains("fake-trace"), "{text}");
+    assert!(!text.contains("fake-span"), "{text}");
+    assert!(!text.contains("fake.event"), "{text}");
+}

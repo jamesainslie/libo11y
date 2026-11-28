@@ -28,6 +28,52 @@ var installed_sig_io: bool = false;
 var old_sig_io: if (have_sig_io) std.posix.Sigaction else void = undefined;
 var installed_sig_pipe: bool = false;
 var old_sig_pipe: if (have_sig_pipe) std.posix.Sigaction else void = undefined;
+var cancel_guard_depth: usize = 0;
+var cancel_installed_sig_io: bool = false;
+var cancel_old_sig_io: if (have_sig_io) std.posix.Sigaction else void = undefined;
+
+pub const CancelSignalGuard = struct {
+    pub fn leave(_: CancelSignalGuard) void {
+        leaveCancelSignalGuard();
+    }
+};
+
+/// Ensures `SIGIO` has a no-op handler during receiver teardown even if another
+/// copy of the runtime in `libo11y` destroyed the last SDK first and restored
+/// `SIG_DFL`.
+pub fn enterCancelSignalGuard() CancelSignalGuard {
+    io_mutex.lock();
+    defer io_mutex.unlock();
+    cancel_guard_depth += 1;
+    if (cancel_guard_depth == 1 and have_sig_io) {
+        std.posix.sigaction(.IO, null, &cancel_old_sig_io);
+        if (isDefaultHandler(cancel_old_sig_io)) {
+            const act: std.posix.Sigaction = .{
+                .handler = .{ .handler = noOpSigHandler },
+                .mask = std.posix.sigemptyset(),
+                .flags = 0,
+            };
+            std.posix.sigaction(.IO, &act, null);
+            cancel_installed_sig_io = true;
+        }
+    }
+    return .{};
+}
+
+fn leaveCancelSignalGuard() void {
+    io_mutex.lock();
+    defer io_mutex.unlock();
+    if (cancel_guard_depth == 0) return;
+    cancel_guard_depth -= 1;
+    if (cancel_guard_depth == 0 and have_sig_io and cancel_installed_sig_io) {
+        var cur: std.posix.Sigaction = undefined;
+        std.posix.sigaction(.IO, null, &cur);
+        if (isOurHandler(cur)) {
+            std.posix.sigaction(.IO, &cancel_old_sig_io, null);
+        }
+        cancel_installed_sig_io = false;
+    }
+}
 
 fn noOpSigHandler(_: std.posix.SIG) callconv(.c) void {}
 

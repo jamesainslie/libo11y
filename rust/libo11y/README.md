@@ -16,6 +16,4 @@ or JSON), `otlp-grpc` (OTLP over gRPC), `tokio` (asynchronous shutdown and
 shutdown on `SIGINT` and `SIGTERM`) and `log` (bridges `log` records into
 the tracing stack `setup()` installs).
 
-This crate is in progress and has not been published yet.
-
 Licensed under the Apache License, Version 2.0.

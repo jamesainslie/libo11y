@@ -6,16 +6,19 @@ get_filename_component(_libo11y_prefix "${CMAKE_CURRENT_LIST_DIR}/../../.." ABSO
 set(_libo11y_libdir "${_libo11y_prefix}/lib")
 set(_libo11y_incdir "${_libo11y_prefix}/include")
 
-find_library(_libo11y_shared_lib
-    NAMES "${CMAKE_SHARED_LIBRARY_PREFIX}o11y${CMAKE_SHARED_LIBRARY_SUFFIX}"
-    PATHS "${_libo11y_libdir}"
-    NO_DEFAULT_PATH
-)
-find_library(_libo11y_static_lib
-    NAMES "${CMAKE_STATIC_LIBRARY_PREFIX}o11y${CMAKE_STATIC_LIBRARY_SUFFIX}"
-    PATHS "${_libo11y_libdir}"
-    NO_DEFAULT_PATH
-)
+set(_libo11y_shared_candidate "${_libo11y_libdir}/${CMAKE_SHARED_LIBRARY_PREFIX}o11y${CMAKE_SHARED_LIBRARY_SUFFIX}")
+set(_libo11y_static_candidate "${_libo11y_libdir}/${CMAKE_STATIC_LIBRARY_PREFIX}o11y${CMAKE_STATIC_LIBRARY_SUFFIX}")
+set(_libo11ytest_candidate "${_libo11y_libdir}/${CMAKE_STATIC_LIBRARY_PREFIX}o11ytest${CMAKE_STATIC_LIBRARY_SUFFIX}")
+
+set(_libo11y_shared_lib "")
+if(EXISTS "${_libo11y_shared_candidate}")
+    set(_libo11y_shared_lib "${_libo11y_shared_candidate}")
+endif()
+
+set(_libo11y_static_lib "")
+if(EXISTS "${_libo11y_static_candidate}")
+    set(_libo11y_static_lib "${_libo11y_static_candidate}")
+endif()
 
 if(NOT _libo11y_shared_lib AND NOT _libo11y_static_lib)
     set(libo11y_FOUND FALSE)
@@ -23,6 +26,9 @@ if(NOT _libo11y_shared_lib AND NOT _libo11y_static_lib)
     unset(_libo11y_prefix)
     unset(_libo11y_libdir)
     unset(_libo11y_incdir)
+    unset(_libo11y_shared_candidate)
+    unset(_libo11y_static_candidate)
+    unset(_libo11ytest_candidate)
     unset(_libo11y_shared_lib)
     unset(_libo11y_static_lib)
     return()
@@ -68,21 +74,27 @@ if(NOT TARGET libo11y::o11y)
     endif()
 endif()
 
-if(NOT TARGET libo11y::o11ytest)
-    find_library(_libo11ytest_lib
-        NAMES "${CMAKE_STATIC_LIBRARY_PREFIX}o11ytest${CMAKE_STATIC_LIBRARY_SUFFIX}" o11ytest
-        PATHS "${_libo11y_libdir}"
-        NO_DEFAULT_PATH
-    )
-    if(_libo11ytest_lib)
+if(EXISTS "${_libo11ytest_candidate}")
+    if(NOT TARGET libo11y::o11ytest)
         add_library(libo11y::o11ytest STATIC IMPORTED)
         set_target_properties(libo11y::o11ytest PROPERTIES
-            IMPORTED_LOCATION "${_libo11ytest_lib}"
+            IMPORTED_LOCATION "${_libo11ytest_candidate}"
             INTERFACE_INCLUDE_DIRECTORIES "${_libo11y_incdir}"
         )
-        set_property(TARGET libo11y::o11ytest APPEND PROPERTY INTERFACE_LINK_LIBRARIES Threads::Threads)
+        set_property(TARGET libo11y::o11ytest APPEND PROPERTY INTERFACE_LINK_LIBRARIES libo11y::o11y Threads::Threads)
         if(UNIX AND NOT APPLE)
             set_property(TARGET libo11y::o11ytest APPEND PROPERTY INTERFACE_LINK_LIBRARIES m)
+        endif()
+    endif()
+    if(TARGET libo11y::o11y_static AND NOT TARGET libo11y::o11ytest_static)
+        add_library(libo11y::o11ytest_static STATIC IMPORTED)
+        set_target_properties(libo11y::o11ytest_static PROPERTIES
+            IMPORTED_LOCATION "${_libo11ytest_candidate}"
+            INTERFACE_INCLUDE_DIRECTORIES "${_libo11y_incdir}"
+        )
+        set_property(TARGET libo11y::o11ytest_static APPEND PROPERTY INTERFACE_LINK_LIBRARIES libo11y::o11y_static Threads::Threads)
+        if(UNIX AND NOT APPLE)
+            set_property(TARGET libo11y::o11ytest_static APPEND PROPERTY INTERFACE_LINK_LIBRARIES m)
         endif()
     endif()
 endif()
@@ -90,6 +102,8 @@ endif()
 unset(_libo11y_prefix)
 unset(_libo11y_libdir)
 unset(_libo11y_incdir)
+unset(_libo11y_shared_candidate)
+unset(_libo11y_static_candidate)
+unset(_libo11ytest_candidate)
 unset(_libo11y_shared_lib)
 unset(_libo11y_static_lib)
-unset(_libo11ytest_lib)

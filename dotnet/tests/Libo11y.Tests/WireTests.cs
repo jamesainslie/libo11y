@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text;
+using Libo11y.Spec;
 using Libo11y.Testing;
 using Microsoft.Extensions.Logging;
 using Xunit;
@@ -82,14 +83,17 @@ public sealed class WireTests
 
         // Verify raw wire payloads contain safe values and never contain leaked secret values
         string traceWire = Encoding.Latin1.GetString(receiver.TraceRequests.SelectMany(r => r.Body).ToArray());
+        Assert.Contains(SpecConstants.SchemaUrl, traceWire);
         Assert.Contains("visible-span-value", traceWire);
         Assert.DoesNotContain("top-secret-token", traceWire);
 
         string logWire = Encoding.Latin1.GetString(receiver.LogRequests.SelectMany(r => r.Body).ToArray());
+        Assert.Contains(SpecConstants.SchemaUrl, logWire);
         Assert.Contains("visible-log-value", logWire);
         Assert.DoesNotContain("supersecretcookie", logWire);
 
         string metricWire = Encoding.Latin1.GetString(receiver.MetricRequests.SelectMany(r => r.Body).ToArray());
+        Assert.Contains(SpecConstants.SchemaUrl, metricWire);
         Assert.Contains("wire.requests", metricWire);
         Assert.DoesNotContain("top-secret-token", metricWire);
     }

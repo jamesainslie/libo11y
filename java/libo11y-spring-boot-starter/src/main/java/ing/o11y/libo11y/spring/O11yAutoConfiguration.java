@@ -273,8 +273,8 @@ public class O11yAutoConfiguration {
         @Bean
         public static O11yDataSourceBeanPostProcessor libo11yDataSourceBeanPostProcessor(
                 ObjectProvider<Telemetry> telemetryProvider,
-                O11yProperties props) {
-            return new O11yDataSourceBeanPostProcessor(telemetryProvider, props.getJdbc());
+                ObjectProvider<O11yProperties> properties) {
+            return new O11yDataSourceBeanPostProcessor(telemetryProvider, properties);
         }
     }
 

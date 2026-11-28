@@ -6,12 +6,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import ing.o11y.libo11y.spec.generated.Spec;
 import ing.o11y.libo11y.spec.generated.SpecTables;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
 class AppRegistryConformanceTest {
     private static Path repoRoot() {
@@ -25,6 +28,24 @@ class AppRegistryConformanceTest {
         throw new IllegalStateException("could not locate repository root");
     }
 
+    private static Path casesDir() {
+        return repoRoot().resolve("conformance").resolve("appregistry");
+    }
+
+    static Stream<String> caseNames() {
+        try (Stream<Path> stream = Files.list(casesDir())) {
+            List<String> names = stream
+                    .map(p -> p.getFileName().toString())
+                    .filter(n -> n.endsWith(".yaml"))
+                    .map(n -> n.substring(0, n.length() - ".yaml".length()))
+                    .sorted()
+                    .toList();
+            return names.stream();
+        } catch (IOException ex) {
+            throw new UncheckedIOException(ex);
+        }
+    }
+
     @Test
     void generatedSpecConstantsPresent() {
         assertTrue(Spec.SCHEMA_URL.startsWith("https://schemas.o11y.ing/libo11y/"));
@@ -34,37 +55,34 @@ class AppRegistryConformanceTest {
     }
 
     @Test
-    void allConformanceAppRegistryCasesMatch() throws IOException {
-        Path dir = repoRoot().resolve("conformance").resolve("appregistry");
-        List<Path> yamlFiles;
-        try (var stream = Files.list(dir)) {
-            yamlFiles = stream.filter(p -> p.toString().endsWith(".yaml")).sorted().toList();
-        }
-        assertTrue(yamlFiles.size() >= 46, "expected at least 46 app registry cases, got " + yamlFiles.size());
+    void sharedSuiteHoldsEveryCase() {
+        long count = caseNames().count();
+        assertTrue(count >= 46, "expected at least 46 app registry cases, got " + count);
+    }
 
-        List<String> failures = new ArrayList<>();
-        for (Path yamlPath : yamlFiles) {
-            String baseName = yamlPath.getFileName().toString().replace(".yaml", "");
-            Path wantPath = dir.resolve(baseName + ".want");
-            String want = Files.readString(wantPath, StandardCharsets.UTF_8).trim().replace("\r\n", "\n");
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("caseNames")
+    void conformanceCase(String name) throws IOException {
+        Path dir = casesDir();
+        String want = Files.readString(dir.resolve(name + ".want"), StandardCharsets.UTF_8)
+                .trim()
+                .replace("\r\n", "\n");
 
-            String got;
-            try {
-                AppRegistryValidator.AppRegistry reg = AppRegistryValidator.parseBytes(Files.readAllBytes(yamlPath));
-                List<AppRegistryValidator.AppRegistryViolation> violations = AppRegistryValidator.validate(reg);
-                if (violations.isEmpty()) {
-                    got = "ok " + reg.attributes().size() + " " + reg.namespace();
-                } else {
-                    got = String.join("\n", violations.stream().map(AppRegistryValidator.AppRegistryViolation::toString).toList());
-                }
-            } catch (AppRegistryValidator.AppRegistryParseException ex) {
-                got = "parse: " + ex.kind();
+        String got;
+        try {
+            AppRegistryValidator.AppRegistry reg =
+                    AppRegistryValidator.parseBytes(Files.readAllBytes(dir.resolve(name + ".yaml")));
+            List<AppRegistryValidator.AppRegistryViolation> violations = AppRegistryValidator.validate(reg);
+            if (violations.isEmpty()) {
+                got = "ok " + reg.attributes().size() + " " + reg.namespace();
+            } else {
+                got = String.join(
+                        "\n",
+                        violations.stream().map(AppRegistryValidator.AppRegistryViolation::toString).toList());
             }
-
-            if (!got.equals(want)) {
-                failures.add(yamlPath.getFileName() + ":\n  got:  " + got + "\n  want: " + want);
-            }
+        } catch (AppRegistryValidator.AppRegistryParseException ex) {
+            got = "parse: " + ex.kind();
         }
-        assertTrue(failures.isEmpty(), String.join("\n", failures));
+        assertEquals(want, got);
     }
 }

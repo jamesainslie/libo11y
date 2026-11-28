@@ -262,6 +262,30 @@ async fn reqwest_marks_error_statuses_and_honors_filters_and_ignore_paths() {
 }
 
 #[tokio::test]
+async fn reqwest_ignore_paths_match_the_percent_decoded_path() {
+    let (addr, seen, server_handle) = start_loopback_server().await;
+    let rec = Recorder::start("reqwest-ignore-decoded");
+
+    let client = ClientBuilder::new(reqwest::Client::new())
+        .with(O11yMiddleware::new(rec.sdk()).with_ignore_paths(["/healthz"]))
+        .build();
+    let base = format!("http://127.0.0.1:{}", addr.port());
+
+    let _ = client
+        .get(format!("{base}/%68ealthz"))
+        .send()
+        .await
+        .unwrap();
+    let _ = client.get(format!("{base}/ok")).send().await.unwrap();
+
+    assert_eq!(seen.lock().unwrap().len(), 2);
+    let spans = rec.spans();
+    assert_eq!(spans.len(), 1);
+    assert_eq!(span_attr(&spans[0], "url.full"), Some(format!("{base}/ok")));
+    server_handle.abort();
+}
+
+#[tokio::test]
 async fn reqwest_records_connect_errors_on_span_and_duration_metric() {
     // Bind and immediately drop a listener to pick an unused loopback port.
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");

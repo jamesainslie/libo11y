@@ -66,11 +66,11 @@ extern "C" {
 
 /** The version of these headers. o11y_version() reports the library's. */
 #define O11Y_VERSION_MAJOR 0
-#define O11Y_VERSION_MINOR 1
+#define O11Y_VERSION_MINOR 2
 #define O11Y_VERSION_PATCH 0
-#define O11Y_VERSION "0.1.0"
+#define O11Y_VERSION "0.2.0"
 
-/** Returns the semantic version of the linked library, such as "0.1.0". */
+/** Returns the semantic version of the linked library, such as "0.2.0". */
 const char *o11y_version(void);
 
 /** Typed error codes returned by fallible libo11y C API calls. */

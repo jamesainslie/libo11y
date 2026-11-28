@@ -24,7 +24,9 @@ use tower_service::Service;
 use crate::carrier::HeaderInjector;
 use crate::method::{normalize_method, span_method};
 use crate::path_match::path_match;
-use crate::url::{extract_scheme, extract_server_address_port, sanitize_url_full};
+use crate::url::{
+    extract_scheme, extract_server_address_port, percent_decode_or_raw, sanitize_url_full,
+};
 use crate::{HTTP_DURATION_BOUNDARIES, SCOPE_NAME};
 
 type RequestFilter = Arc<dyn Fn(&Parts) -> bool + Send + Sync>;
@@ -80,7 +82,9 @@ impl ClientLayer {
     }
 
     /// Excludes outbound requests whose URL path matches any of `patterns` in
-    /// Go's `path.Match` glob syntax. Malformed patterns never match.
+    /// Go's `path.Match` glob syntax. The path is percent-decoded before
+    /// matching, so `/%68ealthz` matches `"/healthz"`; a path with an invalid
+    /// escape or invalid UTF-8 is matched raw. Malformed patterns never match.
     #[must_use]
     pub fn with_ignore_paths<I, S>(mut self, patterns: I) -> Self
     where
@@ -91,8 +95,8 @@ impl ClientLayer {
         Arc::make_mut(&mut self.config)
             .filters
             .push(Arc::new(move |parts: &Parts| {
-                let path = parts.uri.path();
-                !patterns.iter().any(|pat| path_match(pat, path))
+                let path = percent_decode_or_raw(parts.uri.path());
+                !patterns.iter().any(|pat| path_match(pat, &path))
             }));
         self
     }
