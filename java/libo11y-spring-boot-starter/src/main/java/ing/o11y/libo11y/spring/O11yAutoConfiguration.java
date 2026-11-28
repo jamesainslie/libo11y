@@ -30,6 +30,7 @@ import io.opentelemetry.context.Scope;
 import jakarta.servlet.DispatcherType;
 import jakarta.servlet.Filter;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.Base64;
@@ -144,8 +145,10 @@ public class O11yAutoConfiguration {
         for (String location : props.getAppRegistries()) {
             Resource res = resourceLoader.getResource(location);
             if (res.exists()) {
-                String yaml = new String(res.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-                builder.addAppRegistryYaml(yaml, location);
+                // Raw bytes, so the registry parser decodes them as strictly as the CLI does.
+                try (InputStream in = res.getInputStream()) {
+                    builder.addAppRegistryBytes(in.readAllBytes(), location);
+                }
             } else {
                 builder.addAppRegistryFile(Path.of(location));
             }

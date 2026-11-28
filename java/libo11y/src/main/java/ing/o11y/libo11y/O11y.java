@@ -396,6 +396,9 @@ public final class O11y {
                 } else if (src instanceof O11yOptions.AppRegistryYaml y) {
                     compiledRegs.add(AppRegistryValidator.compile(
                             AppRegistryValidator.parse(y.yaml()), y.source()));
+                } else if (src instanceof O11yOptions.AppRegistryBytes b) {
+                    compiledRegs.add(AppRegistryValidator.compile(
+                            AppRegistryValidator.parseBytes(b.yaml()), b.source()));
                 }
             } catch (AppRegistryValidator.AppRegistryParseException
                     | AppRegistryValidator.AppRegistryValidationException

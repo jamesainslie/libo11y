@@ -28,11 +28,30 @@ import java.util.function.Predicate;
 public final class O11yOptions {
     public record BuildInfo(String version, String vcsRevision, String buildTime, Boolean buildModified) {}
 
-    public sealed interface AppRegistrySource permits AppRegistryFile, AppRegistryYaml {}
+    public sealed interface AppRegistrySource permits AppRegistryFile, AppRegistryYaml, AppRegistryBytes {}
 
     public record AppRegistryFile(Path path) implements AppRegistrySource {}
 
     public record AppRegistryYaml(String yaml, String source) implements AppRegistrySource {}
+
+    /**
+     * An application registry given as the raw bytes of its YAML file, decoded as strictly as
+     * {@link AppRegistryFile} decodes a file: a UTF-8 file, or a UTF-16 one with a byte order
+     * mark, and invalid input fails setup with {@code INVALID_APP_REGISTRY}.
+     *
+     * @param yaml the file's bytes, copied on the way in and out
+     * @param source where the bytes came from, for error messages
+     */
+    public record AppRegistryBytes(byte[] yaml, String source) implements AppRegistrySource {
+        public AppRegistryBytes {
+            yaml = yaml.clone();
+        }
+
+        @Override
+        public byte[] yaml() {
+            return yaml.clone();
+        }
+    }
 
     /**
      * A metric view registered with {@link Builder#addView(InstrumentSelector, View)}: the view applies
@@ -348,6 +367,19 @@ public final class O11yOptions {
 
         public Builder addAppRegistryYaml(String yaml, String source) {
             this.appRegistries.add(new AppRegistryYaml(yaml, source));
+            return this;
+        }
+
+        /**
+         * Adds an application registry read from {@code source} as raw bytes, such as a classpath
+         * resource. The bytes are decoded as a registry file is, so invalid UTF-8 fails setup.
+         *
+         * @param yaml the registry file's bytes
+         * @param source where the bytes came from, for error messages
+         * @return this builder
+         */
+        public Builder addAppRegistryBytes(byte[] yaml, String source) {
+            this.appRegistries.add(new AppRegistryBytes(yaml, source));
             return this;
         }
 

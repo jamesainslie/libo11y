@@ -24,8 +24,13 @@ public final class O11yFailureAnalyzer extends AbstractFailureAnalyzer<O11yExcep
                     "Check that the configured log sink accepts startup events; see the underlying exception for details.";
             case ALREADY_SETUP ->
                     "Disable global installation via 'libo11y.install-global=false' when running multiple Spring contexts in one JVM.";
-            case UNSUPPORTED_PROTOCOL, EXPORTER ->
-                    "Verify OTEL_*_EXPORTER and OTEL_EXPORTER_OTLP_*_PROTOCOL use supported OTLP values (http/protobuf or grpc).";
+            case UNSUPPORTED_PROTOCOL ->
+                    "Set OTEL_EXPORTER_OTLP_PROTOCOL and OTEL_EXPORTER_OTLP_*_PROTOCOL to a supported OTLP value (http/protobuf or grpc).";
+            case EXPORTER ->
+                    "Check that OTEL_*_EXPORTER names a supported exporter (otlp, console or none), that "
+                            + "OTEL_EXPORTER_OTLP_ENDPOINT and OTEL_EXPORTER_OTLP_*_ENDPOINT are well-formed http or https URLs, "
+                            + "and that the TLS files OTEL_EXPORTER_OTLP_CERTIFICATE, OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE "
+                            + "and OTEL_EXPORTER_OTLP_CLIENT_KEY (and their per-signal forms) exist, are readable and hold valid PEM.";
             case INVALID_OPTION ->
                     "Review your 'libo11y.*' properties and OTEL_* environment variables for invalid values.";
             case INVALID_CARRIER ->
