@@ -54,6 +54,20 @@ adhere to [Semantic Versioning](https://semver.org/).
 - `make ts-size` bundles a delta row with its base entry's externals and
   export conditions, and its budgets and the Metro bundle budget cover
   `@libo11y/rum-react-native`.
+- `@libo11y/server`'s `instrumentFetch` now replaces the values of the
+  `AWSAccessKeyId`, `Signature`, `sig` and `X-Goog-Signature` query keys
+  in `url.full` with `REDACTED`, as `@libo11y/web` already does. These are
+  the presigned-URL keys the OpenTelemetry HTTP semantic conventions name.
+  Before, only the user name and password were removed, so a presigned
+  URL's signature was exported with the span.
+
+### Fixed
+
+- `instrumentServe` with `serverTiming: true` no longer sends a
+  `Server-Timing` traceparent entry when the span has no valid span
+  context, as before `setup`, after shutdown or with
+  `OTEL_SDK_DISABLED=true`. It used to send an all-zero traceparent. The
+  response now goes out without the entry, as in Go.
 
 ## [0.4.0] - 2026-11-27
 

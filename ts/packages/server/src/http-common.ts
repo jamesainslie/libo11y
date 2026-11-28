@@ -78,6 +78,51 @@ export function serverAttributes(url: URL): Attributes {
   return { "server.address": host, "server.port": port };
 }
 
+// The query keys whose values semconv says url.full SHOULD redact by default (presigned URLs). The
+// same set and matching as redactQuery in @libo11y/web's http-common.ts, which mirrors this file.
+const REDACTED_QUERY_KEYS: ReadonlySet<string> = new Set([
+  "AWSAccessKeyId",
+  "Signature",
+  "sig",
+  "X-Goog-Signature",
+]);
+
+/** search with the value of each REDACTED_QUERY_KEYS parameter replaced by REDACTED, the rest as is. */
+function redactQuery(search: string): string {
+  if (search.length <= 1) return search;
+  const parts = search.slice(1).split("&");
+  let changed = false;
+  for (const [i, part] of parts.entries()) {
+    const eq = part.indexOf("=");
+    if (eq < 0) continue;
+    let key: string;
+    try {
+      key = decodeURIComponent(part.slice(0, eq).replaceAll("+", " "));
+    } catch {
+      // A key that is not valid percent-encoding is none of the redacted keys.
+      continue;
+    }
+    if (REDACTED_QUERY_KEYS.has(key)) {
+      parts[i] = `${part.slice(0, eq)}=REDACTED`;
+      changed = true;
+    }
+  }
+  return changed ? `?${parts.join("&")}` : search;
+}
+
+/**
+ * The url.full of a request URL: credentials removed, and the values of the presigned-URL query
+ * keys semconv names (AWSAccessKeyId, Signature, sig, X-Goog-Signature) replaced by REDACTED.
+ */
+export function urlFull(url: URL): string {
+  const full = new URL(url);
+  full.username = "";
+  full.password = "";
+  const search = redactQuery(full.search);
+  if (search !== full.search) full.search = search;
+  return full.href;
+}
+
 /** The URL scheme without its colon. */
 export function schemeOf(url: URL): string {
   return url.protocol.slice(0, -1);
