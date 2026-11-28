@@ -10,9 +10,18 @@ const o11y = @import("o11y");
 const o11ytest = @import("o11ytest");
 const c = @import("c_types.zig");
 const rt = @import("runtime.zig");
-const abi = @import("abi.zig");
+const abi = @import("abi_common.zig");
+
+/// Do not allocate a 256 KiB per-thread TLS signal stack or call `sigaltstack`
+/// on library worker threads. A C/C++ library must leave host and sanitizer
+/// alternate signal stacks untouched.
+pub const std_options: std.Options = .{
+    .signal_stack_size = null,
+};
 
 const gpa = rt.gpa;
+
+extern "c" fn o11y_shutdown(sdk: ?*abi.SdkHandle, timeout_ms: u64, out_report: ?*c.ShutdownReport) c.Err;
 
 // =========================================================================
 // Internal Handle Wrappers
@@ -190,9 +199,10 @@ fn startRecorder(opts: c.TestOptions, diag_out: ?*c.Diagnostic) (o11y.SetupError
 
 export fn o11y_test_destroy(rec: ?*RecorderHandle) void {
     const h = rec orelse return;
-    const callbacks = abi.detachObservableCallbacks(h.rec.telemetry().meterProvider());
+    // Shut down through libo11y so registered observable callbacks in libo11y are
+    // detached and freed cleanly before the recorder destroys the meter provider.
+    _ = o11y_shutdown(&h.sdk_view, 0, null);
     h.rec.deinit();
-    abi.freeObservableCallbacks(callbacks);
     h.sdk_view.arena.deinit();
     h.str_arena.deinit();
     h.opt_arena.deinit();
@@ -809,7 +819,9 @@ fn startHttpReceiver(opts: c.TestHttpReceiverOptions) ReceiverError!*HttpReceive
 
 export fn o11y_test_http_receiver_destroy(rx: ?*HttpReceiverHandle) void {
     const h = rx orelse return;
+    const sig_guard = rt.enterCancelSignalGuard();
     h.rx.deinit();
+    sig_guard.leave();
     rt.freeZ(gpa, h.url_z);
     gpa.destroy(h);
     rt.releaseIo();
@@ -930,7 +942,9 @@ fn startGrpcReceiver(opts: c.TestGrpcReceiverOptions) ReceiverError!*GrpcReceive
 
 export fn o11y_test_grpc_receiver_destroy(rx: ?*GrpcReceiverHandle) void {
     const h = rx orelse return;
+    const sig_guard = rt.enterCancelSignalGuard();
     h.rx.deinit();
+    sig_guard.leave();
     rt.freeZ(gpa, h.endpoint_z);
     gpa.destroy(h);
     rt.releaseIo();
