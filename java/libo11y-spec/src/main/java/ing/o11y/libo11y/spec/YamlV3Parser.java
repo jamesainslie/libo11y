@@ -11,12 +11,15 @@ import java.util.Base64;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.yaml.snakeyaml.DumperOptions;
 import org.yaml.snakeyaml.LoaderOptions;
+import org.yaml.snakeyaml.error.Mark;
+import org.yaml.snakeyaml.error.MarkedYAMLException;
 import org.yaml.snakeyaml.error.YAMLException;
 import org.yaml.snakeyaml.events.AliasEvent;
 import org.yaml.snakeyaml.events.DocumentEndEvent;
@@ -32,6 +35,10 @@ import org.yaml.snakeyaml.events.StreamStartEvent;
 import org.yaml.snakeyaml.parser.Parser;
 import org.yaml.snakeyaml.parser.ParserImpl;
 import org.yaml.snakeyaml.reader.StreamReader;
+import org.yaml.snakeyaml.scanner.Scanner;
+import org.yaml.snakeyaml.scanner.ScannerImpl;
+import org.yaml.snakeyaml.tokens.ScalarToken;
+import org.yaml.snakeyaml.tokens.Token;
 
 final class YamlV3Parser {
     private YamlV3Parser() {}
@@ -168,13 +175,13 @@ final class YamlV3Parser {
             char c = text.charAt(i);
             if (Character.isHighSurrogate(c)) {
                 if (i + 1 >= text.length() || !Character.isLowSurrogate(text.charAt(i + 1))) {
-                    throw new SyntaxException(String.format("control characters are not allowed: U+%04X", (int) c));
+                    throw new SyntaxException(String.format(Locale.ROOT, "control characters are not allowed: U+%04X", (int) c));
                 }
                 i++;
                 continue;
             }
             if (Character.isLowSurrogate(c)) {
-                throw new SyntaxException(String.format("control characters are not allowed: U+%04X", (int) c));
+                throw new SyntaxException(String.format(Locale.ROOT, "control characters are not allowed: U+%04X", (int) c));
             }
             int cp = c;
             boolean ok = cp == '\t'
@@ -185,88 +192,149 @@ final class YamlV3Parser {
                     || (cp >= 0xA0 && cp <= 0xD7FF)
                     || (cp >= 0xE000 && cp <= 0xFFFD);
             if (!ok) {
-                throw new SyntaxException(String.format("control characters are not allowed: U+%04X", cp));
+                throw new SyntaxException(String.format(Locale.ROOT, "control characters are not allowed: U+%04X", cp));
             }
         }
     }
 
-    private static String preprocessDoubleQuotedEscapes(String text) {
-        StringBuilder sb = new StringBuilder(text.length());
-        int i = 0;
-        int len = text.length();
-        boolean inSingle = false;
-        boolean inDouble = false;
-        boolean inComment = false;
+    /**
+     * Rewrites each {@code \'} escape inside a double-quoted scalar to a plain apostrophe. yaml.v3 accepts
+     * that escape and SnakeYAML rejects it, so it is the one escape this parser translates.
+     *
+     * <p>A candidate is an apostrophe after an odd run of backslashes. Only a tokenizer knows whether a
+     * candidate sits in a double-quoted scalar, since a quote inside a plain or block scalar is literal.
+     * So a probe pass runs SnakeYAML's tokenizer over a copy in which every candidate {@code \'} becomes
+     * {@code \"'}. The copy splits into the same tokens as the original: inside a double-quoted scalar
+     * {@code \"} is a valid escape and the apostrophe is literal, inside a single-quoted scalar the
+     * apostrophe still closes the scalar, and everywhere else every character is literal. The probe's
+     * double-quoted token spans then say which candidates to rewrite. Text without a candidate is
+     * returned unchanged, with no probe.
+     */
+    private static String rewriteApostropheEscapes(String text, LoaderOptions opts) {
+        List<Integer> candidates = new ArrayList<>();
+        int run = 0;
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c == '\\') {
+                run++;
+                continue;
+            }
+            if (c == '\'' && (run & 1) == 1) {
+                candidates.add(i - 1);
+            }
+            run = 0;
+        }
+        if (candidates.isEmpty()) {
+            return text;
+        }
 
-        while (i < len) {
-            char ch = text.charAt(i);
-            if (inComment) {
-                sb.append(ch);
-                if (ch == '\n' || ch == '\r') {
-                    inComment = false;
+        StringBuilder probe = new StringBuilder(text.length() + candidates.size());
+        int[] probeCodePoints = new int[candidates.size()];
+        int from = 0;
+        int codePoints = 0;
+        for (int k = 0; k < candidates.size(); k++) {
+            int backslash = candidates.get(k);
+            codePoints += text.codePointCount(from, backslash);
+            probeCodePoints[k] = codePoints + k;
+            probe.append(text, from, backslash + 1).append('"');
+            from = backslash + 1;
+        }
+        probe.append(text, from, text.length());
+
+        List<int[]> doubleQuoted = new ArrayList<>();
+        try {
+            ScannerImpl scanner = new ScannerImpl(new StreamReader(probe.toString()), opts);
+            while (!scanner.checkToken(Token.ID.StreamEnd)) {
+                Token token = scanner.getToken();
+                if (token instanceof ScalarToken scalar && scalar.getStyle() == DumperOptions.ScalarStyle.DOUBLE_QUOTED) {
+                    doubleQuoted.add(new int[] {scalar.getStartMark().getIndex(), scalar.getEndMark().getIndex()});
                 }
-                i++;
-            } else if (inSingle) {
-                sb.append(ch);
-                if (ch == '\'') {
-                    if (i + 1 < len && text.charAt(i + 1) == '\'') {
-                        sb.append('\'');
-                        i += 2;
-                    } else {
-                        inSingle = false;
-                        i++;
-                    }
-                } else {
-                    i++;
-                }
-            } else if (inDouble) {
-                if (ch == '\\') {
-                    if (i + 1 >= len) {
-                        throw new SyntaxException("unterminated escape in double-quoted scalar");
-                    }
-                    char nxt = text.charAt(i + 1);
-                    if (nxt == '/') {
-                        throw new SyntaxException("found unknown escape character '/'");
-                    }
-                    if (nxt == '\'') {
-                        sb.append('\'');
-                        i += 2;
-                    } else if (nxt == 'u' && i + 5 < len) {
-                        String hex = text.substring(i + 2, i + 6);
-                        try {
-                            int cp = Integer.parseInt(hex, 16);
-                            if (cp >= 0xD800 && cp <= 0xDFFF) {
-                                throw new SyntaxException("found invalid Unicode character escape code");
-                            }
-                        } catch (NumberFormatException ignored) {
-                            // let YAML parser reject invalid hex
-                        }
-                        sb.append(ch).append(nxt);
-                        i += 2;
-                    } else {
-                        sb.append(ch).append(nxt);
-                        i += 2;
-                    }
-                } else {
-                    sb.append(ch);
-                    if (ch == '"') {
-                        inDouble = false;
-                    }
-                    i++;
-                }
-            } else {
-                if (ch == '#' && (i == 0 || isCommentBoundary(text.charAt(i - 1)))) {
-                    inComment = true;
-                } else if (ch == '\'') {
-                    inSingle = true;
-                } else if (ch == '"') {
-                    inDouble = true;
-                }
-                sb.append(ch);
-                i++;
+            }
+        } catch (YAMLException ex) {
+            // The probe differs from the text only inside double-quoted scalars, so the text fails to
+            // tokenize at the same place. Parsing the text unchanged reports that syntax error.
+            return text;
+        }
+
+        StringBuilder out = new StringBuilder(text.length());
+        from = 0;
+        int span = 0;
+        for (int k = 0; k < candidates.size(); k++) {
+            int at = probeCodePoints[k];
+            while (span < doubleQuoted.size() && doubleQuoted.get(span)[1] <= at) {
+                span++;
+            }
+            if (span < doubleQuoted.size() && doubleQuoted.get(span)[0] < at) {
+                int backslash = candidates.get(k);
+                out.append(text, from, backslash).append('\'');
+                from = backslash + 2;
             }
         }
-        return sb.toString();
+        out.append(text, from, text.length());
+        return out.toString();
+    }
+
+    /**
+     * Rejects the escapes yaml.v3 rejects and SnakeYAML decodes: a four or eight digit Unicode escape
+     * that names a surrogate code point or a value above U+10FFFF. yaml.v3 checks each escape on its own, so a pair of
+     * surrogate escapes that SnakeYAML would join into one character is rejected too.
+     */
+    private static final class EscapeCheckingScanner implements Scanner {
+        private final Scanner delegate;
+        private final int[] codePoints;
+
+        EscapeCheckingScanner(Scanner delegate, int[] codePoints) {
+            this.delegate = delegate;
+            this.codePoints = codePoints;
+        }
+
+        @Override
+        public boolean checkToken(Token.ID... choices) {
+            return delegate.checkToken(choices);
+        }
+
+        @Override
+        public Token peekToken() {
+            return delegate.peekToken();
+        }
+
+        @Override
+        public Token getToken() {
+            Token token = delegate.getToken();
+            if (token instanceof ScalarToken scalar && scalar.getStyle() == DumperOptions.ScalarStyle.DOUBLE_QUOTED) {
+                checkEscapes(scalar.getStartMark().getIndex() + 1, scalar.getEndMark().getIndex() - 1);
+            }
+            return token;
+        }
+
+        @Override
+        public void resetDocumentIndex() {
+            delegate.resetDocumentIndex();
+        }
+
+        private void checkEscapes(int start, int end) {
+            int i = start;
+            while (i < end) {
+                if (codePoints[i] != '\\' || i + 1 >= end) {
+                    i++;
+                    continue;
+                }
+                int kind = codePoints[i + 1];
+                int digits = kind == 'u' ? 4 : kind == 'U' ? 8 : 0;
+                i += 2;
+                if (digits == 0) {
+                    continue;
+                }
+                long value = 0;
+                for (int k = 0; k < digits && i + k < end; k++) {
+                    value = (value << 4) + Character.digit(codePoints[i + k], 16);
+                }
+                if ((value >= 0xD800 && value <= 0xDFFF) || value > 0x10FFFF) {
+                    throw new SyntaxException("found invalid Unicode character escape code");
+                }
+                i += digits;
+            }
+        }
     }
 
     private static final Pattern YAML_DIRECTIVE_RE = Pattern.compile("^%YAML[ \\t]+(\\d+)\\.(\\d+)(?:[ \\t]*(?:#.*)?)?$");
@@ -281,6 +349,10 @@ final class YamlV3Parser {
                     Matcher m = YAML_DIRECTIVE_RE.matcher(line);
                     if (!m.matches()) {
                         throw new SyntaxException("found incompatible YAML directive");
+                    }
+                    // yaml.v3 reads at most two digits for each version number.
+                    if (m.group(1).length() > 2 || m.group(2).length() > 2) {
+                        throw new SyntaxException("found extremely long version number");
                     }
                     int major = Integer.parseInt(m.group(1));
                     int minor = Integer.parseInt(m.group(2));
@@ -300,23 +372,21 @@ final class YamlV3Parser {
         }
     }
 
-    private static boolean isCommentBoundary(char c) {
-        return c == ' ' || c == '\t' || c == '\n' || c == '\r';
-    }
-
     static List<Document> parseDocuments(String text) {
         checkCharacters(text);
         checkYamlDirectives(text);
-        String normalized = preprocessDoubleQuotedEscapes(text);
         List<Document> docs = new ArrayList<>();
         try {
             LoaderOptions opts = new LoaderOptions();
-            opts.setCodePointLimit(Math.max(normalized.length() + 1024, 3 * 1024 * 1024));
+            opts.setCodePointLimit(Math.max(text.length() + 1024, 3 * 1024 * 1024));
             opts.setNestingDepthLimit(MAX_DEPTH + 10);
             opts.setAllowDuplicateKeys(true);
             opts.setAllowRecursiveKeys(true);
 
-            Parser parser = new ParserImpl(new StreamReader(normalized), opts);
+            String normalized = rewriteApostropheEscapes(text, opts);
+            Scanner scanner = new EscapeCheckingScanner(
+                    new ScannerImpl(new StreamReader(normalized), opts), normalized.codePoints().toArray());
+            Parser parser = new ParserImpl(scanner);
             Event first = parser.getEvent();
             if (!(first instanceof StreamStartEvent)) {
                 return docs;
@@ -348,9 +418,25 @@ final class YamlV3Parser {
         } catch (SyntaxException ex) {
             throw ex;
         } catch (YAMLException ex) {
-            throw new SyntaxException(ex.getMessage(), ex);
+            throw new SyntaxException(describe(ex), ex);
         }
         return docs;
+    }
+
+    /**
+     * Renders a SnakeYAML error on one line as {@code line N: problem}, the shape of a yaml.v3 error,
+     * since SnakeYAML's own message spans several lines with a source excerpt.
+     */
+    private static String describe(YAMLException ex) {
+        String text = ex.getMessage();
+        if (ex instanceof MarkedYAMLException marked) {
+            Mark mark = marked.getProblemMark() != null ? marked.getProblemMark() : marked.getContextMark();
+            String problem = marked.getProblem() != null ? marked.getProblem() : marked.getContext();
+            if (mark != null && problem != null) {
+                text = "line " + (mark.getLine() + 1) + ": " + problem;
+            }
+        }
+        return text == null ? "the file is not valid YAML" : text.strip().replaceAll("\\s*\\R\\s*", " ");
     }
 
     private static Node composeNode(

@@ -252,8 +252,13 @@ module Libo11y
             )
           end
 
-          Array(opts.span_processors).each do |sp|
-            tracer_provider.add_span_processor(Internal::Bridges::PolicySpanProcessor.new(sp, policy))
+          # An injected processor gets a redacted view of the finished span.
+          # A span's violations are counted once: by the exporter path when
+          # there is one, else by the first injected processor.
+          exporter_counts = trace_exporter_mode != "none"
+          Array(opts.span_processors).each_with_index do |sp, idx|
+            proc_policy = !exporter_counts && idx.zero? ? policy : policy.silent
+            tracer_provider.add_span_processor(Internal::Bridges::PolicySpanProcessor.new(sp, proc_policy))
           end
         end
 
@@ -335,9 +340,11 @@ module Libo11y
         cfg["logs.exporter"] = log_exporter_mode
 
         unless sdk_disabled
+          # First, so every later processor sees the classified record.
+          logger_provider.add_log_record_processor(Internal::Bridges::PolicyLogRecordProcessor.new(policy))
           if opts.log_exporter
             proc = OpenTelemetry::SDK::Logs::Export::SimpleLogRecordProcessor.new(opts.log_exporter)
-            logger_provider.add_log_record_processor(Internal::Bridges::PolicyLogRecordProcessor.new(proc, policy))
+            logger_provider.add_log_record_processor(proc)
           elsif log_exporter_mode == "otlp"
             endpoint = Internal::Env.signal_endpoint(env_map, "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "/v1/logs")
             cfg["logs.endpoint"] = Internal::Endpoint.sanitize(endpoint)
@@ -349,16 +356,16 @@ module Libo11y
               max_export_batch_size: Internal::Env.parse_int(env_map, "OTEL_BLRP_MAX_EXPORT_BATCH_SIZE", 512),
               exporter_timeout: Internal::Env.parse_int(env_map, "OTEL_BLRP_EXPORT_TIMEOUT", 30_000)
             )
-            logger_provider.add_log_record_processor(Internal::Bridges::PolicyLogRecordProcessor.new(proc, policy))
+            logger_provider.add_log_record_processor(proc)
           elsif log_exporter_mode == "console"
             proc = OpenTelemetry::SDK::Logs::Export::SimpleLogRecordProcessor.new(
               OpenTelemetry::SDK::Logs::Export::ConsoleLogRecordExporter.new
             )
-            logger_provider.add_log_record_processor(Internal::Bridges::PolicyLogRecordProcessor.new(proc, policy))
+            logger_provider.add_log_record_processor(proc)
           end
 
           Array(opts.log_processors).each do |lp|
-            logger_provider.add_log_record_processor(Internal::Bridges::PolicyLogRecordProcessor.new(lp, policy))
+            logger_provider.add_log_record_processor(lp)
           end
         end
 

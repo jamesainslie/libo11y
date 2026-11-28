@@ -138,7 +138,7 @@ module Libo11y
         out = {}
         attrs.each do |raw_k, raw_v|
           k = raw_k.to_s
-          v = Redact.contains_redactable?(raw_v) ? Redact.render(raw_v) : raw_v
+          v = render(raw_v)
           changed = true unless v.equal?(raw_v)
           act = decide(signal, k)
           if act == :drop
@@ -162,78 +162,124 @@ module Libo11y
           k = raw_k.to_s
           next unless metric_keep?(k)
 
-          out[k] = Redact.contains_redactable?(raw_v) ? Redact.render(raw_v) : raw_v
+          out[k] = render(raw_v)
         end
         out
       end
 
+      # Applies capture-time redaction, the attribute replacer and the policy
+      # to a log record's attributes. Nested Hashes and Arrays are walked, so
+      # every member is judged on its dotted effective key, as go/logredact.go
+      # does. The walk fails closed. One budget of 2048 nodes is shared by the
+      # whole call and spent before a node is examined. A Hash whose effective
+      # key has more than 16 parts, or an Array nested 16 deep, is not
+      # entered. A reference back into the value being walked, the attributes
+      # themselves included, is cut. What the walk did not examine is dropped,
+      # and so is a Hash or Array that classification emptied.
       def classify_log_attributes(attrs, replacer: nil)
         return {} if attrs.nil? || attrs.empty?
 
-        budget = [PII::MAX_COMPOSITE_NODES]
-        active = {}
-        walk_hash(attrs, [], 0, budget, active, replacer)
+        walk = LogWalk.new(PII::MAX_COMPOSITE_NODES, { attrs => true }.compare_by_identity, replacer)
+        walk_hash(attrs, [], walk).first
       end
 
       private
 
-      def spend?(budget)
-        return false if budget[0] <= 0
+      LogWalk = Struct.new(:budget, :active, :replacer) do
+        # Takes one node from the budget and reports whether any remained.
+        def spend?
+          return false if budget <= 0
 
-        budget[0] -= 1
-        true
+          self.budget -= 1
+          true
+        end
+      end
+      private_constant :LogWalk
+
+      # Renders a Secret, Masked or Fields value, also inside a Hash or Array.
+      def render(value)
+        case value
+        when Hash then Redact.render(value)
+        when Array then value.any? { |v| Redact.redactable?(v) || v.is_a?(Hash) || v.is_a?(Array) } ? Redact.render(value) : value
+        else Redact.redactable?(value) ? Redact.render(value) : value
+        end
       end
 
-      def walk_hash(mapping, groups, depth, budget, active, replacer)
+      # Classifies one Hash's members. Returns what survives, and whether any
+      # member was dropped.
+      def walk_hash(mapping, groups, walk)
         out = {}
+        changed = false
         mapping.each do |raw_k, raw_v|
+          return [out, true] unless walk.spend? # the budget is spent: drop the remaining members
+
           k = raw_k.to_s
-          val = Redact.contains_redactable?(raw_v) ? Redact.render(raw_v) : raw_v
+          # Capture-time redaction first, so the replacer never sees a raw Secret or Masked.
+          val = Redact.redactable?(raw_v) ? Redact.render(raw_v) : raw_v
 
-          if replacer
-            replaced = replacer.call(groups, k, val)
-            next if replaced.nil?
-
+          if walk.replacer
+            replaced = walk.replacer.call(groups, k, val)
             k, val = replaced
             k = k.to_s
-            next if k.empty?
+            if replaced.nil? || k.empty?
+              changed = true
+              next
+            end
           end
 
-          full_key = groups.empty? ? k : "#{groups.join(".")}.#{k}"
-          act = decide(Spec::Signal::LOGS, full_key)
-          next if act == :drop
-
-          if act == :rewrite
+          case decide(Spec::Signal::LOGS, (groups + [k]).join("."))
+          when :drop
+            changed = true
+          when :rewrite
             out[k] = tokenize(val)
-            next
+          else
+            member, keep, member_changed = walk_value(val, groups + [k], 0, walk)
+            changed ||= member_changed
+            out[k] = member if keep
           end
-
-          out[k] = walk_value(val, groups + [k], depth + 1, budget, active, replacer)
         end
-        out
+        [out, changed]
       end
 
-      def walk_value(value, groups, depth, budget, active, replacer)
-        return PII::CANONICAL_TRUNCATED if depth > PII::MAX_COMPOSITE_DEPTH || !spend?(budget)
-
-        value = Redact.render(value) if Redact.contains_redactable?(value)
-        return value if value.nil? || value.is_a?(TrueClass) || value.is_a?(FalseClass) ||
-                        value.is_a?(Integer) || value.is_a?(Float) || value.is_a?(String)
-
-        oid = value.object_id
-        return PII::CANONICAL_TRUNCATED if active[oid]
-
-        active[oid] = true
-        begin
-          if value.is_a?(Hash)
-            return walk_hash(value, groups, depth, budget, active, replacer)
-          elsif value.is_a?(Array)
-            return value.map { |el| walk_value(el, groups, depth + 1, budget, active, replacer) }
-          end
-        ensure
-          active.delete(oid)
+      # Classifies one value held under the effective key path. Returns the
+      # classified value, whether to keep it, and whether classification
+      # dropped anything. depth counts Array nesting, and a Hash member starts
+      # again at zero, so a Hash is bounded by the length of its effective key
+      # and an Array by its nesting.
+      def walk_value(value, path, depth, walk)
+        value = Redact.render(value) if Redact.redactable?(value)
+        case value
+        when nil, true, false, Integer, Float, String then return [value, true, false]
+        when Hash, Array then nil
+        else return [value.to_s, true, false]
         end
-        value.to_s
+
+        if depth >= PII::MAX_COMPOSITE_DEPTH || path.length > PII::MAX_COMPOSITE_DEPTH || !walk.spend? || walk.active.key?(value)
+          return [nil, false, true]
+        end
+
+        walk.active[value] = true
+        begin
+          out, changed = value.is_a?(Hash) ? walk_hash(value, path, walk) : walk_array(value, path, depth, walk)
+          [out, !out.empty? || !changed, changed]
+        ensure
+          walk.active.delete(value)
+        end
+      end
+
+      def walk_array(list, path, depth, walk)
+        kept = []
+        changed = false
+        list.each do |el|
+          unless walk.spend?
+            changed = true # the budget is spent: drop the remaining elements
+            break
+          end
+          member, keep, member_changed = walk_value(el, path, depth + 1, walk)
+          changed ||= member_changed
+          kept << member if keep
+        end
+        [kept, changed]
       end
     end
   end
