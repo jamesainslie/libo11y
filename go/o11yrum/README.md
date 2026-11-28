@@ -244,7 +244,10 @@ collector's rules ported to Go. Both implementations run the shared
 vectors in `conformance/rum-replay`. Input values, input events, canvas,
 font and console events, and every attribute off the allow-list are
 removed. URLs keep their path and only the app's `query_allow_list`
-parameters. Text is handled in one of two modes:
+parameters. That covers URL attributes, `srcset`, CSS `url()`, URL strings
+and bare URLs in CSS declaration values such as custom properties, and a
+kept `content` attribute that holds a URL (`og:url`, `og:image`, a
+refresh). Text is handled in one of two modes:
 
 - By default the gateway masks all text, whatever the client sent. Only
   the text of a `style` element and the inlined stylesheet of a `style` or

@@ -181,7 +181,7 @@ func TestReplayURLVectors(t *testing.T) {
 	}
 	readVector(t, "urls.json", &v)
 	allow := allowSet(v.Allow)
-	strip := map[string]func(string, map[string]bool) string{"url": stripURL, "srcset": stripSrcset, "css": stripCSSURLs}
+	strip := map[string]func(string, map[string]bool) string{"url": stripURL, "srcset": stripSrcset, "css": stripCSSURLs, "content": stripContent}
 	seen := map[string]bool{}
 	for _, c := range v.Cases {
 		f, ok := strip[c.Kind]
@@ -193,7 +193,7 @@ func TestReplayURLVectors(t *testing.T) {
 			t.Errorf("%s %q: %q, want %q", c.Kind, c.In, got, c.Out)
 		}
 	}
-	if len(seen) != 3 {
+	if len(seen) != len(strip) {
 		t.Fatalf("kinds %v", seen)
 	}
 }

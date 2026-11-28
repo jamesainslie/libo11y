@@ -265,12 +265,14 @@ func attributes(attrs obj, textAllowed, cssAllowed, editable, removals bool, all
 		s, isString := value.(string)
 		switch {
 		case maskedAttributes[key]:
-			if isString {
-				if textAllowed {
-					out[name] = s
-				} else {
-					out[name] = maskText(s)
-				}
+			switch {
+			case !isString:
+			case !textAllowed:
+				out[name] = maskText(s)
+			case key == "content":
+				out[name] = stripContent(s, allow)
+			default:
+				out[name] = s
 			}
 		case urlAttributes[key]:
 			if isString {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -500,6 +501,29 @@ func TestScrubSegmentStrictNeverKeepsTextAttributes(t *testing.T) {
 	out, _ := scrubSegment(in, scrubStrict, nil)
 	if got := marshal(t, out); strings.Contains(got, "Jane") {
 		t.Fatalf("leak: %s", got)
+	}
+}
+
+func TestAttributesStripContentURLs(t *testing.T) {
+	allow := map[string]bool{"page": true}
+	for _, c := range []struct {
+		name        string
+		attrs       obj
+		textAllowed bool
+		want        obj
+	}{
+		{"content URL, text allowed", obj{"content": "https://a.example/p?token=SECRET&page=2#SECRET"}, true, obj{"content": "https://a.example/p?page=2"}},
+		{"refresh, text allowed", obj{"content": "5; url=/next?token=SECRET"}, true, obj{"content": "5"}},
+		{"content text, text allowed", obj{"content": "Spring sale"}, true, obj{"content": "Spring sale"}},
+		{"content name in any case", obj{"Content": "/a?token=SECRET"}, true, obj{"Content": "/a"}},
+		{"content URL, text masked", obj{"content": "/a?t=1"}, false, obj{"content": "******"}},
+		// Only content is read as a URL. Other text attributes are text.
+		{"title, text allowed", obj{"title": "/a?token=1"}, true, obj{"title": "/a?token=1"}},
+	} {
+		got := attributes(c.attrs, c.textAllowed, false, false, false, allow)
+		if !reflect.DeepEqual(got, c.want) {
+			t.Errorf("%s: %v, want %v", c.name, got, c.want)
+		}
 	}
 }
 
