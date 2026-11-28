@@ -38,6 +38,7 @@ test("setupExpo builds the expo resource, keeps its queue in files and flushes o
     expect(attrs["o11y.rum.device.class"]).toBe("mobile");
     expect(attrs["service.version"]).toBe("1.0.0");
     expect(attrs["os.name"]).toBe("ios");
+    expect(attrs["telemetry.sdk.language"]).toBe("javascript");
 
     t.tracerProvider.getTracer("fx").startSpan("background-flush").end();
     emitAppState("background");

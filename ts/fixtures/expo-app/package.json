@@ -11,8 +11,13 @@
   "dependencies": {
     "@libo11y/core": "file:.packs/libo11y-core.tgz",
     "@libo11y/react-native": "file:.packs/libo11y-react-native.tgz",
+    "@libo11y/rum": "file:.packs/libo11y-rum.tgz",
+    "@libo11y/rum-connect": "file:.packs/libo11y-rum-connect.tgz",
+    "@libo11y/rum-react": "file:.packs/libo11y-rum-react.tgz",
+    "@libo11y/rum-react-native": "file:.packs/libo11y-rum-react-native.tgz",
     "@libo11y/spec": "file:.packs/libo11y-spec.tgz",
     "@libo11y/web": "file:.packs/libo11y-web.tgz",
+    "@libo11y/webext": "file:.packs/libo11y-webext.tgz",
     "expo": "58.1.0",
     "expo-application": "58.1.2",
     "expo-constants": "58.0.16",
@@ -42,7 +47,12 @@
   "overrides": {
     "@libo11y/core": "file:.packs/libo11y-core.tgz",
     "@libo11y/react-native": "file:.packs/libo11y-react-native.tgz",
+    "@libo11y/rum": "file:.packs/libo11y-rum.tgz",
+    "@libo11y/rum-connect": "file:.packs/libo11y-rum-connect.tgz",
+    "@libo11y/rum-react": "file:.packs/libo11y-rum-react.tgz",
+    "@libo11y/rum-react-native": "file:.packs/libo11y-rum-react-native.tgz",
     "@libo11y/spec": "file:.packs/libo11y-spec.tgz",
-    "@libo11y/web": "file:.packs/libo11y-web.tgz"
+    "@libo11y/web": "file:.packs/libo11y-web.tgz",
+    "@libo11y/webext": "file:.packs/libo11y-webext.tgz"
   }
 }
