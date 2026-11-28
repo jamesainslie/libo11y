@@ -21,9 +21,12 @@ const gpa = rt.gpa;
 // Internal Handle Wrappers (shared with test_abi.zig)
 // =========================================================================
 
+pub const IoKind = enum { none, hermetic, networked };
+
 pub const SdkHandle = struct {
     telemetry: *o11y.Telemetry,
     owns_telemetry: bool,
+    io_kind: IoKind = .none,
     arena: std.heap.ArenaAllocator,
     effective_config_z: [*:0]const u8,
 };
@@ -289,12 +292,11 @@ pub fn convertAttrs(arena: Allocator, raw: ?[*]const c.Attr, len: usize) Allocat
     return out.items;
 }
 
-const max_composite_depth: usize = 16;
-const composite_walk_budget: usize = 2048;
+const composite_walk_budget: usize = o11y.pii.walk_budget;
 
 const WalkState = struct {
     remaining: usize,
-    ancestors: [@max(max_composite_depth, o11y.pii.max_depth) + 2]usize = undefined,
+    ancestors: [o11y.pii.max_depth + 2]usize = undefined,
     ancestor_len: usize = 0,
 
     fn enter(self: *WalkState, addr: usize) bool {
@@ -312,8 +314,8 @@ const WalkState = struct {
     }
 };
 
-fn convertLogValueBounded(arena: Allocator, v: c.LogValue, depth: usize, walk: *WalkState) Allocator.Error!o11y.LogValue {
-    if (walk.remaining == 0) return .empty;
+fn convertLogValueBounded(arena: Allocator, v: c.LogValue, depth: usize, walk: *WalkState) Allocator.Error!?o11y.LogValue {
+    if (walk.remaining == 0) return null;
     walk.remaining -= 1;
     return switch (v.kind) {
         .empty => .empty,
@@ -334,50 +336,60 @@ fn convertLogValueBounded(arena: Allocator, v: c.LogValue, depth: usize, walk: *
             break :blk .{ .bytes = try arena.dupe(u8, bv.data.?[0..bv.len]) };
         },
         .array => blk: {
-            if (depth >= max_composite_depth) break :blk .empty;
+            // Match zig/src/log_pipeline.zig and zig/src/policy_runtime.zig depth >= max_composite_depth.
+            if (depth >= o11y.pii.max_depth) break :blk null;
             const av = v.value.array_val;
             if (av.len == 0 or av.items == null) break :blk .{ .array = &.{} };
-            if (!walk.enter(@intFromPtr(av.items.?))) break :blk .empty;
+            if (!walk.enter(@intFromPtr(av.items.?))) break :blk null;
             defer walk.leave();
-            const cap = @min(av.len, walk.remaining);
-            const out = try arena.alloc(o11y.LogValue, cap);
-            for (av.items.?[0..cap], out) |item, *dst| {
-                dst.* = try convertLogValueBounded(arena, item, depth + 1, walk);
+            var kept: std.ArrayList(o11y.LogValue) = .empty;
+            for (av.items.?[0..av.len]) |item| {
+                if (walk.remaining == 0) break;
+                if (try convertLogValueBounded(arena, item, depth + 1, walk)) |val| {
+                    try kept.append(arena, val);
+                }
             }
-            break :blk .{ .array = out };
+            if (kept.items.len == 0) break :blk null;
+            break :blk .{ .array = kept.items };
         },
         .map => blk: {
-            if (depth >= max_composite_depth) break :blk .empty;
+            // Match zig/src/log_pipeline.zig and zig/src/policy_runtime.zig depth >= max_composite_depth.
+            if (depth >= o11y.pii.max_depth) break :blk null;
             const mv = v.value.map_val;
             if (mv.len == 0 or mv.items == null) break :blk .{ .map = &.{} };
-            if (!walk.enter(@intFromPtr(mv.items.?))) break :blk .empty;
+            if (!walk.enter(@intFromPtr(mv.items.?))) break :blk null;
             defer walk.leave();
-            const cap = @min(mv.len, walk.remaining);
-            const out = try arena.alloc(o11y.LogAttribute, cap);
-            for (mv.items.?[0..cap], out) |src, *dst| {
-                dst.* = .{
-                    .key = try arena.dupe(u8, rt.cStrOrEmpty(src.key)),
-                    .value = try convertLogValueBounded(arena, src.value, depth + 1, walk),
-                };
+            var kept: std.ArrayList(o11y.LogAttribute) = .empty;
+            for (mv.items.?[0..mv.len]) |src| {
+                if (walk.remaining == 0) break;
+                if (try convertLogValueBounded(arena, src.value, depth + 1, walk)) |val| {
+                    try kept.append(arena, .{
+                        .key = try arena.dupe(u8, rt.cStrOrEmpty(src.key)),
+                        .value = val,
+                    });
+                }
             }
-            break :blk .{ .map = out };
+            if (kept.items.len == 0) break :blk null;
+            break :blk .{ .map = kept.items };
         },
-        _ => .empty,
+        _ => null,
     };
 }
 
 pub fn convertLogAttrs(arena: Allocator, raw: ?[*]const c.LogAttr, len: usize) Allocator.Error![]o11y.LogAttribute {
     if (len == 0) return &.{};
     const ptr = raw orelse return &.{};
-    var walk: WalkState = .{ .remaining = composite_walk_budget * 16 };
-    const out = try arena.alloc(o11y.LogAttribute, len);
-    for (ptr[0..len], out) |src, *dst| {
-        dst.* = .{
-            .key = try arena.dupe(u8, rt.cStrOrEmpty(src.key)),
-            .value = try convertLogValueBounded(arena, src.value, 0, &walk),
-        };
+    var out = try std.ArrayList(o11y.LogAttribute).initCapacity(arena, len);
+    for (ptr[0..len]) |src| {
+        var walk: WalkState = .{ .remaining = composite_walk_budget };
+        if (try convertLogValueBounded(arena, src.value, 0, &walk)) |val| {
+            out.appendAssumeCapacity(.{
+                .key = try arena.dupe(u8, rt.cStrOrEmpty(src.key)),
+                .value = val,
+            });
+        }
     }
-    return out;
+    return out.items;
 }
 
 pub fn zigLogValueToC(arena: Allocator, v: o11y.LogValue, depth: usize) Allocator.Error!c.LogValue {
@@ -436,6 +448,52 @@ pub const ConsoleWriterTrampoline = struct {
     }
 };
 
+pub const AttrReplacementHandle = struct {
+    arena: Allocator,
+    key: []const u8 = "",
+    has_key: bool = false,
+    key_failed: bool = false,
+    value: o11y.LogValue = .empty,
+    has_value: bool = false,
+    val_failed: bool = false,
+};
+
+export fn o11y_attr_replacement_set_key(dst: ?*AttrReplacementHandle, key: ?[*:0]const u8) c.Err {
+    const h = dst orelse return .invalid_argument;
+    const raw = key orelse {
+        h.key_failed = true;
+        return .invalid_argument;
+    };
+    const duped = h.arena.dupe(u8, std.mem.span(raw)) catch {
+        h.key_failed = true;
+        return .out_of_memory;
+    };
+    h.key = duped;
+    h.has_key = true;
+    h.key_failed = false;
+    return .ok;
+}
+
+export fn o11y_attr_replacement_set_value(dst: ?*AttrReplacementHandle, value: ?*const c.LogValue) c.Err {
+    const h = dst orelse return .invalid_argument;
+    const vp = value orelse {
+        h.val_failed = true;
+        return .invalid_argument;
+    };
+    var walk: WalkState = .{ .remaining = composite_walk_budget };
+    const converted = (convertLogValueBounded(h.arena, vp.*, 0, &walk) catch {
+        h.val_failed = true;
+        return .out_of_memory;
+    }) orelse {
+        h.val_failed = true;
+        return .invalid_argument;
+    };
+    h.value = converted;
+    h.has_value = true;
+    h.val_failed = false;
+    return .ok;
+}
+
 pub const AttrReplacerTrampoline = struct {
     func: c.AttrReplacerFn,
     userdata: ?*anyopaque,
@@ -454,46 +512,27 @@ pub const AttrReplacerTrampoline = struct {
             c_groups_ptr = grp_arr.ptr;
         }
 
-        var out_key_buf: [256]u8 = @splat(0);
-        var out_val_buf: [1024]u8 = @splat(0);
-        var out_val: c.LogValue = .{ .kind = .empty, .value = .{ .int_val = 0 } };
-        var replace_val: bool = false;
-
+        var repl: AttrReplacementHandle = .{ .arena = arena };
         const keep = self.func(
             self.userdata,
             c_groups_ptr,
             groups.len,
             key_z.ptr,
             &c_val,
-            &out_key_buf,
-            out_key_buf.len,
-            &out_val_buf,
-            out_val_buf.len,
-            &out_val,
-            &replace_val,
+            &repl,
         );
-        if (!keep) return null;
+        if (!keep or repl.key_failed or repl.val_failed) return null;
 
         var res = attr;
-        if (out_key_buf[0] != 0) {
-            const new_k = std.mem.sliceTo(&out_key_buf, 0);
-            res.key = arena.dupe(u8, new_k) catch return null;
-        }
-        if (replace_val) {
-            if (out_val.kind != .empty) {
-                var walk: WalkState = .{ .remaining = composite_walk_budget * 16 };
-                res.value = convertLogValueBounded(arena, out_val, 0, &walk) catch return null;
-            } else {
-                const new_v = std.mem.sliceTo(&out_val_buf, 0);
-                res.value = .{ .string = arena.dupe(u8, new_v) catch return null };
-            }
-        }
+        if (repl.has_key) res.key = repl.key;
+        if (repl.has_value) res.value = repl.value;
         return res;
     }
 };
 
 pub const LogSinkTrampoline = struct {
     sink: c.LogSink,
+    allocator: Allocator = gpa,
 
     pub const vtable: o11y.LogSink.VTable = .{
         .enabled = enabledFn,
@@ -509,15 +548,15 @@ pub const LogSinkTrampoline = struct {
     fn emitFn(ptr: *anyopaque, _: o11y.Context, rec: o11y.SinkRecord) o11y.LogSink.SinkError!void {
         const self: *LogSinkTrampoline = @ptrCast(@alignCast(ptr));
         const f = self.sink.emit orelse return;
-        var arena_state: std.heap.ArenaAllocator = .init(gpa);
+        var arena_state: std.heap.ArenaAllocator = .init(self.allocator);
         defer arena_state.deinit();
         const arena = arena_state.allocator();
-        const msg_z = rt.dupeZ(arena, rec.message) catch return;
+        const msg_z = rt.dupeZ(arena, rec.message) catch return error.SinkRejected;
         const ts_z: ?[*:0]const u8 = if (rec.span_context.trace_state.header.len > 0)
-            (rt.dupeZ(arena, rec.span_context.trace_state.header) catch null)
+            (rt.dupeZ(arena, rec.span_context.trace_state.header) catch return error.SinkRejected)
         else
             null;
-        const c_attrs = zigLogAttrsToC(arena, rec.attributes, 0) catch return;
+        const c_attrs = zigLogAttrsToC(arena, rec.attributes, 0) catch return error.SinkRejected;
         const rc = f(
             self.sink.userdata,
             rec.time_unix_nano,
@@ -586,16 +625,19 @@ const EngineCarrierBridge = struct {
         return .{ .userdata = self, .get = get, .set = set };
     }
 
-    fn get(userdata: ?*anyopaque, key: [*:0]const u8) callconv(.c) ?[*:0]const u8 {
+    fn get(userdata: ?*anyopaque, key: ?[*:0]const u8) callconv(.c) ?[*:0]const u8 {
         const self: *EngineCarrierBridge = @ptrCast(@alignCast(userdata orelse return null));
-        const value = self.carrier.get(std.mem.span(key)) orelse return null;
+        const k = rt.cStrOpt(key) orelse return null;
+        const value = self.carrier.get(k) orelse return null;
         const z = rt.dupeZ(self.arena, value) catch return null;
         return z.ptr;
     }
 
-    fn set(userdata: ?*anyopaque, key: [*:0]const u8, value: [*:0]const u8) callconv(.c) void {
+    fn set(userdata: ?*anyopaque, key: ?[*:0]const u8, value: ?[*:0]const u8) callconv(.c) void {
         const self: *EngineCarrierBridge = @ptrCast(@alignCast(userdata orelse return));
-        self.carrier.set(std.mem.span(key), std.mem.span(value));
+        const k = rt.cStrOpt(key) orelse return;
+        const v = rt.cStrOpt(value) orelse return;
+        self.carrier.set(k, v);
     }
 };
 
@@ -733,10 +775,18 @@ pub fn buildPropagators(
     if (len > 0) {
         const defs = raw.?[0..len];
         list = try arena.alloc(o11y.Propagator, defs.len);
+        var has_any_field = false;
+        var first_custom: ?*CustomPropagator = null;
         for (defs, list) |def, *dst| {
             dst.* = switch (def.kind) {
-                .trace_context => o11y.TraceContextPropagator.propagator,
-                .baggage => o11y.BaggagePropagator.propagator,
+                .trace_context => blk: {
+                    has_any_field = true;
+                    break :blk o11y.TraceContextPropagator.propagator;
+                },
+                .baggage => blk: {
+                    has_any_field = true;
+                    break :blk o11y.BaggagePropagator.propagator;
+                },
                 .custom => blk: {
                     if (def.inject == null and def.extract == null) {
                         return invalidOption(diag_out, "a custom propagator needs an inject or an extract callback");
@@ -745,13 +795,24 @@ pub fn buildPropagators(
                         return invalidOption(diag_out, "custom propagator fields pointer must not be null when fields_len > 0");
                     }
                     const names = try arena.alloc([]const u8, def.fields_len);
-                    for (names, 0..) |*name, i| name.* = try arena.dupe(u8, rt.cStrOrEmpty(def.fields.?[i]));
+                    for (names, 0..) |*name, i| {
+                        name.* = try arena.dupe(u8, rt.cStrOrEmpty(def.fields.?[i]));
+                        if (name.*.len > 0) has_any_field = true;
+                    }
                     const custom = try arena.create(CustomPropagator);
                     custom.* = .{ .def = def, .field_names = names };
+                    if (first_custom == null) first_custom = custom;
                     break :blk custom.propagator();
                 },
                 _ => return invalidOption(diag_out, "unknown propagator kind"),
             };
+        }
+        if (!has_any_field) {
+            if (first_custom) |custom| {
+                const fallback = try arena.alloc([]const u8, 1);
+                fallback[0] = "custom";
+                custom.field_names = fallback;
+            }
         }
     } else if (!env.isHermetic()) {
         if (env.get("OTEL_PROPAGATORS")) |raw_env| {
@@ -1177,8 +1238,13 @@ fn buildSdk(is_setup: bool, opts: c.Options, diag_out: ?*c.Diagnostic) (o11y.Set
         .emit_process_runtime = false,
     };
 
-    const io = rt.acquireIo();
-    errdefer rt.releaseIo();
+    const io_kind: IoKind = if (opts.env_mode == .hermetic) .hermetic else .networked;
+    const io = if (io_kind == .hermetic) rt.acquireHermeticIo() else rt.acquireIo();
+    errdefer switch (io_kind) {
+        .hermetic => rt.releaseHermeticIo(),
+        .networked => rt.releaseIo(),
+        .none => {},
+    };
     const telemetry = (if (is_setup) o11y.setup(gpa, io, zig_opts) else o11y.init(gpa, io, zig_opts)) catch |err| {
         writeDiagnostic(diag_out, &zig_diag);
         return err;
@@ -1190,6 +1256,7 @@ fn buildSdk(is_setup: bool, opts: c.Options, diag_out: ?*c.Diagnostic) (o11y.Set
     handle.* = .{
         .telemetry = telemetry,
         .owns_telemetry = true,
+        .io_kind = io_kind,
         .arena = arena_state,
         .effective_config_z = eff_z.ptr,
     };
@@ -1222,6 +1289,8 @@ export fn o11y_shutdown(sdk: ?*SdkHandle, timeout_ms: u64, out_report: ?*c.Shutd
     const h = sdk orelse return .ok;
     const timeout: ?Io.Duration = if (timeout_ms == 0) null else .fromMilliseconds(@intCast(@min(timeout_ms, std.math.maxInt(i64))));
     const report = h.telemetry.shutdown(timeout);
+    const callbacks = detachObservableCallbacks(h.telemetry.meterProvider());
+    freeObservableCallbacks(callbacks);
     return fillReport(report, out_report);
 }
 
@@ -1241,9 +1310,14 @@ export fn o11y_destroy(sdk: ?*SdkHandle) void {
     const callbacks = detachObservableCallbacks(h.telemetry.meterProvider());
     h.telemetry.deinit();
     freeObservableCallbacks(callbacks);
+    const io_kind = h.io_kind;
     h.arena.deinit();
     gpa.destroy(h);
-    rt.releaseIo();
+    switch (io_kind) {
+        .hermetic => rt.releaseHermeticIo(),
+        .networked => rt.releaseIo(),
+        .none => {},
+    }
 }
 
 export fn o11y_effective_config(sdk: ?*const SdkHandle) [*:0]const u8 {
@@ -1296,9 +1370,7 @@ export fn o11y_shutdown_on_signals(sdk: ?*SdkHandle, opts_ptr: ?*const c.SignalO
         sigs = sig_buf[0..opts.signals_len];
     }
 
-    const io = rt.acquireIo();
-    defer rt.releaseIo();
-    const report = o11y.shutdownOnSignals(io, h.telemetry, .{
+    const report = o11y.shutdownOnSignals(h.telemetry.io, h.telemetry, .{
         .timeout = if (opts.timeout_ms == 0) .fromSeconds(5) else .fromMilliseconds(@intCast(@min(opts.timeout_ms, std.math.maxInt(i64)))),
         .before_shutdown = before,
         .signals = sigs,
@@ -1979,12 +2051,8 @@ export fn o11y_event(
 }
 
 export fn o11y_record_create() ?*RecordHandle {
-    const io = rt.acquireIo();
-    const h = gpa.create(RecordHandle) catch {
-        rt.releaseIo();
-        return null;
-    };
-    h.* = .{ .rec = o11y.Record.init(gpa, io) };
+    const h = gpa.create(RecordHandle) catch return null;
+    h.* = .{ .rec = o11y.Record.init(gpa, rt.syncIo()) };
     return h;
 }
 
@@ -1992,7 +2060,6 @@ export fn o11y_record_destroy(rec: ?*RecordHandle) void {
     const h = rec orelse return;
     h.rec.deinit();
     gpa.destroy(h);
-    rt.releaseIo();
 }
 
 export fn o11y_record_set_attrs(rec: ?*RecordHandle, attrs: ?[*]const c.LogAttr, attrs_len: usize) void {
@@ -2159,6 +2226,7 @@ export fn o11y_detached_marshal(carrier: ?*const DetachedCarrierHandle, out_text
 export fn o11y_detached_unmarshal(text: ?[*]const u8, text_len: usize, out_carrier: ?*?*DetachedCarrierHandle) c.Err {
     const out = out_carrier orelse return .invalid_argument;
     out.* = null;
+    if (text_len > 0 and text == null) return .invalid_argument;
     const slice: []const u8 = if (text) |p| p[0..text_len] else "";
     const parsed = o11y.detached.Carrier.unmarshalText(gpa, slice) catch |err| return switch (err) {
         error.InvalidCarrier => .invalid_carrier,
@@ -2321,11 +2389,20 @@ export fn o11y_derive_instance_id(
 export fn o11y_sanitize_endpoint(raw: ?[*]const u8, raw_len: usize, out: ?*?[*:0]u8) c.Err {
     const dst = out orelse return .invalid_argument;
     dst.* = null;
+    if (raw_len > 0 and raw == null) return .invalid_argument;
     const slice: []const u8 = if (raw) |p| p[0..raw_len] else "";
     const sanitized = o11y.endpoint.sanitize(gpa, slice) catch return .out_of_memory;
     defer gpa.free(sanitized);
     dst.* = rt.allocCString(sanitized) orelse return .out_of_memory;
     return .ok;
+}
+
+fn piiKeyLessThan(keys: []const []const u8, a: usize, b: usize) bool {
+    return switch (std.mem.order(u8, keys[a], keys[b])) {
+        .lt => true,
+        .gt => false,
+        .eq => a < b,
+    };
 }
 
 fn logValueToPiiValue(arena: Allocator, v: c.LogValue, depth: usize, walk: *WalkState) Allocator.Error!o11y.pii.Value {
@@ -2353,10 +2430,12 @@ fn logValueToPiiValue(arena: Allocator, v: c.LogValue, depth: usize, walk: *Walk
             if (av.len == 0 or av.items == null) break :blk .{ .array = &.{} };
             if (!walk.enter(@intFromPtr(av.items.?))) break :blk .{ .string = o11y.pii.truncated };
             defer walk.leave();
-            const cap = @min(av.len, walk.remaining + 1);
-            const out = try arena.alloc(o11y.pii.Value, cap);
-            for (av.items.?[0..cap], out) |item, *dst| {
-                dst.* = try logValueToPiiValue(arena, item, depth + 1, walk);
+            const out = try arena.alloc(o11y.pii.Value, av.len);
+            for (av.items.?[0..av.len], out) |item, *dst| {
+                dst.* = if (depth + 1 > o11y.pii.max_depth or walk.remaining == 0)
+                    .{ .string = o11y.pii.truncated }
+                else
+                    try logValueToPiiValue(arena, item, depth + 1, walk);
             }
             break :blk .{ .array = out };
         },
@@ -2365,12 +2444,23 @@ fn logValueToPiiValue(arena: Allocator, v: c.LogValue, depth: usize, walk: *Walk
             if (mv.len == 0 or mv.items == null) break :blk .{ .map = &.{} };
             if (!walk.enter(@intFromPtr(mv.items.?))) break :blk .{ .string = o11y.pii.truncated };
             defer walk.leave();
-            const cap = @min(mv.len, walk.remaining + 1);
-            const out = try arena.alloc(o11y.pii.Member, cap);
-            for (mv.items.?[0..cap], out) |item, *dst| {
+            const items = mv.items.?[0..mv.len];
+            const keys = try arena.alloc([]const u8, mv.len);
+            const order = try arena.alloc(usize, mv.len);
+            for (items, keys, order, 0..) |item, *k, *o, i| {
+                k.* = rt.cStrOrEmpty(item.key);
+                o.* = i;
+            }
+            std.mem.sort(usize, order, keys, piiKeyLessThan);
+
+            const out = try arena.alloc(o11y.pii.Member, mv.len);
+            for (order, out) |idx, *dst| {
                 dst.* = .{
-                    .key = rt.cStrOrEmpty(item.key),
-                    .value = try logValueToPiiValue(arena, item.value, depth + 1, walk),
+                    .key = keys[idx],
+                    .value = if (depth + 1 > o11y.pii.max_depth or walk.remaining == 0)
+                        .{ .string = o11y.pii.truncated }
+                    else
+                        try logValueToPiiValue(arena, items[idx].value, depth + 1, walk),
                 };
             }
             break :blk .{ .map = out };
@@ -2393,7 +2483,7 @@ export fn o11y_pii_hash_value(
 
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
     defer arena_state.deinit();
-    var walk: WalkState = .{ .remaining = o11y.pii.walk_budget * 16 };
+    var walk: WalkState = .{ .remaining = o11y.pii.walk_budget };
     const pv = logValueToPiiValue(arena_state.allocator(), vp.*, 0, &walk) catch return .out_of_memory;
     const canon = o11y.pii.canonical(gpa, pv) catch return .out_of_memory;
     defer gpa.free(canon);

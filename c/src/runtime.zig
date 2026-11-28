@@ -16,6 +16,71 @@ var io_mutex: Mutex = .{};
 var io_refcount: usize = 0;
 var io_threaded: Io.Threaded = undefined;
 
+var hermetic_io_mutex: Mutex = .{};
+var hermetic_io_refcount: usize = 0;
+var hermetic_io_threaded: Io.Threaded = undefined;
+
+const have_sigaction = builtin.os.tag != .windows and std.posix.Sigaction != void;
+const have_sig_io = have_sigaction and @hasField(std.posix.SIG, "IO");
+const have_sig_pipe = have_sigaction and builtin.os.tag != .linux and @hasField(std.posix.SIG, "PIPE");
+
+var installed_sig_io: bool = false;
+var old_sig_io: if (have_sig_io) std.posix.Sigaction else void = undefined;
+var installed_sig_pipe: bool = false;
+var old_sig_pipe: if (have_sig_pipe) std.posix.Sigaction else void = undefined;
+
+fn noOpSigHandler(_: std.posix.SIG) callconv(.c) void {}
+
+fn isDefaultHandler(act: std.posix.Sigaction) bool {
+    return (act.flags & std.posix.SA.SIGINFO) == 0 and act.handler.handler == std.posix.SIG.DFL;
+}
+
+fn isOurHandler(act: std.posix.Sigaction) bool {
+    return (act.flags & std.posix.SA.SIGINFO) == 0 and
+        act.handler.handler == @as(?std.posix.Sigaction.handler_fn, noOpSigHandler);
+}
+
+fn initNoSignalThreaded() Io.Threaded {
+    var t: Io.Threaded = .init_single_threaded;
+    const cpu_count = std.Thread.getCpuCount();
+    t.allocator = gpa;
+    t.async_limit = if (cpu_count) |n| (if (n > 1) .limited(n - 1) else .nothing) else |_| .nothing;
+    t.concurrent_limit = .unlimited;
+    t.cpu_count_error = if (cpu_count) |_| null else |e| e;
+    return t;
+}
+
+/// Returns a global synchronous `std.Io` handle backed by OS futex/pthread locks
+/// with no worker threads and no signal mutations.
+pub fn syncIo() Io {
+    return Io.Threaded.global_single_threaded.io();
+}
+
+/// Acquires a reference to the signal-free hermetic `std.Io` runtime used by
+/// `O11Y_ENV_HERMETIC` SDKs and the hermetic test recorder. Never touches POSIX
+/// signal handlers.
+pub fn acquireHermeticIo() Io {
+    hermetic_io_mutex.lock();
+    defer hermetic_io_mutex.unlock();
+    if (hermetic_io_refcount == 0) {
+        hermetic_io_threaded = initNoSignalThreaded();
+    }
+    hermetic_io_refcount += 1;
+    return hermetic_io_threaded.io();
+}
+
+/// Releases a reference to the hermetic `std.Io` runtime. When the last
+/// hermetic handle is destroyed, waits for internal worker threads to finish.
+pub fn releaseHermeticIo() void {
+    hermetic_io_mutex.lock();
+    defer hermetic_io_mutex.unlock();
+    if (hermetic_io_refcount == 0) return;
+    hermetic_io_refcount -= 1;
+    if (hermetic_io_refcount == 0) {
+        hermetic_io_threaded.deinit();
+    }
+}
+
 /// Thread-safe mutex usable before `acquireIo` initializes `std.Io.Threaded`.
 pub const Mutex = struct {
     inner: if (builtin.os.tag == .windows)
@@ -45,21 +110,47 @@ pub const Mutex = struct {
     }
 };
 
-/// Acquires a reference to the shared `std.Io` runtime, initializing it on
-/// the first live handle. Every `acquireIo` must be paired with `releaseIo`.
+/// Acquires a reference to the shared networked `std.Io` runtime, initializing
+/// it on the first live handle. Every `acquireIo` must be paired with `releaseIo`.
+///
+/// Only touches POSIX signal dispositions when `SIG_DFL` is currently installed
+/// (`SIGIO` on POSIX for syscall cancellation, and `SIGPIPE` on non-Linux
+/// POSIX targets). On Linux `std.Io.Threaded` uses `MSG_NOSIGNAL`, so `SIGPIPE`
+/// is left untouched.
 pub fn acquireIo() Io {
     io_mutex.lock();
     defer io_mutex.unlock();
     if (io_refcount == 0) {
-        io_threaded = .init(gpa, .{});
+        io_threaded = initNoSignalThreaded();
+        if (have_sig_io or have_sig_pipe) {
+            const act: std.posix.Sigaction = .{
+                .handler = .{ .handler = noOpSigHandler },
+                .mask = std.posix.sigemptyset(),
+                .flags = 0,
+            };
+            if (have_sig_io) {
+                std.posix.sigaction(.IO, null, &old_sig_io);
+                if (isDefaultHandler(old_sig_io)) {
+                    std.posix.sigaction(.IO, &act, null);
+                    installed_sig_io = true;
+                }
+            }
+            if (have_sig_pipe) {
+                std.posix.sigaction(.PIPE, null, &old_sig_pipe);
+                if (isDefaultHandler(old_sig_pipe)) {
+                    std.posix.sigaction(.PIPE, &act, null);
+                    installed_sig_pipe = true;
+                }
+            }
+        }
     }
     io_refcount += 1;
     return io_threaded.io();
 }
 
-/// Releases a reference to the shared `std.Io` runtime. When the last handle
-/// is destroyed, worker threads are joined and prior POSIX signal handlers
-/// installed by `Io.Threaded.init` are restored.
+/// Releases a reference to the shared networked `std.Io` runtime. When the
+/// last handle is destroyed, waits for internal worker threads to finish and
+/// restores only handlers installed by `acquireIo` that remain unchanged.
 pub fn releaseIo() void {
     io_mutex.lock();
     defer io_mutex.unlock();
@@ -67,6 +158,26 @@ pub fn releaseIo() void {
     io_refcount -= 1;
     if (io_refcount == 0) {
         io_threaded.deinit();
+        if (have_sig_io) {
+            if (installed_sig_io) {
+                var cur: std.posix.Sigaction = undefined;
+                std.posix.sigaction(.IO, null, &cur);
+                if (isOurHandler(cur)) {
+                    std.posix.sigaction(.IO, &old_sig_io, null);
+                }
+                installed_sig_io = false;
+            }
+        }
+        if (have_sig_pipe) {
+            if (installed_sig_pipe) {
+                var cur: std.posix.Sigaction = undefined;
+                std.posix.sigaction(.PIPE, null, &cur);
+                if (isOurHandler(cur)) {
+                    std.posix.sigaction(.PIPE, &old_sig_pipe, null);
+                }
+                installed_sig_pipe = false;
+            }
+        }
     }
 }
 

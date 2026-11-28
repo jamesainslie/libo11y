@@ -313,6 +313,19 @@ pub fn build(b: *std.Build) !void {
     const layout_tests = b.addTest(.{ .name = "abi-layout", .root_module = layout_mod });
     test_step.dependOn(&b.addRunArtifact(layout_tests).step);
 
+    const abi_unit_mod = b.createModule(.{
+        .root_source_file = b.path("src/abi_unit_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "o11y", .module = o11y_mod },
+            .{ .name = "c_build_options", .module = build_options_mod },
+        },
+    });
+    const abi_unit_tests = b.addTest(.{ .name = "abi-unit", .root_module = abi_unit_mod });
+    test_step.dependOn(&b.addRunArtifact(abi_unit_tests).step);
+
     const conformance_dir = b.option(
         []const u8,
         "conformance-dir",

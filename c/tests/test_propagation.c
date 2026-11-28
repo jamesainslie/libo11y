@@ -397,6 +397,7 @@ static void test_context_outlives_its_parent_and_its_span(void) {
     ASSERT_NOT_NULL(log);
     o11y_span_context_t logged = o11y_test_log_span_context(log);
     ASSERT_TRUE(memcmp(child.span_id.bytes, logged.span_id.bytes, 8) == 0);
+    ASSERT_EQ_STR("vendor=abc", logged.trace_state);
 
     o11y_ctx_destroy(with_bag);
     o11y_test_destroy(rec);
@@ -561,6 +562,67 @@ static void test_otel_propagators_env(void) {
     o11y_destroy(override_sdk);
 }
 
+struct null_carrier_state {
+    int calls;
+    int non_null_gets;
+};
+
+static void null_carrier_inject(void *userdata, const o11y_ctx_t *ctx, const o11y_carrier_t *carrier) {
+    (void)ctx;
+    struct null_carrier_state *st = (struct null_carrier_state *)userdata;
+    st->calls++;
+    if (carrier->get(carrier->userdata, NULL) != NULL) st->non_null_gets++;
+    carrier->set(carrier->userdata, NULL, "ignored");
+    carrier->set(carrier->userdata, "k", NULL);
+}
+
+static o11y_ctx_t *null_carrier_extract(void *userdata, const o11y_ctx_t *parent, const o11y_carrier_t *carrier) {
+    (void)parent;
+    struct null_carrier_state *st = (struct null_carrier_state *)userdata;
+    st->calls++;
+    if (carrier->get(carrier->userdata, NULL) != NULL) st->non_null_gets++;
+    carrier->set(carrier->userdata, NULL, "ignored");
+    carrier->set(carrier->userdata, "k", NULL);
+    return NULL;
+}
+
+static void test_fieldless_custom_propagator_and_null_carrier_args(void) {
+    struct null_carrier_state st = {0};
+    o11y_propagator_t custom_only[] = {
+        {
+            .kind = O11Y_PROPAGATOR_CUSTOM,
+            .userdata = &st,
+            .inject = null_carrier_inject,
+            .extract = null_carrier_extract,
+            .fields = NULL,
+            .fields_len = 0,
+        },
+    };
+    o11y_options_t opts = o11y_options_default();
+    opts.env_mode = O11Y_ENV_HERMETIC;
+    opts.service_name = "custom-prop";
+    opts.environment = O11Y_ENVIRONMENT_TEST;
+    opts.console_enabled = false;
+    opts.runtime_metrics = false;
+    opts.propagators = custom_only;
+    opts.propagators_len = 1;
+
+    o11y_sdk_t *sdk = NULL;
+    ASSERT_EQ_ERR(O11Y_OK, o11y_init(&opts, &sdk, NULL));
+    ASSERT_NOT_NULL(sdk);
+    ASSERT_STR_CONTAINS(o11y_effective_config(sdk), "o11y.config.propagators=custom");
+
+    struct header_map hdrs = {0};
+    o11y_carrier_t carrier = { .userdata = &hdrs, .get = map_get, .set = map_set };
+    o11y_inject(sdk, NULL, &carrier);
+    o11y_ctx_t *ext = o11y_extract(sdk, NULL, &carrier);
+    o11y_ctx_destroy(ext);
+    ASSERT_EQ_INT(2, st.calls);
+    ASSERT_EQ_INT(0, st.non_null_gets);
+    ASSERT_EQ_SIZE(0, hdrs.len);
+    o11y_destroy(sdk);
+}
+
 int main(void) {
     RUN_TEST(test_w3c_inject_extract_and_baggage_egress_filter);
     RUN_TEST(test_baggage_egress_filter_is_per_sdk);
@@ -571,5 +633,6 @@ int main(void) {
     RUN_TEST(test_proc_env_propagation);
     RUN_TEST(test_carrier_get_reused_buffer_and_baggage_validation);
     RUN_TEST(test_otel_propagators_env);
+    RUN_TEST(test_fieldless_custom_propagator_and_null_carrier_args);
     TEST_SUMMARY("test_propagation");
 }

@@ -31,11 +31,19 @@
  * destroy function. Callbacks run on the thread that triggers them, which
  * for exporter errors and observable instruments is a libo11y thread.
  *
- * Signals. While at least one SDK, wide-event record, or test handle is live,
- * libo11y keeps an internal I/O thread pool whose POSIX initialization sets
- * no-op handlers for SIGIO and SIGPIPE. When the last handle is destroyed,
- * libo11y joins those threads and restores the prior SIGIO and SIGPIPE
- * dispositions.
+ * Signals. Hermetic handles (O11Y_ENV_HERMETIC SDKs, o11y_record_create, and
+ * o11y_test_start) never install or alter POSIX signal handlers. While at
+ * least one non-hermetic handle (networked SDK or test OTLP receiver) is live,
+ * libo11y keeps an internal I/O thread pool. If the host left SIGIO at SIG_DFL
+ * (or SIGPIPE at SIG_DFL on non-Linux POSIX targets), libo11y installs an
+ * internal no-op handler and restores the prior disposition only if still
+ * unchanged when the last networked handle is destroyed. Host handlers already
+ * installed or changed while live are preserved.
+ *
+ * Slices. Fallible (o11y_err_t) functions reject a non-zero length paired with
+ * a NULL pointer with O11Y_ERR_INVALID_ARGUMENT. Hot-path void or handle
+ * functions (attributes, links, histogram buckets, o11y_redact_mask) treat a
+ * NULL pointer as empty.
  */
 
 #ifndef O11Y_H
@@ -562,18 +570,35 @@ typedef struct o11y_histogram_buckets {
     size_t boundaries_len;
 } o11y_histogram_buckets_t;
 
+/** Opaque replacement builder passed to o11y_attr_replacer_fn. Valid only during the callback. */
+typedef struct o11y_attr_replacement o11y_attr_replacement_t;
+
+/**
+ * Sets the replacement attribute key inside o11y_attr_replacer_fn, copying key
+ * immediately into pipeline storage before returning. Returns O11Y_OK,
+ * O11Y_ERR_INVALID_ARGUMENT on NULL inputs, or O11Y_ERR_OUT_OF_MEMORY.
+ */
+o11y_err_t o11y_attr_replacement_set_key(o11y_attr_replacement_t *dst, const char *key);
+
+/**
+ * Sets the replacement attribute value inside o11y_attr_replacer_fn, deep-copying
+ * strings, bytes, arrays, and maps immediately into pipeline storage before
+ * returning. Returns O11Y_OK, O11Y_ERR_INVALID_ARGUMENT on NULL or cyclic inputs,
+ * or O11Y_ERR_OUT_OF_MEMORY.
+ */
+o11y_err_t o11y_attr_replacement_set_value(o11y_attr_replacement_t *dst, const o11y_log_value_t *value);
+
 /**
  * Attribute replacer callback invoked once per leaf log attribute before
  * per-leg sensitivity classification.
  *
  * To drop the attribute, return false.
- * To keep unchanged, leave out_key_buf[0] == '\0' and *out_replace_val = false
- * and return true.
- * To rename the key, write NUL-terminated text into out_key_buf (max 255 bytes).
- * To replace the value, set *out_replace_val = true and either write
- * NUL-terminated text into out_str_val_buf (leaving out_val->kind as
- * O11Y_LOG_VAL_EMPTY) or populate *out_val with a replacement log value
- * valid for the duration of the callback.
+ * To keep unchanged, return true without calling either setter on
+ * out_replacement.
+ * To rename the key or replace the value, call o11y_attr_replacement_set_key
+ * and/or o11y_attr_replacement_set_value with out_replacement before returning
+ * true. All data is deep-copied synchronously during the setter call. If a
+ * setter fails, the attribute is dropped even if the callback returns true.
  */
 typedef bool (*o11y_attr_replacer_fn)(
     void *userdata,
@@ -581,12 +606,7 @@ typedef bool (*o11y_attr_replacer_fn)(
     size_t groups_len,
     const char *key,
     const o11y_log_value_t *value,
-    char *out_key_buf,
-    size_t out_key_cap,
-    char *out_str_val_buf,
-    size_t out_str_val_cap,
-    o11y_log_value_t *out_val,
-    bool *out_replace_val);
+    o11y_attr_replacement_t *out_replacement);
 
 /** Extra log sink callbacks (post-classification, correlated). */
 typedef struct o11y_log_sink {

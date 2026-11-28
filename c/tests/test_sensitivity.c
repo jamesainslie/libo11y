@@ -1,3 +1,9 @@
+#define _DARWIN_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+
+#include <stdlib.h>
+#include <unistd.h>
+
 #include "o11y/test.h"
 #include "test_framework.h"
 
@@ -219,7 +225,10 @@ static void test_out_params_zeroed_nested_bounds_and_violations_signal(void) {
     o11y_string_free(canon);
 
     /* Nested map classification + file-backed app registry + test_violations strict signal */
-    const char *reg_path = "/tmp/libo11y-c-test-reg.yaml";
+    char reg_dir[] = "/tmp/libo11y-c-test-reg-XXXXXX";
+    ASSERT_NOT_NULL(mkdtemp(reg_dir));
+    char reg_path[512];
+    snprintf(reg_path, sizeof(reg_path), "%s/reg.yaml", reg_dir);
     FILE *rf = fopen(reg_path, "wb");
     ASSERT_NOT_NULL(rf);
     ASSERT_TRUE(fwrite(APP_REGISTRY_YAML, 1, strlen(APP_REGISTRY_YAML), rf) == strlen(APP_REGISTRY_YAML));
@@ -255,6 +264,8 @@ static void test_out_params_zeroed_nested_bounds_and_violations_signal(void) {
     const o11y_test_log_t *lr = o11y_test_find_log(rec, "nested-and-bounded");
     ASSERT_NOT_NULL(lr);
     ASSERT_TRUE(o11y_test_log_has_attr(lr, "acme"));
+    /* Cycle must fail closed without leaving null/empty attribute in output. */
+    ASSERT_FALSE(o11y_test_log_has_attr(lr, "loop"));
 
     /* Typoed signal name must return 0 rather than matching all signals. */
     ASSERT_TRUE(o11y_test_violations(rec, O11Y_SIGNAL_LOGS, "pii_attribute") >= 1);
@@ -267,8 +278,103 @@ static void test_out_params_zeroed_nested_bounds_and_violations_signal(void) {
     ASSERT_EQ_STR("", o11y_test_console_output(rec, &clen));
     ASSERT_EQ_SIZE(0, clen);
 
+    /* Depth-18 and cyclic maps fail closed without JSON null; depth-16 PII matches o11y_pii_hash_value; depth-20 direct hash matches Go vector. */
+    o11y_log_attr_t deep_chain[20];
+    o11y_log_value_t deep_vals[20];
+    deep_vals[19] = o11y_log_val_str("leaf");
+    for (int d = 19; d >= 0; d--) {
+        deep_chain[d] = (o11y_log_attr_t){ .key = "n", .value = deep_vals[d] };
+        if (d > 0) deep_vals[d - 1] = o11y_log_val_map(&deep_chain[d], 1);
+    }
+    o11y_log_value_t pii_deep20 = o11y_log_val_map(&deep_chain[0], 1);
+    o11y_log_value_t pii_deep16 = o11y_log_val_map(&deep_chain[4], 1);
+    o11y_log_value_t nonpii_deep18 = o11y_log_val_map(&deep_chain[2], 1);
+
+    o11y_log_attr_t cyclic_map_entry[1];
+    cyclic_map_entry[0] = (o11y_log_attr_t){ .key = "self", .value = o11y_log_val_map(cyclic_map_entry, 1) };
+
+    char tok20[45] = {0}, tok16[45] = {0};
+    ASSERT_EQ_ERR(O11Y_OK, o11y_pii_hash_value(&pii_deep20, full_key, sizeof(full_key), NULL, tok20));
+    ASSERT_EQ_STR("hmac-sha256:cbddae48935e0c2a3f1bff53d9e67533", tok20);
+    ASSERT_EQ_ERR(O11Y_OK, o11y_pii_hash_value(&pii_deep16, full_key, sizeof(full_key), NULL, tok16));
+
+    o11y_log_value_t *huge_arr = (o11y_log_value_t *)calloc(3000, sizeof(o11y_log_value_t));
+    ASSERT_NOT_NULL(huge_arr);
+    for (size_t i = 0; i < 3000; i++) huge_arr[i] = o11y_log_val_int((int64_t)i);
+
+    o11y_log_attr_t composite_checks[] = {
+        { .key = "huge_first", .value = o11y_log_val_array(huge_arr, 3000) },
+        { .key = "after_huge", .value = o11y_log_val_str("kept") },
+        { .key = "deep_nonpii", .value = nonpii_deep18 },
+        { .key = "cyclic_nonpii", .value = cyclic[0] },
+        { .key = "cyclic_map_nonpii", .value = o11y_log_val_map(cyclic_map_entry, 1) },
+        { .key = "acme.user.email", .value = pii_deep16 },
+    };
+    o11y_log_info(sdk, NULL, "composite-depth-check", composite_checks, 6);
+    const o11y_test_log_t *dlr = o11y_test_find_log(rec, "composite-depth-check");
+    ASSERT_NOT_NULL(dlr);
+    ASSERT_EQ_STR("kept", o11y_test_log_attr_str(dlr, "after_huge"));
+    ASSERT_FALSE(o11y_test_log_has_attr(dlr, "deep_nonpii"));
+    ASSERT_FALSE(o11y_test_log_has_attr(dlr, "cyclic_nonpii"));
+    ASSERT_FALSE(o11y_test_log_has_attr(dlr, "cyclic_map_nonpii"));
+    ASSERT_EQ_STR(tok16, o11y_test_log_attr_str(dlr, "acme.user.email"));
+    const char *deep_console = o11y_test_console_output(rec, NULL);
+    ASSERT_TRUE(strstr(deep_console, "deep_nonpii") == NULL);
+    ASSERT_TRUE(strstr(deep_console, "cyclic_nonpii") == NULL);
+    ASSERT_TRUE(strstr(deep_console, "cyclic_map_nonpii") == NULL);
+
+    /* Over-depth PII map fails closed without emitting JSON null or a truncated mismatch. */
+    o11y_log_attr_t over_depth_pii[] = {
+        { .key = "acme.user.email", .value = pii_deep20 },
+    };
+    o11y_log_info(sdk, NULL, "pii-over-depth-check", over_depth_pii, 1);
+    const o11y_test_log_t *odlr = o11y_test_find_log(rec, "pii-over-depth-check");
+    ASSERT_NOT_NULL(odlr);
+    ASSERT_FALSE(o11y_test_log_has_attr(odlr, "acme.user.email"));
+    free(huge_arr);
+
     o11y_test_destroy(rec);
-    remove(reg_path);
+    unlink(reg_path);
+    rmdir(reg_dir);
+
+    /* Large container lengths (32,768 vs 32,769) and map key order stability past walk budget. */
+    o11y_log_value_t *arr32k = (o11y_log_value_t *)calloc(32769, sizeof(o11y_log_value_t));
+    ASSERT_NOT_NULL(arr32k);
+    for (size_t i = 0; i < 32769; i++) arr32k[i] = o11y_log_val_str("x");
+    o11y_log_value_t v32768 = o11y_log_val_array(arr32k, 32768);
+    o11y_log_value_t v32769 = o11y_log_val_array(arr32k, 32769);
+    char tok_a[45] = {0}, tok_b[45] = {0};
+    ASSERT_EQ_ERR(O11Y_OK, o11y_pii_hash_value(&v32768, full_key, sizeof(full_key), NULL, tok_a));
+    ASSERT_EQ_ERR(O11Y_OK, o11y_pii_hash_value(&v32769, full_key, sizeof(full_key), NULL, tok_b));
+    ASSERT_TRUE(strcmp(tok_a, tok_b) != 0);
+    free(arr32k);
+
+    const size_t wide_n = 3000;
+    o11y_log_attr_t *fwd = (o11y_log_attr_t *)calloc(wide_n, sizeof(o11y_log_attr_t));
+    o11y_log_attr_t *rev = (o11y_log_attr_t *)calloc(wide_n, sizeof(o11y_log_attr_t));
+    char *key_pool = (char *)calloc(wide_n, 16);
+    ASSERT_NOT_NULL(fwd);
+    ASSERT_NOT_NULL(rev);
+    ASSERT_NOT_NULL(key_pool);
+    for (size_t i = 0; i < wide_n; i++) {
+        char *kb = key_pool + i * 16;
+        snprintf(kb, 16, "k%04zu", i);
+        fwd[i] = o11y_log_kv_int(kb, (int64_t)i);
+        rev[wide_n - 1 - i] = fwd[i];
+    }
+    o11y_log_value_t mfwd = o11y_log_val_map(fwd, wide_n);
+    o11y_log_value_t mrev = o11y_log_val_map(rev, wide_n);
+    char *cfwd = NULL, *crev = NULL;
+    char tfwd[45] = {0}, trev[45] = {0};
+    ASSERT_EQ_ERR(O11Y_OK, o11y_pii_hash_value(&mfwd, full_key, sizeof(full_key), &cfwd, tfwd));
+    ASSERT_EQ_ERR(O11Y_OK, o11y_pii_hash_value(&mrev, full_key, sizeof(full_key), &crev, trev));
+    ASSERT_EQ_STR(cfwd, crev);
+    ASSERT_EQ_STR(tfwd, trev);
+    o11y_string_free(cfwd);
+    o11y_string_free(crev);
+    free(key_pool);
+    free(rev);
+    free(fwd);
 }
 
 int main(void) {

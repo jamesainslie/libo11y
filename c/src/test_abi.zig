@@ -134,8 +134,8 @@ fn startRecorder(opts: c.TestOptions, diag_out: ?*c.Diagnostic) (o11y.SetupError
     else
         "";
 
-    const io = rt.acquireIo();
-    errdefer rt.releaseIo();
+    const io = rt.acquireHermeticIo();
+    errdefer rt.releaseHermeticIo();
 
     var zig_diag: o11y.Diagnostic = .{};
     const rec = o11ytest.start(gpa, io, .{
@@ -197,7 +197,7 @@ export fn o11y_test_destroy(rec: ?*RecorderHandle) void {
     h.str_arena.deinit();
     h.opt_arena.deinit();
     gpa.destroy(h);
-    rt.releaseIo();
+    rt.releaseHermeticIo();
 }
 
 export fn o11y_test_sdk(rec: ?*RecorderHandle) ?*abi.SdkHandle {
@@ -227,14 +227,21 @@ fn wrapSpan(owner: *RecorderHandle, data: *const o11y.SpanData) ?*const SpanView
 
 export fn o11y_test_span_count(rec: ?*RecorderHandle) usize {
     const h = rec orelse return 0;
-    return h.rec.spans().len;
+    h.rec.span_recorder.mutex.lockUncancelable(h.rec.io);
+    defer h.rec.span_recorder.mutex.unlock(h.rec.io);
+    return h.rec.span_recorder.spans.items.len;
 }
 
 export fn o11y_test_span_at(rec: ?*RecorderHandle, index: usize) ?*const SpanView {
     const h = rec orelse return null;
-    const list = h.rec.spans();
-    if (index >= list.len) return null;
-    return wrapSpan(h, list[index]);
+    const sp: *const o11y.SpanData = blk: {
+        h.rec.span_recorder.mutex.lockUncancelable(h.rec.io);
+        defer h.rec.span_recorder.mutex.unlock(h.rec.io);
+        const items = h.rec.span_recorder.spans.items;
+        if (index >= items.len) return null;
+        break :blk items[index];
+    };
+    return wrapSpan(h, sp);
 }
 
 export fn o11y_test_find_span(rec: ?*RecorderHandle, name: ?[*:0]const u8) ?*const SpanView {
@@ -274,7 +281,11 @@ export fn o11y_test_span_context(span: ?*const SpanView) c.SpanContext {
 
 export fn o11y_test_span_parent_context(span: ?*const SpanView) c.SpanContext {
     const v = span orelse return .{};
-    return abi.fromZigSpanContext(v.data.parent, null);
+    const ts_z: ?[*:0]const u8 = if (v.data.parent.trace_state.header.len > 0)
+        dupeRecorderZ(v.owner, v.data.parent.trace_state.header)
+    else
+        null;
+    return abi.fromZigSpanContext(v.data.parent, ts_z);
 }
 
 fn findAttr(attrs: []const o11y.Attribute, key: []const u8) ?o11y.AttributeValue {
@@ -413,14 +424,21 @@ fn wrapLog(owner: *RecorderHandle, lr: *const o11ytest.LogRecord) ?*const LogVie
 
 export fn o11y_test_log_count(rec: ?*RecorderHandle) usize {
     const h = rec orelse return 0;
-    return h.rec.logs().len;
+    h.rec.log_capture.mutex.lockUncancelable(h.rec.io);
+    defer h.rec.log_capture.mutex.unlock(h.rec.io);
+    return h.rec.log_capture.records.items.len;
 }
 
 export fn o11y_test_log_at(rec: ?*RecorderHandle, index: usize) ?*const LogView {
     const h = rec orelse return null;
-    const list = h.rec.logs();
-    if (index >= list.len) return null;
-    return wrapLog(h, &list[index]);
+    const lr: *const o11ytest.LogRecord = blk: {
+        h.rec.log_capture.mutex.lockUncancelable(h.rec.io);
+        defer h.rec.log_capture.mutex.unlock(h.rec.io);
+        const items = h.rec.log_capture.records.items;
+        if (index >= items.len) return null;
+        break :blk items[index];
+    };
+    return wrapLog(h, lr);
 }
 
 export fn o11y_test_find_log(rec: ?*RecorderHandle, message: ?[*:0]const u8) ?*const LogView {
@@ -447,7 +465,11 @@ export fn o11y_test_log_level(log: ?*const LogView) c.Level {
 
 export fn o11y_test_log_span_context(log: ?*const LogView) c.SpanContext {
     const v = log orelse return .{};
-    return abi.fromZigSpanContext(v.rec.span_context, null);
+    const ts_z: ?[*:0]const u8 = if (v.rec.span_context.trace_state.header.len > 0)
+        dupeRecorderZ(v.owner, v.rec.span_context.trace_state.header)
+    else
+        null;
+    return abi.fromZigSpanContext(v.rec.span_context, ts_z);
 }
 
 export fn o11y_test_log_has_attr(log: ?*const LogView, key: ?[*:0]const u8) bool {

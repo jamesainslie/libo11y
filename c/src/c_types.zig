@@ -257,12 +257,7 @@ pub const AttrReplacerFn = *const fn (
     groups_len: usize,
     key: [*:0]const u8,
     value: *const LogValue,
-    out_key_buf: [*]u8,
-    out_key_cap: usize,
-    out_str_val_buf: [*]u8,
-    out_str_val_cap: usize,
-    out_val: *LogValue,
-    out_replace_val: *bool,
+    out_replacement: ?*anyopaque,
 ) callconv(.c) bool;
 
 pub const LogSink = extern struct {
@@ -431,8 +426,8 @@ pub const ObserveF64Fn = *const fn (userdata: ?*anyopaque, obs: ?*anyopaque) cal
 
 pub const Carrier = extern struct {
     userdata: ?*anyopaque,
-    get: ?*const fn (userdata: ?*anyopaque, key: [*:0]const u8) callconv(.c) ?[*:0]const u8,
-    set: ?*const fn (userdata: ?*anyopaque, key: [*:0]const u8, value: [*:0]const u8) callconv(.c) void,
+    get: ?*const fn (userdata: ?*anyopaque, key: ?[*:0]const u8) callconv(.c) ?[*:0]const u8,
+    set: ?*const fn (userdata: ?*anyopaque, key: ?[*:0]const u8, value: ?[*:0]const u8) callconv(.c) void,
 };
 
 // Test harness types (matching c/include/o11y/test.h)

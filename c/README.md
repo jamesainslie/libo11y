@@ -134,8 +134,10 @@ The comment at the top of `o11y/o11y.h` states the rules in full. In short:
 - Every function may be called from any thread, and an SDK and what it hands
   out may be used from several threads at once. `o11y_span_end` and the
   destroy functions free their handle, so nothing else may use it after.
-  When the last live handle is destroyed, internal worker threads join and
-  any prior `SIGIO`/`SIGPIPE` signal handlers are restored.
+  Hermetic handles (`o11y_record_create`, `o11y_test_start`, and
+  `O11Y_ENV_HERMETIC` SDKs) never alter POSIX signal handlers. Non-hermetic
+  handles wait for internal worker threads to finish on last destroy and restore
+  only signal handlers installed by libo11y that the host has not changed.
 - libo11y never aborts, exits or raises a signal on bad input.
 
 ## Configuration
@@ -259,12 +261,13 @@ spans and the resource is counted on the `o11y.schema.violations` metric.
   and macOS, and `runtime_metrics = false` turns them off.
 - Logs. A record goes to the console (JSON or text), to OTLP and to any
   `extra_log_sinks`, each with the trace and span IDs of its context. The
-  `attr_replacer_fn` callback runs before the policy (supporting key renaming
-  as well as typed `o11y_log_value_t` or string replacement), so renaming a
-  key to a classified name cannot bypass it. Nested maps and arrays are walked
-  on their dotted keys (with cycle and node-budget bounds), and what lies past
-  depth 16 or past 2048 nodes is dropped. A context from
-  `o11y_ctx_with_force_emit` bypasses the level gate, as `o11y_event` does.
+  `attr_replacer_fn` callback runs before the policy (renaming keys or
+  deep-copying replacement values through `o11y_attr_replacement_set_key` and
+  `o11y_attr_replacement_set_value`), so renaming a key to a classified name
+  cannot bypass it. Nested maps and arrays are walked on their dotted keys, and
+  what lies past depth 16, on a cycle, or past 2048 nodes fails closed. A
+  context from `o11y_ctx_with_force_emit` bypasses the level gate, as
+  `o11y_event` does.
 - Capture-time redaction. C has no reflection, so the caller redacts a
   value where it is logged. `o11y_log_kv_secret` logs the literal
   `REDACTED`, `o11y_log_kv_masked` logs one `X` for each code point, and
