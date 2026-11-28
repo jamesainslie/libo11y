@@ -126,7 +126,9 @@ pick up the standard-library security fixes.
 The RUM gateway is its own Go module, `go/o11yrum`, with its own version
 line. It receives OTLP from browsers, browser extensions and React Native
 apps, validates and enriches it, derives the standard RUM metrics, and
-forwards it to your collector. Install the command or pull the image:
+forwards it to your collector. It also stores session replay from
+`@libo11y/rum-replay`, serves it on an internal read API, and erases it
+on request. Install the command or pull the image:
 
 ```sh
 go install github.com/jamesainslie/libo11y/go/o11yrum/cmd/o11yrum-gateway@v0.1.0

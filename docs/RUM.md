@@ -487,7 +487,8 @@ listener, `replay.read_listen`, behind bearer tokens from
 segments, serves one segment, and erases a session for a subject access
 or erasure request. A player backend calls it server side. No player
 ships yet; the end-to-end journey (`make rum-e2e`) replays what it reads
-back with `@rrweb/replay`.
+back with `@rrweb/replay`. The diagram abbreviates the read API's paths,
+which all start with `/v1/replay/{service}/`.
 
 ```mermaid
 sequenceDiagram

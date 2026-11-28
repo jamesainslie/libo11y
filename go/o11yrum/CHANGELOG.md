@@ -28,7 +28,7 @@ adheres to [Semantic Versioning](https://semver.org/).
 - The replay read API, `Handler.ReplayReadHandler`: list a session's
   segment metadata, read one gzipped segment, and erase a session. Every
   request needs a bearer token from `replay.read_token_file`, and without
-  that file every request answers 401. Erasure deletes every object of
+  that file every request fails authentication. Erasure deletes every object of
   the session, is idempotent and reports what it removed. The
   `o11yrum-gateway` command serves the API on its own listener,
   `replay.read_listen`, never on the public `/_o11y/` path. The
@@ -43,14 +43,16 @@ adheres to [Semantic Versioning](https://semver.org/).
   `sweep_interval: 0s` there to skip it.
 - `Handler.ReloadReplayReadTokens` reads `replay.read_token_file` again,
   so read tokens rotate without a restart. The `o11yrum-gateway` command
-  calls it on `SIGHUP`. A failed reload keeps the tokens in use. `SIGHUP`
-  no longer ends the command, even without a token file.
-- The read API limits failed authentications: each TCP peer, keyed by its
-  whole address, may fail 10 times in a burst, refilled over a minute, and is then answered 429
-  before its token is compared. `o11yrum.replay.reads` counts those with
-  `o11yrum.outcome=rate_limited`.
+  calls it on `SIGHUP`. A failed reload keeps the tokens in use.
+- The read API limits failed authentications: each TCP peer, keyed by
+  its whole address, may fail 10 times in a burst, refilled over a
+  minute, and is then answered 429 before its token is compared.
+  `o11yrum.replay.reads` counts those with `o11yrum.outcome=rate_limited`.
 
 ### Changed
+
+- `SIGHUP` no longer ends `o11yrum-gateway`, even without a token file: it
+  reloads `replay.read_token_file`, and during the drain it is ignored.
 
 - `FileStore.Delete` removes the directories a deletion leaves empty, up
   to the store's root, so an erased session leaves no directory named

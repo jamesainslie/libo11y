@@ -3,7 +3,9 @@
 o11yrum is the libo11y RUM gateway. It receives OTLP traces, logs and app
 metrics from browsers, browser extensions and React Native apps, checks
 and validates them against the libo11y specification, and forwards them to
-your backend. The design is in
+your backend. It also stores the session replay segments of
+`@libo11y/rum-replay`, serves them on an internal read API, and erases
+them on request. The design is in
 [the RUM design document](../../docs/design/2026-11-27-libo11y-rum-design.md).
 
 o11yrum versions on its own line, tagged `go/o11yrum/vX.Y.Z`. Its changes
@@ -57,7 +59,10 @@ The gateway serves the RUM endpoints under `/_o11y/v1/`, liveness at
 answers 503 at once. The gateway keeps serving for `shutdown_delay`
 (default 0), then stops accepting connections and drains. In-flight
 requests get 15 seconds to finish and the gateway's own telemetry gets 10
-seconds to flush. A second signal ends the process at once.
+seconds to flush. A second signal ends the process at once. SIGHUP
+reloads `replay.read_token_file` (see
+[The read API and erasure](#the-read-api-and-erasure)) and never ends the
+process; during the drain it is ignored.
 
 ### The batch sink and the OTEL_EXPORTER_OTLP_* fallback
 
@@ -365,13 +370,14 @@ session's recording. It is cluster-internal only:
 - Every request needs `Authorization: Bearer <token>` with a token from
   `replay.read_token_file`: one per line, blank lines and `#` comments
   ignored, each at least 16 visible ASCII characters with no space. A
-  byte order mark at the start of the file is ignored. A library user who serves
-  `Handler.ReplayReadHandler` without the file gets 401 for every
-  request. Several lines let a token rotate without downtime: add the
+  byte order mark at the start of the file is ignored. A library user who
+  serves `Handler.ReplayReadHandler` without the file gets 401 for every
+  request, or 429 once the peer's failure budget below is spent. Several lines let a token rotate without downtime: add the
   new one, send `SIGHUP`, move the caller over, remove the old one, send
   `SIGHUP` again. The gateway reads the file at start and again on each
   `SIGHUP`, and logs `reloaded replay.read_token_file` or, when the file
-  is missing or invalid, `keeping the tokens in use` with the reason. A
+  is missing or invalid, `keeping the tokens in use` with the reason.
+  Without a token file it logs `no replay.read_token_file to reload`. A
   failed reload never drops the tokens in use. Replace the file whole,
   by writing a new file and renaming it over the old one, so a reload
   never reads it half-written; a Kubernetes Secret volume does this
@@ -401,13 +407,15 @@ replay:
 
 | Route | Answer | Refusals |
 |---|---|---|
-| `GET /v1/replay/{service}/sessions/{session}` | 200 `{"service","session","segments":[...]}`: each unexpired segment's metadata object, sorted by segment | 401, 400 bad session, 404 unknown or non-recording service or no unexpired segment, 503 with `Retry-After: 5` |
-| `GET /v1/replay/{service}/sessions/{session}/segments/{segment}` | 200 the stored segment, gzipped JSON, with `Content-Encoding: gzip` | 401, 400 bad session or segment, 404 unknown, missing or expired, 503 with `Retry-After: 5` |
-| `DELETE /v1/replay/{service}/sessions/{session}` | 200 `{"service","session","deleted":<objects>,"segments":[...]}` | 401, 400 bad session, 404 unknown service, 503 with `Retry-After: 5` and what was deleted so far |
+| `GET /v1/replay/{service}/sessions/{session}` | 200 `{"service","session","segments":[...]}`: each unexpired segment's metadata object, sorted by segment | 401, 429, 400 bad session, 404 unknown or non-recording service or no unexpired segment, 503 with `Retry-After: 5` |
+| `GET /v1/replay/{service}/sessions/{session}/segments/{segment}` | 200 the stored segment, gzipped JSON, with `Content-Encoding: gzip` | 401, 429, 400 bad session or segment, 404 unknown, missing or expired, 503 with `Retry-After: 5` |
+| `DELETE /v1/replay/{service}/sessions/{session}` | 200 `{"service","session","deleted":<objects>,"segments":[...]}` | 401, 429, 400 bad session, 404 unknown service, 503 with `Retry-After: 5` and what was deleted so far |
 
 Every answer carries `Cache-Control: private, no-store` and no CORS
 headers. A request without a valid token answers 401 with
-`WWW-Authenticate: Bearer` whatever its path, so the listener tells an
+`WWW-Authenticate: Bearer` whatever its path, and a request from a peer
+past its failure budget answers 429 with `Retry-After`, also whatever its
+path, so the listener tells an
 unauthenticated caller nothing, not even which routes exist. The gateway
 never logs a token or a session ID. `o11yrum.replay.reads` counts
 requests by `o11yrum.operation` (`list`, `get`, `delete` or `other`) and
