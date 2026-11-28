@@ -52,7 +52,11 @@ with `replay()`, it records kept sessions with rrweb behind libo11y's own
 scrubber, masks all text by default and never records input values. It is
 in development in `ts/packages/rum-replay` and has not shipped. It first
 ships in the next TypeScript release, with the gateway's replay storage in
-the next `go/o11yrum` release. Every other named cell is planned.
+the next `go/o11yrum` release. The React Native cells, the core
+(`@libo11y/react-native`) and RUM (`@libo11y/rum-react-native`), are in
+development in `ts/packages` and have not shipped. The React Native RUM
+cell returns the browser cell's `Rum` handle, so the React and Connect
+adapters work with it unchanged. Every other named cell is planned.
 
 ## Data model
 

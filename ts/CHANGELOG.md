@@ -4,7 +4,7 @@ All notable changes to the libo11y TypeScript packages are documented
 here: `@libo11y/spec`, `@libo11y/core`, `@libo11y/server`,
 `@libo11y/test`, `@libo11y/web`, `@libo11y/webext`, `@libo11y/rum`,
 `@libo11y/rum-react`, `@libo11y/rum-tanstack-router`, `@libo11y/rum-connect`,
-`@libo11y/rum-replay`, `@libo11y/react-native` and `@libo11y/sourcemaps`, which release together at one version from a `ts/vX.Y.Z`
+`@libo11y/rum-replay`, `@libo11y/react-native`, `@libo11y/rum-react-native` and `@libo11y/sourcemaps`, which release together at one version from a `ts/vX.Y.Z`
 tag. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the packages
 adhere to [Semantic Versioning](https://semver.org/).
@@ -60,7 +60,8 @@ adhere to [Semantic Versioning](https://semver.org/).
   even when fetch runs over XHR, and `traceFetch` wraps a fetch the global
   patch does not reach, such as `expo/fetch` imported directly. Trace
   context goes only to the origins in `propagateTo`. Every endpoint must be
-  an absolute http or https URL.
+  an absolute http or https URL. The resource's `telemetry.sdk.language`
+  is `javascript`, whichever OpenTelemetry build the bundler resolves.
 - `@libo11y/react-native/expo`, the Expo entry point. `setupExpo` keeps
   the retry queue in files under the app's documents directory, sets
   `service.version` from the native app version and
@@ -71,6 +72,26 @@ adhere to [Semantic Versioning](https://semver.org/).
   packed packages and runs a jest-expo suite, and CI exports it for iOS
   and Android with Hermes bytecode under a Metro bundle budget
   (`make ts-rn-check`).
+- `@libo11y/rum-react-native`, RUM for React Native apps on Hermes over
+  `@libo11y/react-native`. In development; it is not released and not on
+  npm. `setupRumReactNative` returns the same `Rum` handle as the
+  browser's `setupRum`, so `@libo11y/rum-react` and `@libo11y/rum-connect`
+  work with it unchanged. Every view is a screen, named
+  `rum.initialViewName` (default `"app"`) until a router adapter or
+  `rum.setViewName` names it. The session, the retention buffer of
+  sessions not yet kept and the remote configuration cache live in the
+  app's key-value storage, written only once consent is granted, so a
+  relaunch within the 15-minute idle window continues the session.
+  AppState drives hide and show: going to the background emits the view
+  summaries and flushes. App metrics export with delta temporality, as the
+  gateway requires. `screens()` records a view span per screen that ends
+  at the first frame after `rum.viewRendered()`, at most 10 seconds. One
+  `app_load` span per process runs from React Native's
+  `rnStartupTiming.startTime` to the first screen's render, at most 60
+  seconds, and parents the first screen's span. It is recorded on the
+  first grant, also when consent comes after the first screen. The
+  `./expo` entry's `setupRumExpo` keeps it all in the app's documents, as
+  `setupExpo` does. The fixture Expo app runs it under jest-expo.
 - `@libo11y/core` exports `sha1`, for platforms without Web Crypto.
 
 ### Changed
@@ -85,6 +106,13 @@ adhere to [Semantic Versioning](https://semver.org/).
   global removed. Browser behavior is unchanged. `@libo11y/web/portable`
   also exports `parseResourceAttributes` and the fetch and XHR
   instrumentation with an instrumentation scope of the caller's choosing.
+- `@libo11y/rum/core`: `setupRumCore` takes `viewKind`, for a platform
+  whose views are all of one kind, such as React Native's `screen`, and
+  `onRuntime`, which hands a platform's own recorders the runtime before
+  consent is wired. The views collector parents the load view's span to
+  `app_load` by the tracker's load view rather than by its kind, the same
+  rule on the web. The core exports `viewsWith` for a platform's own views
+  collector.
 
 ### Fixed
 
