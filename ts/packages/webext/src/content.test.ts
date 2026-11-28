@@ -304,3 +304,19 @@ test("without the extension API setupContentScript rejects", async () => {
   const r = rig();
   await assert.rejects(setupContentScriptWith(BASE, { ...r.deps, chrome: undefined }), /chrome/);
 });
+
+test("install false builds the telemetry without globals, instrumentation or the active consent", async () => {
+  const r = rig({ stored: "granted", protocol: "chrome-extension:" });
+  const first = await setupContentScriptWith(BASE, r.deps, false);
+  const second = await setupContentScriptWith(BASE, rig({ stored: "granted" }).deps, false);
+  try {
+    assert.deepEqual(r.seen.fetch, []);
+    assert.deepEqual(r.seen.xhr, []);
+    assert.deepEqual(r.seen.documentLoad, []);
+    assert.notEqual(activeConsent(), first.consent);
+    assert.equal(r.seen.hide.length, 1, "it still flushes on hide");
+  } finally {
+    await first.shutdown();
+    await second.shutdown();
+  }
+});

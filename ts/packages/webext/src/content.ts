@@ -1,7 +1,13 @@
 /**
  * WP5 (webext). setupContentScript for content scripts and extension pages.
  */
-import { type Platform, type SignalReport, setupWith, type TelemetryOptions } from "@libo11y/core";
+import {
+  createTelemetryWith,
+  type Platform,
+  type SignalReport,
+  setupWith,
+  type TelemetryOptions,
+} from "@libo11y/core";
 import {
   type BrowserExportOptions,
   type DocumentLoadOptions,
@@ -126,10 +132,15 @@ async function cleanup(steps: readonly (() => unknown)[]): Promise<void> {
   }
 }
 
-/** setupContentScript over deps. Internal: the seam the unit tests use. */
+/**
+ * setupContentScript over deps. Internal: the seam the unit tests and @libo11y/rum use. With install
+ * false it builds the telemetry as web's createTelemetry does: no globals, no instrumentation and
+ * no active consent, still flushing on hide (tests that run two contexts in one process).
+ */
 export async function setupContentScriptWith(
   options: ContentScriptSetupOptions,
   deps: ContentDeps,
+  install = true,
 ): Promise<ContentScriptTelemetry> {
   const chrome = deps.chrome;
   if (chrome === undefined) {
@@ -171,7 +182,9 @@ export async function setupContentScriptWith(
       ...(options.contextManager === undefined ? {} : { contextManager: options.contextManager }),
     });
     const coreOptions: TelemetryOptions = { ...options, console: options.console ?? false };
-    telemetry = await setupWith(coreOptions, platform);
+    telemetry = install
+      ? await setupWith(coreOptions, platform)
+      : await createTelemetryWith(coreOptions, platform);
   } catch (err) {
     await cleanup(steps);
     throw err;
@@ -210,6 +223,7 @@ export async function setupContentScriptWith(
     return shutdownPromise;
   };
 
+  if (!install) return handle;
   try {
     setActiveConsent(controller.consent);
     const instr = options.instrumentations ?? {};
