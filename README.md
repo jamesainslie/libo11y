@@ -19,7 +19,7 @@ everything is correlated and exported over OTLP.
 | Python | Implemented for Python 3.12, 3.13, and 3.14 (`python/v0.1.0`) | [`python/`](python/) |
 | C | Implemented for C11 (`c/v0.1.0`, pure C11 ABI backed by `zig/`) | [`c/`](c/) |
 | Rust | Implemented for Rust 1.88+ (`rust/v0.1.0`; `libo11y-sqlx` requires 1.94) | [`rust/`](rust/) |
-| Ruby | Implemented for Ruby 3.3 and 3.4 | [`ruby/`](ruby/) |
+| Ruby | Implemented for Ruby 3.3 and 3.4 (`ruby/v0.1.0`) | [`ruby/`](ruby/) |
 | .NET | Implemented for .NET 10 (C#, `dotnet/v0.1.0`) | [`dotnet/`](dotnet/) |
 | Java | Implemented for Java 21+ (OpenTelemetry, Micrometer, Spring Boot 4) | [`java/`](java/) |
 

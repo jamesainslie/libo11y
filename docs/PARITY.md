@@ -41,7 +41,7 @@ The Rust columns describe the eleven-crate `rust/` workspace (`rust/v0.1.0`:
 1.88; `libo11y-sqlx` requires 1.94), `tracing` 0.1.44, and OpenTelemetry Rust
 0.33.1.
 
-Ruby (`ruby/`, unreleased, targeting `ruby/v0.1.0`) targets Ruby 3.3+ over
+Ruby (`ruby/`, `ruby/v0.1.0`) targets Ruby 3.3+ over
 OpenTelemetry Ruby (`opentelemetry-sdk`, `opentelemetry-metrics-sdk`,
 `opentelemetry-logs-sdk`), shipping Rack, `Net::HTTP`, DB, `Detached`,
 `Proc`, `Redact`, `exe/libo11y`, and `Libo11y::Testing` (`Recorder` and
@@ -205,9 +205,36 @@ These rows record where the Rust ecosystem, OpenTelemetry Rust 0.33.1, or
 ## Known defects in the current releases
 
 These are places where a release breaks a rule of the design contract.
-Each one is a defect to fix, not a decision. No current release has a
-known defect. `ts/v0.2.1` fixed the last ones, which
+Each one is a defect to fix, not a decision. Of the releases in the
+matrix, none has a known defect. `ts/v0.2.1` fixed the last ones, which
 [`ts/CHANGELOG.md`](../ts/CHANGELOG.md) describes.
+
+`ruby/v0.1.0` has these known defects, found by its first review. A later
+`ruby/` release fixes them.
+
+- **Resource.** OTLP payloads carry no resource schema URL, because the
+  upstream exporters do not write it.
+- **Environment.** With `env: Libo11y::HERMETIC` or an explicit `env`, the
+  upstream SDK still reads the span limit variables, the
+  `OTEL_RUBY_EXPORTER_OTLP_SSL_VERIFY_*` variables and
+  `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE` from the process
+  environment.
+- **Metrics.** The `views` option is not applied, and the bucket
+  boundaries of the HTTP and DB duration histograms are the SDK defaults,
+  because the SDK ignores advisory boundaries.
+- **Detached work.** `Detached::Carrier` serializes as JSON, where every
+  other implementation uses the URL-encoded form, so carriers do not cross
+  languages. `start_linked` drops the caller's baggage. A child process
+  can inherit a stale `TRACESTATE`.
+- **Logger.** Setting `level` on the logger has no effect, `console_level`
+  also gates the OTLP and extra sinks, and a `Float::NAN` attribute raises
+  from the logging call.
+- **HTTP.** The Rack middleware adds `Server-Timing` to responses that are
+  not HTML and puts an unknown request method on metrics as given.
+  `HttpClient` raises on a method `Net::HTTP` has no class for.
+- **Test harness.** `assert_triangle!` passes when the log and the
+  exemplar are on different traces, and `assert_conforms!` does not look
+  at metric attributes.
 
 ## Upcoming and planned clients
 
