@@ -8,7 +8,7 @@ GO_TEST_P ?= 4
 # gate runs on each module separately.
 GO_MODULES := go go/o11ygin go/o11yconnect go/o11ysql go/o11yrum ops
 
-.PHONY: spec-check spec-generate spec-drift ops-generate ops-check ops-integration-up ops-integration-down ops-integration ops-promtool-test ops-release-check ops-release-check-test test lint vet tidy-check vuln release-check zig-release-check python-release-check rust-release-check rust-release-check-test c-release-check o11yrum-release-check print-o11yrum-release-version o11yrum-image schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-rn-bundle-test ts-npm-plan-test ts-install ts-check ts-size ts-browser-test ts-rn-check rum-e2e rust-check rust-msrv zig-check zig-integrations-check zig-hygiene-test python-check python-hygiene-test c-check ruby-check dotnet-check java-check ci
+.PHONY: spec-check spec-generate spec-drift ops-generate ops-check ops-integration-up ops-integration-down ops-integration ops-promtool-test ops-release-check ops-release-check-test test lint vet tidy-check vuln release-check zig-release-check python-release-check rust-release-check rust-release-check-test c-release-check dotnet-release-check o11yrum-release-check print-o11yrum-release-version o11yrum-image schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-rn-bundle-test ts-npm-plan-test ts-install ts-check ts-size ts-browser-test ts-rn-check rum-e2e rust-check rust-msrv zig-check zig-integrations-check zig-hygiene-test python-check python-hygiene-test c-check ruby-check dotnet-check java-check ci
 
 # Validate the spec registry against the libo11y policy suite (naming,
 # ownership, sensitivity, cardinality, events, units).
@@ -184,6 +184,10 @@ RUST_RELEASE_VERSION ?= v0.1.0
 # Moves only in a release commit.
 C_RELEASE_VERSION ?= v0.1.0
 
+# The version dotnet/Directory.Build.props carries, which
+# dotnet-release-check.sh validates. Moves only in a release commit.
+DOTNET_RELEASE_VERSION ?= v0.1.0
+
 # The o11yrum gateway module's own version line (go/o11yrum/vX.Y.Z), which
 # o11yrum-release-check.sh validates and the release workflow requires to
 # match the tag. Moves only in a release commit, together with the
@@ -223,6 +227,13 @@ rust-release-check-test:
 c-release-check:
 	scripts/c-release-check.sh $(C_RELEASE_VERSION)
 
+# Validate the .NET packages at DOTNET_RELEASE_VERSION: the version in
+# dotnet/Directory.Build.props, the changelog, the packed Libo11y.* packages,
+# a throwaway consumer restored from them against an in-process OTLP/HTTP
+# receiver, and the Libo11y.Cli tool. It needs the .NET 10 SDK and nuget.org.
+dotnet-release-check:
+	scripts/dotnet-release-check.sh $(DOTNET_RELEASE_VERSION)
+
 # Validate the release sequence (go/RELEASE_VERSION and
 # go/<sub>/RELEASE_VERSION for every Go submodule, o11ygin, o11yconnect
 # and o11ysql, on HEAD) against a throwaway local remote. Then build and
@@ -231,8 +242,9 @@ c-release-check:
 # browser packages for the browser, validate the Zig consumer tarball at
 # ZIG_RELEASE_VERSION, validate the Python wheel and sdist at
 # PYTHON_RELEASE_VERSION, validate the Rust workspace at
-# RUST_RELEASE_VERSION, and validate the C11 install prefix at
-# C_RELEASE_VERSION. The o11yrum module is checked at
+# RUST_RELEASE_VERSION, validate the C11 install prefix at
+# C_RELEASE_VERSION, and validate the .NET packages at
+# DOTNET_RELEASE_VERSION. The o11yrum module is checked at
 # O11YRUM_RELEASE_VERSION after the lockstep Go modules, and the ops pack
 # and its release archive at OPS_RELEASE_VERSION.
 # Needs a clean working tree.
@@ -244,6 +256,7 @@ release-check:
 	scripts/python-release-check.sh $(PYTHON_RELEASE_VERSION)
 	scripts/rust-release-check.sh $(RUST_RELEASE_VERSION)
 	scripts/c-release-check.sh $(C_RELEASE_VERSION)
+	scripts/dotnet-release-check.sh $(DOTNET_RELEASE_VERSION)
 	scripts/ops-release-check.sh $(OPS_RELEASE_VERSION)
 
 # Validate the o11yrum release at O11YRUM_RELEASE_VERSION against a
@@ -390,10 +403,12 @@ ruby-check:
 
 # .NET solution (dotnet/): build with TreatWarningsAsErrors, xUnit suites
 # (including shared conformance, integrations, and OTLP wire tests), CLI check,
-# and hygiene check.
+# and hygiene check. DOTNET_MAXCPU caps the MSBuild node count.
+DOTNET_MAXCPU ?= 4
 dotnet-check:
-	cd dotnet && dotnet test Libo11y.sln --configuration Release
-	cd dotnet && dotnet run --project src/Libo11y.Cli -- registry check ../conformance/appregistry/valid.yaml
+	cd dotnet && dotnet build Libo11y.sln --configuration Release -maxcpucount:$(DOTNET_MAXCPU) --disable-build-servers
+	cd dotnet && dotnet test Libo11y.sln --configuration Release --no-build
+	cd dotnet && dotnet run --project src/Libo11y.Cli --configuration Release --no-build -- registry check ../conformance/appregistry/valid.yaml
 	scripts/dotnet-hygiene.sh dotnet/src
 
 # Java Maven reactor (java/): compile with -Xlint:all -Werror on Java 21, run

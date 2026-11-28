@@ -6,9 +6,28 @@
     <LangVersion>latest</LangVersion>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+
+  <!-- Every Libo11y.* package releases at this one version, from a
+       dotnet/vX.Y.Z tag. It moves only in a release commit. -->
+  <PropertyGroup>
     <Version>0.1.0</Version>
     <Authors>James Ainslie</Authors>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <PackageProjectUrl>https://o11y.ing</PackageProjectUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>opentelemetry;observability;telemetry;otlp;logging;tracing;metrics</PackageTags>
+    <PackageReleaseNotes>https://github.com/jamesainslie/libo11y/blob/main/dotnet/CHANGELOG.md</PackageReleaseNotes>
     <RepositoryUrl>https://github.com/jamesainslie/libo11y</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
   </PropertyGroup>
+
+  <ItemGroup Condition="'$(IsPackable)' != 'false'">
+    <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="\" Visible="false" />
+  </ItemGroup>
 </Project>

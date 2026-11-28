@@ -52,6 +52,18 @@
 # SHA256SUMS, and publishes the GitHub Release titled `libo11y-c vX.Y.Z`
 # (never marked Latest).
 #
+# A dotnet/vX.Y.Z tag validates dotnet/Directory.Build.props,
+# dotnet/CHANGELOG.md, `make dotnet-check`, and
+# `scripts/dotnet-release-check.sh`, which packs every Libo11y.* package and
+# restores an external consumer from them. It pushes the packages to
+# nuget.org through NuGet trusted publishing when the NUGET_USER repository
+# variable names the nuget.org profile that owns the policy, runs a live
+# consumer smoke test against nuget.org, and publishes the GitHub Release
+# titled `libo11y-dotnet vX.Y.Z` (never marked Latest) with every package,
+# symbol package and SHA256SUMS attached. While NUGET_USER is unset it
+# pushes nothing to nuget.org and the release notes say how to install from
+# the attached packages.
+#
 # An ops/vX.Y.Z tag validates the ops pack (generator drift, the gateway name
 # catalog, query lint, promtool checks and unit tests, kustomize), runs
 # scripts/ops-release-check.sh, and publishes the GitHub Release titled
@@ -60,7 +72,7 @@
 # matches what the check validated.
 #
 # scripts/release-tag.sh routes the tag. The verify job's kind output (go,
-# ts, zig, python, rust, c or ops) selects the jobs and steps that run.
+# ts, zig, python, rust, c, dotnet or ops) selects the jobs and steps that run.
 name: release
 
 on:
@@ -76,6 +88,7 @@ on:
       - "python/v*"
       - "rust/v*"
       - "c/v*"
+      - "dotnet/v*"
       - "ops/v*"
 
 permissions:
@@ -115,7 +128,7 @@ jobs:
         run: |
           # The script explains a refused tag on stderr.
           if ! scripts/release-tag.sh "$TAG" >"$RUNNER_TEMP/release-tag.out"; then
-            echo "::error::$TAG is not a release tag with a semantic version (go/vX.Y.Z, go/<submodule>/vX.Y.Z, go/o11yrum/vX.Y.Z, ts/vX.Y.Z, zig/vX.Y.Z, python/vX.Y.Z, rust/vX.Y.Z, c/vX.Y.Z or ops/vX.Y.Z)"
+            echo "::error::$TAG is not a release tag with a semantic version (go/vX.Y.Z, go/<submodule>/vX.Y.Z, go/o11yrum/vX.Y.Z, ts/vX.Y.Z, zig/vX.Y.Z, python/vX.Y.Z, rust/vX.Y.Z, c/vX.Y.Z, dotnet/vX.Y.Z or ops/vX.Y.Z)"
             exit 1
           fi
           cat "$RUNNER_TEMP/release-tag.out" >>"$GITHUB_OUTPUT"
@@ -368,6 +381,36 @@ jobs:
           VERSION: ${{ steps.tag.outputs.version }}
           ZIG_BUILD_J: "4"
         run: scripts/c-release-check.sh "v$VERSION"
+
+      # The .NET branch. dotnet/Directory.Build.props must carry the tag's
+      # version and dotnet/CHANGELOG.md must hold its release notes.
+      - name: Require dotnet/Directory.Build.props at the tag's version
+        if: steps.tag.outputs.kind == 'dotnet'
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          got="$(sed -nE 's|.*<Version>([^<]+)</Version>.*|\1|p' dotnet/Directory.Build.props | head -n 1)"
+          if [[ "$got" != "$VERSION" ]]; then
+            echo "::error::dotnet/Directory.Build.props is at version ${got:-unset}, not $VERSION"
+            exit 1
+          fi
+      - name: Check the .NET changelog has release notes
+        if: steps.tag.outputs.kind == 'dotnet'
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: scripts/release-notes.sh "$VERSION" dotnet/CHANGELOG.md
+      - uses: actions/setup-dotnet@v4
+        if: steps.tag.outputs.kind == 'dotnet'
+        with:
+          dotnet-version: "10.0.x"
+      - if: steps.tag.outputs.kind == 'dotnet'
+        run: make dotnet-check DOTNET_MAXCPU=4
+      - name: Validate the packed .NET packages and an external consumer
+        if: steps.tag.outputs.kind == 'dotnet'
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+          DOTNET_MAXCPU: "4"
+        run: scripts/dotnet-release-check.sh "v$VERSION"
 
       # The ops branch: the pack's own checks, then the release check, which
       # requires version.go, a dated ops/CHANGELOG.md section, generated
@@ -1275,6 +1318,173 @@ jobs:
             gh release upload "$TAG" "$dist/libo11y-c-v$VERSION-linux-x86_64.tar.gz" "$dist/SHA256SUMS" --clobber
           else
             gh release create "$TAG" "$dist/libo11y-c-v$VERSION-linux-x86_64.tar.gz" "$dist/SHA256SUMS" --title "$title" --notes-file "$notes" --verify-tag --prerelease="$PRERELEASE" --latest=false
+          fi
+
+  # Packs the Libo11y.* packages, checks them, and pushes them to nuget.org
+  # through NuGet trusted publishing: the job's OIDC identity is exchanged
+  # for an API key that lives one hour, and no NuGet key is stored. The
+  # NUGET_USER repository variable names the nuget.org profile that owns the
+  # trusted publishing policy for release.yml. While the variable is unset
+  # the job pushes nothing and says so, and the GitHub Release still carries
+  # the packages. Rerunning is safe: a version nuget.org already has is
+  # skipped.
+  publish-nuget:
+    needs: verify
+    if: needs.verify.outputs.kind == 'dotnet'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      # OIDC identity authenticates to nuget.org through trusted publishing.
+      id-token: write
+    outputs:
+      published: ${{ steps.plan.outputs.published }}
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+      NUGET_USER: ${{ vars.NUGET_USER }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - name: Pack the packages and check them with an external consumer
+        env:
+          DOTNET_MAXCPU: "4"
+        run: scripts/dotnet-release-check.sh "v$VERSION" --out "$RUNNER_TEMP/dotnet-dist"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dotnet-packages
+          path: ${{ runner.temp }}/dotnet-dist
+          if-no-files-found: error
+      - name: Decide whether to publish to nuget.org
+        id: plan
+        run: |
+          if [[ -n "$NUGET_USER" ]]; then
+            echo "published=true" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "published=false" >>"$GITHUB_OUTPUT"
+          echo "::warning::The NUGET_USER repository variable is unset, so nothing was pushed to nuget.org. The GitHub Release carries the packages."
+          {
+            echo "### Not published to nuget.org"
+            echo
+            echo "The \`NUGET_USER\` repository variable is unset. Create a trusted publishing policy on nuget.org for \`release.yml\` in \`$GITHUB_REPOSITORY\`, set \`NUGET_USER\` to the nuget.org profile name that owns it, and rerun this workflow."
+          } >>"$GITHUB_STEP_SUMMARY"
+      - name: Exchange the OIDC identity for a short-lived NuGet API key
+        if: steps.plan.outputs.published == 'true'
+        id: login
+        uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
+        with:
+          user: ${{ vars.NUGET_USER }}
+      - name: Push the packages to nuget.org in dependency order
+        if: steps.plan.outputs.published == 'true'
+        env:
+          NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
+        run: |
+          dist="$RUNNER_TEMP/dotnet-dist"
+          # Each push also sends the .snupkg beside the package to the
+          # symbol server.
+          for id in Libo11y.Spec Libo11y Libo11y.AspNetCore Libo11y.Db Libo11y.Testing Libo11y.Cli; do
+            dotnet nuget push "$dist/$id.$VERSION.nupkg" --api-key "$NUGET_API_KEY" \
+              --source https://api.nuget.org/v3/index.json --skip-duplicate
+          done
+
+  nuget-smoke:
+    needs: [verify, publish-nuget]
+    if: needs.verify.outputs.kind == 'dotnet' && needs.publish-nuget.outputs.published == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - name: Wait for nuget.org to serve every package at the released version
+        run: |
+          # nuget.org validates and indexes a pushed package before serving it.
+          for id in libo11y.spec libo11y libo11y.aspnetcore libo11y.db libo11y.testing libo11y.cli; do
+            url="https://api.nuget.org/v3-flatcontainer/$id/$VERSION/$id.nuspec"
+            served=false
+            for attempt in $(seq 1 60); do
+              if curl -fsS -o /dev/null "$url" 2>/dev/null; then
+                served=true
+                break
+              fi
+              echo "attempt $attempt: nuget.org does not serve $id $VERSION yet" >&2
+              sleep 30
+            done
+            if [[ "$served" != true ]]; then
+              echo "::error::nuget.org did not serve $id $VERSION"
+              exit 1
+            fi
+          done
+      - name: Restore from nuget.org into a fresh consumer and run the smoke test
+        env:
+          DOTNET_MAXCPU: "4"
+        run: scripts/dotnet-release-check.sh "v$VERSION" --from-nuget
+
+  # Runs after the smoke test when the packages went to nuget.org, and
+  # straight after packing when they did not.
+  release-dotnet:
+    needs: [verify, publish-nuget, nuget-smoke]
+    if: ${{ !cancelled() && needs.verify.outputs.kind == 'dotnet' && needs.publish-nuget.result == 'success' && (needs.nuget-smoke.result == 'success' || needs.nuget-smoke.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: dotnet-packages
+          path: ${{ runner.temp }}/dotnet-dist
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.verify.outputs.version }}
+          PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+          PUBLISHED: ${{ needs.publish-nuget.outputs.published }}
+        run: |
+          dist="$RUNNER_TEMP/dotnet-dist"
+          shopt -s nullglob
+          assets=("$dist"/*.nupkg "$dist"/*.snupkg)
+          if ((${#assets[@]} != 12)) || [[ ! -f "$dist/SHA256SUMS" ]]; then
+            echo "::error::the dotnet-packages artifact does not hold six packages, six symbol packages and SHA256SUMS"
+            exit 1
+          fi
+          assets+=("$dist/SHA256SUMS")
+          notes="$RUNNER_TEMP/release-notes.md"
+          scripts/release-notes.sh "$VERSION" dotnet/CHANGELOG.md >"$notes"
+          if [[ "$PUBLISHED" != "true" ]]; then
+            {
+              echo
+              echo "These packages are not on nuget.org yet. Until they are, download the \`.nupkg\` files attached to this release into one directory and add it as a package source:"
+              echo
+              echo '```sh'
+              echo "dotnet nuget add source /path/to/that/directory --name libo11y"
+              echo "dotnet add package Libo11y --version $VERSION"
+              echo '```'
+            } >>"$notes"
+          fi
+          title="libo11y-dotnet v$VERSION"
+          # The Go main module's release stays the repository's Latest release.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "$TAG already has a release; replacing its title, notes and assets"
+            gh release edit "$TAG" --title "$title" --notes-file "$notes" --prerelease="$PRERELEASE" --latest=false
+            gh release upload "$TAG" "${assets[@]}" --clobber
+          else
+            gh release create "$TAG" "${assets[@]}" --title "$title" --notes-file "$notes" --verify-tag --prerelease="$PRERELEASE" --latest=false
           fi
 
   ops-release:

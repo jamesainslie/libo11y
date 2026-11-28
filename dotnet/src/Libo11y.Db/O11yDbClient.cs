@@ -9,7 +9,7 @@ namespace Libo11y.Db;
 /// </summary>
 public sealed class O11yDbClient
 {
-    private static readonly ActivitySource Source = new("libo11y.db", "0.1.0");
+    private static readonly ActivitySource Source = new("libo11y.db", O11y.Version);
 
     private readonly string _dbSystem;
     private readonly string? _dbNamespace;
@@ -30,7 +30,7 @@ public sealed class O11yDbClient
         _serverPort = serverPort;
         if (telemetry is not null)
         {
-            var meter = telemetry.CreateMeter("libo11y.db", "0.1.0");
+            var meter = telemetry.CreateMeter("libo11y.db", O11y.Version);
             _durationHist = meter.CreateHistogram<double>(
                 "db.client.operation.duration",
                 unit: "s",

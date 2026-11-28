@@ -2,6 +2,7 @@
   <PropertyGroup>
     <RootNamespace>Libo11y</RootNamespace>
     <AssemblyName>Libo11y</AssemblyName>
+    <Description>Opinionated observability for .NET built on OpenTelemetry: one-call setup of traces, metrics and logs, one sensitivity policy on every signal, and bounded shutdown.</Description>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\Libo11y.Spec\Libo11y.Spec.csproj" />

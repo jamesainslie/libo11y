@@ -11,7 +11,7 @@ namespace Libo11y.AspNetCore;
 /// </summary>
 public sealed class O11yHttpMessageHandler : DelegatingHandler
 {
-    private static readonly ActivitySource Source = new("libo11y.http", "0.1.0");
+    private static readonly ActivitySource Source = new("libo11y.http", O11y.Version);
 
     private readonly Telemetry? _telemetry;
     private readonly Func<Uri, bool>? _propagateFilter;
@@ -30,7 +30,7 @@ public sealed class O11yHttpMessageHandler : DelegatingHandler
         _peerService = peerService;
         if (_telemetry is not null)
         {
-            var meter = _telemetry.CreateMeter("libo11y.http", "0.1.0");
+            var meter = _telemetry.CreateMeter("libo11y.http", O11y.Version);
             _durationHist = meter.CreateHistogram<double>(
                 "http.client.request.duration",
                 unit: "s",

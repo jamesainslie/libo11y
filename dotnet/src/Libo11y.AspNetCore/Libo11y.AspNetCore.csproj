@@ -2,6 +2,7 @@
   <PropertyGroup>
     <RootNamespace>Libo11y.AspNetCore</RootNamespace>
     <AssemblyName>Libo11y.AspNetCore</AssemblyName>
+    <Description>libo11y instrumentation for ASP.NET Core and HttpClient: server middleware and a client DelegatingHandler with stable HTTP semantic conventions.</Description>
   </PropertyGroup>
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />

@@ -2,6 +2,7 @@
   <PropertyGroup>
     <RootNamespace>Libo11y.Db</RootNamespace>
     <AssemblyName>Libo11y.Db</AssemblyName>
+    <Description>libo11y database client instrumentation for .NET: parent-gated client spans, sanitized query text, and db.client.operation.duration.</Description>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\Libo11y\Libo11y.csproj" />

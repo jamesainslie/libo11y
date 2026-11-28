@@ -20,7 +20,7 @@ everything is correlated and exported over OTLP.
 | C | Implemented for C11 (`c/v0.1.0`, pure C11 ABI backed by `zig/`) | [`c/`](c/) |
 | Rust | Implemented for Rust 1.88+ (`rust/v0.1.0`; `libo11y-sqlx` requires 1.94) | [`rust/`](rust/) |
 | Ruby | Implemented for Ruby 3.3 and 3.4 | [`ruby/`](ruby/) |
-| .NET | Implemented for .NET 10 (C#) | [`dotnet/`](dotnet/) |
+| .NET | Implemented for .NET 10 (C#, `dotnet/v0.1.0`) | [`dotnet/`](dotnet/) |
 | Java | Implemented for Java 21+ (OpenTelemetry, Micrometer, Spring Boot 4) | [`java/`](java/) |
 
 ## Design principles
@@ -557,6 +557,10 @@ dotnet add package Libo11y.AspNetCore  # only for ASP.NET Core and HttpClient
 dotnet add package Libo11y.Db          # only for ADO.NET database instrumentation
 dotnet add package Libo11y.Testing     # hermetic recorder and OTLP/HTTP receiver
 ```
+
+A `dotnet/vX.Y.Z` tag releases every package at one version. A release
+whose packages are not on nuget.org yet attaches them to its GitHub Release,
+and its notes give the commands to install from them.
 
 Requires .NET 10 and builds on `OpenTelemetry` 1.21.0 (`System.Diagnostics.Activity`,
 `System.Diagnostics.Metrics`, and `Microsoft.Extensions.Logging`). Six projects
