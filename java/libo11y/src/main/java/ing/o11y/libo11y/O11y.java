@@ -11,7 +11,6 @@ import ing.o11y.libo11y.spec.generated.Spec;
 import io.opentelemetry.api.GlobalOpenTelemetry;
 import io.opentelemetry.api.baggage.propagation.W3CBaggagePropagator;
 import io.opentelemetry.api.common.AttributeKey;
-import io.opentelemetry.api.common.Attributes;
 import io.opentelemetry.api.logs.Severity;
 import io.opentelemetry.api.metrics.LongCounter;
 import io.opentelemetry.api.metrics.MeterProvider;
@@ -55,6 +54,7 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -189,22 +189,24 @@ public final class O11y {
                 .setResource(composed.resource())
                 .setSampler(sampler);
 
-        String traceExporterLabel = env.traces().exporter();
-        String traceEndpointSanitized = "";
+        boolean spanExporterCounts = false;
         if (!env.sdkDisabled()) {
             if (options.spanExporter() != null) {
-                traceExporterLabel = "custom";
+                spanExporterCounts = true;
                 tracerBuilder.addSpanProcessor(
                         BatchSpanProcessor.builder(new PolicyBridges.PolicySpanExporter(options.spanExporter(), policy))
                                 .build());
             } else if ("otlp".equals(env.traces().exporter())) {
-                traceEndpointSanitized = EndpointSanitizer.sanitize(env.traces().endpoint());
+                spanExporterCounts = true;
                 SpanExporter otlpSpan = buildOtlpSpanExporter(env.traces());
                 tracerBuilder.addSpanProcessor(
                         BatchSpanProcessor.builder(new PolicyBridges.PolicySpanExporter(otlpSpan, policy)).build());
             }
+            // When an exporter path already counts a span's violations, the injected processors'
+            // redaction of the same span records none, so one attribute is one violation.
+            SensitivityPolicy processorPolicy = spanExporterCounts ? policy.silent() : policy;
             for (SpanProcessor sp : options.spanProcessors()) {
-                tracerBuilder.addSpanProcessor(new PolicyBridges.PolicySpanProcessor(sp, policy));
+                tracerBuilder.addSpanProcessor(new PolicyBridges.PolicySpanProcessor(sp, processorPolicy));
             }
         }
         SdkTracerProvider tracerProvider = tracerBuilder.build();
@@ -232,15 +234,16 @@ public final class O11y {
                             .setAggregation(bucketAgg)
                             .build());
         }
+        // Views see measurements the policy meter already classified, so every stream a view
+        // produces, its exemplars included, carries no attribute the policy removes.
+        for (O11yOptions.ViewRegistration reg : options.views()) {
+            meterBuilder.registerView(reg.selector(), reg.view());
+        }
 
-        String metricExporterLabel = env.metrics().exporter();
-        String metricEndpointSanitized = "";
         if (!env.sdkDisabled()) {
             if (options.metricReader() != null) {
-                metricExporterLabel = "custom";
                 meterBuilder.registerMetricReader(options.metricReader());
             } else if ("otlp".equals(env.metrics().exporter())) {
-                metricEndpointSanitized = EndpointSanitizer.sanitize(env.metrics().endpoint());
                 MetricExporter otlpMetric = buildOtlpMetricExporter(env.metrics());
                 meterBuilder.registerMetricReader(
                         PeriodicMetricReader.builder(otlpMetric)
@@ -251,20 +254,19 @@ public final class O11y {
         SdkMeterProvider sdkMeterProvider = meterBuilder.build();
         MeterProvider policyMeterProvider = new PolicyBridges.PolicyMeterProvider(sdkMeterProvider, policy);
 
-        // Attach o11y.schema.violations counter to SensitivityPolicy
+        // Attach the o11y.schema.violations counter, then count what composing the resource
+        // found before the counter existed: classified resource attributes and, under lenient
+        // identity, each unmet identity rule.
         LongCounter violationCounter = sdkMeterProvider.get("libo11y")
                 .counterBuilder(Spec.Metrics.SCHEMA_VIOLATIONS)
-                .setDescription("Count of libo11y schema and sensitivity policy violations.")
+                .setDescription("Telemetry records that violated the libo11y specification.")
                 .setUnit("{violation}")
                 .build();
         policy.attachViolationCounter(violationCounter);
-
-        // Count missing tier-0 attributes if strictIdentity=false
-        for (String missingKey : composed.missingIdentity()) {
-            violationCounter.add(1L, Attributes.of(
-                    AttributeKey.stringKey(Spec.Attributes.RULE), "identity_missing",
-                    AttributeKey.stringKey(Spec.Attributes.SIGNAL), Spec.Signal.RESOURCE,
-                    AttributeKey.stringKey("o11y.attribute.key"), missingKey));
+        composed.classificationViolations().forEach((rule, n) ->
+                policy.recordViolations(Spec.Signal.RESOURCE, rule, n));
+        for (String rule : composed.identityViolations()) {
+            policy.recordViolations(Spec.Signal.RESOURCE, rule, 1L);
         }
 
         // Optional JVM runtime metrics
@@ -277,17 +279,13 @@ public final class O11y {
         SdkLoggerProviderBuilder loggerBuilder = SdkLoggerProvider.builder()
                 .setResource(composed.resource());
 
-        String logExporterLabel = env.logs().exporter();
-        String logEndpointSanitized = "";
         if (!env.sdkDisabled()) {
             if (options.logRecordExporter() != null) {
-                logExporterLabel = "custom";
                 loggerBuilder.addLogRecordProcessor(
                         new PolicyBridges.PolicyLogRecordProcessor(
                                 policy,
                                 BatchLogRecordProcessor.builder(options.logRecordExporter()).build()));
             } else if ("otlp".equals(env.logs().exporter())) {
-                logEndpointSanitized = EndpointSanitizer.sanitize(env.logs().endpoint());
                 LogRecordExporter otlpLog = buildOtlpLogExporter(env.logs());
                 loggerBuilder.addLogRecordProcessor(
                         new PolicyBridges.PolicyLogRecordProcessor(
@@ -311,24 +309,7 @@ public final class O11y {
                 options.extraLogSinks(),
                 Map.of());
 
-        Map<String, Object> effectiveConfig = new LinkedHashMap<>();
-        effectiveConfig.put(Spec.Attributes.CONFIG + ".traces.exporter", traceExporterLabel);
-        effectiveConfig.put(Spec.Attributes.CONFIG + ".metrics.exporter", metricExporterLabel);
-        effectiveConfig.put(Spec.Attributes.CONFIG + ".logs.exporter", logExporterLabel);
-        if (!traceEndpointSanitized.isEmpty()) {
-            effectiveConfig.put(Spec.Attributes.CONFIG + ".traces.endpoint", traceEndpointSanitized);
-        }
-        if (!metricEndpointSanitized.isEmpty()) {
-            effectiveConfig.put(Spec.Attributes.CONFIG + ".metrics.endpoint", metricEndpointSanitized);
-        }
-        if (!logEndpointSanitized.isEmpty()) {
-            effectiveConfig.put(Spec.Attributes.CONFIG + ".logs.endpoint", logEndpointSanitized);
-        }
-        effectiveConfig.put(Spec.Attributes.CONFIG + ".sampler", env.samplerName());
-        effectiveConfig.put(Spec.Attributes.CONFIG + ".pii_mode", options.piiMode().name().toLowerCase(java.util.Locale.ROOT));
-        effectiveConfig.put(Spec.Attributes.CONFIG + ".exemplar_filter", exemplarMode.name().toLowerCase(java.util.Locale.ROOT));
-        effectiveConfig.put(Spec.Attributes.CONFIG + ".hermetic", env.hermetic());
-        effectiveConfig.put(Spec.Attributes.CONFIG + ".setup", isSetup);
+        Map<String, Object> effectiveConfig = effectiveConfig(options, env, composed, baseProps);
 
         return new Telemetry(
                 tracerProvider,
@@ -343,6 +324,108 @@ public final class O11y {
                 jvmMetrics,
                 options.shutdownTimeout(),
                 onShutdownComplete);
+    }
+
+    /**
+     * Resolves the o11y.config.* attributes of the o11y.telemetry.configured event, the keys the
+     * o11y.config group registers, with the values Go reports: what will actually happen once
+     * option-over-environment precedence applies.
+     */
+    private static Map<String, Object> effectiveConfig(
+            O11yOptions options,
+            O11yEnvParser.ParsedEnv env,
+            ResourceComposer.ComposedResource composed,
+            List<TextMapPropagator> propagators) {
+        boolean disabled = env.sdkDisabled();
+        String traces;
+        if (disabled) {
+            traces = "none";
+        } else if (options.spanExporter() != null) {
+            traces = "injected";
+        } else if (!"otlp".equals(env.traces().exporter()) && !options.spanProcessors().isEmpty()) {
+            traces = "injected";
+        } else {
+            traces = env.traces().exporter();
+        }
+        String metrics = !disabled && options.metricReader() != null ? "injected" : env.metrics().exporter();
+        String logs = !disabled && options.logRecordExporter() != null ? "injected" : env.logs().exporter();
+        if (disabled) {
+            metrics = "none";
+            logs = "none";
+        }
+        String sampler = options.sampler() != null ? options.sampler().getDescription() : env.samplerName();
+
+        Map<String, Object> cfg = new LinkedHashMap<>();
+        String serviceName = composed.resource().getAttribute(AttributeKey.stringKey("service.name"));
+        cfg.put("service.name", serviceName == null ? "" : serviceName);
+        String serviceVersion = composed.resource().getAttribute(AttributeKey.stringKey("service.version"));
+        if (serviceVersion != null && !serviceVersion.isEmpty()) {
+            cfg.put("service.version", serviceVersion);
+        }
+        String prefix = Spec.Attributes.CONFIG + ".";
+        cfg.put(prefix + "traces", traces);
+        cfg.put(prefix + "metrics", metrics);
+        cfg.put(prefix + "logs", logs);
+        cfg.put(prefix + "console", options.consoleEnabled() ? "json" : "off");
+        cfg.put(prefix + "level", levelName(options.logLevel()));
+        cfg.put(prefix + "sampler", sampler);
+        cfg.put(prefix + "propagators", propagatorFields(propagators));
+        cfg.put(prefix + "runtime_metrics", Boolean.toString(options.runtimeMetrics() && !disabled));
+        if (composed.serviceVersionFallback()) {
+            cfg.put(prefix + "service_version_fallback", "true");
+        }
+        // Endpoints come from the environment as given, sanitized: a URL may carry credentials in
+        // its userinfo or query, and the event reaches every sink. Hermetic mode reads none.
+        Map<String, String> rawEnv = env.hermetic()
+                ? Map.of()
+                : options.env() != null ? options.env() : System.getenv();
+        String[][] endpoints = {
+            {"endpoint", "OTEL_EXPORTER_OTLP_ENDPOINT"},
+            {"traces_endpoint", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"},
+            {"metrics_endpoint", "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"},
+            {"logs_endpoint", "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"},
+        };
+        for (String[] ep : endpoints) {
+            String raw = rawEnv.get(ep[1]);
+            if (raw != null && !raw.isEmpty()) {
+                cfg.put(prefix + ep[0], EndpointSanitizer.sanitize(raw));
+            }
+        }
+        return cfg;
+    }
+
+    /** Names a log level as Go's slog does: DEBUG, INFO, WARN, ERROR, and DEBUG-4 below DEBUG. */
+    private static String levelName(Severity level) {
+        int n = level == null ? Severity.INFO.getSeverityNumber() : level.getSeverityNumber();
+        if (n <= Severity.TRACE4.getSeverityNumber()) {
+            return "DEBUG-4";
+        }
+        if (n <= Severity.DEBUG4.getSeverityNumber()) {
+            return "DEBUG";
+        }
+        if (n <= Severity.INFO4.getSeverityNumber()) {
+            return "INFO";
+        }
+        if (n <= Severity.WARN4.getSeverityNumber()) {
+            return "WARN";
+        }
+        return "ERROR";
+    }
+
+    /**
+     * Lists the propagators' fields in their configured order, each field once, as Go does:
+     * {@code none} when no propagator is configured, {@code custom} when the configured ones name no
+     * fields.
+     */
+    private static String propagatorFields(List<TextMapPropagator> propagators) {
+        if (propagators.isEmpty()) {
+            return "none";
+        }
+        LinkedHashSet<String> fields = new LinkedHashSet<>();
+        for (TextMapPropagator p : propagators) {
+            fields.addAll(p.fields());
+        }
+        return fields.isEmpty() ? "custom" : String.join(",", fields);
     }
 
     private static SpanExporter buildOtlpSpanExporter(O11yEnvParser.SignalConfig cfg) {

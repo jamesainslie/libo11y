@@ -9,7 +9,6 @@ import io.opentelemetry.api.metrics.MeterProvider;
 import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.api.trace.TracerProvider;
 import io.opentelemetry.context.propagation.ContextPropagators;
-import io.opentelemetry.sdk.OpenTelemetrySdk;
 import io.opentelemetry.sdk.common.CompletableResultCode;
 import io.opentelemetry.sdk.logs.SdkLoggerProvider;
 import io.opentelemetry.sdk.metrics.SdkMeterProvider;
@@ -99,22 +98,8 @@ public final class Telemetry implements AutoCloseable {
         return openTelemetry;
     }
 
-    /** Returns an {@link OpenTelemetrySdk} wrapper backed by the underlying SDK providers (for bridges requiring Sdk types). */
-    public OpenTelemetrySdk openTelemetrySdk() {
-        return OpenTelemetrySdk.builder()
-                .setTracerProvider(sdkTracerProvider)
-                .setMeterProvider(sdkMeterProvider)
-                .setLoggerProvider(sdkLoggerProvider)
-                .setPropagators(propagators)
-                .build();
-    }
-
     public SdkTracerProvider sdkTracerProvider() {
         return sdkTracerProvider;
-    }
-
-    public SdkMeterProvider sdkMeterProvider() {
-        return sdkMeterProvider;
     }
 
     public SdkLoggerProvider sdkLoggerProvider() {
@@ -125,7 +110,12 @@ public final class Telemetry implements AutoCloseable {
         return sdkTracerProvider;
     }
 
-    /** Returns the sensitivity-enforcing {@link MeterProvider} (drops SECRET and PII attributes). */
+    /**
+     * Returns the sensitivity-enforcing {@link MeterProvider}: it drops secret attributes, and PII
+     * attributes unless the PII mode is {@link PiiMode#KEEP}, from every measurement before the SDK
+     * sees it, so neither data points nor exemplars carry them. This and {@link #openTelemetry()}
+     * are the only ways to get a meter; the SDK meter provider itself is not exposed.
+     */
     public MeterProvider meterProvider() {
         return policyMeterProvider;
     }

@@ -3,15 +3,19 @@ package ing.o11y.libo11y.internal;
 import java.lang.reflect.Array;
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.math.MathContext;
+import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HexFormat;
 import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import javax.crypto.Mac;
@@ -108,13 +112,24 @@ public final class PiiTokenizer {
         if (digits.isEmpty()) {
             return neg ? "-0" : "0";
         }
+        if (digits.length() == 2) {
+            // Double.toString never prints fewer than two significant digits, so a value whose
+            // shortest round-tripping form has one digit (Double.MIN_VALUE is 5e-324 in Go, 4.9E-324
+            // in Java) gets one digit too many. Take the one-digit neighbour that reads back as the
+            // same double, preferring the nearer one, as Go's shortest formatting does.
+            BigDecimal shortest = oneDigitForm(absVal);
+            if (shortest != null) {
+                digits = shortest.unscaledValue().toString();
+                exp = shortest.precision() - shortest.scale() - 1;
+            }
+        }
 
         String prefix = neg ? "-" : "";
         if (exp < -4 || exp >= 6) {
             String body = digits.length() == 1 ? digits : digits.charAt(0) + "." + digits.substring(1);
             String sign = exp >= 0 ? "+" : "-";
             int absExp = Math.abs(exp);
-            String expFmt = absExp < 100 ? String.format("%02d", absExp) : Integer.toString(absExp);
+            String expFmt = absExp < 100 ? String.format(Locale.ROOT, "%02d", absExp) : Integer.toString(absExp);
             return prefix + body + "e" + sign + expFmt;
         }
 
@@ -126,6 +141,23 @@ public final class PiiTokenizer {
         }
         int split = exp + 1;
         return prefix + digits.substring(0, split) + "." + digits.substring(split);
+    }
+
+    /** Returns the nearer one-significant-digit decimal that parses back to value, or null. */
+    private static BigDecimal oneDigitForm(double value) {
+        BigDecimal exact = new BigDecimal(value);
+        BigDecimal best = null;
+        for (RoundingMode mode : new RoundingMode[] {RoundingMode.FLOOR, RoundingMode.CEILING}) {
+            BigDecimal candidate = exact.round(new MathContext(1, mode)).stripTrailingZeros();
+            if (candidate.signum() == 0 || Double.parseDouble(candidate.toString()) != value) {
+                continue;
+            }
+            if (best == null
+                    || candidate.subtract(exact).abs().compareTo(best.subtract(exact).abs()) < 0) {
+                best = candidate;
+            }
+        }
+        return best;
     }
 
     private static String trimTrailingZeros(String s) {
@@ -156,7 +188,7 @@ public final class PiiTokenizer {
                 case '\u2029' -> sb.append("\\u2029");
                 default -> {
                     if (ch < 0x20) {
-                        sb.append(String.format("\\u%04x", (int) ch));
+                        sb.append(String.format(Locale.ROOT, "\\u%04x", (int) ch));
                     } else {
                         sb.append(ch);
                     }
@@ -253,7 +285,7 @@ public final class PiiTokenizer {
                 walk.leave(map);
             }
         }
-        if (value instanceof Iterable<?> iter) {
+        if (value instanceof Collection<?> iter) {
             if (!walk.enter(iter)) {
                 return CANONICAL_TRUNCATED;
             }
