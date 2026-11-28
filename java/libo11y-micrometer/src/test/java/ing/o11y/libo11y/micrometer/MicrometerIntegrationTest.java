@@ -1,6 +1,7 @@
 package ing.o11y.libo11y.micrometer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -124,7 +125,9 @@ class MicrometerIntegrationTest {
                         .orElseThrow();
                 assertEquals("stripe", summary.attributes().get("payment.provider"));
                 assertEquals("ord-777", summary.attributes().get("order.id"));
-                assertEquals(Spec.Outcome.SUCCESS, summary.attributes().get(Spec.Attributes.OUTCOME));
+                // The record's owner, not a nested observation, decides the outcome and duration.
+                assertFalse(summary.attributes().containsKey(Spec.Attributes.OUTCOME));
+                assertFalse(summary.attributes().containsKey(Spec.Attributes.DURATION));
 
                 // Full triangle: Observation created span + correlated log + Micrometer timer with exemplar
                 rec.assertConforms();
