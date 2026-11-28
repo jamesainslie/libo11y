@@ -41,13 +41,20 @@ function read(raw: string | null, sessionId: string): number {
   return 0;
 }
 
-/** Takes the next segment index of sessionId under the lock. Rejects only when the lock does. */
+/**
+ * Takes the next segment index of sessionId under the lock. proceed is checked once the lock is
+ * granted, which can be long after the call: when it is false (consent was revoked meanwhile) the
+ * counter is neither read nor written and the promise rejects. Otherwise it rejects only when the
+ * lock does.
+ */
 export function allocateSegment(
   sessionId: string,
   storage: Pick<Storage, "getItem" | "setItem">,
   locks: LockManagerLike,
+  proceed: () => boolean = () => true,
 ): Promise<number> {
   return locks.request(SEQUENCE_LOCK, () => {
+    if (!proceed()) throw new Error("rum-replay: segment numbering is no longer allowed");
     const counter: Counter = { session: sessionId, next: 0 };
     let next: number;
     try {

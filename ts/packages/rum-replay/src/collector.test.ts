@@ -479,3 +479,46 @@ test("a failed load turns replay off for the page without throwing or retrying",
   assert.equal(w.rec.starts, 0);
   assert.equal(w.warnings.length, 1, "it warns once");
 });
+
+test("a revoke while the segment lock is pending leaves no counter behind", async () => {
+  const w = world();
+  const grants: (() => void)[] = [];
+  const deps: ReplayDeps = {
+    ...w.deps,
+    locks: {
+      request: <T>(_name: string, cb: () => Promise<T> | T): Promise<T> =>
+        new Promise<void>((r) => grants.push(r)).then(cb),
+    },
+  };
+  const stop = replayWith(deps).start(w.rt);
+  segment(w);
+  await settle(w);
+  assert.equal(grants.length, 1, "the upload waits on the lock");
+  w.rt.gate.open = false;
+  stop();
+  for (const g of grants) g();
+  await settle(w);
+  assert.equal(w.storage.getItem(SEQUENCE_KEY), null);
+  assert.equal(w.uploads.length, 0);
+});
+
+test("a session that rotates inside decide records only the new session", () => {
+  const w = world();
+  const previous = w.rt.session.current() as SessionState;
+  const next: SessionState = { ...previous, id: OTHER };
+  let rotated = false;
+  const decide = w.rt.session.decide;
+  (w.rt.session as { decide: typeof decide }).decide = (id) => {
+    if (!rotated && id === SESSION) {
+      // decide rotates an expired session synchronously, which emits its start.
+      rotated = true;
+      w.rt.setSessionState(next);
+      w.rt.sessionEvent({ type: "start", session: next, previous, local: true });
+    }
+    return decide(id);
+  };
+  const stop = replayWith(w.deps).start(w.rt);
+  assert.equal(w.rec.starts, 1, "one recorder, for the new session");
+  stop();
+  assert.equal(w.rec.stops, 1, "and the stop reaches it");
+});

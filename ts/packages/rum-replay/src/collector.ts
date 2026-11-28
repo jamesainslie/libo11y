@@ -213,7 +213,7 @@ export function replayWith(deps: ReplayDeps | (() => ReplayDeps), options: Repla
         service,
         ...(rt.settings().clientToken === undefined ? {} : { clientToken: rt.settings().clientToken }),
         fetch: d.fetch ?? globalThis.fetch,
-        allocate: (id) => allocateSegment(id, storage, locks),
+        allocate: (id) => allocateSegment(id, storage, locks, () => rt.gate.recording()),
         now: d.now,
         allowed: (id) => rt.gate.recording() && rt.session.decide(id) === "send",
         timers: d.timers,
@@ -271,7 +271,10 @@ export function replayWith(deps: ReplayDeps | (() => ReplayDeps), options: Repla
 
       /** Records session with start, rrweb having loaded. */
       const record = (session: SessionState, s: ReplaySettings, start: StartRecorder): void => {
+        const mine = generation;
         const kept = rt.session.decide(session.id) === "send";
+        // decide can rotate an expired session, whose start began a recording of its own.
+        if (mine !== generation) return;
         const direct = session.sampled || (kept && s.onRetain);
         const id = session.id;
         const route: Route = { direct, live: true, ring: [] };

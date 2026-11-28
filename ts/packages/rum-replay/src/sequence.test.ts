@@ -85,3 +85,21 @@ test("clearSequence removes the counter", async () => {
   clearSequence(storage);
   assert.equal(storage.getItem(SEQUENCE_KEY), null);
 });
+
+test("a lock granted after proceed turns false neither reads nor writes the counter", async () => {
+  const storage = createFakeStorage();
+  let grant: (() => void) | undefined;
+  const deferred: LockManagerLike = {
+    request: <T>(_name: string, cb: () => Promise<T> | T): Promise<T> =>
+      new Promise<void>((r) => {
+        grant = r;
+      }).then(cb),
+  };
+  let allowed = true;
+  const got = allocateSegment("s1", storage, deferred, () => allowed);
+  allowed = false;
+  clearSequence(storage);
+  grant?.();
+  await assert.rejects(got, /no longer allowed/);
+  assert.equal(storage.getItem(SEQUENCE_KEY), null);
+});
