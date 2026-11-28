@@ -31,8 +31,8 @@ use std::time::Instant;
 use http::Extensions;
 use libo11y::Sdk;
 use libo11y_http::{
-    HTTP_DURATION_BOUNDARIES, HeaderInjector, normalize_method, path_match, redact_query,
-    span_method, strip_ipv6_brackets,
+    HTTP_DURATION_BOUNDARIES, HeaderInjector, normalize_method, path_match, percent_decode_or_raw,
+    redact_query, span_method, strip_ipv6_brackets,
 };
 use opentelemetry::context::FutureExt as _;
 use opentelemetry::metrics::Histogram;
@@ -100,7 +100,9 @@ impl O11yMiddleware {
 
     /// Excludes outbound requests whose URL path matches any of `patterns` in
     /// Go's `path.Match` glob syntax (for example `"/healthz"` or
-    /// `"/debug/*"`). Malformed patterns never match.
+    /// `"/debug/*"`). The path is percent-decoded before matching, so
+    /// `/%68ealthz` matches `"/healthz"`; a path with an invalid escape or
+    /// invalid UTF-8 is matched raw. Malformed patterns never match.
     #[must_use]
     pub fn with_ignore_paths<I, S>(mut self, patterns: I) -> Self
     where
@@ -111,8 +113,8 @@ impl O11yMiddleware {
         Arc::make_mut(&mut self.config)
             .filters
             .push(Arc::new(move |req: &Request| {
-                let path = req.url().path();
-                !patterns.iter().any(|pat| path_match(pat, path))
+                let path = percent_decode_or_raw(req.url().path());
+                !patterns.iter().any(|pat| path_match(pat, &path))
             }));
         self
     }
@@ -339,6 +341,16 @@ mod tests {
         assert_eq!(
             sanitize_reqwest_url(&url),
             "https://example.com:8443/v1/items?page=1&token=REDACTED"
+        );
+    }
+
+    #[test]
+    fn sanitize_reqwest_url_redacts_percent_encoded_sensitive_keys() {
+        let url = Url::parse("https://example.com/v1/items?page=1&%74oken=tok&sig%6E=keep")
+            .expect("valid url");
+        assert_eq!(
+            sanitize_reqwest_url(&url),
+            "https://example.com/v1/items?page=1&%74oken=REDACTED&sig%6E=keep"
         );
     }
 }

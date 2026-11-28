@@ -8,8 +8,11 @@ contract.
   route-aware span names, W3C Trace Context and Baggage extraction,
   `with_public_endpoint()`, `with_ignore_paths(...)` (Go `path.Match` globs),
   `with_filter(...)`, `with_canonical_line()` (`o11y.request.summary` wide
-  events enriched via `libo11y::record_from_context`), panic recording, and
-  `http.server.request.duration` histograms with exemplars.
+  events enriched via `libo11y::record_from_context`), `with_server_timing()`
+  (`Server-Timing: traceparent;desc="..."` on `text/html` responses), panic
+  recording, and `http.server.request.duration` histograms with exemplars.
+  Spans, duration metrics, and canonical lines finish when the response body
+  ends, errors, panics, or drops.
 - Optional `axum` feature reads `axum::extract::MatchedPath` automatically when
   no custom route extractor matches.
 - `ClientLayer::new(&sdk)` instruments outbound `tower::Service` clients with
