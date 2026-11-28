@@ -2,7 +2,7 @@
 
 Status: in development. Nothing is released yet, and the first release will be `ops/v0.1.0`.
 
-The ops pack is a generic Grafana and Prometheus pack for libo11y RUM. It holds dashboards for the metrics the `o11yrum-gateway` derives, error and frustration views, and a session explorer over Tempo and Loki. A dashboard for the gateway's own telemetry and the Prometheus recording and alert rules are still to come.
+The ops pack is a generic Grafana and Prometheus pack for libo11y RUM. It holds dashboards for the metrics the `o11yrum-gateway` derives, error and frustration views, a session explorer over Tempo and Loki, a dashboard for the gateway's own telemetry, and Prometheus recording and alert rules.
 
 The dashboards and rules are generated from Go code in this module, so operators import the committed JSON and YAML and never need Go. Every dashboard selects its datasources through the `prometheus`, `loki` and `tempo` variables, so no datasource UID is written into the pack.
 
@@ -16,6 +16,7 @@ The generated dashboards are in `dashboards/`. Each is plain Grafana JSON for Gr
 | libo11y RUM: web vitals | `libo11y-rum-vitals` | LCP, INP, CLS, FCP and TTFB at the 75th percentile over time and by view, device class, browser and country. |
 | libo11y RUM: errors and frustration | `libo11y-rum-errors` | Error and frustration rates from the derived metrics, and from Loki the error inbox, the most frustrated elements and the sessions behind them. |
 | libo11y RUM: session explorer | `libo11y-rum-session-explorer` | One session rebuilt from its Loki events and Tempo traces by `session.id`, and one of its views by `o11y.rum.view.id`. |
+| libo11y RUM: gateway | `libo11y-rum-gateway` | The gateway's own telemetry: requests by outcome and signal, rejections and dropped records by reason, attributes the policy removed, sink latency and outcomes, the derived metric aggregator, symbolicated frames and source map uploads. |
 
 The Prometheus panels count every consented session, because the gateway derives the metrics from view summaries. Error and frustration events reach Loki only for sessions the sampler kept, so the errors dashboard's Loki panels say so in their descriptions.
 
@@ -26,8 +27,132 @@ The Prometheus panels count every consented session, because the gateway derives
 - `platform` filters by `o11y_rum_platform` on the overview and the errors dashboard. `view` filters by `o11y_rum_view_name` on the web vitals and errors dashboards. Both apply only to Prometheus panels whose metric carries the label. The overview's vitals and long animation frame panels ignore `platform` and say so in their descriptions. The errors dashboard's Loki panels ignore both.
 - The web vitals dashboard also has `device`, `browser`, `country` and `connection`.
 - `session_id` and `view_id` are text boxes on the session explorer. Its queries read them as Loki structured metadata after the stream selector, and as span attributes in Tempo.
+- The gateway dashboard has `gateway`, which picks scrape jobs that export `o11yrum_batches_total`, and its own `app`, which filters by the gateway's `o11yrum_app` label. Sink and aggregator panels carry no app label, so they ignore `app` and say so.
 
 Labels the specification makes required on a metric (`service.name`, `o11y.rum.platform`) use `.+` as the All value. Optional labels (device class, browser family, effective connection, country, and the view name) use `.*`, so a series without the label still counts when its variable is at All.
+
+## Recording rules
+
+`alerts/libo11y-rum.rules.yaml` starts with the group `libo11y-rum-recording`, evaluated every minute. The alerts read these series, so a check against the same hour a week ago stays cheap. The dashboards query the raw series and work without them.
+
+| Series | What it holds |
+|---|---|
+| `service_name:<vital>:p75_rate1h` | The p75 of each vital over the last hour, by app. `<vital>` is the histogram family, such as `o11y_rum_vital_lcp_seconds`. |
+| `service_name:<vital>_count:increase1h` | The vital's samples over the last hour, by app. |
+| `service_name:o11y_rum_views:increase15m` | Views over the last 15 minutes, by app. |
+| `service_name:o11y_rum_errors:increase15m` | Errors over the last 15 minutes, by app. |
+
+## Alerts
+
+The RUM alerts are in `alerts/libo11y-rum.rules.yaml` and the gateway alerts in `alerts/libo11y-rum-gateway.rules.yaml`. The numbers below are the defaults from `thresholds.yaml`. Every alert has a `severity` label (`critical`, `warning` or `info`) and the annotations `summary`, `description`, `runbook_url` (the heading below) and `dashboard` (the path of the dashboard to open). The annotations never include the alert's value, so the promtool unit tests in `alerts/tests/` compare them exactly. The value is on the linked dashboard.
+
+The vital alerts fire only when the app sent at least 200 samples of that vital in the last hour, so a quiet app or a quiet hour does not page anyone over a handful of slow devices.
+
+### O11yRUMVitalPoor
+
+A vital's p75 over the last hour has been above the specification's poor bound for 30 minutes: LCP 4 s, INP 0.5 s, CLS 0.25, FCP 3 s, TTFB 1.8 s. The `vital` label names it. Severity `warning`. Dashboard: web vitals.
+
+1. Open the web vitals dashboard for the app and find the view, device class, browser or country that moved. A single slow view usually points at a page change, every view at a backend or CDN change.
+2. Compare the start of the rise with recent releases of the app and its backends.
+3. For LCP, FCP and TTFB, check `TTFB p75 by view` first: a slow server response delays everything after it.
+
+### O11yRUMVitalRegression
+
+A vital's p75 over the last hour is more than 1.25 times its p75 in the same hour a week ago, and above the good bound, for an hour. Both hours need at least 200 samples. Comparing with the same hour a week ago allows for daily and weekly traffic patterns. Severity `warning`. Dashboard: web vitals.
+
+1. Set the web vitals dashboard to the last 8 days and find when the p75 moved.
+2. Check releases of the app, its third-party scripts and its backends around that time.
+3. Check whether the traffic mix changed, such as more mobile devices or a new country, using the device class, browser and country panels.
+
+### O11yRUMErrorRateHigh
+
+The app reported more than 0.1 errors per view over the last 15 minutes, with at least 50 views, for 15 minutes. Severity `warning`. Dashboard: errors and frustration.
+
+1. Open the errors dashboard and look at `Errors per 100 views by source`. A rise in `network` or `resource` points at a backend or CDN, `uncaught` and `unhandled_rejection` at the app's code.
+2. Open the error inbox to find the fingerprint that grew, and the sessions behind it in the session explorer.
+3. Compare the start with the app's latest release.
+
+### O11yRUMGatewayRejections
+
+More than 5% of the requests for one app to one gateway were rejected over the last 10 minutes, for reasons other than rate limiting and sink failures, for 15 minutes. The app must send at least 0.05 requests a second. The gateway refuses these requests with a 4xx status, so their telemetry never reaches the sinks. Severity `warning`. Dashboard: gateway.
+
+1. Open `Rejections by reason` on the gateway dashboard. `origin` means the page's origin is missing from the app's `origins`, `client_token` a token mismatch, and `unknown_service` a `service.name` the gateway has no app for.
+2. For `decode`, `too_large` or `content_type`, check which client library version the app ships.
+3. Check whether the gateway's configuration changed recently.
+
+### O11yRUMGatewayRateLimited
+
+More than 20% of the requests for one app were refused by the gateway's per-client rate limit over the last 10 minutes, for 15 minutes. Severity `info`. Dashboard: gateway.
+
+1. Check whether the traffic is real: a launch or a campaign raises the request rate for every client.
+2. Check for a client in a loop, such as a page that reloads itself or retries without backing off.
+3. If the traffic is real, raise the rate limit in the gateway's configuration.
+
+### O11yRUMGatewaySinkFailing
+
+More than 1% of the requests to a gateway failed in a sink over the last 5 minutes, for 5 minutes. The gateway answers them with 503 and a Retry-After header, so a short outage loses little, but a sink that stays down loses telemetry. Severity `critical`. Dashboard: gateway.
+
+1. Open `Sink exports by outcome` to see which sink fails.
+2. Check the backend behind that sink, such as the collector, and the network path to it.
+3. Read the gateway's logs for the export error.
+
+### O11yRUMGatewaySinkSlow
+
+The p99 of one export to a sink has been above 2 s for 10 minutes. Slow exports hold requests open and can turn into sink failures. Severity `warning`. Dashboard: gateway.
+
+1. Open `Sink latency` to see which sink is slow and whether the median moved too.
+2. Check the load and latency of the backend behind the sink.
+3. Check whether the request rate rose at the same time.
+
+### O11yRUMAggregatorNearCap
+
+A derived metric has held more than 1800 attribute sets for 30 minutes. Each app may hold `aggregation.max_series_per_metric` (default 2000) attribute sets in one metric. Past that, new attribute sets go to the overflow series, marked `otel.metric.overflow=true`, and lose their labels. The gauge sums every app, so with several apps it can fire before any one app reaches the cap. Severity `warning`. Dashboard: gateway.
+
+1. Open `Aggregator series by metric` to see which metric grows.
+2. Check the view names the app reports. A view name that holds an ID instead of a route template is the usual cause.
+3. If the cardinality is real, raise `aggregation.max_series_per_metric`, and the warning level in `thresholds.yaml` with it.
+
+### O11yRUMGatewayDown
+
+Prometheus has failed to scrape a gateway for 5 minutes. The alert sees only gateways Prometheus scrapes: `up` exists only for scrape targets, so a gateway that pushes its metrics over OTLP needs its own absence check. Severity `critical`. Dashboard: gateway.
+
+1. Check the gateway's pods or processes, and their restarts.
+2. Check that the gateway still exports to Prometheus: `OTEL_METRICS_EXPORTER` must select the Prometheus reader.
+3. Check the ServiceMonitor or scrape configuration, and the network path from Prometheus.
+
+## Thresholds
+
+`thresholds.yaml` holds every threshold, minimum traffic and the gateway selector the rules use. The vital bounds default to the specification's rating table. To use your own values, copy the file, change it, and generate the pack:
+
+```sh
+go run github.com/jamesainslie/libo11y/ops/cmd/opsgen@ops/v0.1.0 -thresholds my-thresholds.yaml -out my-pack/
+```
+
+`gateway_selector` is the label matcher every gateway alert uses. The default, `job=~"(.*/)?o11yrum-gateway"`, matches a job named `o11yrum-gateway` and a namespaced job such as `monitoring/o11yrum-gateway`, the name a PodMonitor gives.
+
+## Kubernetes
+
+`kustomization.yaml` packages the pack for a cluster that runs the Prometheus Operator and Grafana's dashboard sidecar:
+
+- `kubernetes/prometheusrule.yaml` is one `PrometheusRule` with the same groups as the rule files.
+- Each dashboard becomes a ConfigMap labelled `grafana_dashboard: "1"`, the label the sidecar watches by default.
+
+The pack sets no namespace and no operator-specific labels. Add them in your own overlay. With kube-prometheus-stack, whose Prometheus selects rules by its `release` label:
+
+```yaml
+# overlays/kube-prometheus-stack/kustomization.yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: monitoring
+resources:
+  - https://github.com/jamesainslie/libo11y//ops?ref=ops/v0.1.0
+labels:
+  - pairs:
+      release: kube-prometheus-stack
+    includeSelectors: false
+```
+
+`datasources/example.yaml` shows Grafana datasource provisioning for Prometheus, Loki and Tempo, with Tempo's link from traces to logs. The dashboards pick datasources through their variables, so its UIDs are a convenience, not a requirement.
 
 ## How the pack is tested
 

@@ -43,8 +43,11 @@ func Dashboards(t thresholds.Thresholds) []dash.Dashboard {
 
 // RuleFiles returns the pack's Prometheus rule files by path. version goes
 // into the runbook links.
-func RuleFiles(_ thresholds.Thresholds, _ string) map[string]rules.File {
-	return nil
+func RuleFiles(t thresholds.Thresholds, version string) map[string]rules.File {
+	return map[string]rules.File{
+		rumRulesPath:     rumRules(t, version),
+		gatewayRulesPath: gatewayRules(t, version),
+	}
 }
 
 // Build renders every artifact of the pack, sorted by path.
