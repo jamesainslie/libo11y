@@ -8,9 +8,13 @@
  */
 
 #define _DARWIN_C_SOURCE
-#define _POSIX_C_SOURCE 200809L
+#define _XOPEN_SOURCE 700
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <signal.h>
 #include <stdlib.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -337,21 +341,61 @@ static void test_receiver_validation_and_error_handler(void) {
     o11y_test_http_receiver_destroy(hrx);
 }
 
-static void test_reverse_order_sdk_and_receiver_teardown(void) {
+static int open_hanging_loopback_listener(uint16_t *out_port) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    struct sockaddr_in addr = {0};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = 0;
+    if (bind(fd, (const struct sockaddr *)&addr, sizeof(addr)) != 0 ||
+        listen(fd, 4) != 0) {
+        close(fd);
+        return -1;
+    }
+    socklen_t len = sizeof(addr);
+    if (getsockname(fd, (struct sockaddr *)&addr, &len) != 0) {
+        close(fd);
+        return -1;
+    }
+    *out_port = ntohs(addr.sin_port);
+    return fd;
+}
+
+static void test_cross_library_signal_refcount_both_orders(void) {
+#ifdef SIGIO
+    struct sigaction saved_sigio = {0};
+    ASSERT_EQ_INT(0, sigaction(SIGIO, NULL, &saved_sigio));
+    struct sigaction dfl = {0};
+    dfl.sa_handler = SIG_DFL;
+    sigemptyset(&dfl.sa_mask);
+    ASSERT_EQ_INT(0, sigaction(SIGIO, &dfl, NULL));
+#endif
+
+    /* Order A: start receiver first, start networked SDK second pointing at a
+     * silent TCP listener, destroy receiver first, then trigger a real SIGIO
+     * export cancellation in o11y_shutdown while the SDK is still live. */
+    uint16_t hang_port = 0;
+    int listen_fd = open_hanging_loopback_listener(&hang_port);
+    ASSERT_TRUE(listen_fd >= 0);
+    char endpoint[64];
+    snprintf(endpoint, sizeof(endpoint), "http://127.0.0.1:%u", (unsigned)hang_port);
+
     o11y_test_http_receiver_t *rx = NULL;
     ASSERT_EQ_ERR(O11Y_OK, o11y_test_http_receiver_start(NULL, &rx));
     ASSERT_NOT_NULL(rx);
 
-    o11y_env_pair_t env_pairs[] = {
-        { "OTEL_TRACES_EXPORTER", "none" },
+    o11y_env_pair_t hang_env[] = {
+        { "OTEL_EXPORTER_OTLP_ENDPOINT", endpoint },
+        { "OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf" },
         { "OTEL_METRICS_EXPORTER", "none" },
         { "OTEL_LOGS_EXPORTER", "none" },
     };
     o11y_options_t opts = o11y_options_default();
     opts.env_mode = O11Y_ENV_PAIRS;
-    opts.env_pairs = env_pairs;
-    opts.env_pairs_len = 3;
-    opts.service_name = "c-rev-teardown";
+    opts.env_pairs = hang_env;
+    opts.env_pairs_len = 4;
+    opts.service_name = "c-sigio-order-a";
     opts.environment = O11Y_ENVIRONMENT_TEST;
     opts.console_enabled = false;
     opts.runtime_metrics = false;
@@ -360,9 +404,55 @@ static void test_reverse_order_sdk_and_receiver_teardown(void) {
     ASSERT_EQ_ERR(O11Y_OK, o11y_init(&opts, &sdk, NULL));
     ASSERT_NOT_NULL(sdk);
 
-    /* Destroy the networked SDK before the receiver; receiver teardown must not hit SIGIO SIG_DFL. */
-    o11y_destroy(sdk);
+    o11y_span_t *sp = o11y_tracer_start(o11y_tracer(sdk, "sigio"), NULL, "hang-op", NULL);
+    o11y_span_end(sp);
+
+    /* Destroy receiver while SDK stays live: SIGIO must stay guarded. */
     o11y_test_http_receiver_destroy(rx);
+#ifdef SIGIO
+    struct sigaction cur_sigio = {0};
+    ASSERT_EQ_INT(0, sigaction(SIGIO, NULL, &cur_sigio));
+    ASSERT_TRUE(cur_sigio.sa_handler != SIG_DFL);
+#endif
+
+    o11y_shutdown_report_t report = {0};
+    o11y_err_t serr = o11y_shutdown(sdk, 150, &report);
+    ASSERT_TRUE(serr != O11Y_OK);
+    o11y_destroy(sdk);
+    close(listen_fd);
+#ifdef SIGIO
+    ASSERT_EQ_INT(0, sigaction(SIGIO, NULL, &cur_sigio));
+    ASSERT_TRUE(cur_sigio.sa_handler == SIG_DFL);
+#endif
+
+    /* Order B: start networked SDK first, start receiver second, destroy SDK
+     * first, then destroy receiver (cancelling its accept loop via SIGIO). */
+    o11y_env_pair_t none_env[] = {
+        { "OTEL_TRACES_EXPORTER", "none" },
+        { "OTEL_METRICS_EXPORTER", "none" },
+        { "OTEL_LOGS_EXPORTER", "none" },
+    };
+    opts.env_pairs = none_env;
+    opts.env_pairs_len = 3;
+    opts.service_name = "c-sigio-order-b";
+    ASSERT_EQ_ERR(O11Y_OK, o11y_init(&opts, &sdk, NULL));
+    ASSERT_NOT_NULL(sdk);
+
+    rx = NULL;
+    ASSERT_EQ_ERR(O11Y_OK, o11y_test_http_receiver_start(NULL, &rx));
+    ASSERT_NOT_NULL(rx);
+
+    o11y_destroy(sdk);
+#ifdef SIGIO
+    ASSERT_EQ_INT(0, sigaction(SIGIO, NULL, &cur_sigio));
+    ASSERT_TRUE(cur_sigio.sa_handler != SIG_DFL);
+#endif
+    o11y_test_http_receiver_destroy(rx);
+#ifdef SIGIO
+    ASSERT_EQ_INT(0, sigaction(SIGIO, NULL, &cur_sigio));
+    ASSERT_TRUE(cur_sigio.sa_handler == SIG_DFL);
+    ASSERT_EQ_INT(0, sigaction(SIGIO, &saved_sigio, NULL));
+#endif
 }
 
 int main(void) {
@@ -371,6 +461,6 @@ int main(void) {
     RUN_TEST(test_otlp_http_mtls);
     RUN_TEST(test_otlp_grpc_h2c_and_mtls);
     RUN_TEST(test_receiver_validation_and_error_handler);
-    RUN_TEST(test_reverse_order_sdk_and_receiver_teardown);
+    RUN_TEST(test_cross_library_signal_refcount_both_orders);
     TEST_SUMMARY("test_wire");
 }

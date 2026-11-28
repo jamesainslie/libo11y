@@ -29,7 +29,7 @@ The Python columns describe `libo11y` (`python/v0.1.0`) on CPython 3.12,
 extras for third-party integrations and isolating the private
 `opentelemetry.sdk._logs` module behind `libo11y._internal.logs_bridge`.
 
-The C columns describe `libo11y-c` (`c/v0.1.0`),
+The C columns describe `libo11y-c` (`c/v0.2.0`),
 a pure ISO C11 public ABI (`o11y/o11y.h`, `o11y/spec.h`, `o11y/test.h`,
 C++ `extern "C"` safe) backed by libo11y's Zig telemetry engine with zero
 external runtime dependencies beyond libc and pthreads.
@@ -53,7 +53,7 @@ shipping `Libo11y.Spec`, `Libo11y`, `Libo11y.AspNetCore`, `Libo11y.Db`,
 application registry cases).
 
 The matrix describes the latest releases: `go/v0.4.0`, `ts/v0.4.0`,
-`zig/v0.1.0`, `python/v0.1.0`, `c/v0.1.0`, and `rust/v0.1.0`.
+`zig/v0.1.0`, `python/v0.1.0`, `c/v0.2.0`, and `rust/v0.1.0`.
 
 A status describes how a capability is designed and built. It does not say
 the release is free of defects in it. The section "Known defects in the
