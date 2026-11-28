@@ -78,8 +78,8 @@ jobs:
 
   # The ops pack: generator drift, the metric catalog from the gateway built
   # from this checkout, query lint, promtool checks and unit tests of the
-  # alert rules, the promtool installer's own tests, and kustomize through
-  # kubectl, which ubuntu-latest ships.
+  # alert rules, the promtool installer's own tests, the ops release check's
+  # own tests, and kustomize through kubectl, which ubuntu-latest ships.
   ops:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -101,7 +101,7 @@ jobs:
         with:
           path: ~/.cache/libo11y
           key: ops-promtool-${{ runner.os }}-${{ hashFiles('scripts/ops-promtool.sh') }}
-      - run: make ops-check ops-promtool-test GO_TEST_P=4
+      - run: make ops-check ops-promtool-test ops-release-check-test GO_TEST_P=4
 
   # The ops pack against real backends: Loki, Tempo, Prometheus, Grafana and
   # a collector in Docker Compose (ops/test/compose.yaml), behind the gateway

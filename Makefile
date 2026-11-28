@@ -8,7 +8,7 @@ GO_TEST_P ?= 4
 # gate runs on each module separately.
 GO_MODULES := go go/o11ygin go/o11yconnect go/o11ysql go/o11yrum ops
 
-.PHONY: spec-check spec-generate spec-drift ops-generate ops-check ops-integration-up ops-integration-down ops-integration ops-promtool-test test lint vet tidy-check vuln release-check zig-release-check python-release-check rust-release-check rust-release-check-test c-release-check o11yrum-release-check print-o11yrum-release-version o11yrum-image schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-npm-plan-test ts-install ts-check ts-size ts-browser-test rum-e2e rust-check rust-msrv zig-check zig-integrations-check zig-hygiene-test python-check python-hygiene-test c-check ruby-check dotnet-check ci
+.PHONY: spec-check spec-generate spec-drift ops-generate ops-check ops-integration-up ops-integration-down ops-integration ops-promtool-test ops-release-check ops-release-check-test test lint vet tidy-check vuln release-check zig-release-check python-release-check rust-release-check rust-release-check-test c-release-check o11yrum-release-check print-o11yrum-release-version o11yrum-image schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-npm-plan-test ts-install ts-check ts-size ts-browser-test rum-e2e rust-check rust-msrv zig-check zig-integrations-check zig-hygiene-test python-check python-hygiene-test c-check ruby-check dotnet-check ci
 
 # Validate the spec registry against the libo11y policy suite (naming,
 # ownership, sensitivity, cardinality, events, units).
@@ -172,6 +172,11 @@ C_RELEASE_VERSION ?= v0.1.0
 # script's default and a dated go/o11yrum/CHANGELOG.md section.
 O11YRUM_RELEASE_VERSION ?= v0.1.0
 
+# The ops pack version (ops/vX.Y.Z), which ops-release-check.sh validates
+# against ops/internal/version/version.go, ops/CHANGELOG.md and the
+# runbook links in the generated rules. Moves only in a release commit.
+OPS_RELEASE_VERSION ?= v0.1.0
+
 # Validate the Zig package at ZIG_RELEASE_VERSION as an external consumer
 # fetches and runs it against an in-process OTLP receiver.
 # Needs a clean working tree and zig 0.17.1.
@@ -210,7 +215,8 @@ c-release-check:
 # PYTHON_RELEASE_VERSION, validate the Rust workspace at
 # RUST_RELEASE_VERSION, and validate the C11 install prefix at
 # C_RELEASE_VERSION. The o11yrum module is checked at
-# O11YRUM_RELEASE_VERSION after the lockstep Go modules.
+# O11YRUM_RELEASE_VERSION after the lockstep Go modules, and the ops pack
+# and its release archive at OPS_RELEASE_VERSION.
 # Needs a clean working tree.
 release-check:
 	scripts/release-check.sh $(RELEASE_VERSION)
@@ -220,6 +226,7 @@ release-check:
 	scripts/python-release-check.sh $(PYTHON_RELEASE_VERSION)
 	scripts/rust-release-check.sh $(RUST_RELEASE_VERSION)
 	scripts/c-release-check.sh $(C_RELEASE_VERSION)
+	scripts/ops-release-check.sh $(OPS_RELEASE_VERSION)
 
 # Validate the o11yrum release at O11YRUM_RELEASE_VERSION against a
 # throwaway local remote: the parent version it requires is a real go/
@@ -228,6 +235,17 @@ release-check:
 # builds. Needs a clean working tree.
 o11yrum-release-check:
 	scripts/o11yrum-release-check.sh $(O11YRUM_RELEASE_VERSION)
+
+# Validate the ops pack at OPS_RELEASE_VERSION: version.go, the changelog,
+# generator drift for that version, the runbook links, the release archive
+# contents and, when kubectl is on PATH, kustomize of the unpacked archive.
+ops-release-check:
+	scripts/ops-release-check.sh $(OPS_RELEASE_VERSION)
+
+# Test ops-release-check.sh against this checkout, including the --archive
+# mode the release workflow uses.
+ops-release-check-test:
+	OPS_RELEASE_VERSION=$(OPS_RELEASE_VERSION) scripts/ops-release-check_test.sh
 
 # Prints O11YRUM_RELEASE_VERSION, for the release workflow.
 print-o11yrum-release-version:
@@ -356,4 +374,4 @@ dotnet-check:
 
 # vuln runs last: it depends on the advisory database and the toolchain's
 # patch level, so local runs exercise every other gate first.
-ci: lint vet test tidy-check spec-check spec-drift ops-check ops-integration ts-check ts-size ts-browser-test rum-e2e o11yrum-image rust-check rust-msrv zig-check python-check c-check ruby-check dotnet-check schema-published-test release-notes-test release-tag-test ops-promtool-test rust-release-check-test ts-browser-bundle-test ts-npm-plan-test release-check vuln
+ci: lint vet test tidy-check spec-check spec-drift ops-check ops-integration ts-check ts-size ts-browser-test rum-e2e o11yrum-image rust-check rust-msrv zig-check python-check c-check ruby-check dotnet-check schema-published-test release-notes-test release-tag-test ops-promtool-test ops-release-check-test rust-release-check-test ts-browser-bundle-test ts-npm-plan-test release-check vuln
