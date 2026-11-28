@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # ts-rn-bundle-check.sh: bundle installed packages the way a React Native
 # app's bundler resolves them, with the react-native export condition and
-# React Native, React and the Expo modules left external, and fail if the
-# bundle reaches a Node builtin.
+# React Native, React and the Expo modules (and their scoped packages) left
+# external, and fail if the bundle reaches a Node builtin.
 #
 # Usage: ts-rn-bundle-check.sh DIR PACKAGE[=NAME,...]...
 #
@@ -68,6 +68,7 @@ done
 meta="$work/meta.json"
 if ! (cd "$dir" && bun build --target=browser --format=esm --conditions=react-native \
 	--external react-native --external react --external 'expo-*' --external expo \
+	--external '@expo/*' --external '@react-native/*' \
 	--outdir "$work/out" --metafile="$meta" "$entry" >"$work/build.log" 2>&1); then
 	cat "$work/build.log" >&2
 	fail "bun build failed for $*"

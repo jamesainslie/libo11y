@@ -1,9 +1,8 @@
 /**
  * The app lifecycle from AppState: background, and inactive on iOS (the app switcher, an incoming
  * call, Control Center), hide the app; active, or any other state, shows it. Listeners run in
- * registration order, so a subscriber that registers first, such as RUM emitting its view
- * summaries, runs before the platform's flush. AppState is listened to only while someone
- * subscribes, so the lifecycle needs no close.
+ * registration order, once per change between visible and hidden. AppState is listened to only
+ * while someone subscribes, so the lifecycle needs no close.
  */
 import { diag } from "@opentelemetry/api";
 import type { AppLifecycle, AppStateLike } from "./contracts/env.ts";

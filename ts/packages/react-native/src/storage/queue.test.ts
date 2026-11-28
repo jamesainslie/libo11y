@@ -27,7 +27,17 @@ test("opening reads only: no write until the first put, which removes orphan bod
 test("put resolves only after the body and the index are saved", async () => {
   const storage = fakeStorage();
   const q = await openStorageQueue({ storage, now: () => T0 });
-  const e = await q.put({ signal: "traces", body: "payload" });
+  const release = storage.hold();
+  let resolved = false;
+  const putting = q.put({ signal: "traces", body: "payload" }).then((e) => {
+    resolved = true;
+    return e;
+  });
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(resolved, false, "put waits for its writes");
+  assert.equal(storage.map.size, 0);
+  release();
+  const e = await putting;
   assert.ok(e);
   assert.equal(storage.map.get(`${BODY}${e.id}`), "payload");
   assert.match(storage.map.get(INDEX) ?? "", new RegExp(e.id));
@@ -98,6 +108,75 @@ test("a failing storage never rejects, and a put that failed keeps nothing", asy
   storage.heal();
   storage.fail("getAllKeys");
   await q.clear();
+});
+
+test("a put whose index write fails keeps nothing, in memory or on disk", async () => {
+  const storage = fakeStorage();
+  const q = await openStorageQueue({ storage, now: () => T0 });
+  await q.put({ signal: "traces", body: "first" });
+  storage.fail("setItem", (k) => k === INDEX);
+  assert.equal(await q.put({ signal: "traces", body: "second" }), undefined);
+  storage.heal();
+  assert.deepEqual(await q.size(), { entries: 1, bytes: 5 });
+  assert.equal([...storage.map.values()].includes("second"), false, "the body written first is removed");
+  q.close();
+  const again = await openStorageQueue({ storage, now: () => T0 });
+  assert.deepEqual(
+    (await again.claim(T0, 10, 1)).map((e) => e.body),
+    ["first"],
+  );
+});
+
+test("a body that cannot be read is skipped, not the whole claim, and dropped after three tries", async () => {
+  const storage = fakeStorage();
+  const q = await openStorageQueue({ storage, now: () => T0 });
+  const bad = await q.put({ signal: "traces", body: "too big" });
+  await q.put({ signal: "traces", body: "fine" });
+  assert.ok(bad);
+  storage.fail("getItem", (k) => k === `${BODY}${bad.id}`);
+  assert.deepEqual(
+    (await q.claim(T0, 10, 60_000)).map((e) => e.body),
+    ["fine"],
+  );
+  assert.deepEqual(await q.claim(T0 + 1, 10, 1), []);
+  assert.equal((await q.size()).entries, 2, "kept while it may still be readable");
+  assert.deepEqual(await q.claim(T0 + 2, 10, 1), []);
+  assert.deepEqual(await q.size(), { entries: 1, bytes: 4 }, "dropped after the third failed read");
+  assert.equal(storage.map.has(`${BODY}${bad.id}`), false);
+});
+
+test("a cleanup that keeps failing never blocks puts or claims", async () => {
+  const storage = fakeStorage();
+  storage.map.set(`${BODY}orphan`, "x");
+  const q = await openStorageQueue({ storage, now: () => T0 });
+  storage.fail("getAllKeys");
+  assert.ok(await q.put({ signal: "traces", body: "a" }));
+  storage.heal();
+  storage.fail("removeItem", (k) => k === `${BODY}orphan`);
+  assert.deepEqual(
+    (await q.claim(T0, 10, 1)).map((e) => e.body),
+    ["a"],
+  );
+  assert.ok(await q.put({ signal: "traces", body: "b" }));
+});
+
+test("close while an operation runs leaves the stored index as it was", async () => {
+  const storage = fakeStorage();
+  const q = await openStorageQueue({ storage, now: () => T0 });
+  await q.put({ signal: "traces", body: "a" });
+  await q.put({ signal: "traces", body: "b" });
+  const release = storage.hold();
+  const putting = q.put({ signal: "traces", body: "c" });
+  await new Promise((r) => setTimeout(r, 5));
+  q.close();
+  release();
+  await putting;
+  const again = await openStorageQueue({ storage, now: () => T0 });
+  assert.deepEqual(
+    (await again.claim(T0, 10, 1)).map((e) => e.body),
+    ["a", "b"],
+    "a and b survive; c, unsaved in the index, is an orphan",
+  );
 });
 
 test("a failing index read opens an empty queue", async () => {

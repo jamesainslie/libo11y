@@ -115,13 +115,15 @@ async function cleanup(steps: readonly (() => unknown)[]): Promise<void> {
  * Builds React Native telemetry, installing it globally (providers, propagator, context manager,
  * and the fetch and XHR patches) when install is true. In order: the consent controller (initial
  * state only), the retry queue on options.storage (default memoryStorage(); opening only
- * reads), the endpoints (each an absolute http or https URL, else INVALID_OPTION), the HTTP
+ * reads), the endpoints (every endpoint given, in the options or the env, must be an absolute http
+ * or https URL, else INVALID_OPTION), the HTTP
  * transport (the pristine fetch, no beacon), the delivery (every batch saved before it is sent,
  * always online), reactNativePlatform, then core with console defaulting to false. The handle is
  * core's Telemetry extended in place with consent and traceFetch.
  *
  * Going to the background flushes every provider; coming back drains the queue. Revoking consent
- * flushes into the closed gate and empties the queue. Shutdown shuts core down, then removes the
+ * flushes into the closed gate and empties the queue, also when consent was never granted, which
+ * deletes what an earlier launch left. Shutdown shuts core down, then removes the
  * patches and the lifecycle subscription, shuts the delivery down and closes the queue. After
  * setup the queue is drained once, so batches an earlier launch left go out once consent allows.
  */
@@ -212,9 +214,13 @@ export async function setupReactNativeWith(
   const activeDelivery = delivery;
   // Revocation: the gate is already closed, so flushing drains the SDK buffers into it and they
   // are dropped; then the persistent queue is emptied.
+  // Revoking while still pending clears too: it deletes only what an earlier launch left.
   const unregisterRevoke = controller.onRevoke(async () => {
-    await telemetry.forceFlush();
-    await activeDelivery.clear();
+    try {
+      await telemetry.forceFlush();
+    } finally {
+      await activeDelivery.clear();
+    }
   });
   const uninstalls: (() => void)[] = [];
 

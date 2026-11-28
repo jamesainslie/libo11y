@@ -37,7 +37,7 @@ fixture() {
 # React Native, Expo and React are not installed: the check must keep them external.
 fixture @fx/native '{ "name": "@fx/native", "type": "module", "exports": { ".": "./index.js", "./expo": "./expo.js", "./package.json": "./package.json" } }' \
 	'index.js=import { AppState } from "react-native"; import { createElement } from "react"; export function setupNative() { return [AppState, createElement]; }' \
-	'expo.js=import { File } from "expo-file-system"; import { useSegments } from "expo-router"; export const expo = [File, useSegments];'
+	'expo.js=import { File } from "expo-file-system"; import { useSegments } from "expo-router"; import { Asset } from "@expo/vector-icons"; import { codegen } from "@react-native/codegen"; export const expo = [File, useSegments, Asset, codegen];'
 fixture @fx/conditional '{ "name": "@fx/conditional", "type": "module", "exports": { ".": { "react-native": "./native.js", "default": "./node.js" } } }' \
 	'native.js=export const which = "native";' \
 	'node.js=import { readFileSync } from "node:fs"; export const which = readFileSync;'

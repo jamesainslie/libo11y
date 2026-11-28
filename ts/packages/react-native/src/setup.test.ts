@@ -186,6 +186,20 @@ test("revoke empties the persistent queue", async () => {
   await h.telemetry.shutdown();
 });
 
+test("revoking while pending sends nothing and deletes what an earlier launch left", async () => {
+  const storage = fakeStorage();
+  const earlier = await openStorageQueue({ storage, databaseName: "libo11y" });
+  await earlier.put({ signal: "logs", body: "left" });
+  earlier.close();
+  const h = await rnHarness({}, { storage });
+  await settle();
+  assert.equal(h.transport.requests.length, 0);
+  await h.telemetry.consent.revoke();
+  assert.equal(h.transport.requests.length, 0);
+  assert.deepEqual([...storage.map.keys()], [], "the denied user's earlier batches are gone");
+  await h.telemetry.shutdown();
+});
+
 test("without the global install there is no network patch and traceFetch is the identity", async () => {
   const h = await rnHarness();
   assert.equal(h.network.installs.length, 0);

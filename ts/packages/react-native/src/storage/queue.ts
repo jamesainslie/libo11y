@@ -8,9 +8,10 @@
  *
  * Opening reads only. Orphan bodies, left by a stop between a body and its index, are removed
  * inside the first mutating call, which the delivery makes only while consent is granted. An index
- * entry whose body is gone is dropped when claimed. Every method runs on one chain and never
- * rejects: a storage failure is reported through diag and the call resolves as if the change were
- * dropped. After close, calls behave as on an empty queue.
+ * entry whose body is gone is dropped when claimed; one whose body fails to read is skipped, and
+ * dropped after three failed reads. Every method runs on one chain and never rejects: a storage
+ * failure is reported through diag and the call resolves as if the change were dropped. After
+ * close, calls behave as on an empty queue, and an operation still running writes nothing more.
  */
 import {
   buildEntry,
@@ -38,6 +39,8 @@ export interface StorageQueueOptions extends QueueOptions {
 type Meta = Omit<QueueEntry, "body" | "leaseUntil">;
 
 const INDEX_VERSION = 1;
+/** Failed reads of one body after which claim drops the entry. */
+const MAX_READ_FAILURES = 3;
 const SIGNALS: ReadonlySet<unknown> = new Set(["traces", "metrics", "logs"]);
 
 function isMeta(e: unknown): e is Meta {
@@ -82,6 +85,9 @@ export async function openStorageQueue(opts: StorageQueueOptions): Promise<Persi
   }
   let closed = false;
   let cleaned = false;
+  // Failed body reads per entry: a body that keeps failing (too large for the storage to return,
+  // say) is dropped after MAX_READ_FAILURES, so it cannot hold the queue up for its whole age.
+  const readFailures = new Map<string, number>();
   let chain: Promise<unknown> = Promise.resolve();
   const serial = <T>(fallback: T, fn: () => Promise<T>): Promise<T> => {
     const run = async (): Promise<T> => {
@@ -98,8 +104,11 @@ export async function openStorageQueue(opts: StorageQueueOptions): Promise<Persi
     return p;
   };
   const ordered = (): QueueEntry[] => [...entries.values()].sort(byAge);
-  const writeIndex = (): Promise<void> =>
-    storage.setItem(
+  // Once closed, an operation still running writes nothing more, so it cannot overwrite what is
+  // stored with a partial view.
+  const writeIndex = async (): Promise<void> => {
+    if (closed) return;
+    await storage.setItem(
       indexKey,
       JSON.stringify({
         v: INDEX_VERSION,
@@ -113,20 +122,33 @@ export async function openStorageQueue(opts: StorageQueueOptions): Promise<Persi
         })),
       }),
     );
-  // Removes the bodies no entry owns, once per queue (and again after clear).
+  };
+  // Removes the bodies no entry owns, once per queue (and again after clear). Best effort: an
+  // orphan that cannot be listed or removed waits for the next launch, and never fails the put or
+  // claim that ran the cleanup.
   const cleanup = async (): Promise<void> => {
-    if (cleaned) return;
-    for (const key of await storage.getAllKeys()) {
+    if (cleaned || closed) return;
+    cleaned = true;
+    let keys: readonly string[];
+    try {
+      keys = await storage.getAllKeys();
+    } catch (err) {
+      diag.warn("libo11y: react-native: listing the retry queue's orphans failed", err);
+      return;
+    }
+    for (const key of keys) {
       if (key.startsWith(bodyPrefix) && !entries.has(key.slice(bodyPrefix.length))) {
-        await storage.removeItem(key);
+        await storage.removeItem(key).catch((err: unknown) => {
+          diag.warn("libo11y: react-native: removing an orphan of the retry queue failed", err);
+        });
       }
     }
-    cleaned = true;
   };
   const drop = async (ids: readonly string[]): Promise<void> => {
     for (const id of ids) {
       entries.delete(id);
-      await storage.removeItem(bodyPrefix + id);
+      readFailures.delete(id);
+      if (!closed) await storage.removeItem(bodyPrefix + id);
     }
   };
 
@@ -145,9 +167,11 @@ export async function openStorageQueue(opts: StorageQueueOptions): Promise<Persi
           entries.set(entry.id, { ...entry, body: "" });
           await writeIndex();
         } catch (err) {
-          // Not saved: keep nothing of it, so the caller's one direct attempt is the only send.
+          // Not saved: keep nothing of it, so the caller's one direct attempt is the only send, and
+          // store the index without it and without what was evicted for it.
           entries.delete(entry.id);
           await storage.removeItem(bodyPrefix + entry.id).catch(() => {});
+          await writeIndex().catch(() => {});
           throw err;
         }
         return entry;
@@ -164,7 +188,17 @@ export async function openStorageQueue(opts: StorageQueueOptions): Promise<Persi
           }
           if (out.length >= limit) break;
           if (!isDue(e, now)) continue;
-          const body = await storage.getItem(bodyPrefix + e.id);
+          let body: string | null;
+          try {
+            body = await storage.getItem(bodyPrefix + e.id);
+          } catch (err) {
+            const failures = (readFailures.get(e.id) ?? 0) + 1;
+            readFailures.set(e.id, failures);
+            diag.warn("libo11y: react-native: reading a queued batch failed", err);
+            if (failures >= MAX_READ_FAILURES) gone.push(e.id);
+            continue;
+          }
+          readFailures.delete(e.id);
           if (body === null) {
             gone.push(e.id);
             continue;
@@ -196,6 +230,7 @@ export async function openStorageQueue(opts: StorageQueueOptions): Promise<Persi
     clear: () =>
       serial(undefined, async () => {
         entries.clear();
+        readFailures.clear();
         cleaned = false;
         await storage.removeItem(indexKey);
         await cleanup();
@@ -217,8 +252,8 @@ export async function openStorageQueue(opts: StorageQueueOptions): Promise<Persi
         return { entries: entries.size, bytes };
       }),
     close() {
+      // entries stay for an operation still running; every later call returns its empty fallback.
       closed = true;
-      entries.clear();
     },
   };
 }

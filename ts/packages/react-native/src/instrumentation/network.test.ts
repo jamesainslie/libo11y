@@ -146,6 +146,52 @@ test("ignored URLs get no span from fetch or XHR", async () => {
   });
 });
 
+test("a plain XHR to an ignored URL gets no span", async () => {
+  await withNet(async ({ rec, install }) => {
+    install({ ignoreUrls: ["https://gw.test/_o11y/v1/logs"] });
+    const xhr = new FakeXhr();
+    xhr.open("POST", "https://gw.test/_o11y/v1/logs");
+    xhr.send("{}");
+    xhr.respond(200);
+    assert.equal(clientSpans(rec).length, 0);
+  });
+});
+
+test("an XHR sent after a traced fetch returned gets its own span", async () => {
+  await withNet(async ({ rec, g, install }) => {
+    install();
+    const pending = g.fetch?.("https://api.test/first");
+    answerLast();
+    await pending;
+    const xhr = new FakeXhr();
+    xhr.open("GET", "https://api.test/second");
+    xhr.send();
+    xhr.respond(200);
+    assert.deepEqual(
+      clientSpans(rec).map((s) => s.attributes["url.full"]),
+      ["https://api.test/first", "https://api.test/second"],
+    );
+  });
+});
+
+test("a traced fetch that throws synchronously still lets later XHRs record", async () => {
+  await withNet(async ({ rec, install }) => {
+    const net = install();
+    const throwing = (() => {
+      throw new TypeError("bad input");
+    }) as unknown as typeof fetch;
+    await assert.rejects(net.traceFetch(throwing)("https://api.test/x"), TypeError);
+    const xhr = new FakeXhr();
+    xhr.open("GET", "https://api.test/after");
+    xhr.send();
+    xhr.respond(200);
+    assert.equal(
+      clientSpans(rec).filter((s) => s.attributes["url.full"] === "https://api.test/after").length,
+      1,
+    );
+  });
+});
+
 test("uninstall restores the globals it patched, and a traced fetch then passes straight through", async () => {
   await withNet(async ({ rec, g, install }) => {
     const before = { fetch: g.fetch, open: FakeXhr.prototype.open, send: FakeXhr.prototype.send };
