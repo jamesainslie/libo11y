@@ -18,6 +18,7 @@ import (
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel/codes"
+	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
 	"go.opentelemetry.io/otel/trace"
 
 	o11y "github.com/jamesainslie/libo11y/go"
@@ -48,8 +49,8 @@ func WithSDK(sdk *o11y.SDK) Option {
 
 // WithFilter adds a predicate; requests for which it returns false are not
 // traced or measured. All filters must pass for a request to be recorded.
-// A filter may run more than once per request, so it must be deterministic
-// and free of side effects. A nil allow adds no filter.
+// Each filter runs once per request, on the request as it arrived, before
+// instrumentation modifies the request context. A nil allow adds no filter.
 func WithFilter(allow func(*http.Request) bool) Option {
 	return func(c *config) {
 		if allow != nil {
@@ -87,7 +88,8 @@ func WithPublicEndpoint() Option {
 // and outcome, plus anything handlers accumulate on the request's
 // o11y.Record (see o11y.RecordFromContext). The event fires even if the
 // handler panics. Requests excluded by [WithFilter] or [WithIgnorePaths]
-// emit no summary. Requires an SDK bound with [WithSDK].
+// emit no summary. Requires an SDK bound with [WithSDK]; without one, it is
+// a no-op.
 func WithCanonicalLine() Option {
 	return func(c *config) { c.canonicalLine = true }
 }
@@ -114,9 +116,9 @@ func WithServerTiming() Option {
 }
 
 // WithSpanNameFormatter replaces the default span name formatter. The
-// default prefers the matched ServeMux pattern ("GET /users/{id}"), then
-// the operation name, then the request method. A nil format keeps the
-// default.
+// default names spans from the matched ServeMux pattern ("GET /users/{id}"),
+// or the normalized request method ("GET", or "HTTP" for unknown methods)
+// when no route matched. A nil format keeps the default.
 func WithSpanNameFormatter(format func(operation string, r *http.Request) string) Option {
 	return func(c *config) {
 		if format != nil {
@@ -125,21 +127,14 @@ func WithSpanNameFormatter(format func(operation string, r *http.Request) string
 	}
 }
 
-// NewHandler instruments an http.Handler. The operation name seeds span
-// names for requests that match no route pattern. A panic in the handler,
+// NewHandler instruments an http.Handler. The operation name is passed to a
+// custom [WithSpanNameFormatter]; the default formatter ignores it and names
+// spans from the matched route or request method. A panic in the handler,
 // including http.ErrAbortHandler, marks the server span Error and keeps
 // propagating. handler must not be nil: a nil handler is a programming
 // error, and a request through it panics.
 func NewHandler(handler http.Handler, operation string, opts ...Option) http.Handler {
-	cfg := newConfig(opts)
-	if cfg.canonicalLine {
-		handler = cfg.wrapCanonical(handler)
-	}
-	if cfg.serverTiming {
-		handler = cfg.wrapServerTiming(handler)
-	}
-	handler = cfg.recordPanics(handler)
-	return otelhttp.NewHandler(handler, operation, cfg.serverOptions()...)
+	return NewMiddleware(operation, opts...)(handler)
 }
 
 // NewMiddleware returns server instrumentation in middleware form, for
@@ -150,13 +145,30 @@ func NewMiddleware(operation string, opts ...Option) func(http.Handler) http.Han
 	cfg := newConfig(opts)
 	otel := otelhttp.NewMiddleware(operation, cfg.serverOptions()...)
 	return func(next http.Handler) http.Handler {
+		instrumented := next
 		if cfg.canonicalLine {
-			next = cfg.wrapCanonical(next)
+			instrumented = cfg.wrapCanonical(instrumented)
 		}
 		if cfg.serverTiming {
-			next = cfg.wrapServerTiming(next)
+			instrumented = cfg.wrapServerTiming(instrumented)
 		}
-		return otel(cfg.recordPanics(next))
+		instrumented = otel(cfg.finishSpan(instrumented))
+		if len(cfg.filters) == 0 {
+			return instrumented
+		}
+		// The filters are asked here, once, on the request as it arrived,
+		// and a request they exclude goes straight to next: it is not
+		// traced, measured, summarized, or given a Server-Timing entry.
+		// Asking again inside the server span could get another answer,
+		// because a filter may read the request context and the span
+		// changes it.
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !cfg.allowed(r) {
+				next.ServeHTTP(w, r)
+				return
+			}
+			instrumented.ServeHTTP(w, r)
+		})
 	}
 }
 
@@ -178,8 +190,8 @@ func newConfig(opts []Option) *config {
 	return cfg
 }
 
-// allowed reports whether every configured filter admits r, matching the
-// decision otelhttp makes before it starts a span.
+// allowed reports whether every configured filter admits r. A server asks
+// once per request (see NewMiddleware).
 func (c *config) allowed(r *http.Request) bool {
 	for _, allow := range c.filters {
 		if !allow(r) {
@@ -189,24 +201,44 @@ func (c *config) allowed(r *http.Request) bool {
 	return true
 }
 
-// recordPanics marks the active server span as failed when the handler
-// panics, then re-panics so net/http's own recovery still runs. otelhttp has
-// no recover of its own, so without this a panicking request ends with an
-// Unset span status. It sits inside otelhttp so the span is in context.
-// The exception event itself is not recorded here: the SDK span's End,
+// restoreRequest copies back to outer what a handler sets on clone, a
+// copy of outer made with WithContext. ServeMux records the matched
+// pattern on the request it receives, and whoever wraps this handler names
+// spans and labels metrics from its own request. ParseMultipartForm records
+// the form on the request it is called on, and net/http removes an
+// upload's temporary files through the request it created. Call it
+// deferred, so it also runs while a panic unwinds.
+func restoreRequest(outer, clone *http.Request) {
+	if clone.Pattern != "" {
+		outer.Pattern = clone.Pattern
+	}
+	if clone.MultipartForm != nil {
+		outer.MultipartForm = clone.MultipartForm
+	}
+}
+
+// finishSpan completes the server span once the handler returns or panics.
+// It sits inside otelhttp so the span is in context.
+//
+// It sets http.route from the pattern ServeMux matched. otelhttp names the
+// span and labels the duration metric from that pattern but reads it for
+// the span's attributes before the mux has run.
+//
+// It marks the span as failed when the handler panics, then re-panics so
+// net/http's own recovery still runs. otelhttp has no recover of its own,
+// so without this a panicking request ends with an Unset span status. The
+// exception event itself is not recorded here: the SDK span's End,
 // deferred by otelhttp, already records one for an in-flight panic, and a
-// second would duplicate it. Filtered requests have no server span, so
-// they pass straight through rather than marking whatever span an outer
-// layer put in the context.
-func (c *config) recordPanics(next http.Handler) http.Handler {
+// second would duplicate it.
+func (c *config) finishSpan(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !c.allowed(r) {
-			next.ServeHTTP(w, r)
-			return
-		}
 		defer func() {
+			span := trace.SpanFromContext(r.Context())
+			if route := routeOf(r.Pattern); route != "" {
+				span.SetAttributes(semconv.HTTPRoute(route))
+			}
 			if p := recover(); p != nil {
-				trace.SpanFromContext(r.Context()).SetStatus(codes.Error, "panic")
+				span.SetStatus(codes.Error, "panic")
 				panic(p)
 			}
 		}()
@@ -222,10 +254,6 @@ func (c *config) wrapCanonical(next http.Handler) http.Handler {
 		return next // no SDK to emit through; canonical line is a no-op
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, outer *http.Request) {
-		if !c.allowed(outer) {
-			next.ServeHTTP(w, outer) // filtered: not traced, measured, or summarized
-			return
-		}
 		start := time.Now()
 		ctx, record := o11y.StartRecord(outer.Context())
 		r := outer.WithContext(ctx)
@@ -233,11 +261,7 @@ func (c *config) wrapCanonical(next http.Handler) http.Handler {
 
 		panicked := false
 		defer func() {
-			// ServeMux records the matched pattern on the request it
-			// receives, which is our clone. The enclosing otelhttp handler
-			// names the span and labels its metrics from its own request,
-			// so copy the pattern back before it looks.
-			outer.Pattern = r.Pattern
+			restoreRequest(outer, r)
 
 			// A panic unwinds through here before the connection-level
 			// recovery in http.Server; stamp the request as failed so the
@@ -268,8 +292,8 @@ func (c *config) wrapCanonical(next http.Handler) http.Handler {
 				slog.String(string(spec.OutcomeKey), string(outcome)),
 				slog.Float64(string(spec.DurationKey), time.Since(start).Seconds()),
 			)
-			if r.Pattern != "" {
-				attrs = append(attrs, slog.String("http.route", routeOnly(r.Pattern)))
+			if route := routeOf(r.Pattern); route != "" {
+				attrs = append(attrs, slog.String("http.route", route))
 			}
 			record.EmitEvent(r.Context(), c.sdk, spec.EventRequestSummary, attrs...)
 
@@ -284,15 +308,10 @@ func (c *config) wrapCanonical(next http.Handler) http.Handler {
 
 // wrapServerTiming adds the server span's Server-Timing entry to HTML
 // responses (see [WithServerTiming]). It runs inside the otelhttp span, so
-// the span is in the request context. Filtered requests have no server span
-// and pass straight through rather than naming whatever span an outer layer
-// put in the context.
+// the span is in the request context. A request the filters exclude never
+// reaches it.
 func (c *config) wrapServerTiming(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !c.allowed(r) {
-			next.ServeHTTP(w, r)
-			return
-		}
 		entry, ok := servertiming.Entry(trace.SpanContextFromContext(r.Context()))
 		if !ok {
 			next.ServeHTTP(w, r)
@@ -302,13 +321,15 @@ func (c *config) wrapServerTiming(next http.Handler) http.Handler {
 	})
 }
 
-// routeOnly strips a leading method from a ServeMux pattern
-// ("GET /users/{id}" -> "/users/{id}").
-func routeOnly(pattern string) string {
-	if _, route, found := strings.Cut(pattern, " "); found {
-		return route
+// routeOf returns the http.route of a ServeMux pattern: the path template,
+// without the method and host a pattern may start with
+// ("GET example.com/users/{id}" -> "/users/{id}"). It is "" when no pattern
+// matched. otelhttp derives the route on the duration metric the same way.
+func routeOf(pattern string) string {
+	if i := strings.IndexByte(pattern, '/'); i >= 0 {
+		return pattern[i:]
 	}
-	return pattern
+	return ""
 }
 
 func (c *config) commonOptions() []otelhttp.Option {
@@ -320,13 +341,11 @@ func (c *config) commonOptions() []otelhttp.Option {
 			otelhttp.WithPropagators(c.sdk.Propagator()),
 		)
 	}
-	opts = append(opts, otelhttp.WithSpanNameFormatter(c.nameFormatter))
-	for _, filter := range c.filters {
-		opts = append(opts, otelhttp.WithFilter(filter))
-	}
-	return opts
+	return append(opts, otelhttp.WithSpanNameFormatter(c.nameFormatter))
 }
 
+// serverOptions gives otelhttp no filters: NewMiddleware asks them itself,
+// once per request, before otelhttp runs.
 func (c *config) serverOptions() []otelhttp.Option {
 	opts := c.commonOptions()
 	if c.publicServer {
@@ -335,16 +354,22 @@ func (c *config) serverOptions() []otelhttp.Option {
 	return opts
 }
 
+// transportOptions gives otelhttp the filters themselves: the transport has
+// no wrappers of its own, so otelhttp is the only one to ask them.
 func (c *config) transportOptions() []otelhttp.Option {
-	return c.commonOptions()
+	opts := c.commonOptions()
+	for _, filter := range c.filters {
+		opts = append(opts, otelhttp.WithFilter(filter))
+	}
+	return opts
 }
 
 // defaultSpanName names spans "METHOD pattern" when a ServeMux route
-// pattern is available, keeping cardinality bounded while staying
-// human-readable. Methods outside the semantic-convention set are named
-// "HTTP", as otelhttp does, so arbitrary request methods cannot mint new
-// span names.
-func defaultSpanName(operation string, r *http.Request) string {
+// pattern is available, and the normalized method alone otherwise, keeping
+// cardinality bounded while staying human-readable. Methods outside the
+// semantic-convention set are named "HTTP", as otelhttp does, so arbitrary
+// request methods cannot mint new span names.
+func defaultSpanName(_ string, r *http.Request) string {
 	method, _ := normalizeMethod(r.Method)
 	if method == methodOther {
 		method = "HTTP" // semconv: unknown methods name the span "HTTP"
@@ -357,9 +382,6 @@ func defaultSpanName(operation string, r *http.Request) string {
 			return r.Pattern
 		}
 		return method + " " + r.Pattern
-	}
-	if operation != "" {
-		return operation
 	}
 	return method
 }
