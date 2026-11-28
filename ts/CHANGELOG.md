@@ -116,9 +116,11 @@ adhere to [Semantic Versioning](https://semver.org/).
   metrics.
 - `@libo11y/web/internal` exports `setupWithDeps`, `defaultSetupDeps` and
   `SetupDeps`, the seam `@libo11y/rum` builds on.
-- `@libo11y/rum`: `o11y.rum.session.start` waits for the 500 ms session
-  election, so two tabs or extension contexts that create the first
-  session at once send one start. A hide sends a pending start at once.
+- `@libo11y/rum`: the `o11y.rum.session.start` of a kept session waits
+  for the 500 ms session election, so two tabs or extension contexts that
+  create the first session at once send one start. A hide sends a pending
+  start at once. An unkept session's start goes to the retention buffer at
+  once, as before.
 - `@libo11y/rum`: spans that start between a grant and the session
   loading, such as `app_load` right after a late grant, wait for the
   session and carry its `session.id` and view. This matters where the

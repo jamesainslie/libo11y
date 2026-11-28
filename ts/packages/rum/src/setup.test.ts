@@ -1656,3 +1656,17 @@ test("a start that fails releases the spans waiting for its session, so a flush 
   ]);
   assert.equal(flushed, "flushed");
 });
+
+test("an unkept session's start is buffered at once, so a reload before the election keeps it", async () => {
+  const retentionQueue = createMemoryQueue({ ...RETENTION_QUEUE_DEFAULTS });
+  const h = harness({ retentionQueue });
+  open = await setupRumWith(
+    { ...OPTS, consent: { initial: "granted" }, rum: { sessionSampleRate: 0 } },
+    h.deps,
+  );
+  await open.forceFlush();
+  await new Promise((r) => setTimeout(r, 0));
+  const bodies = (await retentionQueue.claim(Date.now(), 100, 0)).map((e) => e.body).join("\n");
+  assert.ok(bodies.includes("o11y.rum.session.start"), "the start waits in the retention buffer");
+  assert.deepEqual(sentEvents(h.transport), []);
+});

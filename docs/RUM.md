@@ -265,10 +265,12 @@ only its own records from the shared retention buffer.
 
 The same race happens when two contexts find no session stored and both
 create the first one, as an extension's side panel and content script
-can. So a client sends `o11y.rum.session.start` only after the same
-500 ms election, and only if its new session is still the one every
-context shares. A page that hides before then sends a pending start whose
-session is still current.
+can. So a client sends the `o11y.rum.session.start` of a kept session
+only after the same 500 ms election, and only if its new session is still
+the one every context shares. A page that hides before then sends a
+pending start whose session is still current. The start of a session that
+is not kept goes to the retention buffer at once: a session that lost the
+election is never kept, so its start is never sent.
 
 ### Extensions
 

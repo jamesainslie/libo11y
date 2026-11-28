@@ -786,8 +786,8 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
   // for the others' broadcasts and emits only if its successor is still the current session. An
   // unkept session that ends removes only its own records from the shared retention buffer.
   //
-  // Session start (R3f): o11y.rum.session.start waits for the same election, so only the session
-  // every context ends up sharing sends its start. That covers two tabs rotating at once and two
+  // Session start (R3f): the o11y.rum.session.start of a kept session waits for the same election,
+  // so only the session every context ends up sharing sends its start. That covers two tabs rotating at once and two
   // contexts that both find nothing stored and create the first session, as an extension's side
   // panel and content script do, each before it hears of the other's. A context whose session lost
   // abandons its start. A page that hides first sends its pending start if that session is still
@@ -822,6 +822,13 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
       if (endingSession !== undefined && e.previous?.id === endingSession.id)
         endingSession.successor = e.session.id;
       const started = e.session;
+      // An unkept session's start waits in the retention buffer and is sent only if the session is
+      // kept. A session that lost its election is abandoned and never kept, so its start is never
+      // sent, and buffering it at once means a reload before the election cannot lose it.
+      if (started.retained === undefined) {
+        sendStart(started);
+        return;
+      }
       const decide = (): void => {
         pendingStarts.delete(timer);
         if (on() && session.current()?.id === started.id) sendStart(started);
