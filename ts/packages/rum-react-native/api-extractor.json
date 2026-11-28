@@ -1,0 +1,38 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/api-extractor/v7/api-extractor.schema.json",
+  "extends": "../../api-extractor.base.json",
+  "projectFolder": ".",
+  "compiler": {
+    "overrideTsconfig": {
+      "compilerOptions": {
+        "module": "nodenext",
+        "moduleResolution": "nodenext",
+        "target": "es2023",
+        "lib": ["es2023", "dom", "dom.iterable"],
+        "strict": true,
+        "skipLibCheck": true,
+        "types": [],
+        "paths": {
+          "@libo11y/core": ["./node_modules/@libo11y/core/dist/index.d.ts"],
+          "@libo11y/react-native": ["./node_modules/@libo11y/react-native/dist/index.d.ts"],
+          "@libo11y/react-native/env": ["./node_modules/@libo11y/react-native/dist/env.d.ts"],
+          "@libo11y/react-native/expo": ["./node_modules/@libo11y/react-native/dist/expo.d.ts"],
+          "@libo11y/react-native/internal": ["./node_modules/@libo11y/react-native/dist/internal.d.ts"],
+          "@libo11y/rum": ["./node_modules/@libo11y/rum/dist/index.d.ts"],
+          "@libo11y/rum/bootstrap": ["./node_modules/@libo11y/rum/dist/bootstrap.d.ts"],
+          "@libo11y/rum/core": ["./node_modules/@libo11y/rum/dist/core.d.ts"],
+          "@libo11y/spec": ["./node_modules/@libo11y/spec/dist/index.d.ts"],
+          "@libo11y/web": ["./node_modules/@libo11y/web/dist/index.d.ts"],
+          "@libo11y/web/internal": ["./node_modules/@libo11y/web/dist/internal/index.d.ts"],
+          "@libo11y/web/portable": ["./node_modules/@libo11y/web/dist/portable.d.ts"],
+          "@libo11y/webext": ["./node_modules/@libo11y/rum/node_modules/@libo11y/webext/dist/index.d.ts"],
+          "@libo11y/webext/internal": [
+            "./node_modules/@libo11y/rum/node_modules/@libo11y/webext/dist/internal.d.ts"
+          ]
+        },
+        "preserveSymlinks": true
+      },
+      "include": ["dist"]
+    }
+  }
+}

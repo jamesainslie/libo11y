@@ -1,6 +1,6 @@
 /** The public options of setupRumReactNative and its telemetry handle. */
 import type { ReactNativeSetupOptions, ReactNativeTelemetry } from "@libo11y/react-native";
-import type { Rum, RumOptions } from "@libo11y/rum/core";
+import type { Rum, RumOptions } from "@libo11y/rum";
 
 /**
  * RUM's own options on React Native: the browser's RumOptions without URL naming, because an app
@@ -16,6 +16,7 @@ export interface RumReactNativeOptions extends Omit<RumOptions, "viewName"> {
 
 /** The options of setupRumReactNative: the setup options of `@libo11y/react-native` and RUM's own. */
 export interface RumReactNativeSetupOptions extends ReactNativeSetupOptions {
+  /** RUM's own options. */
   readonly rum?: RumReactNativeOptions;
 }
 
@@ -24,5 +25,6 @@ export interface RumReactNativeSetupOptions extends ReactNativeSetupOptions {
  * `@libo11y/rum-react` and `@libo11y/rum-connect` accept it as it is.
  */
 export interface ReactNativeRumTelemetry extends ReactNativeTelemetry {
+  /** The application's handle on RUM. */
   readonly rum: Rum;
 }
