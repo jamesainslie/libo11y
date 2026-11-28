@@ -5,8 +5,8 @@ its conventions. The conventions are part of the specification from spec
 1.1.0 on, and spec 1.3.0 adds the view summary. They live in the
 registry under [`spec/registry`](../spec/registry). Where this document and
 the registry disagree, the registry wins. Every RUM group has development
-stability. The RUM libraries themselves arrive in later releases, starting
-with `@libo11y/rum` in `ts/v0.3.0`.
+stability. The first RUM libraries, `@libo11y/rum` and its adapters, ship
+in `ts/v0.3.0`.
 
 ## Charter
 
@@ -33,18 +33,21 @@ a set of new platforms under both products, not a third product.
 | Core (setup) | `go` | `@libo11y/server` | `@libo11y/web` | `@libo11y/webext` | `@libo11y/react-native` | `Libo11y` Swift package | `libo11y-android` |
 | RUM (experience) | gateway `go/o11yrum` | none | `@libo11y/rum` | `@libo11y/rum/webext` | `@libo11y/rum-react-native` | `Libo11yRUM` | `libo11y-rum-android` |
 
-Five cells exist today: the Go core (`go`), the Bun and Node core
+Seven cells exist today: the Go core (`go`), the Bun and Node core
 (`@libo11y/server`), the browser core (`@libo11y/web`), the MV3
-extension core (`@libo11y/webext`) and the RUM gateway (`go/o11yrum`).
-The two browser cores first ship in `ts/v0.2.1`. The gateway first ships
-in `go/o11yrum/v0.1.0`, with the `ghcr.io/jamesainslie/o11yrum-gateway`
-image, and [its README](../go/o11yrum/README.md) covers configuration and
-deployment. The browser RUM cell, `@libo11y/rum`, and the MV3 extension
-RUM cell, its `@libo11y/rum/webext` entry point, are in development in
-`ts/packages/rum` and have not shipped. Its adapters for React
-(`@libo11y/rum-react`), TanStack Router (`@libo11y/rum-tanstack-router`)
-and Connect (`@libo11y/rum-connect`) are in development beside it. Every
-other named cell is planned.
+extension core (`@libo11y/webext`), the RUM gateway (`go/o11yrum`), the
+browser RUM cell (`@libo11y/rum`) and the MV3 extension RUM cell (its
+`@libo11y/rum/webext` entry point). The two browser cores first ship in
+`ts/v0.2.1`. The gateway first ships in `go/o11yrum/v0.1.0`, with the
+`ghcr.io/jamesainslie/o11yrum-gateway` image, and
+[its README](../go/o11yrum/README.md) covers configuration and
+deployment. The two RUM cells first ship in `ts/v0.3.0`, together with
+the adapters for React (`@libo11y/rum-react`), TanStack Router
+(`@libo11y/rum-tanstack-router`) and Connect (`@libo11y/rum-connect`) and
+the source map uploader `@libo11y/sourcemaps`. These five packages are not
+on npm yet. Until their first npm publish, they install from the tarballs
+attached to the `ts/v0.3.0` GitHub Release. Every other named cell is
+planned.
 
 ## Data model
 

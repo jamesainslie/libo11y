@@ -1,6 +1,6 @@
 {
   "name": "@libo11y/rum",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "private": true,
   "description": "libo11y RUM for browsers and MV3 extensions: sessions shared across tabs, consent, session sampling with a retention buffer, views, actions, frustration signals, errors with breadcrumbs, web vitals with attribution, resources and per-view summaries over @libo11y/web.",
   "license": "Apache-2.0",

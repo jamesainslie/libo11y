@@ -19,14 +19,19 @@ each release.
 | [`@libo11y/test`](packages/test)                               | the hermetic recorder, its assertions, and an in-process OTLP/HTTP sink                                                                                                                                      |
 | [`@libo11y/web`](packages/web)                                 | the browser platform: `setup` with a pluggable context manager, the browser resource, the OTLP/HTTP JSON transport with an IndexedDB retry queue, the consent gate, and `fetch`, XHR and document-load spans |
 | [`@libo11y/webext`](packages/webext)                           | the Manifest V3 extension platform: `setupWorker` for the service worker, `setupContentScript` for content scripts and extension pages, and traced runtime messaging                                         |
-| [`@libo11y/rum`](packages/rum)                                 | browser RUM over `@libo11y/web`: `setupRum`, sessions shared across tabs, session sampling with a retention buffer, and per-view summaries. In development                                                   |
-| [`@libo11y/sourcemaps`](packages/sourcemaps)                   | the `libo11y-sourcemaps` command and `uploadSourceMaps`, which upload source maps to the RUM gateway (`go/o11yrum`) for symbolication. In development                                                        |
-| [`@libo11y/rum-react`](packages/rum-react)                     | the React adapter for `@libo11y/rum`: `RumProvider`, `useRum` and `RumErrorBoundary`, which records render errors with the component stack. In development                                                   |
-| [`@libo11y/rum-tanstack-router`](packages/rum-tanstack-router) | the TanStack Router adapter for `@libo11y/rum`: `instrumentTanStackRouter` names views by route template and times soft navigations. In development                                                          |
-| [`@libo11y/rum-connect`](packages/rum-connect)                 | the Connect adapter for `@libo11y/rum`: `connectRequestNaming` names the fetch spans of Connect RPCs by service and method. In development                                                                   |
+| [`@libo11y/rum`](packages/rum)                                 | browser RUM over `@libo11y/web`: `setupRum`, sessions shared across tabs, session sampling with a retention buffer, and per-view summaries                                                                   |
+| [`@libo11y/sourcemaps`](packages/sourcemaps)                   | the `libo11y-sourcemaps` command and `uploadSourceMaps`, which upload source maps to the RUM gateway (`go/o11yrum`) for symbolication                                                                        |
+| [`@libo11y/rum-react`](packages/rum-react)                     | the React adapter for `@libo11y/rum`: `RumProvider`, `useRum` and `RumErrorBoundary`, which records render errors with the component stack                                                                   |
+| [`@libo11y/rum-tanstack-router`](packages/rum-tanstack-router) | the TanStack Router adapter for `@libo11y/rum`: `instrumentTanStackRouter` names views by route template and times soft navigations                                                                          |
+| [`@libo11y/rum-connect`](packages/rum-connect)                 | the Connect adapter for `@libo11y/rum`: `connectRequestNaming` names the fetch spans of Connect RPCs by service and method                                                                                   |
 
-`@libo11y/web` and `@libo11y/webext` first ship in `ts/v0.2.1`. `@libo11y/rum`,
-its adapters and `@libo11y/sourcemaps` have not shipped yet.
+`@libo11y/web` and `@libo11y/webext` first ship in `ts/v0.2.1`.
+`@libo11y/rum`, `@libo11y/rum-react`, `@libo11y/rum-tanstack-router`,
+`@libo11y/rum-connect` and `@libo11y/sourcemaps` first ship in
+`ts/v0.3.0`. They are not on npm yet. Until their first npm publish, they
+install from the tarballs attached to the
+[`ts/v0.3.0` GitHub Release](https://github.com/jamesainslie/libo11y/releases/tag/ts/v0.3.0),
+whose notes list the exact URLs. Every package implements spec 1.3.0.
 [docs/PARITY.md](../docs/PARITY.md) compares every capability with Go.
 
 ## Install
@@ -47,8 +52,8 @@ platform instead:
 ```sh
 npm install @libo11y/web      # pages
 npm install @libo11y/webext   # Manifest V3 service workers, content scripts and extension pages
-npm install @libo11y/rum      # RUM over @libo11y/web (in development)
-npm install @libo11y/rum-react @libo11y/rum-tanstack-router @libo11y/rum-connect   # RUM adapters (in development)
+npm install @libo11y/rum      # RUM over @libo11y/web (release tarball until it reaches npm)
+npm install @libo11y/rum-react @libo11y/rum-tanstack-router @libo11y/rum-connect   # RUM adapters (release tarballs until they reach npm)
 ```
 
 The [web README](packages/web/README.md) and the

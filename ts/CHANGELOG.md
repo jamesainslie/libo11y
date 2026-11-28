@@ -11,10 +11,20 @@ adhere to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-27
+
+This release adds browser RUM: `@libo11y/rum`, its adapters
+`@libo11y/rum-react`, `@libo11y/rum-tanstack-router` and
+`@libo11y/rum-connect`, and `@libo11y/sourcemaps`. These five packages are
+not on npm yet. Until their first npm publish they install from the
+tarballs attached to the GitHub Release for `ts/v0.3.0`, whose notes end
+with the exact `npm install` URLs. Every package now implements spec
+1.3.0.
+
 ### Added
 
-- `@libo11y/rum`, browser RUM over `@libo11y/web`. In development; it is
-  not on npm yet. `setupRum` takes the options of the web `setup` and RUM's
+- `@libo11y/rum`, browser RUM over `@libo11y/web`. It is not on npm
+  yet. `setupRum` takes the options of the web `setup` and RUM's
   own under `rum`. It shares one session across the tabs of an origin
   through `localStorage` and a `BroadcastChannel`, ending a session after
   15 minutes idle or 4 hours. It records, stores and sends nothing until
@@ -41,10 +51,10 @@ adhere to [Semantic Versioning](https://semver.org/).
   `rum` handle gains `startView`, `setViewName`, `viewRendered`,
   `addAction` and `addError`.
 - `@libo11y/rum-react`, `@libo11y/rum-tanstack-router` and
-  `@libo11y/rum-connect`, the RUM adapters. In development; they are not on
-  npm yet. `@libo11y/rum-react` has `RumProvider`, `useRum` and
-  `RumErrorBoundary`, which records a render error as `o11y.rum.error`
-  with source `boundary` and the component stack. React 18.3 and 19 are
+  `@libo11y/rum-connect`, the RUM adapters. They are not on npm yet.
+  `@libo11y/rum-react` has `RumProvider`, `useRum` and `RumErrorBoundary`,
+  which records a render error as `o11y.rum.error` with source `boundary`
+  and the component stack. React 18.3 and 19 are
   its peers. `@libo11y/rum-tanstack-router` has `instrumentTanStackRouter`,
   which names views by route template, never by URL, starts a soft view
   when a navigation changes the path, and ends the view span at the first
@@ -129,14 +139,22 @@ adhere to [Semantic Versioning](https://semver.org/).
   `bun scripts/size.ts --check` (`make ts-size`) in CI.
 - `conformance/rum-summary/`, the view summary vectors the TypeScript
   suite checks.
-- `@libo11y/sourcemaps`, a new package for Bun and Node. In development; it
-  is not on npm yet. `findSourceMaps` finds the scripts of a build that
+- `@libo11y/sourcemaps`, a new package for Bun and Node. It is not on npm
+  yet. `findSourceMaps` finds the scripts of a build that
   have an external source map, `uploadSourceMaps` uploads each map gzipped
   to the RUM gateway's `POST /_o11y/v1/sourcemaps` with a bearer token,
   retrying 429 and 5xx answers, and can delete the uploaded maps and their
   `sourceMappingURL` comments from the build output. The
   `libo11y-sourcemaps upload` command does the same from a build job and
   reads the token only from an environment variable.
+
+### Changed
+
+- `@libo11y/spec`: spec 1.3.0. `SPEC_VERSION` is `1.3.0` and `SCHEMA_URL`
+  is `https://schemas.o11y.ing/libo11y/1.3.0`, so every resource carries
+  the new schema URL. The new constants cover the view summary event and
+  its attributes, the RUM span shape marker, the RUM detail attributes and
+  `o11y.rum.app.update_id`.
 
 ### Fixed
 
@@ -550,7 +568,8 @@ adhere to [Semantic Versioning](https://semver.org/).
   protobuf. `decodeOtlpProtobuf` and `normalizeOtlp` decode and compare
   bodies directly.
 
-[Unreleased]: https://github.com/jamesainslie/libo11y/compare/ts/v0.2.1...HEAD
+[Unreleased]: https://github.com/jamesainslie/libo11y/compare/ts/v0.3.0...HEAD
+[0.3.0]: https://github.com/jamesainslie/libo11y/compare/ts/v0.2.1...ts/v0.3.0
 [0.2.1]: https://github.com/jamesainslie/libo11y/compare/ts/v0.2.0...ts/v0.2.1
 [0.2.0]: https://github.com/jamesainslie/libo11y/compare/ts/v0.1.2...ts/v0.2.0
 [0.1.2]: https://github.com/jamesainslie/libo11y/compare/ts/v0.1.1...ts/v0.1.2

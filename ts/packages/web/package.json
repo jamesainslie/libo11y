@@ -1,6 +1,6 @@
 {
   "name": "@libo11y/web",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "private": true,
   "description": "The libo11y browser platform for TypeScript: setup over the OpenTelemetry JS 3.x providers with a pluggable context manager, the browser resource, an OTLP/HTTP JSON transport with gzip, beacons and an IndexedDB retry queue, the consent gate, and fetch, XHR and document-load spans.",
   "license": "Apache-2.0",

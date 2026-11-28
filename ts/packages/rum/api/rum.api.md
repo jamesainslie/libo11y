@@ -388,7 +388,7 @@ export interface SummaryView {
 }
 
 // @public
-export const VERSION = "0.2.1";
+export const VERSION = "0.3.0";
 
 // @public (undocumented)
 export type ViewEvent = {

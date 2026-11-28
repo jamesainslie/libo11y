@@ -5,7 +5,7 @@
 # Bun, and bundle the browser packages for the browser with
 # scripts/ts-browser-bundle-check.sh.
 #
-# Usage: ts-release-check.sh [VERSION]   (default v0.2.1; `make
+# Usage: ts-release-check.sh [VERSION]   (default v0.3.0; `make
 # release-check` passes TS_RELEASE_VERSION). Every package must already
 # be at VERSION. The packages stay at 0.0.0 until a release commit moves
 # them, here and TS_RELEASE_VERSION in the Makefile, together.
@@ -13,7 +13,7 @@
 # registry for the packages' third-party dependencies.
 set -euo pipefail
 
-version="${1:-v0.2.1}"
+version="${1:-v0.3.0}"
 plain="${version#v}"
 
 repo_root="$(git rev-parse --show-toplevel)"
