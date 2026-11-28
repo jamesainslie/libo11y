@@ -16,13 +16,13 @@ are in [`CHANGELOG.md`](CHANGELOG.md).
 Install the command:
 
 ```sh
-go install github.com/jamesainslie/libo11y/go/o11yrum/cmd/o11yrum-gateway@v0.1.0
+go install github.com/jamesainslie/libo11y/go/o11yrum/cmd/o11yrum-gateway@v0.2.0
 ```
 
 Or run the container image, built for `linux/amd64` and `linux/arm64`:
 
 ```sh
-docker pull ghcr.io/jamesainslie/o11yrum-gateway:0.1.0
+docker pull ghcr.io/jamesainslie/o11yrum-gateway:0.2.0
 ```
 
 Each release tags the image `X.Y.Z`. A release without a `-prerelease`
@@ -32,11 +32,11 @@ digest. Every
 image carries build provenance, which you can check before you mirror it:
 
 ```sh
-gh attestation verify oci://ghcr.io/jamesainslie/o11yrum-gateway:0.1.0 --repo jamesainslie/libo11y
+gh attestation verify oci://ghcr.io/jamesainslie/o11yrum-gateway:0.2.0 --repo jamesainslie/libo11y
 ```
 
 Use the module as a library with `go get
-github.com/jamesainslie/libo11y/go/o11yrum@v0.1.0`. It requires
+github.com/jamesainslie/libo11y/go/o11yrum@v0.2.0`. It requires
 `github.com/jamesainslie/libo11y/go` v0.4.0 or later.
 
 ## Running the gateway

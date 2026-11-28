@@ -8,6 +8,12 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-27
+
+Session replay: the gateway stores the segments `@libo11y/rum-replay`
+uploads, serves them on an internal read API and erases them on request.
+It still requires `github.com/jamesainslie/libo11y/go` v0.4.0 or later.
+
 ### Added
 
 - Session replay ingest at `POST /_o11y/v1/replay`, off until an app sets
@@ -149,5 +155,6 @@ v0.4.0 or later.
   store is configured, published by the release
   workflow with attested build provenance.
 
-[Unreleased]: https://github.com/jamesainslie/libo11y/compare/go/o11yrum/v0.1.0...HEAD
+[Unreleased]: https://github.com/jamesainslie/libo11y/compare/go/o11yrum/v0.2.0...HEAD
+[0.2.0]: https://github.com/jamesainslie/libo11y/compare/go/o11yrum/v0.1.0...go/o11yrum/v0.2.0
 [0.1.0]: https://github.com/jamesainslie/libo11y/releases/tag/go/o11yrum/v0.1.0

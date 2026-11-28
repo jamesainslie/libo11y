@@ -131,8 +131,8 @@ forwards it to your collector. It also stores session replay from
 on request. Install the command or pull the image:
 
 ```sh
-go install github.com/jamesainslie/libo11y/go/o11yrum/cmd/o11yrum-gateway@v0.1.0
-docker pull ghcr.io/jamesainslie/o11yrum-gateway:0.1.0
+go install github.com/jamesainslie/libo11y/go/o11yrum/cmd/o11yrum-gateway@v0.2.0
+docker pull ghcr.io/jamesainslie/o11yrum-gateway:0.2.0
 ```
 
 [`go/o11yrum/README.md`](go/o11yrum/README.md) covers configuration and

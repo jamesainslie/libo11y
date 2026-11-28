@@ -188,7 +188,7 @@ C_RELEASE_VERSION ?= v0.1.0
 # o11yrum-release-check.sh validates and the release workflow requires to
 # match the tag. Moves only in a release commit, together with the
 # script's default and a dated go/o11yrum/CHANGELOG.md section.
-O11YRUM_RELEASE_VERSION ?= v0.1.0
+O11YRUM_RELEASE_VERSION ?= v0.2.0
 
 # The ops pack version (ops/vX.Y.Z), which ops-release-check.sh validates
 # against ops/internal/version/version.go, ops/CHANGELOG.md and the

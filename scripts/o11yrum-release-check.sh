@@ -10,13 +10,13 @@
 #
 # Needs git, go and jq.
 #
-# Usage: o11yrum-release-check.sh [VERSION]   (default v0.1.0; `make
+# Usage: o11yrum-release-check.sh [VERSION]   (default v0.2.0; `make
 # o11yrum-release-check` and `make release-check` pass
 # O11YRUM_RELEASE_VERSION). A release commit moves the default here and in
 # the Makefile together.
 set -euo pipefail
 
-version="${1:-v0.1.0}"
+version="${1:-v0.2.0}"
 module="github.com/jamesainslie/libo11y"
 
 work="$(mktemp -d)"
