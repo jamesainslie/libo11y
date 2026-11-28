@@ -170,7 +170,7 @@ class LogbackAppenderTest {
                     .findFirst()
                     .orElseThrow();
             assertFalse(entry.message().contains("4111111111114242"), entry.message());
-            assertTrue(entry.message().contains("****4242"), entry.message());
+            assertTrue(entry.message().contains("cardNumber=XXXXXXXXXXXXXXXX"), entry.message());
         }
     }
 }
