@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Generated spec constants, tables, and `GoPrint` ranges (`Libo11y::Spec`, spec 1.3.0) and strict `yaml.v3`-compatible application attribute registry validator passing all 46 shared conformance cases, plus `exe/libo11y registry check`.
 - Single `SensitivityPolicy` across resource, spans, metrics (PII always dropped), and structured logs, matching all shared PII hash, instance ID, and endpoint sanitization conformance vectors.
 - Capture-time redaction (`Libo11y::Redact::Secret`, `Masked`, `Fields`), wide events (`Record`), `force_emit`, detached propagation (`Libo11y::Detached`), child-process propagation (`Libo11y::Proc`), and zero-dependency Ruby/process runtime metrics.
-- Integrations: `Libo11y::Rack::Middleware`, `Libo11y::HttpClient`, and `Libo11y::DB::Client`.
+- Integrations: `Libo11y::Rack::Middleware`, `Libo11y::HttpClient`, and `Libo11y::DB::Client`. The DB client removes literals and comments with the same dialect-aware lexer as `go/o11ysql` (PostgreSQL dollar quoting, escape strings and nested comments, MySQL backslash escapes, double-quoted strings, `#` and versioned comments, SQLite parameters), records `db.query.text` only for `postgresql`, `sqlite`, `mysql` and `mariadb`, capped at 4096 bytes, names the span after the operation and table, and never records a driver's error message.
 - Hermetic test harness (`Libo11y::Testing::Recorder` and `OtlpHttpReceiver`). `OtlpHttpReceiver` serves through WEBrick, which the gem does not depend on. A consumer adds `gem "webrick"` to its test group.
 
 [Unreleased]: https://github.com/jamesainslie/libo11y/compare/ruby/v0.1.0...HEAD
