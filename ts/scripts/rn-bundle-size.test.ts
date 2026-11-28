@@ -92,6 +92,18 @@ test("groups sum the bytes of sources inside node_modules/<group>/", () => {
   assert.deepEqual(sums, { "@libo11y": 6, "@opentelemetry": 3, "@expo": 0 });
 });
 
+test("a package nested inside another counts for its own group only", () => {
+  const sums = groupSums(
+    new Map([
+      ["node_modules/@libo11y/web/node_modules/@opentelemetry/core/dist/index.mjs", 10],
+      ["node_modules/@libo11y/web/dist/index.js", 5],
+      ["node_modules/@opentelemetry/api/build/esm/index.js", 2],
+    ]),
+    ["@libo11y", "@opentelemetry"],
+  );
+  assert.deepEqual(sums, { "@libo11y": 5, "@opentelemetry": 12 });
+});
+
 test("a package bundled from both its CommonJS and its ESM build is a duplicate", () => {
   assert.deepEqual(
     duplicatePackages([
@@ -188,6 +200,16 @@ test("--check fails when a group is over its budget, and without --check it only
     assert.equal(main([...f.args, "--check"]), 1);
     assert.match(readFileSync(f.summary, "utf8"), /\| @libo11y \| 6 \| 5 \| over \|/);
     assert.equal(main(f.args), 0);
+  } finally {
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+test("--check fails when a group measures nothing, so a change in source paths cannot pass it", () => {
+  const f = fixture({ "@libo11y": 6, "@opentelemetry": 3, "@expo": 100 });
+  try {
+    assert.equal(main([...f.args, "--check"]), 1);
+    assert.match(readFileSync(f.summary, "utf8"), /\| @expo \| 0 \| 100 \| none \|/);
   } finally {
     rmSync(f.dir, { recursive: true, force: true });
   }

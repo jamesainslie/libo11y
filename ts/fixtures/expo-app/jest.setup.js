@@ -52,6 +52,14 @@ jest.mock("expo-file-system", () => {
     delete() {
       if (!files.delete(this.uri)) throw new Error(`no file ${this.uri}`);
     }
+    async move(destination, options = {}) {
+      if (!files.has(this.uri)) throw new Error(`no file ${this.uri}`);
+      if (files.has(destination.uri) && options.overwrite !== true)
+        throw new Error(`${destination.uri} exists`);
+      files.set(destination.uri, files.get(this.uri));
+      files.delete(this.uri);
+      this.uri = destination.uri;
+    }
   }
   global.__fixtureFiles = files;
   return { Directory, File, Paths: { document: new Directory("file:///document") } };

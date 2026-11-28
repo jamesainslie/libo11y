@@ -93,7 +93,8 @@ ts-size: ts-install
 ts-rn-check: ts-install
 	bash ts/scripts/rn-fixture.sh
 	cd ts/fixtures/expo-app && bun run typecheck && bun run test && bun run export:native && bun run export:size
-	cd ts && set -- fixtures/expo-app/dist-size/_expo/static/js/android/*.js.map && [ "$$#" -eq 1 ] && [ -f "$$1" ] \
+	cd ts && set -- fixtures/expo-app/dist-size/_expo/static/js/android/*.js.map \
+		&& { [ "$$#" -eq 1 ] && [ -f "$$1" ] || { echo "ts-rn-check: expected one Android source map, found: $$*" >&2; exit 1; }; } \
 		&& bun scripts/rn-bundle-size.ts --check --summary "$${GITHUB_STEP_SUMMARY:-/dev/null}" --map "$$1" --bundle "$${1%.map}"
 
 # Browser suites under Playwright: @libo11y/web and @libo11y/webext in

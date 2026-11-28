@@ -142,16 +142,28 @@ export function attribute(code: string, map: SourceMap): Attribution {
   return { bySource, unmapped, total: encoder.encode(code).length };
 }
 
-/** The bytes of the sources inside node_modules/<group>/ for each group, such as "@libo11y". */
+/**
+ * The bytes of the sources of each group, such as "@libo11y". A source belongs to the package of
+ * its last node_modules/ segment, so an @opentelemetry package nested inside an @libo11y one
+ * counts for @opentelemetry only.
+ */
 export function groupSums(
   bySource: ReadonlyMap<string, number>,
   groups: readonly string[],
 ): Record<string, number> {
   const sums: Record<string, number> = Object.fromEntries(groups.map((g) => [g, 0]));
   for (const [source, bytes] of bySource) {
-    for (const g of groups) if (source.includes(`node_modules/${g}/`)) sums[g] = (sums[g] ?? 0) + bytes;
+    const g = groupOf(source, groups);
+    if (g !== undefined) sums[g] = (sums[g] ?? 0) + bytes;
   }
   return sums;
+}
+
+/** The group the package of source belongs to: its scope or its name. */
+function groupOf(source: string, groups: readonly string[]): string | undefined {
+  const name = packageOf(source)?.name;
+  if (name === undefined) return undefined;
+  return groups.find((g) => name === g || name.startsWith(`${g}/`));
 }
 
 /** The installed directory and the name of the package a source belongs to, from its last node_modules. */
@@ -165,7 +177,9 @@ function packageOf(source: string): { dir: string; name: string } | undefined {
 
 /**
  * The packages, by name and sorted, that sources reach from more than one installed copy, or from
- * both their CommonJS (.cjs) and their ESM (.mjs) build in one copy.
+ * both their CommonJS (.cjs) and their ESM (.mjs) build in one copy. Builds told apart only by
+ * directory, such as build/src and build/esm, are not detected. OpenTelemetry JS 3.x ships .cjs
+ * and .mjs.
  */
 export function duplicatePackages(sources: Iterable<string>): string[] {
   const copies = new Map<string, Map<string, Set<string>>>();
@@ -190,6 +204,7 @@ export interface GroupRow {
   readonly group: string;
   readonly bytes: number;
   readonly budget: number;
+  /** Over its budget. */
   readonly over: boolean;
 }
 
@@ -197,7 +212,9 @@ export function formatTable(rows: readonly GroupRow[], duplicates: readonly stri
   const lines = [
     "| Group | Bytes | Budget | Status |",
     "|---|---|---|---|",
-    ...rows.map((r) => `| ${r.group} | ${r.bytes} | ${r.budget} | ${r.over ? "over" : "ok"} |`),
+    ...rows.map(
+      (r) => `| ${r.group} | ${r.bytes} | ${r.budget} | ${r.over ? "over" : r.bytes === 0 ? "none" : "ok"} |`,
+    ),
   ];
   if (duplicates.length > 0) lines.push("", `Bundled twice: ${duplicates.join(", ")}`);
   return lines.join("\n");
@@ -229,13 +246,14 @@ export function main(args: readonly string[]): number {
     return { group, bytes, budget: limit, over: bytes > limit };
   });
   const duplicates = duplicatePackages(
-    [...a.bySource.keys()].filter((s) => groups.some((g) => s.includes(`node_modules/${g}/`))),
+    [...a.bySource.keys()].filter((s) => groupOf(s, groups) !== undefined),
   );
   const table = formatTable(rows, duplicates);
   console.log(`${table}\n\n${budget.unit}; the whole bundle is ${a.total} bytes.`);
   const summary = flag(args, "--summary");
   if (summary !== undefined) appendFileSync(summary, `### React Native bundle budget\n\n${table}\n`);
-  const failed = rows.some((r) => r.over) || duplicates.length > 0;
+  // A group that measures nothing means the source paths changed, not that the bytes went away.
+  const failed = rows.some((r) => r.over || r.bytes === 0) || duplicates.length > 0;
   return args.includes("--check") && failed ? 1 : 0;
 }
 
