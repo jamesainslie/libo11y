@@ -242,6 +242,27 @@ test("it flushes on hide where there is a document", async () => {
   });
 });
 
+test("a flush on hide that fails is reported once through the telemetry's own reporter", async () => {
+  const r = rig();
+  const failing = {
+    onStart: () => {},
+    onEnd: () => {},
+    forceFlush: () => Promise.reject(new Error("collector at https://secret.example")),
+    shutdown: async () => {},
+  };
+  await withContent(r, { ...BASE, spanProcessor: failing }, async (h) => {
+    const reports: Error[] = [];
+    (h as unknown as Record<symbol, unknown>)[Symbol.for("libo11y.report")] = (err: Error) =>
+      reports.push(err);
+    const report = (await r.seen.hide[0]?.flush()) as { ok: boolean };
+    assert.equal(report.ok, false);
+    assert.deepEqual(
+      reports.map((e) => e.message),
+      ["o11y: flush on hide failed: traces (Error)"],
+    );
+  });
+});
+
 test("revoke clears the delivery", async () => {
   const r = rig({ stored: "granted" });
   await withContent(r, BASE, async (h) => {

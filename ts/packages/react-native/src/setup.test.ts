@@ -6,6 +6,32 @@ import { openStorageQueue } from "./storage/queue.ts";
 import { fakeStorage } from "./test-support/fake-storage.ts";
 import { rnHarness, settle, TRACE_NETWORK, until } from "./test-support/harness.ts";
 
+test("going to the background with a flush that fails reports it once through the telemetry's own reporter", async () => {
+  const h = await rnHarness({
+    consent: { initial: "granted" },
+    spanProcessor: {
+      onStart: () => {},
+      onEnd: () => {},
+      forceFlush: () => Promise.reject(new Error("collector at https://secret.example")),
+      shutdown: async () => {},
+    },
+  });
+  const reports: Error[] = [];
+  (h.telemetry as unknown as Record<symbol, unknown>)[Symbol.for("libo11y.report")] = (err: Error) =>
+    reports.push(err);
+  try {
+    h.env.setAppState("background");
+    await until(() => reports.length > 0);
+    await settle();
+    assert.deepEqual(
+      reports.map((r) => r.message),
+      ["o11y: react-native: flush on background failed: traces (Error)"],
+    );
+  } finally {
+    await h.telemetry.shutdown();
+  }
+});
+
 test("nothing is recorded, stored or sent before consent; a grant sends, saving the batch first", async () => {
   const h = await rnHarness();
   assert.equal(h.telemetry.consent.state(), "pending");

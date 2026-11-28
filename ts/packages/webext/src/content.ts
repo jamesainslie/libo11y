@@ -34,6 +34,7 @@ import {
   type WebPlatformOptions,
   webPlatform,
 } from "@libo11y/web/internal";
+import { flushInBackground } from "@libo11y/web/portable";
 import { diag } from "@opentelemetry/api";
 import { type ChromeLike, getChrome } from "./chrome.ts";
 import { readStoredConsent, syncConsent } from "./consent-sync.ts";
@@ -192,7 +193,8 @@ export async function setupContentScriptWith(
 
   const core = telemetry;
   const doc = deps.document;
-  if (doc !== undefined) steps.unshift(deps.installFlushOnHide(doc, deps.window, () => core.forceFlush()));
+  if (doc !== undefined)
+    steps.unshift(deps.installFlushOnHide(doc, deps.window, () => flushInBackground(core, "flush on hide")));
   steps.unshift(
     // The queue is emptied first, whatever the flush does, as on a page.
     controller.onRevoke(async () => {

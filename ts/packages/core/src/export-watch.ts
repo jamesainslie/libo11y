@@ -6,7 +6,9 @@
  * global error handler and then resolve their flush and shutdown, so a caller that awaits them never
  * learns the telemetry was lost. The watch sits between the processor and the exporter. A flush or
  * a shutdown observes it while it runs, and adds the first export that failed in that time to its
- * report.
+ * report. An export that fails while nothing observes, as one the batch timer or the periodic
+ * reader starts on its own does, goes to the watch's onUnobserved instead, so the telemetry can
+ * say the signal was dropped. A failure reaches one of the two, never both, so it is told once.
  *
  * Stopping. An exporter that never answers leaves two things behind after the shutdown deadline:
  * the processor's export timer, which keeps the process alive until it fires, and whatever the
@@ -56,10 +58,16 @@ export class ExportWatch {
   /** Each export waiting for its result, with the promise that resolves when it has reported. */
   private readonly pending = new Map<(result: ExportResult) => void, Promise<void>>();
   private readonly stops: (() => void)[] = [];
+  private readonly onUnobserved: ((error: unknown) => void) | undefined;
 
-  /** timeoutMillis is how long one export may take to report its result: the export timeout. */
-  constructor(timeoutMillis: number) {
+  /**
+   * timeoutMillis is how long one export may take to report its result: the export timeout.
+   * onUnobserved hears of each export that fails while no flush or shutdown observes the watch and
+   * before it is closed. An export close() fails is left out: the shutdown that closes reports it.
+   */
+  constructor(timeoutMillis: number, onUnobserved?: (error: unknown) => void) {
     this.timeoutMillis = timeoutMillis;
+    this.onUnobserved = onUnobserved;
   }
 
   /**
@@ -140,7 +148,8 @@ export class ExportWatch {
           this.pending.delete(settle);
           if (result.code !== ExportResultCode.SUCCESS) {
             const error = result.error ?? new Error("the export failed");
-            for (const observer of this.observers) observer(error);
+            if (this.observers.size > 0) for (const observer of this.observers) observer(error);
+            else if (!this.closed) this.unobserved(error);
           }
           try {
             resultCallback(result);
@@ -164,6 +173,14 @@ export class ExportWatch {
         if (!this.closed) await stop();
       },
     };
+  }
+
+  private unobserved(error: unknown): void {
+    try {
+      this.onUnobserved?.(error);
+    } catch {
+      // Reporting is best effort, and must not keep the result from the processor.
+    }
   }
 
   /**

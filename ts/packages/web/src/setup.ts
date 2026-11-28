@@ -10,6 +10,7 @@ import {
   type TelemetryOptions,
 } from "@libo11y/core";
 import { diag } from "@opentelemetry/api";
+import { flushInBackground } from "./background-flush.ts";
 import { activeConsent, setActiveConsent } from "./consent/active.ts";
 import { createConsentController } from "./consent/controller.ts";
 import type { ConsentController, ConsentControllerOptions } from "./contracts/consent.ts";
@@ -203,7 +204,8 @@ export async function setupWithDeps(
       : await createTelemetryWith(coreOptions, platform);
     built = telemetry;
 
-    if (doc !== undefined) listeners.push(installFlushOnHide(doc, win, () => telemetry.forceFlush()));
+    if (doc !== undefined)
+      listeners.push(installFlushOnHide(doc, win, () => flushInBackground(telemetry, "flush on hide")));
   } catch (err) {
     const d = delivery;
     const t = built;

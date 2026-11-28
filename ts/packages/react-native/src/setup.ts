@@ -17,6 +17,7 @@ import {
   type createExporterSet,
   type Delivery,
   type DeliveryOptions,
+  flushInBackground,
   type HttpTransportOptions,
   OTLP_SIGNALS,
   type PersistentQueue,
@@ -197,10 +198,8 @@ export async function setupReactNativeWith(
     listeners.push(
       deps.lifecycle.subscribe((visible) => {
         if (visible) void d.drain();
-        else
-          void telemetry
-            .forceFlush()
-            .catch((err: unknown) => diag.warn("libo11y: react-native: flush failed", err));
+        // flushInBackground never rejects, and says a flush that lost telemetry.
+        else void flushInBackground(telemetry, "react-native: flush on background");
       }),
     );
   } catch (err) {

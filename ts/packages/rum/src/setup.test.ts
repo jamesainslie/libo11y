@@ -532,6 +532,34 @@ test("rum.addError retains an unkept session and sends the error with its breadc
   assert.equal(runtimeOf(open)?.session.kept(), true);
 });
 
+test("a retention flush that fails is reported once through the telemetry's own reporter", async () => {
+  const h = harness();
+  open = await setupRumWith(
+    {
+      ...OPTS,
+      consent: { initial: "granted" },
+      rum: { sessionSampleRate: 0 },
+      spanProcessor: {
+        onStart: () => {},
+        onEnd: () => {},
+        forceFlush: () => Promise.reject(new Error("collector at https://secret.example")),
+        shutdown: async () => {},
+      },
+    },
+    h.deps,
+  );
+  const reports: Error[] = [];
+  (open as unknown as Record<symbol, unknown>)[Symbol.for("libo11y.report")] = (err: Error) =>
+    reports.push(err);
+  // An error keeps the unkept session, and a kept session flushes what it retained.
+  open.rum.addError(new Error("x"));
+  await until(() => reports.length > 0, "the retention flush report");
+  assert.deepEqual(
+    reports.map((r) => r.message),
+    ["o11y: rum: retention flush failed: traces (Error)"],
+  );
+});
+
 test("rum.addError with a boundary source and component stack", async () => {
   const h = harness();
   open = await setupRumWith({ ...OPTS, consent: { initial: "granted" } }, h.deps);

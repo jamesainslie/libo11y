@@ -4,7 +4,12 @@
  */
 
 /** Seams a test may set before createTelemetryWith. */
-export const seams: { baggageEgress: ((key: string) => boolean) | undefined } = {
+export const seams: {
+  baggageEgress: ((key: string) => boolean) | undefined;
+  now: (() => number) | undefined;
+} = {
   /** The baggage egress predicate. Undefined means allow every key. */
   baggageEgress: undefined,
+  /** The clock the rate limits on o11y.telemetry.dropped read. Undefined means Date.now. */
+  now: undefined,
 };

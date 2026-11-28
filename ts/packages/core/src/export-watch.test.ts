@@ -236,3 +236,48 @@ test("close survives an exporter whose shutdown rejects and a processor whose ca
   assert.doesNotThrow(() => watch.close());
   await tick();
 });
+
+test("a failure with nothing observing goes to onUnobserved, and one an observation sees does not", () => {
+  const unobserved: string[] = [];
+  const watch = new ExportWatch(1000, (error) => unobserved.push((error as Error).message));
+  const { exporter, callbacks } = manual();
+  const watched = watch.watch(exporter);
+  const results: ExportResult[] = [];
+
+  watched.export("timer", (r) => results.push(r));
+  callbacks[0]?.({ code: 1, error: new Error("background") });
+  watched.export("ok", (r) => results.push(r));
+  callbacks[1]?.(OK);
+
+  const seen = watch.observe();
+  watched.export("flush", (r) => results.push(r));
+  callbacks[2]?.({ code: 1, error: new Error("during the flush") });
+  seen.end();
+
+  assert.deepEqual(unobserved, ["background"]);
+  assert.equal(seenMessage(seen), "during the flush");
+  assert.deepEqual(
+    results.map((r) => r.code),
+    [1, 0, 1],
+  );
+});
+
+test("an export close fails is not unobserved: the shutdown that closes reports it", () => {
+  const unobserved: unknown[] = [];
+  const watch = new ExportWatch(60_000, (error) => unobserved.push(error));
+  const { exporter } = manual();
+  watch.watch(exporter).export("stuck", () => {});
+  watch.close();
+  assert.deepEqual(unobserved, []);
+});
+
+test("an onUnobserved that throws does not keep the result from the processor", () => {
+  const watch = new ExportWatch(1000, () => {
+    throw new Error("reporter broke");
+  });
+  const { exporter, callbacks } = manual();
+  const results: ExportResult[] = [];
+  watch.watch(exporter).export("a", (r) => results.push(r));
+  assert.doesNotThrow(() => callbacks[0]?.({ code: 1, error: new Error("lost") }));
+  assert.equal(results[0]?.code, 1);
+});

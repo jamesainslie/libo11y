@@ -7,6 +7,7 @@
  * has no API report.
  */
 
+export { flushInBackground, reportFlush } from "./background-flush.ts";
 export { activeConsent, setActiveConsent } from "./consent/active.ts";
 export { createConsentController } from "./consent/controller.ts";
 export { privacySignalDenies } from "./consent/privacy-signals.ts";

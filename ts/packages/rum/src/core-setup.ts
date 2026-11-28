@@ -48,6 +48,7 @@ import {
   type PersistentQueue,
   pristineFetch,
   type QueueOptions,
+  reportFlush,
   type SignalEndpoints,
 } from "@libo11y/web/portable";
 import { type Attributes, diag, ROOT_CONTEXT, SeverityNumber, type Span } from "@opentelemetry/api";
@@ -784,7 +785,7 @@ export async function setupRumCore<O extends RumPlatformOptions, T extends Telem
   };
 
   const flushRetention = async (): Promise<void> => {
-    await t.forceFlush();
+    reportFlush(t, "rum: retention flush", await t.forceFlush());
     await settled();
     if (delivery !== undefined && gate.recording()) await retention.flush(delivery, keep);
   };
