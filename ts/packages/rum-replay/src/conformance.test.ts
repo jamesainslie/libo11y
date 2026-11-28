@@ -19,6 +19,7 @@ interface ScrubVector {
   readonly query_allow_list: readonly string[];
   readonly text_allowed_ids: readonly number[];
   readonly editable_ids: readonly number[];
+  readonly blocked_ids: readonly number[];
   readonly parent_tags: Readonly<Record<string, string>>;
   readonly secrets: readonly string[];
   readonly allowed_texts: readonly string[];
@@ -58,10 +59,12 @@ test("there are scrub vectors", () => {
 function run(v: ScrubVector, allowedIds: ReadonlySet<number>): RrwebEvent[] {
   const policy = resolvePolicy(undefined, new Set(v.query_allow_list));
   const editable = new Set(v.editable_ids);
+  const blocked = new Set(v.blocked_ids);
   const ctx: ScrubContext = {
     textAllowed: (id) => allowedIds.has(id),
     parentTag: (id) => v.parent_tags[String(id)],
     editable: (id) => editable.has(id),
+    blocked: (id) => blocked.has(id),
   };
   return v.events.map((e) => scrubEvent(e, policy, ctx)).filter((e) => e !== undefined);
 }

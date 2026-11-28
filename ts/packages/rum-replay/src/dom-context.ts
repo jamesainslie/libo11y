@@ -1,29 +1,39 @@
 /**
  * The DOM-backed ScrubContext: what the scrubber needs to know about a node it cannot see in the
  * event itself, read from the live page through rrweb's mirror (R6b wires getNode to
- * record.mirror.getNode).
+ * record.mirror.getNode). The collector must scrub synchronously inside rrweb's emit callback,
+ * while the DOM still matches the event: a node read later may have moved or been detached.
  *
- * textAllowed(id) takes the node's element (a text node's parent element, or the host when its
- * parent is a shadow root) and decides, in this order:
- * 1. false under a block selector, then false under a mask selector (FIXED_MASK, code, remote);
- * 2. true for a style or link element, so stylesheets survive (their URLs are still stripped);
- * 3. true under an unmask selector, and only when the code's unmask list is not empty;
- * 4. false otherwise.
- * "Under" is composed: the walk continues from a shadow root to its host and from a same-origin
- * iframe's document to the iframe element, so a mask or block on a host or an iframe covers what is
- * inside it. Markup never unmasks: data-o11y-unmask counts only when the code lists it. An unknown
- * node, a detached node or a selector that throws is never allowed.
+ * Every question walks the node's element and its composed ancestors: a slotted element continues
+ * at its slot, an element at the top of a shadow tree at the host, and the root of a same-origin
+ * iframe's document at the iframe element. So a mask or block on a host, around a slot or on an
+ * iframe covers what renders inside it. A text node's element is its parent element, or the host
+ * when its parent is a shadow root.
  *
- * editable(id) is true inside a textarea or a contenteditable element (composed the same way), for
- * an element whose isContentEditable is true, and in a document in designMode.
+ * - blocked(id): under a block selector (FIXED_BLOCK, code, remote).
+ * - textAllowed(id), in this order: false when blocked, false under a mask selector, true for a
+ *   style or link element (so stylesheets survive; the scrubber still masks their text
+ *   attributes and strips their URLs), true under an unmask selector when the code's unmask list
+ *   is not empty, false otherwise. Markup never unmasks: data-o11y-unmask counts only when the
+ *   code lists it.
+ * - editable(id): isContentEditable, a document in designMode, or under a textarea or a
+ *   contenteditable element.
+ *
+ * Every answer fails closed. An unknown or detached node is not allowed and not editable (the
+ * scrubber masks it). A selector that throws, or a walk longer than MAX_HOPS, counts as blocked,
+ * masked and editable, and never as unmasked.
  */
 import type { ReplayPolicy } from "./policy.ts";
 import type { ScrubContext } from "./scrub.ts";
 
 const EDITABLE = 'textarea, [contenteditable]:not([contenteditable="false"])';
 const STYLESHEET_TAGS: ReadonlySet<string> = new Set(["style", "link"]);
+/** The longest composed ancestor walk. A longer one fails closed. */
+export const MAX_HOPS = 4096;
 
 const lower = (s: string): string => s.replace(/[A-Z]/g, (c) => c.toLowerCase());
+
+type Walk = "match" | "none" | "unknown";
 
 /** The element a node's text and attributes belong to, or null when it has none. */
 function elementOf(node: Node | null): Element | null {
@@ -34,21 +44,31 @@ function elementOf(node: Node | null): Element | null {
   return parent !== null && parent.nodeType === 11 && parent.host !== undefined ? parent.host : null;
 }
 
-/** Whether el or an ancestor, across shadow roots and same-origin iframes, matches selectors. Throws on a bad selector. */
-function composedClosest(start: Element, selectors: string): boolean {
-  let el: Element | null = start;
-  for (let hops = 0; el !== null && hops < 64; hops++) {
-    if (el.closest(selectors) !== null) return true;
-    const root = el.getRootNode() as Node & { host?: Element; defaultView?: Window | null };
-    if (root.nodeType === 11 && root.host !== undefined) {
-      el = root.host;
-    } else if (root.nodeType === 9) {
-      el = (root.defaultView?.frameElement as Element | null | undefined) ?? null;
-    } else {
-      el = null;
+/** el's parent in the composed tree, across slots, shadow roots and same-origin iframes. */
+function composedParent(el: Element): Element | null {
+  const slot = (el as Element & { assignedSlot?: Element | null }).assignedSlot;
+  if (slot !== null && slot !== undefined) return slot;
+  if (el.parentElement !== null) return el.parentElement;
+  const root = el.getRootNode() as Node & { host?: Element; defaultView?: Window | null };
+  if (root.nodeType === 11 && root.host !== undefined) return root.host;
+  if (root.nodeType === 9) return (root.defaultView?.frameElement as Element | null | undefined) ?? null;
+  return null;
+}
+
+/** Whether el or a composed ancestor matches selectors. "unknown" when a selector throws or the walk is too long. */
+function walk(start: Element, selectors: string): Walk {
+  if (selectors === "") return "none";
+  try {
+    let el: Element | null = start;
+    for (let hops = 0; hops < MAX_HOPS; hops++) {
+      if (el === null) return "none";
+      if (el.matches(selectors)) return "match";
+      el = composedParent(el);
     }
+    return "unknown";
+  } catch {
+    return "unknown";
   }
-  return false;
 }
 
 /** A ScrubContext over the live DOM. getNode resolves an rrweb node id. See the file comment. */
@@ -56,41 +76,43 @@ export function domScrubContext(policy: ReplayPolicy, getNode: (id: number) => N
   const block = policy.block.join(",");
   const mask = policy.mask.join(",");
   const unmask = policy.unmask.join(",");
-  const get = (id: number): Node | null => {
+  const element = (id: number): Element | null => {
     try {
-      return getNode(id);
+      return elementOf(getNode(id));
     } catch {
       return null;
     }
   };
   return {
+    blocked(id: number): boolean {
+      const el = element(id);
+      return el !== null && walk(el, block) !== "none";
+    },
     textAllowed(id: number): boolean {
-      const el = elementOf(get(id));
+      const el = element(id);
       if (el === null) return false;
-      try {
-        if (block !== "" && composedClosest(el, block)) return false;
-        if (composedClosest(el, mask)) return false;
-        if (STYLESHEET_TAGS.has(lower(el.tagName))) return true;
-        return unmask !== "" && composedClosest(el, unmask);
-      } catch {
-        return false;
-      }
+      if (walk(el, block) !== "none" || walk(el, mask) !== "none") return false;
+      if (STYLESHEET_TAGS.has(lower(el.tagName))) return true;
+      return walk(el, unmask) === "match";
     },
     parentTag(id: number): string | undefined {
-      const tag = get(id)?.parentElement?.tagName;
-      return tag === undefined ? undefined : lower(tag);
+      try {
+        const tag = getNode(id)?.parentElement?.tagName;
+        return tag === undefined ? undefined : lower(tag);
+      } catch {
+        return undefined;
+      }
     },
     editable(id: number): boolean {
-      const el = elementOf(get(id));
+      const el = element(id);
       if (el === null) return false;
       try {
         if ((el as HTMLElement).isContentEditable === true) return true;
         if (el.ownerDocument?.designMode === "on") return true;
-        return composedClosest(el, EDITABLE);
       } catch {
-        // A context that cannot tell treats the node as editable: its text is dropped.
         return true;
       }
+      return walk(el, EDITABLE) !== "none";
     },
   };
 }

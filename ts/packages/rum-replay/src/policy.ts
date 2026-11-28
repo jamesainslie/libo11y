@@ -107,8 +107,6 @@ export const KEPT_ATTRIBUTES: ReadonlySet<string> = new Set([
   // ARIA state and relations, never ARIA text
   "aria-hidden",
   "aria-expanded",
-  "aria-selected",
-  "aria-checked",
   "aria-current",
   "aria-disabled",
   "aria-busy",

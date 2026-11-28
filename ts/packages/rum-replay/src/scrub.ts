@@ -20,17 +20,24 @@
  *   editable (under a textarea or a contenteditable element, or editable by the context) is "".
  *   Text under style follows the same rule and, when kept, has its URLs stripped.
  * - Within one tree, the fixed rules hold whatever the context says: everything under input,
- *   textarea, select, option, a contenteditable element or [data-o11y-mask] is masked, and an
- *   element with data-o11y-block keeps only its class and rrweb's size, and no children.
+ *   textarea, select, option, a contenteditable element or [data-o11y-mask] is masked.
+ * - A blocked element (data-o11y-block, or blocked by the context: code and remote block
+ *   selectors) keeps only class, rr_width and rr_height, and no children.
  * - Comments and CDATA have their text emptied.
  * - Attributes follow the allow-list in policy.ts. Masked attributes follow their element's text
- *   rule; the inlined stylesheet (_cssText) is kept, URLs stripped, only when its element's text is
- *   allowed.
+ *   rule, and are always masked on style and link elements. The inlined stylesheet (_cssText) is
+ *   kept, URLs stripped, only when its element's text is allowed. On editable content every URL
+ *   and CSS attribute is dropped, since links, images and styles there are user content.
  * - Trees deeper than MAX_DEPTH lose the children past it.
  *
- * Mutations: text changes follow the text rule of their node, attribute changes the attribute rules
- * (a removal, null, is kept only for an attribute the scrubber would keep; a style diff keeps its
- * properties with URLs stripped), removes and adds keep their own fields.
+ * Mutations: text changes follow the text rule of their node and are dropped on a blocked node.
+ * Attribute changes follow the attribute rules (a removal, null, is kept only for an attribute the
+ * scrubber would keep; a style diff keeps its properties with URLs stripped), and on a blocked node
+ * keep only the placeholder attributes. An added node under a blocked parent is dropped. Removes
+ * and adds keep their own fields.
+ *
+ * Selection ranges that start or end in editable content are dropped, since their offsets track
+ * the caret. A CSS declaration's priority is kept only when it is "important" or "".
  *
  * The scrubber never mutates its input. It returns new objects.
  */
@@ -56,12 +63,23 @@ export interface ScrubContext {
   parentTag(id: number): string | undefined;
   /** True when node id is user-editable content (in a textarea or a contenteditable element), whose text is never recorded. */
   editable(id: number): boolean;
+  /** True when node id is under a block selector (fixed, code or remote): it is a placeholder, and nothing inside it is recorded. */
+  blocked(id: number): boolean;
 }
 
 /** Trees are cut below this depth, so a pathological page cannot overflow the stack. */
 export const MAX_DEPTH = 1000;
 
 const FIXED_MASK_TAGS: ReadonlySet<string> = new Set(["input", "textarea", "select", "option"]);
+const STYLESHEET_TAGS: ReadonlySet<string> = new Set(["style", "link"]);
+/** What a blocked element keeps: its class and rrweb's size. */
+const PLACEHOLDER: readonly string[] = ["class", "rr_width", "rr_height"];
+
+function placeholder(kept: Mutable): Mutable {
+  const out: Mutable = {};
+  for (const k of PLACEHOLDER) if (typeof kept[k] === "string") out[k] = kept[k];
+  return out;
+}
 
 type Json = Record<string, unknown>;
 type Mutable = Record<string, unknown>;
@@ -113,13 +131,15 @@ function styleDiff(diff: Json, policy: ReplayPolicy): Mutable {
 
 /**
  * attrs reduced to the allow-list. textAllowed decides masked attributes, cssAllowed the inlined
- * stylesheet. A null value (a removal in a mutation) is kept for a known attribute when removals
+ * stylesheet. On editable content (editable true) every URL and CSS attribute is dropped: links,
+ * images and styles there are what the user typed or pasted. A null value (a removal in a mutation) is kept for a known attribute when removals
  * is true.
  */
 function attributes(
   attrs: Json,
   textAllowed: boolean,
   cssAllowed: boolean,
+  editable: boolean,
   removals: boolean,
   policy: ReplayPolicy,
 ): Mutable {
@@ -134,6 +154,7 @@ function attributes(
       CSS_ATTRIBUTES.has(key) ||
       key === "_csstext";
     if (!known) continue;
+    if (editable && (URL_ATTRIBUTES.has(key) || CSS_ATTRIBUTES.has(key) || key === "_csstext")) continue;
     if (value === null) {
       if (removals) out[name] = null;
       continue;
@@ -211,19 +232,20 @@ function node(n: unknown, state: TreeState, policy: ReplayPolicy, ctx: ScrubCont
       const masked =
         state.masked || editable || FIXED_MASK_TAGS.has(tag) || attr(attrs, "data-o11y-mask") !== undefined;
       const allowed = !masked && ctx.textAllowed(id);
-      let kept = attributes(attrs, allowed && !ctx.editable(id), allowed, false, policy);
-      const blocked = attr(attrs, "data-o11y-block") !== undefined;
-      if (blocked) {
-        const reduced: Mutable = {};
-        for (const k of ["class", "rr_width", "rr_height"])
-          if (typeof kept[k] === "string") reduced[k] = kept[k];
-        kept = reduced;
-      }
+      const editableHere = editable || ctx.editable(id);
+      const textAttrs = allowed && !editableHere && !STYLESHEET_TAGS.has(tag);
+      const blocked = attr(attrs, "data-o11y-block") !== undefined || ctx.blocked(id);
+      const kept = attributes(attrs, textAttrs, allowed, editableHere, false, policy);
       out.tagName = n.tagName;
-      out.attributes = kept;
+      out.attributes = blocked ? placeholder(kept) : kept;
       out.childNodes = blocked
         ? []
-        : children(n, { parentTag: tag, masked, editable, depth: next.depth }, policy, ctx);
+        : children(
+            n,
+            { parentTag: tag, masked: masked || editableHere, editable: editableHere, depth: next.depth },
+            policy,
+            ctx,
+          );
       if (n.isSVG === true) out.isSVG = true;
       if (typeof n.needBlock === "boolean") out.needBlock = n.needBlock;
       if (n.isCustom === true) out.isCustom = true;
@@ -265,7 +287,7 @@ function defined<T>(xs: readonly (T | undefined)[]): T[] {
 function mutationData(data: Json, policy: ReplayPolicy, ctx: ScrubContext): Mutable {
   const texts = defined(
     list(data.texts).map((t) => {
-      if (!isObj(t) || !isNum(t.id)) return undefined;
+      if (!isObj(t) || !isNum(t.id) || ctx.blocked(t.id)) return undefined;
       if (t.value === null) return { id: t.id, value: null };
       if (typeof t.value !== "string") return undefined;
       const r: TextRule = {
@@ -280,7 +302,9 @@ function mutationData(data: Json, policy: ReplayPolicy, ctx: ScrubContext): Muta
     list(data.attributes).map((a) => {
       if (!isObj(a) || !isNum(a.id) || !isObj(a.attributes)) return undefined;
       const allowed = ctx.textAllowed(a.id);
-      const kept = attributes(a.attributes, allowed && !ctx.editable(a.id), allowed, true, policy);
+      const editable = ctx.editable(a.id);
+      const all = attributes(a.attributes, allowed && !editable, allowed, editable, true, policy);
+      const kept = ctx.blocked(a.id) ? placeholder(all) : all;
       return Object.keys(kept).length > 0 ? { id: a.id, attributes: kept } : undefined;
     }),
   );
@@ -292,7 +316,7 @@ function mutationData(data: Json, policy: ReplayPolicy, ctx: ScrubContext): Muta
   );
   const adds = defined(
     list(data.adds).map((a) => {
-      if (!isObj(a) || !isNum(a.parentId)) return undefined;
+      if (!isObj(a) || !isNum(a.parentId) || ctx.blocked(a.parentId)) return undefined;
       const n = node(a.node, ROOT, policy, ctx);
       if (n === undefined) return undefined;
       const out: Mutable = { parentId: a.parentId, nextId: isNum(a.nextId) ? a.nextId : null };
@@ -368,7 +392,9 @@ function incremental(data: Json, policy: ReplayPolicy, ctx: ScrubContext): Mutab
         out.set = {
           property: data.set.property,
           value: typeof v === "string" ? stripCssUrls(v, allow) : null,
-          ...(typeof data.set.priority === "string" ? { priority: data.set.priority } : {}),
+          ...(data.set.priority === "important" || data.set.priority === ""
+            ? { priority: data.set.priority }
+            : {}),
         };
       }
       if (isObj(data.remove) && typeof data.remove.property === "string")
@@ -382,7 +408,9 @@ function incremental(data: Json, policy: ReplayPolicy, ctx: ScrubContext): Mutab
           list(data.ranges).map((r) => {
             if (!isObj(r)) return undefined;
             const kept = numbers(r, ["start", "startOffset", "end", "endOffset"]);
-            return Object.keys(kept).length === 4 ? kept : undefined;
+            if (Object.keys(kept).length !== 4) return undefined;
+            // Offsets in editable text track the caret as the user types.
+            return ctx.editable(kept.start as number) || ctx.editable(kept.end as number) ? undefined : kept;
           }),
         ),
       };

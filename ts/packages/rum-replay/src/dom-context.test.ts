@@ -1,6 +1,6 @@
 /**
  * domScrubContext against a small fake DOM: elements match the selectors listed in their
- * `matches`, closest walks parentElement, and getRootNode returns a fake document or shadow root.
+ * `sels` (matches tests them), closest walks parentElement, and getRootNode returns a fake document or shadow root.
  * The browser spec (browser/privacy.pw.ts) runs the same context against Chromium's DOM.
  */
 import assert from "node:assert/strict";
@@ -21,11 +21,12 @@ class FakeElement {
   parentNode: FakeElement | FakeRoot | null = null;
   root: FakeRoot;
   isContentEditable = false;
+  assignedSlot: FakeElement | null = null;
   readonly tagName: string;
-  readonly matches: readonly string[];
+  readonly sels: readonly string[];
   constructor(tagName: string, matches: readonly string[], root: FakeRoot) {
     this.tagName = tagName;
-    this.matches = matches;
+    this.sels = matches;
     this.root = root;
   }
   get ownerDocument(): FakeRoot {
@@ -34,11 +35,16 @@ class FakeElement {
   getRootNode(): FakeRoot {
     return this.root;
   }
+  matches(selectors: string): boolean {
+    const parts = selectors.split(",").map((s) => s.trim());
+    if (parts.includes("::bad")) throw new SyntaxError("bad selector");
+    return parts.some((p) => this.sels.includes(p));
+  }
   closest(selectors: string): FakeElement | null {
     const parts = selectors.split(",").map((s) => s.trim());
     if (parts.includes("::bad")) throw new SyntaxError("bad selector");
     for (let el: FakeElement | null = this; el !== null; el = el.parentElement) {
-      if (parts.some((p) => el?.matches.includes(p))) return el;
+      if (parts.some((p) => el?.sels.includes(p))) return el;
     }
     return null;
   }
@@ -184,4 +190,49 @@ test("parentTag is the lowercase tag of the parent element", () => {
   const { nodes, text } = tree();
   const id = text(new FakeElement("TEXTAREA", [], doc));
   assert.equal(ctxFor([], nodes).parentTag(id), "textarea");
+});
+
+test("blocked is composed across shadow roots and iframes and covers the code's block selectors", () => {
+  const { nodes, text } = tree();
+  const host = new FakeElement("X-CHAT", [".chat"], doc);
+  const inner = new FakeElement("P", [".public"], { nodeType: 11, host });
+  nodes.set(1, host);
+  const ctx = domScrubContext(
+    resolvePolicy({ unmask: [".public"], block: [".chat"] }, new Set()),
+    (id) => (nodes.get(id) as Node | undefined) ?? null,
+  );
+  assert.equal(ctx.blocked(1), true);
+  assert.equal(ctx.blocked(text(inner)), true);
+  assert.equal(ctx.textAllowed(text(inner)), false);
+  assert.equal(ctx.blocked(text(new FakeElement("P", [], doc))), false);
+});
+
+test("a walk past the hop limit fails closed: masked, blocked and editable, never unmasked", () => {
+  const { nodes, text } = tree();
+  let host = new FakeElement("DIV", ["[data-o11y-mask]"], doc);
+  for (let i = 0; i < 5000; i++) {
+    const next = new FakeElement("X-H", [], { nodeType: 11, host });
+    host = next;
+  }
+  const inner = new FakeElement("P", [".public"], { nodeType: 11, host });
+  const id = text(inner);
+  const ctx = ctxFor([".public"], nodes);
+  assert.equal(ctx.textAllowed(id), false);
+  assert.equal(ctx.blocked(id), true);
+  assert.equal(ctx.editable(id), true);
+});
+
+test("slotted light DOM follows its slot: a mask around the slot masks it", () => {
+  const { nodes, text } = tree();
+  const outer = new FakeElement("DIV", [".public"], doc);
+  const host = new FakeElement("X-CARD", [], doc);
+  outer.add(host);
+  const shadow: FakeRoot = { nodeType: 11, host };
+  const maskWrap = new FakeElement("DIV", ["[data-o11y-mask]"], shadow);
+  const slot = new FakeElement("SLOT", [], shadow);
+  maskWrap.add(slot);
+  const slotted = new FakeElement("SPAN", [], doc);
+  host.add(slotted);
+  slotted.assignedSlot = slot;
+  assert.equal(ctxFor([".public"], nodes).textAllowed(text(slotted)), false);
 });

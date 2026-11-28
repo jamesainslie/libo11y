@@ -4,8 +4,18 @@ import { resolvePolicy } from "./policy.ts";
 import { type RrwebEvent, type ScrubContext, scrubEvent } from "./scrub.ts";
 
 const policy = resolvePolicy(undefined, new Set(["page"]));
-const none: ScrubContext = { textAllowed: () => false, parentTag: () => "p", editable: () => false };
-const all: ScrubContext = { textAllowed: () => true, parentTag: () => "p", editable: () => false };
+const none: ScrubContext = {
+  textAllowed: () => false,
+  parentTag: () => "p",
+  editable: () => false,
+  blocked: () => false,
+};
+const all: ScrubContext = {
+  textAllowed: () => true,
+  parentTag: () => "p",
+  editable: () => false,
+  blocked: () => false,
+};
 
 type Json = Record<string, unknown>;
 const snapshot = (node: unknown): RrwebEvent => ({
@@ -571,4 +581,122 @@ test("the input event object is not mutated", () => {
   const before = JSON.stringify(ev);
   scrubEvent(ev, policy, none);
   assert.equal(JSON.stringify(ev), before);
+});
+
+test("an element the context blocks (code or remote block selectors) is reduced to its placeholder", () => {
+  const ctx: ScrubContext = { ...all, blocked: (id) => id === 1 };
+  const tree = el(
+    1,
+    "div",
+    { class: "chat-widget", id: "chat-jane.doe", rr_width: "10px", rr_height: "5px" },
+    [el(2, "img", { src: "https://cdn.example/users/jane.doe/avatar.png" })],
+  );
+  const out = root(scrubEvent(snapshot(el(9, "main", {}, [tree])), policy, ctx));
+  assert.deepEqual((out.childNodes as Json[])[0], {
+    type: 2,
+    id: 1,
+    tagName: "div",
+    attributes: { class: "chat-widget", rr_width: "10px", rr_height: "5px" },
+    childNodes: [],
+  });
+});
+
+test("mutations into a blocked element are dropped and its own attribute changes reduced", () => {
+  const ctx: ScrubContext = { ...all, blocked: (id) => id === 20 || id === 21 || id === 22 };
+  const ev = mutation({
+    texts: [{ id: 22, value: "Jane" }],
+    attributes: [
+      {
+        id: 20,
+        attributes: {
+          style: "background:url(/users/jane/photo.jpg)",
+          id: "acct-99812",
+          class: "box",
+          href: "/u/jane",
+        },
+      },
+      { id: 21, attributes: { title: "Jane" } },
+    ],
+    adds: [
+      {
+        parentId: 20,
+        nextId: null,
+        node: el(23, "img", { src: "https://cdn.example/patients/jane/xray.png", class: "x" }),
+      },
+      { parentId: 1, nextId: null, node: el(24, "p", {}) },
+    ],
+  });
+  const out = dataOf(scrubEvent(ev, policy, ctx));
+  assert.deepEqual(out.texts, []);
+  assert.deepEqual(out.attributes, [{ id: 20, attributes: { class: "box" } }]);
+  assert.deepEqual(
+    (out.adds as Json[]).map((a) => a.parentId),
+    [1],
+  );
+});
+
+test("an element the context blocks inside an added subtree loses its children", () => {
+  const ctx: ScrubContext = { ...all, blocked: (id) => id === 31 };
+  const ev = mutation({
+    adds: [
+      {
+        parentId: 1,
+        nextId: null,
+        node: el(30, "div", {}, [el(31, "div", { class: "ad" }, [text(32, "Jane")])]),
+      },
+    ],
+  });
+  assert.doesNotMatch(scrubbed(ev, ctx), /Jane|"id":32/);
+});
+
+test("URLs and CSS inside editable content are dropped: links and images there are user content", () => {
+  const tree = el(1, "div", { contenteditable: "true" }, [
+    el(2, "a", { href: "https://mybank.example/transfer/GB29NWBK60161331926819" }, [text(3, "x")]),
+    el(4, "img", {
+      src: "https://files.example/jane-passport.jpg",
+      srcset: "/jane.png 1x",
+      style: "background:url(/jane.png)",
+    }),
+  ]);
+  const out = scrubbed(snapshot(tree), all);
+  assert.doesNotMatch(out, /jane|GB29|mybank/i);
+  const ctx: ScrubContext = { ...all, editable: (id) => id === 5 };
+  const ev = mutation({
+    attributes: [{ id: 5, attributes: { href: "https://x.example/jane", style: "color:red" } }],
+  });
+  assert.doesNotMatch(scrubbed(ev, ctx), /jane|color/);
+});
+
+test("selection ranges in editable text are dropped, since offsets track the caret", () => {
+  const ctx: ScrubContext = { ...all, editable: (id) => id === 7 };
+  const ev: RrwebEvent = {
+    type: 3,
+    timestamp: 1,
+    data: {
+      source: 14,
+      ranges: [
+        { start: 7, startOffset: 3, end: 7, endOffset: 3 },
+        { start: 1, startOffset: 0, end: 2, endOffset: 1 },
+      ],
+    },
+  };
+  assert.deepEqual(dataOf(scrubEvent(ev, policy, ctx)).ranges, [
+    { start: 1, startOffset: 0, end: 2, endOffset: 1 },
+  ]);
+});
+
+test("a CSS declaration's priority is only ever important or empty", () => {
+  const ev: RrwebEvent = {
+    type: 3,
+    timestamp: 1,
+    data: { source: 13, index: [0], set: { property: "color", value: "red", priority: "jane@x.test" } },
+  };
+  assert.deepEqual(dataOf(scrubEvent(ev, policy, none)).set, { property: "color", value: "red" });
+});
+
+test("stylesheet elements never keep text attributes", () => {
+  const out = root(
+    scrubEvent(snapshot(el(1, "link", { rel: "stylesheet", title: "Jane", _cssText: "a{}" })), policy, all),
+  );
+  assert.deepEqual(out.attributes, { rel: "stylesheet", title: "****", _cssText: "a{}" });
 });

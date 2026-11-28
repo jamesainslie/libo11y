@@ -45,6 +45,8 @@ test("input state, handlers, data attributes and embedded documents are never ke
     "data",
     "nonce",
     "autocomplete",
+    "aria-checked",
+    "aria-selected",
   ]) {
     assert.equal(KEPT_ATTRIBUTES.has(a.toLowerCase()), false, a);
     assert.equal(MASKED_ATTRIBUTES.has(a.toLowerCase()), false, a);
