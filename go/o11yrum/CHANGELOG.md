@@ -16,7 +16,8 @@ adheres to [Semantic Versioning](https://semver.org/).
   implementations to, and stored with its metadata under
   `replay/<namespace>/<session.id>/`. The gateway masks all text unless
   the operator sets the app's `replay.unmasked_text`. The `replay` section
-  caps the body, the inflated body and the events of one segment.
+  caps the body, the inflated body and the events of one segment, and the
+  segments handled at once.
 - `ObjectLister`, `ObjectDeleter` and `ObjectInfo`, optional interfaces
   of an object store, implemented by `FileStore` and the S3 store. Replay
   needs both.

@@ -123,8 +123,9 @@ func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
 }
 
 // List calls fn for every object whose key starts with the prefixed
-// prefix, in key order (S3 lists in UTF-8 binary order), with the store's
-// prefix removed from each key.
+// prefix, with the store's prefix removed from each key. A general
+// purpose bucket lists in key order (UTF-8 binary order). Directory
+// buckets and some S3-compatible stores do not promise an order.
 func (s *Store) List(ctx context.Context, prefix string, fn func(o11yrum.ObjectInfo) error) error {
 	pages := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{
 		Bucket: aws.String(s.bucket),

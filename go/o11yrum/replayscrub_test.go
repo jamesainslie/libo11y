@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // events decodes a JSON array of rrweb events as the endpoint does.
@@ -435,5 +437,137 @@ func TestScrubSegmentStylesheetElementsAllowOnlyCSS(t *testing.T) {
 	}
 	if err := checkStrictOutput(out); err != nil {
 		t.Error(err)
+	}
+}
+
+func TestJSFalseMatchesJSString(t *testing.T) {
+	cases := []any{
+		"false", "FALSE", "fAlSe", false, true, "", nil,
+		[]any{"false"},
+		[]any{[]any{"False"}},
+		[]any{false},
+		[]any{"false", ""},
+		[]any{nil},
+		[]any{},
+		map[string]any{},
+		json.Number("0"), "true",
+		[]any{[]any{}},
+	}
+	for _, v := range cases {
+		want := v != nil && asciiLower(jsString(v)) == "false"
+		if got := jsFalse(v); got != want {
+			t.Errorf("jsFalse(%#v) = %v, want %v", v, got, want)
+		}
+	}
+}
+
+func TestScrubSegmentDeepContentEditableIsCheap(t *testing.T) {
+	// A contenteditable value nested in arrays once cost depth times size
+	// to stringify. It must cost no more than its depth.
+	var b strings.Builder
+	const depth = 5000
+	b.WriteString(`[` + `{"type":2,"timestamp":1,"data":{"node":{"type":2,"id":1,"tagName":"div","childNodes":[],"attributes":{"contenteditable":`)
+	b.WriteString(strings.Repeat("[", depth))
+	b.WriteString(`"` + strings.Repeat("A", 2<<20) + `",0`)
+	b.WriteString(strings.Repeat("],0", depth-1) + "]")
+	b.WriteString(`}}}}]`)
+	in := events(t, b.String())
+	start := time.Now()
+	scrubSegment(in, scrubStrict, nil)
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("scrubbing took %v", d)
+	}
+}
+
+func TestScrubSegmentFollowsAttributeMutations(t *testing.T) {
+	base := snapshot(`{"type":0,"id":1,"childNodes":[{"type":2,"id":30,"tagName":"div","attributes":{},"childNodes":[{"type":3,"id":31,"textContent":"x"}]}]}`)
+	for _, marker := range []string{`"data-o11y-block":""`, `"data-o11y-mask":""`, `"contenteditable":"true"`} {
+		in := events(t, `[`+base+`,
+		  {"type":3,"timestamp":2,"data":{"source":0,"texts":[],"attributes":[{"id":30,"attributes":{`+marker+`}}],"removes":[],"adds":[]}},
+		  {"type":3,"timestamp":3,"data":{"source":0,"texts":[{"id":31,"value":"Jane Doe"}],"attributes":[],"removes":[],
+		    "adds":[{"parentId":30,"nextId":null,"node":{"type":2,"id":32,"tagName":"img","attributes":{"class":"card","src":"/photo.png?u=jane"},"childNodes":[]}}]}}]`)
+		out, _ := scrubSegment(in, scrubTrust, nil)
+		got := marshal(t, out[2])
+		if strings.Contains(got, "Jane") || strings.Contains(got, "jane") {
+			t.Errorf("%s set later: %s", marker, got)
+		}
+	}
+}
+
+func TestScrubSegmentStrictNeverKeepsTextAttributes(t *testing.T) {
+	in := events(t, `[`+snapshot(publicPage)+`,
+	  {"type":3,"timestamp":2,"data":{"source":0,"texts":[],"attributes":[{"id":5,"attributes":{"title":"Jane","aria-label":"Jane"}}],"removes":[],"adds":[]}}]`)
+	out, _ := scrubSegment(in, scrubStrict, nil)
+	if got := marshal(t, out); strings.Contains(got, "Jane") {
+		t.Fatalf("leak: %s", got)
+	}
+}
+
+func TestScrubSegmentInvalidSnapshotKeepsTheModel(t *testing.T) {
+	in := events(t, `[`+snapshot(`{"type":2,"id":20,"tagName":"textarea","attributes":{},"childNodes":[{"type":3,"id":21,"textContent":"x"}]}`)+`,
+	  {"type":2,"timestamp":2,"data":{"node":null}},
+	  {"type":3,"timestamp":3,"data":{"source":0,"texts":[{"id":21,"value":"Jane Doe"}],"attributes":[],"removes":[],"adds":[]}}]`)
+	out, _ := scrubSegment(in, scrubTrust, nil)
+	if got := marshal(t, out); strings.Contains(got, "Jane") {
+		t.Fatalf("leak: %s", got)
+	}
+}
+
+func TestScrubSegmentAddsBeforeTheirParent(t *testing.T) {
+	in := events(t, `[`+snapshot(`{"type":0,"id":1,"childNodes":[{"type":2,"id":30,"tagName":"div","attributes":{},"childNodes":[]}]}`)+`,
+	  {"type":3,"timestamp":2,"data":{"source":0,"texts":[],"attributes":[],"removes":[],"adds":[
+	    {"parentId":61,"nextId":null,"node":{"type":3,"id":62,"textContent":"Jane Doe"}},
+	    {"parentId":30,"nextId":null,"node":{"type":2,"id":61,"tagName":"select","attributes":{},"childNodes":[]}}]}}]`)
+	out, _ := scrubSegment(in, scrubTrust, nil)
+	if got := marshal(t, out); strings.Contains(got, "Jane") {
+		t.Fatalf("leak: %s", got)
+	}
+}
+
+func TestScrubSegmentReserializedStyleAllowsNoText(t *testing.T) {
+	in := events(t, `[`+snapshot(`{"type":0,"id":1,"childNodes":[{"type":2,"id":80,"tagName":"style","attributes":{},"childNodes":[{"type":3,"id":81,"textContent":"a{}"}]}]}`)+`,
+	  {"type":3,"timestamp":2,"data":{"source":0,"texts":[],"attributes":[],"removes":[],"adds":[{"parentId":1,"nextId":null,"node":{"type":2,"id":80,"tagName":"div","attributes":{},"childNodes":[]}}]}},
+	  {"type":3,"timestamp":3,"data":{"source":0,"texts":[{"id":81,"value":"Jane Doe"}],"attributes":[],"removes":[],"adds":[]}}]`)
+	out, _ := scrubSegment(in, scrubStrict, nil)
+	if got := marshal(t, out[2]); strings.Contains(got, "Jane") {
+		t.Fatalf("leak: %s", got)
+	}
+}
+
+func TestScrubSegmentParentCyclesFailClosed(t *testing.T) {
+	in := events(t, `[`+snapshot(`{"type":0,"id":1,"childNodes":[]}`)+`,
+	  {"type":3,"timestamp":2,"data":{"source":0,"texts":[{"id":72,"value":"Jane Doe"}],"attributes":[],"removes":[],"adds":[
+	    {"parentId":71,"nextId":null,"node":{"type":2,"id":70,"tagName":"div","attributes":{},"childNodes":[{"type":3,"id":72,"textContent":"Jane"}]}},
+	    {"parentId":70,"nextId":null,"node":{"type":2,"id":71,"tagName":"div","attributes":{},"childNodes":[]}}]}}]`)
+	out, _ := scrubSegment(in, scrubTrust, nil)
+	if got := marshal(t, out); strings.Contains(got, "Jane") {
+		t.Fatalf("a parent cycle allowed text: %s", got)
+	}
+}
+
+// jsString is JavaScript's String(v) for a decoded JSON value.
+func jsString(v any) string {
+	switch x := v.(type) {
+	case nil:
+		return "null"
+	case string:
+		return x
+	case bool:
+		return strconv.FormatBool(x)
+	case json.Number, float64:
+		if f, ok := toNum(x); ok {
+			return jsNumberString(f)
+		}
+		return "Infinity"
+	case []any:
+		parts := make([]string, len(x))
+		for i, e := range x {
+			if e != nil {
+				parts[i] = jsString(e)
+			}
+		}
+		return strings.Join(parts, ",")
+	default:
+		return "[object Object]"
 	}
 }

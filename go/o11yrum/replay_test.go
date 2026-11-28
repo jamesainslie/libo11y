@@ -472,3 +472,36 @@ func TestReplayNeedsAStore(t *testing.T) {
 		t.Fatalf("status %d", w.Code)
 	}
 }
+
+// blockingStore holds every Put until release is closed.
+type blockingStore struct {
+	failingReplayStore
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s blockingStore) Put(context.Context, string, []byte) error {
+	s.entered <- struct{}{}
+	<-s.release
+	return nil
+}
+
+func TestReplayConcurrencyCap(t *testing.T) {
+	store := blockingStore{entered: make(chan struct{}, 4), release: make(chan struct{})}
+	f := newReplayFixture(t, strings.Replace(replayConfig, "max_events: 50}", "max_events: 50, max_concurrent: 1}", 1), store)
+	done := make(chan int)
+	go func() { done <- postReplay(t, f.h, replayQuery("shop-web"), sampleEnvelope(), true).Code }()
+	<-store.entered
+	w := postReplay(t, f.h, replayQuery("shop-web"), sampleEnvelope(), true)
+	if w.Code != http.StatusServiceUnavailable || w.Header().Get("Retry-After") != "1" {
+		t.Errorf("second request: %d Retry-After %q", w.Code, w.Header().Get("Retry-After"))
+	}
+	close(store.release)
+	<-store.entered // the first request's metadata
+	if code := <-done; code != http.StatusNoContent {
+		t.Fatalf("first request: %d", code)
+	}
+	if got := sumPoints(t, metricByName(t, f.rec.Metrics(), "o11yrum.replay.segments"))[set(telApp, "shop-web", telOutcome, outcomeRejected, telReason, "busy")]; got != 1 {
+		t.Errorf("busy not recorded: %d", got)
+	}
+}

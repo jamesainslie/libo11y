@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -184,6 +185,7 @@ const tempPrefix = ".put-"
 // List calls fn for every object whose key starts with prefix, in key
 // order. prefix follows the key rules of Put, except that it may be empty
 // or end with a slash, and may end part way through a key segment.
+// Symbolic links under the root are not listed.
 func (s *FileStore) List(ctx context.Context, prefix string, fn func(ObjectInfo) error) error {
 	dir := ""
 	if prefix != "" {
@@ -218,7 +220,7 @@ func (s *FileStore) walk(ctx context.Context, dir, prefix string, fn func(Object
 	}
 	entries, err := os.ReadDir(filepath.Join(s.root, filepath.FromSlash(dir)))
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
+		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
 			return errDirGone
 		}
 		return fmt.Errorf("o11yrum: file store: %w", err)

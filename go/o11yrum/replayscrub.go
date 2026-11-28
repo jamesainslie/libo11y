@@ -35,7 +35,6 @@ import (
 	"errors"
 	"math"
 	"strconv"
-	"strings"
 )
 
 // scrubContext is what the scrubber needs to know about a node it cannot
@@ -49,6 +48,10 @@ type scrubContext interface {
 	// gateway's strict mode keeps stylesheets and no other text, so it
 	// needs them apart.
 	stylesheetAllowed(id float64) bool
+	// attrsAllowed reports whether the masked attributes of node id may
+	// be kept. The collector asks textAllowed; the gateway's strict mode
+	// keeps none.
+	attrsAllowed(id float64) bool
 	// parentTag is the lowercase tag of the parent element of node id, or
 	// "" when it is not known.
 	parentTag(id float64) string
@@ -164,30 +167,26 @@ func jsNumberString(f float64) string {
 	return string(raw)
 }
 
-// jsString is JavaScript's String(v) for a decoded JSON value.
-func jsString(v any) string {
-	switch x := v.(type) {
-	case nil:
-		return "null"
-	case string:
-		return x
-	case bool:
-		return strconv.FormatBool(x)
-	case json.Number, float64:
-		if f, ok := toNum(x); ok {
-			return jsNumberString(f)
-		}
-		return "Infinity"
-	case []any:
-		parts := make([]string, len(x))
-		for i, e := range x {
-			if e != nil {
-				parts[i] = jsString(e)
+// jsFalse reports whether JavaScript's String(v), lowercased in ASCII,
+// is "false": a string "false" in any case, the boolean false, or an
+// array of exactly one such value (an array joins its elements with
+// commas). It answers without building the string, so a deeply nested
+// value costs only its depth.
+func jsFalse(v any) bool {
+	for {
+		switch x := v.(type) {
+		case string:
+			return asciiLower(x) == "false"
+		case bool:
+			return !x
+		case []any:
+			if len(x) != 1 || x[0] == nil {
+				return false
 			}
+			v = x[0]
+		default:
+			return false
 		}
-		return strings.Join(parts, ",")
-	default:
-		return "[object Object]"
 	}
 }
 
@@ -332,7 +331,7 @@ func attr(attrs obj, name string) []any {
 // element editable: present, not null and not "false".
 func isContentEditable(attrs obj) bool {
 	for _, ce := range attr(attrs, "contenteditable") {
-		if ce != nil && asciiLower(jsString(ce)) != "false" {
+		if ce != nil && !jsFalse(ce) {
 			return true
 		}
 	}
@@ -413,10 +412,10 @@ func scrubNode(v any, state treeState, allow map[string]bool, ctx scrubContext) 
 		attrs, _ := isObj(n["attributes"])
 		editable := state.editable || tag == "textarea" || isContentEditable(attrs)
 		masked := state.masked || editable || fixedMaskTags[tag] || len(attr(attrs, "data-o11y-mask")) > 0
-		allowed := !masked && ctx.textAllowed(id)
+		attrsAllowed := !masked && ctx.attrsAllowed(id)
 		cssAllowed := !masked && ctx.stylesheetAllowed(id)
 		editableHere := editable || ctx.editable(id)
-		textAttrs := allowed && !editableHere && !stylesheetTags[tag]
+		textAttrs := attrsAllowed && !editableHere && !stylesheetTags[tag]
 		blocked := len(attr(attrs, "data-o11y-block")) > 0 || ctx.blocked(id)
 		kept := attributes(attrs, textAttrs, cssAllowed, editableHere, false, allow)
 		out["tagName"] = tagName
@@ -549,7 +548,7 @@ func mutationData(data obj, allow map[string]bool, ctx scrubContext) obj {
 			continue
 		}
 		editable := ctx.editable(id)
-		kept := attributes(m, ctx.textAllowed(id) && !editable, ctx.stylesheetAllowed(id), editable, true, allow)
+		kept := attributes(m, ctx.attrsAllowed(id) && !editable, ctx.stylesheetAllowed(id), editable, true, allow)
 		if ctx.blocked(id) {
 			kept = placeholder(kept)
 		}
@@ -849,7 +848,7 @@ func dropReason(e any) string {
 // kept ones, with the dropped ones counted by reason. allow is the app's
 // query parameter allow-list.
 func scrubSegment(events []any, mode scrubMode, allow map[string]bool) ([]any, scrubStats) {
-	model := &segmentModel{mode: mode, nodes: map[float64]*modelNode{}}
+	model := newSegmentModel(mode)
 	stats := scrubStats{}
 	out := make([]any, 0, len(events))
 	for _, e := range events {
@@ -863,31 +862,54 @@ func scrubSegment(events []any, mode scrubMode, allow map[string]bool) ([]any, s
 	return out, stats
 }
 
-// modelNode is what a segment says about one node, merged over every time
-// the segment serializes it. Flags only ever turn on, so a node moved out
-// of a mask stays masked, and a node serialized twice with different tags
-// or parents is a conflict that allows no text.
+// maxModelHops bounds the ancestor walk of the segment model. A longer
+// chain, or a cycle, fails closed: masked, editable, blocked and in
+// conflict.
+const maxModelHops = 4096
+
+// modelNode is what a segment says about one node. Its flags are its own
+// (from its tag and attributes) and only ever turn on: a node moved to a
+// new parent keeps the masks of the old one, and an attribute mutation
+// can add a mask but never remove one. A node serialized again with
+// another kind, tag or parent is a conflict, which allows no text in
+// strict mode, for it or for its children.
 type modelNode struct {
 	text      bool
 	tag       string // lowercase, elements only
-	parentTag string // lowercase tag of the parent element
-	masked    bool   // under a fixed mask, in the tree's own terms
-	editable  bool   // in a textarea or a contenteditable element
-	blocked   bool   // under data-o11y-block
+	parent    float64
+	hasParent bool
+	masked    bool // input, textarea, select, option, contenteditable or data-o11y-mask
+	editable  bool // textarea or contenteditable
+	blocked   bool // data-o11y-block
 	conflict  bool
+	stub      bool // known only from an attribute mutation
 }
 
-// segmentModel answers scrubContext from the nodes the segment's full
-// snapshots and added nodes serialize. A segment is self-contained, so
-// every node a conforming client mentions is in it. It holds nothing
-// across segments.
+// resolved is a node's flags with its ancestors' folded in.
+type resolved struct {
+	masked, editable, blocked, conflict bool
+}
+
+var failClosed = resolved{masked: true, editable: true, blocked: true, conflict: true}
+
+// segmentModel answers scrubContext from what the segment's full
+// snapshots, added nodes and attribute mutations say. A segment is
+// self-contained, so every node a conforming client mentions is in it. It
+// holds nothing across segments. Each node keeps its parent's ID, and a
+// question walks the ancestors as they stand, so a mask set later, or a
+// parent added after its child, still counts.
 type segmentModel struct {
 	mode  scrubMode
 	nodes map[float64]*modelNode
+	cache map[float64]resolved // valid until the model next changes
 }
 
-// observe records the nodes e serializes, before e is scrubbed, as the
-// collector's DOM already holds them when it scrubs.
+func newSegmentModel(mode scrubMode) *segmentModel {
+	return &segmentModel{mode: mode, nodes: map[float64]*modelNode{}, cache: map[float64]resolved{}}
+}
+
+// observe records what e says about the page, before e is scrubbed, as
+// the collector's DOM already holds it when it scrubs.
 func (m *segmentModel) observe(e any) {
 	ev, ok := isObj(e)
 	if !ok {
@@ -896,44 +918,89 @@ func (m *segmentModel) observe(e any) {
 	data, _ := isObj(ev["data"])
 	switch typ, _ := toNum(ev["type"]); typ {
 	case 2:
-		// A full snapshot describes the whole page again.
+		// A full snapshot describes the whole page again, but only a root
+		// the scrubber accepts replaces what is known.
+		if !validRoot(data["node"]) {
+			return
+		}
+		clear(m.cache)
 		clear(m.nodes)
-		m.walk(data["node"], modelState{})
+		m.walk(data["node"], 0, false, 0)
 	case 3:
 		if source, ok := toNum(data["source"]); !ok || source != 0 {
 			return
 		}
+		clear(m.cache)
 		for _, v := range jsonList(data["adds"]) {
+			if a, ok := isObj(v); ok {
+				if parentID, ok := toNum(a["parentId"]); ok {
+					m.walk(a["node"], parentID, true, 0)
+				}
+			}
+		}
+		for _, v := range jsonList(data["attributes"]) {
 			a, ok := isObj(v)
 			if !ok {
 				continue
 			}
-			parentID, ok := toNum(a["parentId"])
-			if !ok {
+			id, ok := toNum(a["id"])
+			attrs, ok2 := isObj(a["attributes"])
+			if !ok || !ok2 {
 				continue
 			}
-			state := modelState{}
-			if p := m.nodes[parentID]; p != nil {
-				state = modelState{parentTag: p.tag, masked: p.masked, editable: p.editable, blocked: p.blocked}
-				if p.conflict {
-					state.parentTag = ""
-				}
-			}
-			m.walk(a["node"], state)
+			m.markAttributes(id, attrs)
 		}
 	}
 }
 
-type modelState struct {
-	parentTag                 string
-	masked, editable, blocked bool
-	depth                     int
+// validRoot reports whether scrubNode would keep v as a snapshot root.
+func validRoot(v any) bool {
+	n, ok := isObj(v)
+	if !ok {
+		return false
+	}
+	_, okID := toNum(n["id"])
+	typ, okType := toNum(n["type"])
+	if !okID || !okType || typ != math.Trunc(typ) || typ < 0 || typ > 5 {
+		return false
+	}
+	_, isString := n["tagName"].(string)
+	return typ != 2 || isString
 }
 
-// walk records n and its subtree, following scrubNode's reading of a node
-// and its depth cut, and descending into blocked elements so that later
-// mutations of what they hold are recognised as blocked.
-func (m *segmentModel) walk(v any, state modelState) {
+// markAttributes turns on the flags an attribute mutation sets. A removal
+// (null) changes nothing, since flags only turn on.
+func (m *segmentModel) markAttributes(id float64, attrs obj) {
+	set := func(name string) bool {
+		for _, v := range attr(attrs, name) {
+			if v != nil {
+				return true
+			}
+		}
+		return false
+	}
+	n := m.nodes[id]
+	if n == nil {
+		n = &modelNode{stub: true}
+		m.nodes[id] = n
+	}
+	if n.text {
+		return
+	}
+	if isContentEditable(attrs) {
+		n.editable, n.masked = true, true
+	}
+	if set("data-o11y-mask") {
+		n.masked = true
+	}
+	if set("data-o11y-block") {
+		n.blocked = true
+	}
+}
+
+// walk records v and its subtree under parent, following scrubNode's
+// reading of a node and its depth cut.
+func (m *segmentModel) walk(v any, parent float64, hasParent bool, depth int) {
 	n, ok := isObj(v)
 	if !ok {
 		return
@@ -943,13 +1010,9 @@ func (m *segmentModel) walk(v any, state modelState) {
 	if !ok1 || !ok2 {
 		return
 	}
-	node := modelNode{parentTag: state.parentTag, masked: state.masked, editable: state.editable, blocked: state.blocked}
-	child := state
-	child.depth++
+	node := modelNode{parent: parent, hasParent: hasParent}
 	switch typ {
-	case 0:
-		child.parentTag = ""
-	case 1, 4, 5:
+	case 0, 1, 4, 5:
 	case 2:
 		tagName, ok := n["tagName"].(string)
 		if !ok {
@@ -957,69 +1020,164 @@ func (m *segmentModel) walk(v any, state modelState) {
 		}
 		attrs, _ := isObj(n["attributes"])
 		node.tag = asciiLower(tagName)
-		node.editable = node.editable || node.tag == "textarea" || isContentEditable(attrs)
-		node.masked = node.masked || node.editable || fixedMaskTags[node.tag] || len(attr(attrs, "data-o11y-mask")) > 0
-		node.blocked = node.blocked || len(attr(attrs, "data-o11y-block")) > 0
-		child = modelState{parentTag: node.tag, masked: node.masked, editable: node.editable, blocked: node.blocked, depth: child.depth}
+		node.editable = node.tag == "textarea" || isContentEditable(attrs)
+		node.masked = node.editable || fixedMaskTags[node.tag] || len(attr(attrs, "data-o11y-mask")) > 0
+		node.blocked = len(attr(attrs, "data-o11y-block")) > 0
 	case 3:
 		node.text = true
 	default:
 		return
 	}
 	m.record(id, node)
-	if typ == 1 || typ == 3 || typ == 4 || typ == 5 || child.depth >= maxScrubDepth {
+	if (typ != 0 && typ != 2) || depth+1 >= maxScrubDepth {
 		return
 	}
 	for _, c := range jsonList(n["childNodes"]) {
-		m.walk(c, child)
+		m.walk(c, id, true, depth+1)
 	}
 }
 
 func (m *segmentModel) record(id float64, n modelNode) {
 	old := m.nodes[id]
-	if old == nil {
+	switch {
+	case old == nil:
 		m.nodes[id] = &n
 		return
+	case old.stub:
+		n.masked = n.masked || old.masked
+		n.editable = n.editable || old.editable
+		n.blocked = n.blocked || old.blocked
+		*old = n
+		return
 	}
-	if old.text != n.text || old.tag != n.tag || old.parentTag != n.parentTag {
+	if old.text != n.text || old.tag != n.tag {
 		old.conflict = true
+	}
+	if old.hasParent != n.hasParent || old.parent != n.parent {
+		// A move: the node keeps what its old place masked.
+		r := m.resolveUncached(id)
+		old.masked = old.masked || r.masked
+		old.editable = old.editable || r.editable
+		old.blocked = old.blocked || r.blocked
+		old.conflict = true
+		old.parent, old.hasParent = n.parent, n.hasParent
 	}
 	old.masked = old.masked || n.masked
 	old.editable = old.editable || n.editable
 	old.blocked = old.blocked || n.blocked
 }
 
-func (m *segmentModel) textAllowed(id float64) bool {
-	n := m.nodes[id]
-	if m.mode == scrubTrust {
-		return n == nil || !n.masked && !n.blocked
+// resolve returns id's flags with its ancestors' folded in, memoized
+// until the model next changes. The walk stops at a node with no known
+// parent.
+func (m *segmentModel) resolve(id float64) resolved {
+	if r, ok := m.cache[id]; ok {
+		return r
 	}
-	return n != nil && !n.conflict && !n.masked && !n.blocked && n.text && n.parentTag == "style"
+	var path []float64
+	onPath := map[float64]bool{}
+	cur := id
+	base := resolved{}
+	for {
+		if r, ok := m.cache[cur]; ok {
+			base = r
+			break
+		}
+		n := m.nodes[cur]
+		if n == nil {
+			break
+		}
+		if onPath[cur] || len(path) >= maxModelHops {
+			base = failClosed
+			for _, p := range path {
+				m.cache[p] = failClosed
+			}
+			return failClosed
+		}
+		path = append(path, cur)
+		onPath[cur] = true
+		if !n.hasParent {
+			break
+		}
+		cur = n.parent
+	}
+	for i := len(path) - 1; i >= 0; i-- {
+		n := m.nodes[path[i]]
+		base = resolved{
+			masked:   base.masked || n.masked,
+			editable: base.editable || n.editable,
+			blocked:  base.blocked || n.blocked,
+			conflict: base.conflict || n.conflict,
+		}
+		m.cache[path[i]] = base
+	}
+	return m.cache[id]
+}
+
+// resolveUncached is resolve for use while the model is changing.
+func (m *segmentModel) resolveUncached(id float64) resolved {
+	saved := m.cache
+	m.cache = map[float64]resolved{}
+	r := m.resolve(id)
+	m.cache = saved
+	return r
+}
+
+// trustAllowed is trust mode's answer: the client decided, unless the
+// segment's own tree masks or blocks the node.
+func (m *segmentModel) trustAllowed(id float64) bool {
+	r := m.resolve(id)
+	return !r.masked && !r.blocked
+}
+
+func (m *segmentModel) textAllowed(id float64) bool {
+	if m.mode == scrubTrust {
+		return m.trustAllowed(id)
+	}
+	// Strict: only the text of a style element, neither in conflict.
+	n := m.nodes[id]
+	if n == nil || !n.text || !n.hasParent {
+		return false
+	}
+	p := m.nodes[n.parent]
+	if p == nil || p.text || p.tag != "style" {
+		return false
+	}
+	r := m.resolve(id)
+	return !r.masked && !r.blocked && !r.conflict
 }
 
 // stylesheetAllowed keeps the inlined stylesheet of a style or link
-// element, in either mode.
+// element.
 func (m *segmentModel) stylesheetAllowed(id float64) bool {
-	n := m.nodes[id]
 	if m.mode == scrubTrust {
-		return n == nil || !n.masked && !n.blocked
+		return m.trustAllowed(id)
 	}
-	return n != nil && !n.conflict && !n.masked && !n.blocked && !n.text && stylesheetTags[n.tag]
+	n := m.nodes[id]
+	if n == nil || n.text || !stylesheetTags[n.tag] {
+		return false
+	}
+	r := m.resolve(id)
+	return !r.masked && !r.blocked && !r.conflict
+}
+
+// attrsAllowed keeps masked attributes in trust mode only.
+func (m *segmentModel) attrsAllowed(id float64) bool {
+	return m.mode == scrubTrust && m.trustAllowed(id)
 }
 
 func (m *segmentModel) parentTag(id float64) string {
-	if n := m.nodes[id]; n != nil && !n.conflict {
-		return n.parentTag
+	n := m.nodes[id]
+	if n == nil || !n.hasParent {
+		return ""
 	}
-	return ""
+	p := m.nodes[n.parent]
+	if p == nil || m.resolve(id).conflict {
+		return ""
+	}
+	return p.tag
 }
 
-func (m *segmentModel) editable(id float64) bool {
-	n := m.nodes[id]
-	return n != nil && n.editable
-}
+func (m *segmentModel) editable(id float64) bool { return m.resolve(id).editable }
 
-func (m *segmentModel) blocked(id float64) bool {
-	n := m.nodes[id]
-	return n != nil && n.blocked
-}
+func (m *segmentModel) blocked(id float64) bool { return m.resolve(id).blocked }

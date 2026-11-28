@@ -204,3 +204,18 @@ func TestFileStoreListEdges(t *testing.T) {
 		t.Fatalf("cancelled context: %v", err)
 	}
 }
+
+func TestFileStoreListThroughAFile(t *testing.T) {
+	s, err := NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := s.Put(ctx, "replay/ns/a.json", []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	if err := s.List(ctx, "replay/ns/a.json/", func(ObjectInfo) error { calls++; return nil }); err != nil || calls != 0 {
+		t.Fatalf("%d calls, %v", calls, err)
+	}
+}

@@ -98,6 +98,13 @@ func (h *Handler) serveReplay(w http.ResponseWriter, r *http.Request) {
 		refuse(a.origins, rejection{status: http.StatusUnsupportedMediaType, reason: "content_type"})
 		return
 	}
+	select {
+	case h.replaySlots <- struct{}{}:
+		defer func() { <-h.replaySlots }()
+	default:
+		refuse(a.origins, rejection{status: http.StatusServiceUnavailable, reason: "busy", retryAfter: time.Second})
+		return
+	}
 	rc := h.cfg.Replay
 	body, err := readCapped(r.Body, r.Header.Get("Content-Encoding"), rc.MaxBodyBytes, rc.MaxDecompressedBytes)
 	if err != nil {

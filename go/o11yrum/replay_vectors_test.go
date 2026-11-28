@@ -87,8 +87,10 @@ func newVectorContext(v scrubVector, allowed []float64) vectorContext {
 
 func (c vectorContext) textAllowed(id float64) bool { return c.allowed[id] }
 
-// stylesheetAllowed is textAllowed, as the collector has it.
+// stylesheetAllowed and attrsAllowed are textAllowed, as the collector
+// has it.
 func (c vectorContext) stylesheetAllowed(id float64) bool { return c.allowed[id] }
+func (c vectorContext) attrsAllowed(id float64) bool      { return c.allowed[id] }
 func (c vectorContext) parentTag(id float64) string       { return c.parents[jsNumberString(id)] }
 func (c vectorContext) editable(id float64) bool          { return c.editableIDs[id] }
 func (c vectorContext) blocked(id float64) bool           { return c.blockedIDs[id] }

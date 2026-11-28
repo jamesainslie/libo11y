@@ -212,6 +212,7 @@ replay:
   max_body_bytes: 1048576          # one segment as sent (default 1 MiB)
   max_decompressed_bytes: 16777216 # after gzip (default 16 MiB)
   max_events: 20000                # rrweb events per segment (default 20000)
+  max_concurrent: 8                # segments handled at once (default 8)
 apps:
   - service_name: shop-web
     origins: ["https://shop.example"]
@@ -228,7 +229,11 @@ takes one segment envelope as JSON, optionally gzipped, and answers 204.
 client address, the rate limit, the app's origins and client token. An app
 without `replay.enabled` answers 403. A body over the caps answers 413, as
 does a segment with more than `max_events` events. A malformed envelope
-answers 400. A failing store answers 503 with `Retry-After: 5`. The
+answers 400. A failing store answers 503 with `Retry-After: 5`. A
+decoded segment takes many times its size in memory, up to about 30 times
+for a body of small events, so `max_concurrent` bounds how many the
+gateway holds at once. A segment past it answers 503 with
+`Retry-After: 1`. The
 gateway keeps no session state, so it cannot tell a kept session from
 another. The collector uploads only for kept sessions and only with
 consent.
@@ -249,9 +254,16 @@ parameters. Text is handled in one of two modes:
   contenteditable element or `data-o11y-mask`, as the segment's own tree
   shows it, is still masked.
 
-The gateway has no DOM. It reads each node's parent and the masks above it
-from the segment, which always starts with a full snapshot. A node the
-segment serializes twice under different parents allows no text.
+The gateway has no DOM. It reads each node's parent and the masks above
+it from the segment, which always starts with a full snapshot: the
+snapshot's tree, the nodes later mutations add, and the mask, block and
+contenteditable attributes later mutations set. A mask, once seen, stays,
+and a node moved to a new parent keeps the masks of the old one. A node
+the segment serializes twice with a different tag or parent allows no
+text, and neither do its children. In both modes a hostile client can
+still put text in the attributes the allow-list keeps as they are, such
+as `class` and `id`, and in stylesheets. The scrubber protects against
+a client that records too much, not one that lies.
 
 Each segment is stored under the app's namespace and the session as two
 objects:

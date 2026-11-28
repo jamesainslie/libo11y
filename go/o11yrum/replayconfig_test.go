@@ -126,3 +126,16 @@ func TestNewHandlerRefusesReplayWithoutListingStore(t *testing.T) {
 		t.Fatalf("replayNS %q", ns)
 	}
 }
+
+func TestReplayMaxConcurrent(t *testing.T) {
+	cfg, err := ParseConfig([]byte(replayApp))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Replay.MaxConcurrent != 8 {
+		t.Fatalf("default %d", cfg.Replay.MaxConcurrent)
+	}
+	if _, err := ParseConfig([]byte("replay: {max_concurrent: -1}\n" + replayApp)); err == nil || !strings.Contains(err.Error(), "replay.max_concurrent") {
+		t.Fatalf("negative: %v", err)
+	}
+}

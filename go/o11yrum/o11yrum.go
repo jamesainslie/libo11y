@@ -29,6 +29,8 @@ type Handler struct {
 	// store and symbols are nil without an object store.
 	store   ObjectStore
 	symbols *symbolicator
+	// replaySlots holds one token per replay segment being handled.
+	replaySlots chan struct{}
 
 	// derive is nil without WithMetricProducer.
 	derive           *deriver
@@ -106,10 +108,11 @@ func NewHandler(opts ...Option) (*Handler, error) {
 		return nil, err
 	}
 	if cfg.replayEnabled() {
-		if err := replayStore(h.store); err != nil {
+		if err := checkReplayStore(h.store); err != nil {
 			return nil, err
 		}
 	}
+	h.replaySlots = make(chan struct{}, cfg.Replay.MaxConcurrent)
 	if h.store != nil {
 		h.symbols = newSymbolicator(h.store, cfg.Symbolication, symbolicatorDeps{
 			maxValueLen: cfg.Limits.MaxValueLength,

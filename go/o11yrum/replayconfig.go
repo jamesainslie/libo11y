@@ -18,6 +18,11 @@ type ReplayConfig struct {
 	MaxDecompressedBytes int64 `yaml:"max_decompressed_bytes"`
 	// MaxEvents caps the rrweb events of one segment. Default 20000.
 	MaxEvents int `yaml:"max_events"`
+	// MaxConcurrent caps the segments one gateway decodes and scrubs at
+	// once. A decoded segment takes many times its size in memory, so
+	// this bounds the memory replay can use. A segment past the cap
+	// answers 503 with Retry-After: 1. Default 8.
+	MaxConcurrent int `yaml:"max_concurrent"`
 }
 
 // AppReplay configures one app's session replay.
@@ -41,6 +46,7 @@ func (r *ReplayConfig) applyDefaults() {
 	setDefault(&r.MaxBodyBytes, 1<<20)
 	setDefault(&r.MaxDecompressedBytes, 16<<20)
 	setDefault(&r.MaxEvents, 20000)
+	setDefault(&r.MaxConcurrent, 8)
 }
 
 // validate refuses caps that are not positive or that contradict each
@@ -53,6 +59,7 @@ func (r ReplayConfig) validate() error {
 		{"replay.max_body_bytes", r.MaxBodyBytes},
 		{"replay.max_decompressed_bytes", r.MaxDecompressedBytes},
 		{"replay.max_events", int64(r.MaxEvents)},
+		{"replay.max_concurrent", int64(r.MaxConcurrent)},
 	} {
 		if f.v <= 0 {
 			return fmt.Errorf("%s must be positive", f.name)
@@ -125,9 +132,9 @@ func (c *Config) replayEnabled() bool {
 	return false
 }
 
-// replayStore checks the object store can hold recordings. Replay needs
+// checkReplayStore checks the object store can hold recordings. Replay needs
 // List and Delete for the read API, erasure and retention.
-func replayStore(store ObjectStore) error {
+func checkReplayStore(store ObjectStore) error {
 	if store == nil {
 		return errors.New("o11yrum: replay needs an object store")
 	}
