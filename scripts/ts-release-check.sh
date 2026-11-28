@@ -134,8 +134,9 @@ printf '{ "name": "libo11y-consumer", "private": true, "type": "module" }\n' >"$
 	# The React Native packages run on Hermes, which has no Node builtins.
 	# They must bundle with the react-native condition, React Native and
 	# Expo left external, from every entry point.
-	"$repo_root/scripts/ts-rn-bundle-check.sh" "$consumer" @libo11y/react-native=setupReactNative
-	echo "ts-release-check: @libo11y/react-native bundles for React Native"
+	"$repo_root/scripts/ts-rn-bundle-check.sh" "$consumer" @libo11y/react-native=setupReactNative \
+		@libo11y/rum-react-native=setupRumReactNative,screens
+	echo "ts-release-check: @libo11y/react-native and @libo11y/rum-react-native bundle for React Native"
 
 	# The published declarations must typecheck for a nodenext consumer.
 	cat >check.ts <<'TS'

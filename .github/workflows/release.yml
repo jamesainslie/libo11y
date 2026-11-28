@@ -849,12 +849,13 @@ jobs:
       # Native and Expo left external, as scripts/ts-release-check.sh does.
       - name: Install and bundle the React Native packages
         run: |
-          specs_out="$(scripts/ts-npm-plan.sh specs "$RUNNER_TEMP/packs/plan.tsv" "$VERSION" @libo11y/react-native)"
+          specs_out="$(scripts/ts-npm-plan.sh specs "$RUNNER_TEMP/packs/plan.tsv" "$VERSION" @libo11y/react-native @libo11y/rum-react-native)"
           mapfile -t specs <<<"$specs_out"
           consumer="$(mktemp -d)"
           printf '{ "name": "libo11y-react-native-smoke", "private": true, "type": "module" }\n' >"$consumer/package.json"
           (cd "$consumer" && npm install --no-audit --no-fund --ignore-scripts "${specs[@]}")
-          scripts/ts-rn-bundle-check.sh "$consumer" @libo11y/react-native=setupReactNative
+          scripts/ts-rn-bundle-check.sh "$consumer" @libo11y/react-native=setupReactNative \
+            @libo11y/rum-react-native=setupRumReactNative,screens
       # A package not on npm yet installs from its tarball, with its other
       # dependencies from the registry, the way a consumer installs it from
       # the GitHub Release. The check fails on an incomplete dependency tree
