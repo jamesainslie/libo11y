@@ -758,6 +758,127 @@ test "o11yhttp loopback: cross-origin redirect strips propagated trace and bagga
     }
 }
 
+test "o11yhttp client: a redirect back to the first origin does not restore stripped headers" {
+    const rec = try o11ytest.start(testing.allocator, testing.io, .{});
+    defer rec.deinit();
+
+    // Another origin that sends the request straight back.
+    const Bounce = struct {
+        back_url: []const u8 = "",
+        fn run(self: *@This(), sreq: *o11yhttp.ServerRequest) !void {
+            try sreq.respond("", .{
+                .status = .found,
+                .extra_headers = &.{.{ .name = "location", .value = self.back_url }},
+            });
+        }
+    };
+    var bounce: Bounce = .{};
+    const other = try LoopbackServer(*Bounce, Bounce.run).start(testing.allocator, testing.io, .{
+        .telemetry = rec.telemetry(),
+        .operation = "other",
+    }, &bounce);
+    defer other.deinit();
+
+    const Origin = struct {
+        out_url: []const u8,
+        saw_traceparent: bool = false,
+        saw_secret: bool = false,
+        saw_custom: bool = false,
+        fn run(self: *@This(), sreq: *o11yhttp.ServerRequest) !void {
+            if (std.mem.eql(u8, sreq.path(), "/out")) {
+                try sreq.respond("", .{
+                    .status = .found,
+                    .extra_headers = &.{.{ .name = "location", .value = self.out_url }},
+                });
+                return;
+            }
+            self.saw_traceparent = sreq.header("traceparent") != null;
+            self.saw_secret = sreq.header("x-secret") != null;
+            self.saw_custom = sreq.header("x-custom") != null;
+            try sreq.respond("back", .{ .status = .ok });
+        }
+    };
+    const out_url = try other.url(testing.allocator, "/bounce");
+    defer testing.allocator.free(out_url);
+    var origin_state: Origin = .{ .out_url = out_url };
+    const origin = try LoopbackServer(*Origin, Origin.run).start(testing.allocator, testing.io, .{
+        .telemetry = rec.telemetry(),
+        .operation = "origin",
+    }, &origin_state);
+    defer origin.deinit();
+    const back_url = try origin.url(testing.allocator, "/landing");
+    defer testing.allocator.free(back_url);
+    bounce.back_url = back_url;
+
+    var std_client: std.http.Client = .{ .allocator = testing.allocator, .io = testing.io };
+    defer std_client.deinit();
+    const client = o11yhttp.Client.init(&std_client, .{ .telemetry = rec.telemetry() });
+
+    const start_url = try origin.url(testing.allocator, "/out");
+    defer testing.allocator.free(start_url);
+    const res = try client.fetch(.background, .{
+        .location = .{ .url = start_url },
+        .extra_headers = &.{.{ .name = "x-custom", .value = "keep" }},
+        .privileged_headers = &.{.{ .name = "x-secret", .value = "token" }},
+    });
+    try origin.waitHandled(2);
+    try testing.expectEqual(std.http.Status.ok, res.status);
+    // The request left the first origin, so what was stripped there stays
+    // stripped, as in std.http.Client.
+    try testing.expect(!origin_state.saw_secret);
+    try testing.expect(!origin_state.saw_traceparent);
+    try testing.expect(origin_state.saw_custom);
+}
+
+test "o11yhttp client: fetch keeps the span open while it reads the body" {
+    const rec = try o11ytest.start(testing.allocator, testing.io, .{});
+    defer rec.deinit();
+
+    const Handler = struct {
+        fn run(sreq: *o11yhttp.ServerRequest) !void {
+            try sreq.respond("a body longer than the caller has room for", .{ .status = .ok });
+        }
+    };
+    const srv = try LoopbackServer(void, Handler.run).start(testing.allocator, testing.io, .{
+        .telemetry = rec.telemetry(),
+        .operation = "upstream",
+    }, {});
+    defer srv.deinit();
+
+    var std_client: std.http.Client = .{ .allocator = testing.allocator, .io = testing.io };
+    defer std_client.deinit();
+    const client = o11yhttp.Client.init(&std_client, .{ .telemetry = rec.telemetry() });
+
+    const url = try srv.url(testing.allocator, "/body");
+    defer testing.allocator.free(url);
+
+    // The head arrives with status 200, then copying the body fails
+    // because the caller's writer is full.
+    var small: [4]u8 = undefined;
+    var full: Io.Writer = .fixed(&small);
+    try testing.expectError(error.WriteFailed, client.fetch(.background, .{
+        .location = .{ .url = url },
+        .response_writer = &full,
+        .keep_alive = false,
+    }));
+
+    // The caller got an error, so the span says so. It used to end as a
+    // clean 200 before the body was read.
+    const failed = try rec.expectSpan("GET");
+    try testing.expectEqual(o11y.StatusCode.@"error", failed.status.code);
+    try testing.expectEqualStrings("WriteFailed", findAttr(failed.attributes.items, "error.type").?.string);
+
+    rec.reset();
+    var sink: Io.Writer.Allocating = .init(testing.allocator);
+    defer sink.deinit();
+    const ok = try client.fetch(.background, .{ .location = .{ .url = url }, .response_writer = &sink.writer });
+    try testing.expectEqual(std.http.Status.ok, ok.status);
+    try testing.expectEqualStrings("a body longer than the caller has room for", sink.written());
+    const done = try rec.expectSpan("GET");
+    try testing.expectEqual(o11y.StatusCode.unset, done.status.code);
+    try testing.expectEqual(@as(i64, 200), findAttr(done.attributes.items, "http.response.status_code").?.int);
+}
+
 test "o11yhttp client: a 304 and a redirect answer to HEAD are final responses, as in std.http.Client" {
     const rec = try o11ytest.start(testing.allocator, testing.io, .{});
     defer rec.deinit();

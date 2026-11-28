@@ -116,14 +116,32 @@ pub const Client = struct {
             try self.http_client.allocator.alloc(u8, 8 * 1024);
         defer if (options.redirect_buffer == null) self.http_client.allocator.free(redirect_buffer);
 
+        // fetch reads the body itself, so the span and the duration cover
+        // it: a body that fails to arrive marks the span as an error.
+        req.finish_on_head = false;
         var response = try req.receiveHead(redirect_buffer);
+        const status = response.head.status;
+        self.readBody(options, &response) catch |err| {
+            req.recordFailure(err);
+            return err;
+        };
+        req.finishWith(status);
+        return .{ .status = status };
+    }
 
+    /// Reads the response body as `std.http.Client.fetch` does: into
+    /// `options.response_writer`, decompressed, or discarded without one.
+    fn readBody(
+        self: *const Client,
+        options: std.http.Client.FetchOptions,
+        response: *std.http.Client.Response,
+    ) std.http.Client.FetchError!void {
         const response_writer = options.response_writer orelse {
             const reader = response.reader(&.{});
             _ = reader.discardRemaining() catch |err| switch (err) {
                 error.ReadFailed => return response.bodyErr().?,
             };
-            return .{ .status = response.head.status };
+            return;
         };
 
         const decompress_buffer: []u8 = switch (response.head.content_encoding) {
@@ -142,8 +160,6 @@ pub const Client = struct {
             error.ReadFailed => return response.bodyErr().?,
             else => |e| return e,
         };
-
-        return .{ .status = response.head.status };
     }
 
     /// Opens an instrumented `ClientRequest` wrapping `std.http.Client.request`
@@ -426,6 +442,14 @@ pub const ClientRequest = struct {
     orig_privileged_headers: []const std.http.Header,
     initial_uri: std.Uri,
     finished: bool = false,
+    /// Set once a redirect leaves the first origin. From then on every hop
+    /// counts as cross-origin, also one back to the first origin, so
+    /// stripped headers are never restored. `std.http.Client` drops its
+    /// privileged headers for good in the same way.
+    left_origin: bool = false,
+    /// Whether `receiveHead` ends the span. `Client.fetch` clears it and
+    /// ends the span after it has read the body.
+    finish_on_head: bool = true,
 
     /// Sends a bodiless HTTP request. Marks the client span as error on failure.
     pub fn sendBodiless(self: *ClientRequest) Io.Writer.Error!void {
@@ -454,7 +478,9 @@ pub const ClientRequest = struct {
     /// Receives response headers, following redirects hop-by-hop (stripping
     /// propagated trace/baggage and privileged headers on cross-origin hops),
     /// recording HTTP status and client duration metric with exemplar, and
-    /// ending the client span.
+    /// ending the client span. The span ends here because the caller reads
+    /// the body afterwards, outside the wrapper. `Client.fetch` reads the
+    /// body itself and ends the span after it.
     pub fn receiveHead(
         self: *ClientRequest,
         redirect_buffer: []u8,
@@ -522,7 +548,8 @@ pub const ClientRequest = struct {
                 }
 
                 const a = self.arena.allocator();
-                const same_origin = common.sameOrigin(a, self.initial_uri, new_uri);
+                if (!common.sameOrigin(a, self.initial_uri, new_uri)) self.left_origin = true;
+                const same_origin = !self.left_origin;
                 const span_ctx = self.parent_ctx.withSpan(&self.span);
                 const header_set = self.client.buildHopHeaders(
                     a,
@@ -565,12 +592,17 @@ pub const ClientRequest = struct {
                 continue;
             }
 
-            if (!self.finished) {
-                self.finished = true;
-                self.client.finishStatus(&self.span, self.parent_ctx, self.info, self.start_time, resp.head.status);
-            }
+            if (self.finish_on_head) self.finishWith(resp.head.status);
             return resp;
         }
+    }
+
+    /// Records the response status and the request duration and ends the
+    /// span, once.
+    fn finishWith(self: *ClientRequest, status: std.http.Status) void {
+        if (self.finished) return;
+        self.finished = true;
+        self.client.finishStatus(&self.span, self.parent_ctx, self.info, self.start_time, status);
     }
 
     /// Releases the underlying `std.http.Client.Request`, ends the span if not
