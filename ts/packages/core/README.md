@@ -111,6 +111,10 @@ keeps its own rule.
 | `logExporter`                                       | inject a log exporter. Records are batched and classified                                                                        |
 | `logProcessor`                                      | a log record processor after the redacting processor, which sees each classified record synchronously (Go `WithExtraLogHandler`) |
 
+An injected `logProcessor` is a leg beside the log exporter. It does not
+change where records are exported, and it runs with `logExport: false` and
+in hermetic mode too. Only `OTEL_SDK_DISABLED=true` turns it off.
+
 `OTEL_PROPAGATORS` selects the propagators when the `propagators` option
 is absent or empty. It is a comma-separated list. Each entry is trimmed,
 an empty entry is dropped, and a name counts once, where it first appears.
@@ -175,7 +179,9 @@ batch log processor and periodic metric reader report a failed export to
 the error handler only, so core watches each exporter itself. `shutdown`
 also writes one `o11y.telemetry.dropped` event to the console for each
 signal in the report, or to the diagnostic stream when the console sink is
-off. Those events are never rate limited.
+off. Those events are never rate limited. Its `error.type` is the class of
+the error the signal failed with, such as `CollectorError`. A signal that
+missed the deadline says `TimeoutError`.
 
 An export that fails outside any `forceFlush` or `shutdown`, such as one
 the batch timer or the periodic reader started, is not in any report. Core

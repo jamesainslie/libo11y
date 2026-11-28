@@ -185,10 +185,12 @@ export function resolveConfig(options: TelemetryOptions, ambient: Env): Resolved
       : hermetic
         ? "none"
         : exporterRoute(env, "OTEL_METRICS_EXPORTER", "metric reader");
+  // An injected log processor is a leg beside the exporter, not a route: it does not decide where
+  // the exported records go (Go WithExtraLogHandler).
   let logs: SignalRoute =
     options.logExport === false
       ? "none"
-      : options.logExporter !== undefined || options.logProcessor !== undefined
+      : options.logExporter !== undefined
         ? "injected"
         : hermetic
           ? "none"

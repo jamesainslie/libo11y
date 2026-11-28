@@ -82,7 +82,16 @@ test("injected exporters and readers route as injected, whatever the environment
   assert.equal(c.metrics, "injected");
   assert.equal(c.logs, "injected");
   assert.equal(resolveConfig({ spanProcessor: {} as never }, {}).traces, "injected");
-  assert.equal(resolveConfig({ hermetic: true, logProcessor: {} as never }, {}).logs, "injected");
+});
+
+test("a log processor does not decide the log route: it runs beside whatever the route is", () => {
+  assert.equal(resolveConfig({ logProcessor: {} as never }, {}).logs, "otlp");
+  assert.equal(
+    resolveConfig({ logProcessor: {} as never }, { OTEL_LOGS_EXPORTER: "console" }).logs,
+    "console",
+  );
+  assert.equal(resolveConfig({ hermetic: true, logProcessor: {} as never }, {}).logs, "none");
+  assert.equal(resolveConfig({ logProcessor: {} as never, logExporter: {} as never }, {}).logs, "injected");
 });
 
 test("logExport false turns the log route off, even with an exporter", () => {

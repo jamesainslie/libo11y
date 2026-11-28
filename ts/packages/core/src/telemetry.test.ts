@@ -293,9 +293,33 @@ test("a hung log exporter does not starve traces, and shutdown keeps its deadlin
   assert.deepEqual(exported, ["kept"]);
   const dropped = lineObjects(platform.lines as string[]).filter((l) => l.msg === "o11y.telemetry.dropped");
   assert.deepEqual(
-    dropped.map((d) => d["o11y.signal"]),
-    ["logs"],
+    dropped.map((d) => [d["o11y.signal"], d["error.type"]]),
+    [["logs", "TimeoutError"]],
   );
+});
+
+test("shutdown's dropped event names the class of what the signal failed with, not the wrapper's", async () => {
+  class ExporterBroke extends Error {}
+  const failing: PushMetricExporter = {
+    export: (_m, cb) => cb({ code: 0 }),
+    forceFlush: async () => {},
+    shutdown: async () => {
+      throw new ExporterBroke("exporter broke at secret-host");
+    },
+  };
+  const { platform } = rig({}, failing);
+  const t = await createTelemetryWith(OPTIONS, platform);
+  const report = await t.shutdown();
+  assert.deepEqual(
+    report.errors.map((e) => [e.signal, (e.error as Error).message]),
+    [["metrics", "o11y: shutdown metrics: exporter broke at secret-host"]],
+  );
+  const dropped = lineObjects(platform.lines as string[]).filter((l) => l.msg === "o11y.telemetry.dropped");
+  assert.deepEqual(
+    dropped.map((d) => [d["o11y.signal"], d["error.type"]]),
+    [["metrics", "ExporterBroke"]],
+  );
+  assert.doesNotMatch(JSON.stringify(dropped), /secret-host/);
 });
 
 test("forceFlush reports each failing signal in order", async () => {
@@ -650,6 +674,110 @@ test("an injected log processor sees each classified record synchronously, with 
     await t.shutdown();
   }
   assert.equal(shutdowns, 1);
+});
+
+// A log processor is one more leg beside the log exporter, as Go's WithExtraLogHandler is beside
+// the OTLP leg. It used to make the log route "injected", so the platform's log exporter was never
+// used, and logExport false dropped it.
+function bodiesProcessor() {
+  const bodies: unknown[] = [];
+  let shutdowns = 0;
+  const processor: LogRecordProcessor = {
+    onEmit: (record) => void bodies.push(record.body),
+    forceFlush: async () => {},
+    shutdown: async () => {
+      shutdowns++;
+    },
+  };
+  return { processor, bodies, shutdowns: () => shutdowns };
+}
+
+test("a log processor alone runs beside the platform's log exporter, and both get every record", async () => {
+  const { platform, logs } = rig();
+  const p = bodiesProcessor();
+  const t = await createTelemetryWith(
+    { ...OPTIONS, console: false, startupSummary: false, logProcessor: p.processor },
+    platform,
+  );
+  try {
+    t.logger.info("one");
+    t.logger.warn("two");
+    await t.forceFlush();
+    assert.deepEqual(p.bodies, ["one", "two"]);
+    assert.deepEqual(
+      logs.getFinishedLogRecords().map((r) => r.body),
+      ["one", "two"],
+    );
+    // The summary describes the exporter route, not the processor.
+    assert.match(t.effectiveConfig(), /o11y\.config\.logs=otlp/);
+  } finally {
+    await t.shutdown();
+  }
+  assert.equal(p.shutdowns(), 1);
+});
+
+test("with logExport false a log processor still gets every record, and nothing is exported", async () => {
+  const { platform, logs } = rig();
+  const p = bodiesProcessor();
+  const t = await createTelemetryWith(
+    { ...OPTIONS, console: false, startupSummary: false, logExport: false, logProcessor: p.processor },
+    platform,
+  );
+  try {
+    t.logger.info("one");
+    await t.forceFlush();
+    assert.deepEqual(p.bodies, ["one"]);
+    assert.deepEqual(logs.getFinishedLogRecords(), []);
+    assert.match(t.effectiveConfig(), /o11y\.config\.logs=none/);
+  } finally {
+    await t.shutdown();
+  }
+  assert.equal(p.shutdowns(), 1);
+});
+
+test("in hermetic mode a log processor alone gets every record, classified, with no exporter", async () => {
+  const { platform, logs, requests } = rig();
+  const p = bodiesProcessor();
+  const attrs: Record<string, unknown>[] = [];
+  const processor: LogRecordProcessor = {
+    ...p.processor,
+    onEmit: (record, ctx) => {
+      p.processor.onEmit(record, ctx);
+      attrs.push({ ...record.attributes });
+    },
+  };
+  const t = await createTelemetryWith(
+    { ...OPTIONS, hermetic: true, console: false, startupSummary: false, logProcessor: processor },
+    platform,
+  );
+  try {
+    t.logger.info("one", { "http.request.header.authorization": "Bearer x", ok: 1 });
+    await t.forceFlush();
+    assert.deepEqual(p.bodies, ["one"]);
+    assert.deepEqual(attrs, [{ ok: 1 }]);
+    assert.deepEqual(logs.getFinishedLogRecords(), []);
+    assert.deepEqual(requests, []);
+    assert.match(t.effectiveConfig(), /o11y\.config\.logs=none/);
+  } finally {
+    await t.shutdown();
+  }
+  assert.equal(p.shutdowns(), 1);
+});
+
+test("OTEL_SDK_DISABLED keeps an injected log processor off", async () => {
+  const { platform } = rig({ env: () => ({ OTEL_SDK_DISABLED: "true" }) });
+  const p = bodiesProcessor();
+  const t = await createTelemetryWith(
+    { ...OPTIONS, console: false, startupSummary: false, logProcessor: p.processor },
+    platform,
+  );
+  try {
+    t.logger.info("one");
+    await t.forceFlush();
+    assert.deepEqual(p.bodies, []);
+  } finally {
+    await t.shutdown();
+  }
 });
 
 test("exemplarStoreOf lets a harness attach exemplars to an injected reader's collection", async () => {

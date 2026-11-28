@@ -12,7 +12,6 @@
  * and %% substitute, the remaining arguments join with a space, objects render as JSON with cycles
  * cut to "[Circular]", and errors as String(err).
  */
-import { ATTR_LOG_SOURCE, LOG_SOURCE_VALUE_CONSOLE } from "@libo11y/spec";
 import { isError } from "./is-error.ts";
 import type { LogLevel } from "./log-values.ts";
 import type { CoreLogger } from "./logger.ts";
@@ -113,7 +112,7 @@ export function captureConsole(target: PlatformConsole, logger: CoreLogger): () 
       capturing = true;
       try {
         const error = args.find(isError);
-        logger.log(level, formatConsoleArgs(args), { [ATTR_LOG_SOURCE]: LOG_SOURCE_VALUE_CONSOLE }, error);
+        logger.captured(level, formatConsoleArgs(args), error);
       } catch {
         // A failing sink must not break the caller's console call.
       } finally {

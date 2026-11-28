@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { runInNewContext } from "node:vm";
+import type { CompiledAppRegistry } from "@libo11y/spec";
 import { context, ROOT_CONTEXT, TraceFlags, trace } from "@opentelemetry/api";
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
 import { InMemoryLogRecordExporter, LoggerProvider, SimpleLogRecordProcessor } from "@opentelemetry/sdk-logs";
@@ -28,13 +29,16 @@ function harness(
     level?: LogLevel;
     replacer?: AttrReplacer;
     pii?: "drop" | "hash";
+    registries?: readonly CompiledAppRegistry[];
     write?: (l: string) => void;
   } = {},
 ) {
   const counts = new Counts();
-  const policy = SensitivityPolicy.create({ pii: opts.pii ?? "drop", key: KEY, registries: [] }).withRecorder(
-    counts,
-  );
+  const policy = SensitivityPolicy.create({
+    pii: opts.pii ?? "drop",
+    key: KEY,
+    registries: opts.registries ?? [],
+  }).withRecorder(counts);
   const lines: string[] = [];
   const errors: unknown[] = [];
   const exporter = new InMemoryLogRecordExporter();
@@ -162,6 +166,89 @@ test("user trace_id and span_id at the top level are dropped, nested ones kept",
     lines[0],
     '{"time":"2026-11-24T01:02:03.4Z","level":"INFO","msg":"m","g":{"trace_id":"kept"}}',
   );
+});
+
+// An Error under a key the policy drops or tokenizes must not escape through exception.*: its own
+// key was discarded before the policy ran, so the message and stack went out in clear text.
+test("an Error under a secret key is dropped whole from both sinks", () => {
+  const { logger, lines, exporter, counts } = harness();
+  logger.info("x", { "http.request.header.authorization": new Error("Bearer abc"), ok: 1 });
+  assert.equal(lines[0], '{"time":"2026-11-24T01:02:03.4Z","level":"INFO","msg":"x","ok":1}');
+  assert.deepEqual(exporter.getFinishedLogRecords()[0]?.attributes, { ok: 1 });
+  assert.doesNotMatch(lines[0] ?? "", /Bearer|exception/);
+  // Counted once per sink, as a string value is.
+  assert.deepEqual(counts.seen, ["logs/secret_attribute", "logs/secret_attribute"]);
+});
+
+test("an Error under a PII key is dropped in drop mode, counted once per sink as a string is", () => {
+  const withError = harness();
+  withError.logger.info("x", { "host.ip": new Error("10.0.0.1") });
+  const withString = harness();
+  withString.logger.info("x", { "host.ip": "10.0.0.1" });
+  assert.equal(withError.lines[0], '{"time":"2026-11-24T01:02:03.4Z","level":"INFO","msg":"x"}');
+  assert.deepEqual(withError.exporter.getFinishedLogRecords()[0]?.attributes, {});
+  assert.deepEqual(withError.counts.seen, ["logs/pii_attribute", "logs/pii_attribute"]);
+  assert.deepEqual(withError.counts.seen, withString.counts.seen);
+});
+
+test("an Error under a PII key is tokenized in hash mode, as the string a second Error renders to", () => {
+  const { logger, lines, exporter, policy, counts } = harness({ pii: "hash" });
+  const err = new Error("10.0.0.1");
+  logger.info("x", { "host.ip": err });
+  const token = policy.tokenOf(String(err));
+  assert.equal(lines[0], `{"time":"2026-11-24T01:02:03.4Z","level":"INFO","msg":"x","host.ip":"${token}"}`);
+  assert.deepEqual(exporter.getFinishedLogRecords()[0]?.attributes, { "host.ip": token });
+  assert.deepEqual(counts.seen, ["logs/pii_attribute", "logs/pii_attribute"]);
+});
+
+test("an Error under a key an application registry classifies secret is dropped from both sinks", () => {
+  const registry: CompiledAppRegistry = { namespace: "lor", classes: { "lor.session.token": "secret" } };
+  const { logger, lines, exporter } = harness({ registries: [registry] });
+  logger.info("x", { "lor.session.token": new Error("tok-123") });
+  assert.equal(lines[0], '{"time":"2026-11-24T01:02:03.4Z","level":"INFO","msg":"x"}');
+  assert.deepEqual(exporter.getFinishedLogRecords()[0]?.attributes, {});
+});
+
+test("an Error under an unclassified key still expands, after one under a dropped key", () => {
+  const { logger, exporter, lines } = harness();
+  const err = new TypeError("boom");
+  logger.info("x", { "http.request.header.authorization": new Error("Bearer abc"), cause: err });
+  assert.deepEqual(exporter.getFinishedLogRecords()[0]?.attributes, {
+    "exception.type": "TypeError",
+    "exception.message": "boom",
+    "exception.stacktrace": err.stack,
+  });
+  assert.doesNotMatch(lines[0] ?? "", /Bearer/);
+});
+
+test("a replacer cannot add a top-level trace_id or span_id on either sink", () => {
+  const replacer: AttrReplacer = (key, value) => {
+    if (key === "t") return ["trace_id", value];
+    if (key === "s") return ["span_id", value];
+    return [key, value];
+  };
+  const outside = harness({ replacer });
+  outside.logger.info("m", { t: "fake", s: "fake", ok: 1 });
+  assert.equal(outside.lines[0], '{"time":"2026-11-24T01:02:03.4Z","level":"INFO","msg":"m","ok":1}');
+  assert.deepEqual(outside.exporter.getFinishedLogRecords()[0]?.attributes, { ok: 1 });
+
+  const inside = harness({ replacer });
+  const ctx = trace.setSpanContext(ROOT_CONTEXT, {
+    traceId: TRACE_ID,
+    spanId: SPAN_ID,
+    traceFlags: TraceFlags.SAMPLED,
+  });
+  inside.pipeline.emit("info", "m", { t: "fake", s: "fake", g: { t: "kept" } }, { ctx });
+  assert.equal(inside.lines.length, 1);
+  // The top-level keys follow a comma; the nested one opens its group.
+  assert.equal(inside.lines[0]?.match(/,"trace_id"/g)?.length, 1, inside.lines[0]);
+  assert.equal(inside.lines[0]?.match(/,"span_id"/g)?.length, 1, inside.lines[0]);
+  assert.match(inside.lines[0] ?? "", new RegExp(`"trace_id":"${TRACE_ID}","span_id":"${SPAN_ID}"`));
+  assert.match(inside.lines[0] ?? "", /"g":\{"trace_id":"kept"\}/);
+  for (const r of inside.exporter.getFinishedLogRecords()) {
+    assert.equal(r.attributes.trace_id, undefined);
+    assert.equal(r.attributes.span_id, undefined);
+  }
 });
 
 test("groups nest on the console and become maps on OTLP", () => {

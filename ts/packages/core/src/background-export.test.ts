@@ -296,7 +296,7 @@ test("with the console sink off, shutdown's dropped event is written to the diag
   const [line, ...rest] = droppedOnDiagnostics(platform);
   assert.equal(rest.length, 0);
   assert.match(line ?? "", /o11y\.signal=traces/);
-  assert.match(line ?? "", /error\.type=Error/);
+  assert.match(line ?? "", /error\.type=CollectorError/);
   assert.doesNotMatch(line ?? "", /secret-host/);
 });
 
