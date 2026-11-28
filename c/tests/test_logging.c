@@ -7,11 +7,7 @@ static bool replacer_rename_and_drop(
     size_t groups_len,
     const char *key,
     const o11y_log_value_t *value,
-    char *out_key_buf,
-    size_t out_key_cap,
-    char *out_str_val_buf,
-    size_t out_str_val_cap,
-    bool *out_replace_str_val) {
+    o11y_attr_replacement_t *out_replacement) {
     (void)userdata;
     (void)groups;
     (void)groups_len;
@@ -21,12 +17,44 @@ static bool replacer_rename_and_drop(
     }
     if (strcmp(key, "alias_secret") == 0) {
         /* Rename to a spec-classified secret key to prove sensitivity runs AFTER replacer */
-        snprintf(out_key_buf, out_key_cap, "%s", "http.request.header.authorization");
+        (void)o11y_attr_replacement_set_key(out_replacement, "http.request.header.authorization");
         return true;
     }
     if (strcmp(key, "rewrite_val") == 0) {
-        snprintf(out_str_val_buf, out_str_val_cap, "%s", "rewritten");
-        *out_replace_str_val = true;
+        char buf[32] = "rewritten";
+        o11y_log_value_t sv = o11y_log_val_str(buf);
+        (void)o11y_attr_replacement_set_value(out_replacement, &sv);
+        memset(buf, 'X', sizeof(buf));
+        return true;
+    }
+    if (strcmp(key, "rewrite_int") == 0) {
+        o11y_log_value_t iv = o11y_log_val_int(99);
+        (void)o11y_attr_replacement_set_value(out_replacement, &iv);
+        return true;
+    }
+    if (strcmp(key, "rewrite_composite") == 0) {
+        char kbuf[32] = "renamed_composite";
+        char inner_k[32] = "nested_msg";
+        char inner_s[32] = "copied_before_return";
+        uint8_t inner_bytes[4] = { 1, 2, 3, 4 };
+        o11y_log_value_t arr[2];
+        arr[0] = o11y_log_val_str(inner_s);
+        arr[1] = o11y_log_val_bytes(inner_bytes, sizeof(inner_bytes));
+        o11y_log_attr_t map_items[1] = {
+            o11y_log_kv_array(inner_k, arr, 2),
+        };
+        o11y_log_value_t mv = o11y_log_val_map(map_items, 1);
+        o11y_err_t krc = o11y_attr_replacement_set_key(out_replacement, kbuf);
+        o11y_err_t vrc = o11y_attr_replacement_set_value(out_replacement, &mv);
+        memset(kbuf, 'X', sizeof(kbuf));
+        memset(inner_k, 'X', sizeof(inner_k));
+        memset(inner_s, 'X', sizeof(inner_s));
+        memset(inner_bytes, 'X', sizeof(inner_bytes));
+        return krc == O11Y_OK && vrc == O11Y_OK;
+    }
+    if (strcmp(key, "bad_replacement") == 0) {
+        /* Setter failure (NULL value) must fail closed even if callback returns true. */
+        (void)o11y_attr_replacement_set_value(out_replacement, NULL);
         return true;
     }
     return true;
@@ -138,15 +166,28 @@ static void test_attr_replacer_runs_before_sensitivity(void) {
         o11y_log_kv_str("drop_me", "gone"),
         o11y_log_kv_str("alias_secret", "Bearer top-secret"),
         o11y_log_kv_str("rewrite_val", "original"),
+        o11y_log_kv_str("rewrite_int", "raw"),
+        o11y_log_kv_str("rewrite_composite", "orig"),
+        o11y_log_kv_str("bad_replacement", "should-drop"),
     };
-    o11y_log_info(o11y_test_sdk(rec), NULL, "replaced", attrs, 3);
+    o11y_log_info(o11y_test_sdk(rec), NULL, "replaced", attrs, 6);
 
     const o11y_test_log_t *lr = o11y_test_find_log(rec, "replaced");
     ASSERT_NOT_NULL(lr);
     ASSERT_FALSE(o11y_test_log_has_attr(lr, "drop_me"));
     ASSERT_FALSE(o11y_test_log_has_attr(lr, "alias_secret"));
     ASSERT_FALSE(o11y_test_log_has_attr(lr, "http.request.header.authorization"));
+    ASSERT_FALSE(o11y_test_log_has_attr(lr, "bad_replacement"));
     ASSERT_EQ_STR("rewritten", o11y_test_log_attr_str(lr, "rewrite_val"));
+    int64_t replaced_int = 0;
+    ASSERT_TRUE(o11y_test_log_attr_int(lr, "rewrite_int", &replaced_int));
+    ASSERT_EQ_INT(99, replaced_int);
+    ASSERT_TRUE(o11y_test_log_has_attr(lr, "renamed_composite"));
+    const char *console = o11y_test_console_output(rec, NULL);
+    ASSERT_STR_CONTAINS(console, "renamed_composite");
+    ASSERT_STR_CONTAINS(console, "nested_msg");
+    ASSERT_STR_CONTAINS(console, "copied_before_return");
+    ASSERT_TRUE(strstr(console, "XXXX") == NULL);
     ASSERT_TRUE(o11y_test_violations(rec, O11Y_SIGNAL_LOGS, "secret_attribute") >= 1);
 
     o11y_test_destroy(rec);
@@ -214,9 +255,42 @@ static void test_wide_event_record_and_capture_redaction(void) {
     ASSERT_EQ_SIZE(4, runes);
     ASSERT_EQ_STR("XXXX", masked);
 
+    /* A short buffer truncates the mask and still reports the full length. */
+    char small[3];
+    ASSERT_EQ_SIZE(4, o11y_redact_mask("caf\xc3\xa9", 5, small, sizeof(small)));
+    ASSERT_EQ_STR("XX", small);
+    ASSERT_EQ_SIZE(4, o11y_redact_mask("caf\xc3\xa9", 5, NULL, 0));
+
+    /* The masked and secret attributes reach the sinks already redacted. */
+    char card_mask[32];
+    o11y_log_attr_t redacted[] = {
+        o11y_log_kv_masked("card.last4", "4242", card_mask, sizeof(card_mask)),
+        o11y_log_kv_secret("card.cvv"),
+    };
+    o11y_log_error(sdk, NULL, "card charged", redacted, 2); /* the recorder gates below ERROR */
+    const o11y_test_log_t *charged = o11y_test_find_log(rec_test, "card charged");
+    ASSERT_NOT_NULL(charged);
+    ASSERT_EQ_STR("XXXX", o11y_test_log_attr_str(charged, "card.last4"));
+    ASSERT_EQ_STR("REDACTED", o11y_test_log_attr_str(charged, "card.cvv"));
+    ASSERT_TRUE(strstr(o11y_test_console_output(rec_test, NULL), "4242") == NULL);
+
     o11y_ctx_destroy(ctx);
     o11y_record_destroy(wide);
     o11y_test_destroy(rec_test);
+
+    /* Text console format writes readable KEY=VALUE text output. */
+    o11y_test_options_t text_opts = o11y_test_options_default();
+    text_opts.console_format = O11Y_CONSOLE_TEXT;
+    o11y_test_recorder_t *text_rec = NULL;
+    ASSERT_EQ_ERR(O11Y_OK, o11y_test_start(&text_opts, &text_rec, NULL));
+    o11y_log_attr_t text_attrs[] = { o11y_log_kv_str("order.id", "ord-9") };
+    o11y_log_info(o11y_test_sdk(text_rec), NULL, "text-line", text_attrs, 1);
+    size_t text_len = 0;
+    const char *text_out = o11y_test_console_output(text_rec, &text_len);
+    ASSERT_TRUE(text_len > 0);
+    ASSERT_STR_CONTAINS(text_out, "text-line");
+    ASSERT_STR_CONTAINS(text_out, "order.id=ord-9");
+    o11y_test_destroy(text_rec);
 }
 
 int main(void) {

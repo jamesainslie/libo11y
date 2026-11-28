@@ -8,6 +8,26 @@ adhere to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- A slog group whose own key is classified is now judged whole, as a map
+  under that key already was. `slog.Group("http.request.header.authorization", ...)`
+  and `logger.WithGroup("http.request.header.authorization")` kept their
+  members on every sink, because only the members' longer keys were looked
+  up. A group under a `secret` key, or a `pii` key in the default mode, is
+  dropped with everything inside it. Under `PIIHash` a group under a `pii`
+  key becomes one token, the token a log bridge produces for the same
+  group.
+- An attribute replacer can no longer put a second `trace_id` or `span_id`
+  on a record by renaming an attribute to one of them. The top-level guard
+  ran only before the replacer.
+- `SDK.Event` writes exactly one `event.name`. An inline group
+  (`slog.Group("", slog.String("event.name", ...))`) or a replacer that
+  renamed an attribute to `event.name` added a second one, and a replacer
+  could rewrite the name. The replacer no longer sees the `event.name` of
+  an event. A plain slog record that carries its own `event.name`
+  attribute is unchanged.
+
 ## [0.4.0] - 2026-11-27
 
 ### Added

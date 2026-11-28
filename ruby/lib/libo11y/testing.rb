@@ -2,7 +2,6 @@
 
 require "json"
 require "stringio"
-require "webrick"
 require "zlib"
 require "opentelemetry/sdk"
 require "opentelemetry-metrics-sdk"
@@ -190,11 +189,22 @@ module Libo11y
       end
     end
 
-    # In-process OTLP/HTTP protobuf receiver for wire-level verification.
+    # In-process OTLP/HTTP protobuf receiver for wire-level verification. It
+    # serves through WEBrick, which libo11y does not depend on, so that a
+    # production bundle carries no web server. Add `gem "webrick"` to the
+    # Gemfile group that runs the tests.
     class OtlpHttpReceiver
       attr_reader :port, :endpoint, :trace_requests, :metric_requests, :log_requests, :received_headers
 
+      def self.load_webrick
+        require "webrick"
+      rescue LoadError => e
+        raise LoadError, "Libo11y::Testing::OtlpHttpReceiver needs the webrick gem, which libo11y does not depend on. " \
+                         "Add `gem \"webrick\"` to the test group of your Gemfile (#{e.message})"
+      end
+
       def initialize
+        self.class.load_webrick
         @mutex = Mutex.new
         @trace_requests = []
         @metric_requests = []

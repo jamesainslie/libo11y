@@ -3,9 +3,12 @@
     <OutputType>Exe</OutputType>
     <RootNamespace>Libo11y.Cli</RootNamespace>
     <AssemblyName>Libo11y.Cli</AssemblyName>
+    <PackAsTool>true</PackAsTool>
     <ToolCommandName>libo11y</ToolCommandName>
+    <Description>The libo11y command line tool for .NET: `libo11y registry check FILE...` validates application attribute registries.</Description>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\Libo11y.Spec\Libo11y.Spec.csproj" />
+    <InternalsVisibleTo Include="Libo11y.Tests" />
   </ItemGroup>
 </Project>

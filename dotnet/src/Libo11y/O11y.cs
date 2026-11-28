@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using System.Globalization;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using Libo11y.Internal;
 using Libo11y.Spec;
@@ -22,6 +23,23 @@ public static class O11y
 {
     private static readonly object GlobalLock = new();
     private static bool _globalActive;
+
+    /// <summary>
+    /// The libo11y .NET release this assembly was built from, such as <c>0.1.0</c>.
+    /// Every Libo11y.* package releases at this one version.
+    /// </summary>
+    public static string Version { get; } = ReadVersion();
+
+    private static string ReadVersion()
+    {
+        string? informational = typeof(O11y).Assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
+            .InformationalVersion;
+        if (string.IsNullOrEmpty(informational)) return "0.0.0-unknown";
+        // The SDK appends the source revision as SemVer build metadata.
+        int plus = informational.IndexOf('+');
+        return plus < 0 ? informational : informational[..plus];
+    }
 
     public static IDisposable ForceEmit() => O11yLogRouter.EnterForceEmit();
     public static bool IsForceEmit => O11yLogRouter.IsForceEmit;
@@ -274,7 +292,7 @@ public static class O11y
         }
 
         // Wire o11y.schema.violations self-metric and flush buffered resource violations
-        var selfMeter = new Meter("libo11y", "0.1.0");
+        var selfMeter = new Meter("libo11y", Version);
         ownedDisposables.Add(selfMeter);
         var violationsCounter = selfMeter.CreateCounter<long>(
             SpecMetrics.SchemaViolations,

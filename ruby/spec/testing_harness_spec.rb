@@ -16,6 +16,13 @@ RSpec.describe "Libo11y::Testing harness and OTLP wire verification" do
     end
   end
 
+  it "names the webrick gem when OtlpHttpReceiver starts without it" do
+    allow(Libo11y::Testing::OtlpHttpReceiver).to receive(:require).with("webrick").and_raise(LoadError, "cannot load such file -- webrick")
+
+    expect { Libo11y::Testing::OtlpHttpReceiver.new }
+      .to raise_error(LoadError, /OtlpHttpReceiver needs the webrick gem.*gem "webrick"/)
+  end
+
   it "exports real OTLP/HTTP protobuf payloads for traces, metrics, and logs to OtlpHttpReceiver" do
     receiver = Libo11y::Testing::OtlpHttpReceiver.new
     begin

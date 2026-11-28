@@ -14,6 +14,76 @@ Java 21+ implementation of the libo11y telemetry contract ([docs/DESIGN.md](../d
 | `libo11y-test` | Hermetic `O11yRecorder`, JUnit 5 `O11yExtension`, `assertConforms` / `assertCorrelated` / `assertTriangle`, and in-process `OtlpHttpReceiver` |
 | `libo11y-cli` | `libo11y registry check` command-line validator |
 
+## Installing
+
+Every artifact shares one version. Import the BOM and leave the versions off
+the dependencies:
+
+```xml
+<dependencyManagement>
+    <dependencies>
+        <dependency>
+            <groupId>ing.o11y</groupId>
+            <artifactId>libo11y-bom</artifactId>
+            <version>0.1.0</version>
+            <type>pom</type>
+            <scope>import</scope>
+        </dependency>
+    </dependencies>
+</dependencyManagement>
+
+<dependencies>
+    <dependency>
+        <groupId>ing.o11y</groupId>
+        <artifactId>libo11y-spring-boot-starter</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>ing.o11y</groupId>
+        <artifactId>libo11y-test</artifactId>
+        <scope>test</scope>
+    </dependency>
+</dependencies>
+```
+
+The artifacts are on Maven Central, so no repository needs declaring.
+
+### Installing from a GitHub Release
+
+Each `java/` release on GitHub also carries
+`libo11y-java-vX.Y.Z-maven-repository.tar.gz`, which holds every artifact
+with its POM, sources and javadoc in Maven repository layout. Download and
+unpack it next to your build:
+
+```sh
+curl -fsSLO https://github.com/jamesainslie/libo11y/releases/download/java/v0.1.0/libo11y-java-v0.1.0-maven-repository.tar.gz
+tar -xzf libo11y-java-v0.1.0-maven-repository.tar.gz
+```
+
+Then add the directory as a repository. In Maven:
+
+```xml
+<repositories>
+    <repository>
+        <id>libo11y-release</id>
+        <url>file://${project.basedir}/libo11y-java-v0.1.0-maven-repository</url>
+    </repository>
+</repositories>
+```
+
+In Gradle:
+
+```kotlin
+repositories {
+    maven { url = uri("libo11y-java-v0.1.0-maven-repository") }
+    mavenCentral()
+}
+```
+
+The third-party dependencies still come from Maven Central. `SHA256SUMS` on
+the release lists the checksum of the archive and of each jar, and every
+file in the archive has a detached OpenPGP signature (`.asc`) from the
+release key `0D7ED402068BC76908086D34F73DED99417B74B2`.
+
 ## Quick start (Spring Boot + Micrometer)
 
 Add `ing.o11y:libo11y-spring-boot-starter` and set your service identity in `application.yaml`:
@@ -102,5 +172,9 @@ class CheckoutTest {
 ## Building locally
 
 ```sh
-make java-check
+make java-check          # compile with lint warnings as errors, and run every suite
+make java-release-check  # build the release artifacts and run a consumer against them
 ```
+
+Both need JDK 21 and Maven 3.9. [docs/CONVENTIONS.md](../docs/CONVENTIONS.md)
+describes the toolchain and the release steps.

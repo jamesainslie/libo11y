@@ -21,13 +21,40 @@ const (
 	csGoPrintPath = "dotnet/src/Libo11y.Spec/Generated/GoPrint.g.cs"
 )
 
-// csReservedTypes are type names a generated enum class may not take.
+// csReservedTypes are type names a generated enum class may not take: the
+// other generated types, every top-level type declared by hand in the
+// Libo11y.Spec namespace (public or internal, since both share the
+// namespace), and the framework types the generated code names unqualified.
+// TestCsReservedTypesCoverHandWrittenTypes keeps the hand-written part in
+// step with dotnet/src/Libo11y.Spec.
 var csReservedTypes = map[string]bool{
+	// Generated types.
 	"SpecConstants": true, "SpecAttributes": true, "SpecEvents": true, "SpecMetrics": true,
-	"SpecTables": true, "GoPrintRanges": true, "GoQuote": true,
+	"SpecTables": true, "GoPrintRanges": true,
 	"Sensitivity": true, "Cardinality": true, "Requirement": true, "InstrumentKind": true,
 	"ResourceAttr": true, "EventInfo": true, "MetricInfo": true,
-	"DeploymentEnvironment": true, "Environment": true, "Object": true, "String": true, "Type": true,
+	"DeploymentEnvironment": true,
+	// Hand-written types in dotnet/src/Libo11y.Spec.
+	"AppRegistry": true, "AppRegistryAttribute": true, "AppRegistryViolation": true,
+	"CompiledAppRegistry": true, "AppRegistryParseException": true,
+	"AppRegistryValidationException": true, "AppRegistryValidator": true,
+	"GoQuote": true, "YamlV3Parser": true, "YamlV3SyntaxException": true,
+	"YamlV3Node": true, "YamlV3Scalar": true, "YamlV3Sequence": true,
+	"YamlV3Mapping": true, "YamlV3Alias": true, "YamlV3Document": true,
+	"ScalarValue": true, "YamlEscapePreprocessor": true,
+	// Framework types the generated code names without a namespace.
+	"Array": true, "Dictionary": true, "FrozenDictionary": true, "FrozenSet": true,
+	"ImmutableArray": true, "IReadOnlyList": true, "ReadOnlySpan": true,
+	"Environment": true, "Object": true, "String": true, "Type": true,
+}
+
+// csReservedMembers are member names a generated constant may not take:
+// the members every generated enum class declares, and the members of
+// System.Object, which a constant would hide (CS0108).
+var csReservedMembers = map[string]bool{
+	"All": true, "IsValid": true,
+	"Equals": true, "GetHashCode": true, "GetType": true, "ToString": true,
+	"ReferenceEquals": true, "MemberwiseClone": true, "Finalize": true,
 }
 
 var csKeywords = map[string]bool{
@@ -111,8 +138,11 @@ func (m *model) csEnums() ([]csEnum, error) {
 		seen := map[string]string{}
 		for _, member := range e.members {
 			name := csPascalName(member.ID)
-			if !csTypePattern.MatchString(name) || name == "All" || name == "IsValid" {
+			if !csTypePattern.MatchString(name) || csReservedMembers[name] {
 				return nil, fmt.Errorf("%w: attribute %s: member %s: %q is not a C# member name", errCsName, e.key, member.ID, name)
+			}
+			if name == e.typeName {
+				return nil, fmt.Errorf("%w: attribute %s: member %s would share the name of its enclosing type %s (CS0542)", errCsName, e.key, member.ID, name)
 			}
 			if other, dup := seen[name]; dup {
 				return nil, fmt.Errorf("%w: attribute %s: members %s and %s both become %s", errCsName, e.key, other, member.ID, name)
@@ -124,74 +154,221 @@ func (m *model) csEnums() ([]csEnum, error) {
 	return enums, nil
 }
 
+// csXMLEscaper escapes the characters XML doc text may not hold verbatim.
+var csXMLEscaper = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
+
+// csCodeSpan matches a Markdown code span in registry prose.
+var csCodeSpan = regexp.MustCompile("`([^`<>]+)`")
+
+// csDocText renders registry prose as one line of XML doc text: control
+// characters are dropped, runs of whitespace become one space, XML
+// metacharacters are escaped, and Markdown code spans become <c> elements.
+func csDocText(prose string) string {
+	printable := strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) {
+			return ' '
+		}
+		if !unicode.IsPrint(r) {
+			return -1
+		}
+		return r
+	}, prose)
+	text := csXMLEscaper.Replace(strings.Join(strings.Fields(printable), " "))
+	return csCodeSpan.ReplaceAllString(text, "<c>$1</c>")
+}
+
+// csSentence renders prose with csDocText and ends it with a full stop
+// unless it already ends a sentence. Empty prose stays empty.
+func csSentence(prose string) string {
+	text := csDocText(prose)
+	if text == "" || strings.HasSuffix(text, ".") || strings.HasSuffix(text, "!") || strings.HasSuffix(text, "?") {
+		return text
+	}
+	return text + "."
+}
+
+// csCode renders a registry name or value as a <c> element.
+func csCode(name string) string {
+	return "<c>" + csDocText(name) + "</c>"
+}
+
+// csSummary writes a one-line XML doc summary at the given indentation.
+func csSummary(b *strings.Builder, indent, text string) {
+	fmt.Fprintf(b, "%s/// <summary>%s</summary>\n", indent, text)
+}
+
+// briefs maps every attribute name to the first brief the registry gives
+// it, preferring the attribute's definition over a reference to it.
+func (m *model) briefs() map[string]string {
+	out := map[string]string{}
+	add := func(a attr) {
+		if _, seen := out[a.name()]; !seen && strings.TrimSpace(a.Brief) != "" {
+			out[a.name()] = a.Brief
+		}
+	}
+	for _, g := range m.groups {
+		for _, a := range g.Attributes {
+			if a.ID != "" {
+				add(a)
+			}
+		}
+	}
+	for _, g := range m.groups {
+		for _, a := range g.Attributes {
+			add(a)
+		}
+	}
+	return out
+}
+
+// csAttributeDoc is the summary of an attribute key constant: the brief,
+// then the sensitivity class and cardinality budget the registry assigns.
+func (m *model) csAttributeDoc(key, brief string, upstream bool) string {
+	text := csSentence(brief)
+	if text == "" {
+		if upstream {
+			text = "The upstream " + csCode(key) + " attribute key."
+		} else {
+			text = "The " + csCode(key) + " attribute key."
+		}
+	}
+	if class := m.classByName[key]; class != "" {
+		text += " Sensitivity: " + csDocText(class) + "."
+	}
+	if card := m.cardByName[key]; card != "" {
+		text += " Cardinality: " + csDocText(card) + "."
+	}
+	return text
+}
+
+// csConst is one constant of a generated constant class.
+type csConst struct {
+	value string
+	doc   string
+}
+
 // genCsSpec renders dotnet/src/Libo11y.Spec/Generated/Spec.g.cs.
 func genCsSpec(m *model) (string, error) {
 	enums, err := m.csEnums()
 	if err != nil {
 		return "", err
 	}
+	briefs := m.briefs()
 	var b strings.Builder
 	csHeader(&b, m)
-	b.WriteString("using System.Collections.Frozen;\n")
-	b.WriteString("using System.Collections.Generic;\n\n")
+	b.WriteString("using System.Collections.Frozen;\n\n")
 	b.WriteString("namespace Libo11y.Spec;\n\n")
+	b.WriteString("/// <summary>Version facts about the libo11y specification this library implements.</summary>\n")
 	b.WriteString("public static class SpecConstants\n{\n")
+	csSummary(&b, "    ", "The schema URL of the specification version this library implements.")
 	fmt.Fprintf(&b, "    public const string SchemaUrl = %s;\n", csQuote(m.schemaURL))
+	csSummary(&b, "    ", "The libo11y specification version.")
 	fmt.Fprintf(&b, "    public const string SpecVersion = %s;\n", csQuote(m.specVersion))
+	csSummary(&b, "    ", "The OpenTelemetry semantic conventions release the specification pins.")
 	fmt.Fprintf(&b, "    public const string SemconvVersion = %s;\n", csQuote(m.semconvVersion))
+	csSummary(&b, "    ", "The attribute key that carries an event's name.")
 	fmt.Fprintf(&b, "    public const string EventNameKey = %s;\n", csQuote("event.name"))
 	b.WriteString("}\n")
 
 	for _, e := range enums {
-		fmt.Fprintf(&b, "\npublic static class %s\n{\n", e.typeName)
+		b.WriteString("\n")
+		if e.key == environmentKey {
+			csSummary(&b, "", "The base values of "+csCode(e.key)+". An application may configure further values at setup, so a value outside this set is not necessarily invalid.")
+		} else {
+			text := "The values of the " + csCode(e.key) + " attribute."
+			if brief := csSentence(briefs[e.key]); brief != "" {
+				text += " " + brief
+			}
+			csSummary(&b, "", text)
+		}
+		fmt.Fprintf(&b, "public static class %s\n{\n", e.typeName)
 		for i, member := range e.members {
+			doc := csSentence(member.Brief)
+			if doc == "" {
+				doc = "The value " + csCode(member.Value) + "."
+			}
+			csSummary(&b, "    ", doc)
 			fmt.Fprintf(&b, "    public const string %s = %s;\n", e.names[i], csQuote(member.Value))
 		}
-		fmt.Fprintf(&b, "\n    public static readonly FrozenSet<string> All = FrozenSet.ToFrozenSet(new string[] { %s });\n", strings.Join(e.names, ", "))
+		b.WriteString("\n")
+		csSummary(&b, "    ", "Every value of "+csCode(e.key)+" this class defines.")
+		fmt.Fprintf(&b, "    public static readonly FrozenSet<string> All = FrozenSet.ToFrozenSet(new string[] { %s });\n\n", strings.Join(e.names, ", "))
+		b.WriteString("    /// <summary>Reports whether <paramref name=\"value\"/> is one of these values.</summary>\n")
+		b.WriteString("    /// <param name=\"value\">The value to check.</param>\n")
+		b.WriteString("    /// <returns><see langword=\"true\"/> when <see cref=\"All\"/> holds <paramref name=\"value\"/>.</returns>\n")
 		b.WriteString("    public static bool IsValid(string value) => All.Contains(value);\n")
 		b.WriteString("}\n")
 	}
 
-	writeGroup := func(className string, entries []string) error {
+	writeGroup := func(className, classDoc string, names []string, consts map[string]csConst) error {
 		seen := map[string]string{}
-		fmt.Fprintf(&b, "\npublic static class %s\n{\n", className)
-		for _, raw := range entries {
+		b.WriteString("\n")
+		csSummary(&b, "", classDoc)
+		fmt.Fprintf(&b, "public static class %s\n{\n", className)
+		for _, raw := range names {
 			name := csPascalName(raw)
-			if !csTypePattern.MatchString(name) {
+			if !csTypePattern.MatchString(name) || csReservedMembers[name] {
 				return fmt.Errorf("%w: %s: %q is not a C# constant name", errCsName, raw, name)
+			}
+			if name == className {
+				return fmt.Errorf("%w: %s: constant %s would share the name of its enclosing type (CS0542)", errCsName, raw, name)
 			}
 			if other, dup := seen[name]; dup {
 				return fmt.Errorf("%w: %s and %s both become constant %s.%s", errCsName, other, raw, className, name)
 			}
 			seen[name] = raw
-			fmt.Fprintf(&b, "    public const string %s = %s;\n", name, csQuote(raw))
+			csSummary(&b, "    ", consts[raw].doc)
+			fmt.Fprintf(&b, "    public const string %s = %s;\n", name, csQuote(consts[raw].value))
 		}
 		b.WriteString("}\n")
 		return nil
 	}
 
 	var attrKeys []string
+	attrConsts := map[string]csConst{}
 	for _, a := range m.minted {
 		attrKeys = append(attrKeys, a.ID)
+		attrConsts[a.ID] = csConst{value: a.ID, doc: m.csAttributeDoc(a.ID, a.Brief, false)}
 	}
-	attrKeys = append(attrKeys, m.copiedRefs()...)
-	if err := writeGroup("SpecAttributes", attrKeys); err != nil {
+	for _, key := range m.copiedRefs() {
+		attrKeys = append(attrKeys, key)
+		attrConsts[key] = csConst{value: key, doc: m.csAttributeDoc(key, briefs[key], true)}
+	}
+	if err := writeGroup("SpecAttributes", "Attribute keys: the ones the libo11y specification mints, then the upstream ones it copies.", attrKeys, attrConsts); err != nil {
 		return "", err
 	}
 
 	var eventNames []string
+	eventConsts := map[string]csConst{}
 	for _, ev := range m.events {
 		eventNames = append(eventNames, ev.Name)
+		doc := csSentence(ev.Brief)
+		if doc == "" {
+			doc = "The " + csCode(ev.Name) + " event."
+		}
+		eventConsts[ev.Name] = csConst{value: ev.Name, doc: doc}
 	}
-	if err := writeGroup("SpecEvents", eventNames); err != nil {
+	if err := writeGroup("SpecEvents", "Registered event names.", eventNames, eventConsts); err != nil {
 		return "", err
 	}
 
 	var metricNames []string
+	metricConsts := map[string]csConst{}
 	for _, mt := range m.metrics {
 		metricNames = append(metricNames, mt.MetricName)
+		doc := csSentence(mt.Brief)
+		if doc == "" {
+			doc = "The " + csCode(mt.MetricName) + " metric."
+		}
+		if mt.Instrument != "" {
+			doc += " Instrument: " + csDocText(mt.Instrument) + "."
+		}
+		if mt.Unit != "" {
+			doc += " Unit: " + csCode(mt.Unit) + "."
+		}
+		metricConsts[mt.MetricName] = csConst{value: mt.MetricName, doc: doc}
 	}
-	if err := writeGroup("SpecMetrics", metricNames); err != nil {
+	if err := writeGroup("SpecMetrics", "Registered metric names.", metricNames, metricConsts); err != nil {
 		return "", err
 	}
 
@@ -254,6 +431,9 @@ func csInstrument(instrument string) (string, error) {
 	}
 }
 
+// csStringArray renders items as a C# string array expression. The
+// generated code only passes one to a Frozen collection factory, which
+// copies it, so no caller ever sees the array.
 func csStringArray(items []string) string {
 	if len(items) == 0 {
 		return "Array.Empty<string>()"
@@ -261,43 +441,90 @@ func csStringArray(items []string) string {
 	return "new string[] { " + strings.Join(csQuoteAll(items), ", ") + " }"
 }
 
+// csImmutableArray renders items as an ImmutableArray<string> expression.
+// Generated lists are ImmutableArray rather than arrays behind
+// IReadOnlyList, which a caller could cast back and write.
+func csImmutableArray(items []string) string {
+	if len(items) == 0 {
+		return "ImmutableArray<string>.Empty"
+	}
+	return "ImmutableArray.Create(" + strings.Join(csQuoteAll(items), ", ") + ")"
+}
+
 const csTablesPreamble = `using System;
 using System.Collections.Frozen;
 using System.Collections.Generic;
+using System.Collections.Immutable;
 
 namespace Libo11y.Spec;
 
+/// <summary>The sensitivity class of an attribute (SPEC section 5).</summary>
 public enum Sensitivity
 {
+    /// <summary>Safe to emit anywhere.</summary>
     Public,
+
+    /// <summary>Internal to the organization, but not personal data.</summary>
     Internal,
+
+    /// <summary>Personal data: dropped, hashed or kept according to the PII mode.</summary>
     Pii,
+
+    /// <summary>A secret: always dropped.</summary>
     Secret,
 }
 
+/// <summary>The cardinality budget of an attribute.</summary>
 public enum Cardinality
 {
+    /// <summary>A closed set of values.</summary>
     Enum,
+
+    /// <summary>An open set of values with a known bound.</summary>
     Bounded,
+
+    /// <summary>An open set of values with no bound, which must not label a metric.</summary>
     Unbounded,
 }
 
+/// <summary>The requirement level of an attribute in a group.</summary>
 public enum Requirement
 {
+    /// <summary>The attribute must be present.</summary>
     Required,
+
+    /// <summary>The attribute must be present when its condition holds.</summary>
     ConditionallyRequired,
+
+    /// <summary>The attribute should be present.</summary>
     Recommended,
+
+    /// <summary>The attribute is present only when an application opts in.</summary>
     OptIn,
 }
 
+/// <summary>The kind of instrument a metric is recorded with.</summary>
 public enum InstrumentKind
 {
+    /// <summary>A monotonic counter.</summary>
     Counter,
+
+    /// <summary>A histogram.</summary>
     Histogram,
+
+    /// <summary>A gauge.</summary>
     Gauge,
+
+    /// <summary>A counter that can go up and down.</summary>
     UpDownCounter,
 }
 
+/// <summary>One resource attribute the specification defines.</summary>
+/// <param name="Key">The attribute key.</param>
+/// <param name="Tier">The resource tier the attribute belongs to, such as <c>tier0</c>.</param>
+/// <param name="Requirement">The attribute's requirement level in its tier.</param>
+/// <param name="Source">Where the value comes from, from the registry's <c>o11y.source</c> annotation.</param>
+/// <param name="Role">Whether the attribute identifies the entity or describes it, from the <c>o11y.role</c> annotation.</param>
 public sealed record ResourceAttr(
     string Key,
     string Tier,
@@ -305,16 +532,25 @@ public sealed record ResourceAttr(
     string Source,
     string Role);
 
+/// <summary>One registered event and the attributes it must carry.</summary>
+/// <param name="Name">The event name.</param>
+/// <param name="Required">The attribute keys the event must carry.</param>
+/// <param name="RequiredTemplates">The template attributes the event must carry, each satisfied by any <c>TEMPLATE.KEY</c> attribute.</param>
 public sealed record EventInfo(
     string Name,
-    IReadOnlyList<string> Required,
-    IReadOnlyList<string> RequiredTemplates);
+    ImmutableArray<string> Required,
+    ImmutableArray<string> RequiredTemplates);
 
+/// <summary>One registered metric.</summary>
+/// <param name="Name">The metric name.</param>
+/// <param name="Instrument">The instrument the metric is recorded with.</param>
+/// <param name="Unit">The metric's UCUM unit.</param>
 public sealed record MetricInfo(
     string Name,
     InstrumentKind Instrument,
     string Unit);
 
+/// <summary>The lookup tables the specification registry defines. Every table is immutable.</summary>
 public static class SpecTables
 {
 `
@@ -325,6 +561,7 @@ func genCsTables(m *model) (string, error) {
 	csHeader(&b, m)
 	b.WriteString(csTablesPreamble)
 
+	csSummary(&b, "    ", "Every resource attribute the specification defines, keyed by attribute key, in tier order.")
 	b.WriteString("    public static readonly FrozenDictionary<string, ResourceAttr> Resource = new Dictionary<string, ResourceAttr>\n    {\n")
 	for _, tier := range m.tierOrder {
 		for _, a := range m.tiers[tier] {
@@ -346,9 +583,12 @@ func genCsTables(m *model) (string, error) {
 			tier0 = append(tier0, a.name())
 		}
 	}
-	fmt.Fprintf(&b, "    public static readonly IReadOnlyList<string> RequiredTier0 = %s;\n\n", csStringArray(tier0))
+	csSummary(&b, "    ", "The resource attributes tier 0 requires, in registry order.")
+	fmt.Fprintf(&b, "    public static readonly ImmutableArray<string> RequiredTier0 = %s;\n\n", csImmutableArray(tier0))
+	csSummary(&b, "    ", "The base values of <c>deployment.environment.name</c>.")
 	fmt.Fprintf(&b, "    public static readonly FrozenSet<string> EnvironmentValues = FrozenSet.ToFrozenSet(%s);\n\n", csStringArray(m.environmentValues()))
 
+	csSummary(&b, "    ", "The sensitivity class of every classified attribute key.")
 	b.WriteString("    public static readonly FrozenDictionary<string, Sensitivity> SensitivityOf = new Dictionary<string, Sensitivity>\n    {\n")
 	for _, name := range slices.Sorted(maps.Keys(m.classByName)) {
 		cls, err := csSensitivity(m.classByName[name])
@@ -359,6 +599,7 @@ func genCsTables(m *model) (string, error) {
 	}
 	b.WriteString("    }.ToFrozenDictionary();\n\n")
 
+	csSummary(&b, "    ", "The cardinality budget of every attribute key that has one.")
 	b.WriteString("    public static readonly FrozenDictionary<string, Cardinality> CardinalityOf = new Dictionary<string, Cardinality>\n    {\n")
 	for _, name := range slices.Sorted(maps.Keys(m.cardByName)) {
 		card, err := csCardinality(m.cardByName[name])
@@ -369,6 +610,7 @@ func genCsTables(m *model) (string, error) {
 	}
 	b.WriteString("    }.ToFrozenDictionary();\n\n")
 
+	csSummary(&b, "    ", "Keys emitted before the specification existed, mapped to the keys that replace them.")
 	b.WriteString("    public static readonly FrozenDictionary<string, string> LegacyKeys = new Dictionary<string, string>\n    {\n")
 	for _, name := range slices.Sorted(maps.Keys(m.legacyKeys)) {
 		fmt.Fprintf(&b, "        [%s] = %s,\n", csQuote(name), csQuote(m.legacyKeys[name]))
@@ -379,20 +621,23 @@ func genCsTables(m *model) (string, error) {
 	for i, a := range m.metricLabels {
 		labels[i] = a.name()
 	}
-	fmt.Fprintf(&b, "    public static readonly IReadOnlyList<string> MetricResourceLabels = %s;\n\n", csStringArray(labels))
+	csSummary(&b, "    ", "The resource attributes copied onto every metric data point as labels, in registry order.")
+	fmt.Fprintf(&b, "    public static readonly ImmutableArray<string> MetricResourceLabels = %s;\n\n", csImmutableArray(labels))
 
+	csSummary(&b, "    ", "Every registered event, keyed by event name.")
 	b.WriteString("    public static readonly FrozenDictionary<string, EventInfo> Events = new Dictionary<string, EventInfo>\n    {\n")
 	for _, ev := range m.events {
 		required, templates := m.eventRequirements(ev)
 		fmt.Fprintf(&b, "        [%s] = new EventInfo(%s, %s, %s),\n",
 			csQuote(ev.Name),
 			csQuote(ev.Name),
-			csStringArray(required),
-			csStringArray(templates),
+			csImmutableArray(required),
+			csImmutableArray(templates),
 		)
 	}
 	b.WriteString("    }.ToFrozenDictionary();\n\n")
 
+	csSummary(&b, "    ", "Every registered metric, keyed by metric name.")
 	b.WriteString("    public static readonly FrozenDictionary<string, MetricInfo> Metrics = new Dictionary<string, MetricInfo>\n    {\n")
 	for _, mt := range m.metrics {
 		inst, err := csInstrument(mt.Instrument)
@@ -408,19 +653,22 @@ func genCsTables(m *model) (string, error) {
 	}
 	b.WriteString("    }.ToFrozenDictionary();\n\n")
 
-	writeSpanMap := func(varName string, groups []group, ann string) {
-		fmt.Fprintf(&b, "    public static readonly FrozenDictionary<string, IReadOnlyList<string>> %s = new Dictionary<string, IReadOnlyList<string>>\n    {\n", varName)
+	writeSpanMap := func(varName, doc string, groups []group, ann string) {
+		csSummary(&b, "    ", doc)
+		fmt.Fprintf(&b, "    public static readonly FrozenDictionary<string, ImmutableArray<string>> %s = new Dictionary<string, ImmutableArray<string>>\n    {\n", varName)
 		for _, g := range groups {
-			fmt.Fprintf(&b, "        [%s] = %s,\n", csQuote(g.Annotations[ann]), csStringArray(requiredNames(g)))
+			fmt.Fprintf(&b, "        [%s] = %s,\n", csQuote(g.Annotations[ann]), csImmutableArray(requiredNames(g)))
 		}
 		b.WriteString("    }.ToFrozenDictionary();\n\n")
 	}
 
-	writeSpanMap("SpanRequired", m.spans, "o11y.span.kind")
-	writeSpanMap("RumSpanRequired", m.rumSpans, "o11y.rum.span")
+	writeSpanMap("SpanRequired", "The attributes each kind of span must carry, keyed by the <c>o11y.span.kind</c> annotation.", m.spans, "o11y.span.kind")
+	writeSpanMap("RumSpanRequired", "The attributes each kind of RUM span must carry, keyed by the <c>o11y.rum.span</c> annotation.", m.rumSpans, "o11y.rum.span")
 
+	csSummary(&b, "    ", "The only application registry schema this library reads.")
 	fmt.Fprintf(&b, "    public const string AppRegistrySchema = %s;\n\n", csQuote(appregistry.SchemaV1))
 	reserved := appregistry.ReservedNamespaces()
+	csSummary(&b, "    ", "The namespaces an application registry may not claim: libo11y's, OpenTelemetry's, and semconv's.")
 	b.WriteString("    public static readonly FrozenSet<string> AppReservedNamespaces = FrozenSet.ToFrozenSet(new string[]\n    {\n")
 	for _, ns := range reserved {
 		fmt.Fprintf(&b, "        %s,\n", csQuote(ns))
@@ -430,16 +678,21 @@ func genCsTables(m *model) (string, error) {
 	return b.String(), nil
 }
 
-// genCsGoPrint renders dotnet/src/Libo11y.Spec/Generated/GoPrint.g.cs.
+// genCsGoPrint renders dotnet/src/Libo11y.Spec/Generated/GoPrint.g.cs. The
+// ranges are a ReadOnlySpan property over static data, so no caller can
+// change them.
 func genCsGoPrint() string {
 	ranges := goPrintRanges()
 	var b strings.Builder
 	b.WriteString("// <auto-generated/>\n")
 	b.WriteString("// Code generated by specgen from Go's unicode.IsPrint (Unicode " + unicode.Version + "). DO NOT EDIT.\n")
 	b.WriteString("#nullable enable\n\n")
+	b.WriteString("using System;\n\n")
 	b.WriteString("namespace Libo11y.Spec;\n\n")
-	b.WriteString("public static class GoPrintRanges\n{\n")
-	b.WriteString("    public static readonly int[] Ranges =\n    {\n")
+	b.WriteString("/// <summary>The code points Go's <c>unicode.IsPrint</c> accepts, for <c>strconv.Quote</c>.</summary>\n")
+	b.WriteString("internal static class GoPrintRanges\n{\n")
+	b.WriteString("    /// <summary>Sorted, inclusive pairs of first and last code point of each printable range.</summary>\n")
+	b.WriteString("    public static ReadOnlySpan<int> Ranges => new int[]\n    {\n")
 	for i := 0; i+1 < len(ranges); i += 2 {
 		fmt.Fprintf(&b, "        %s, %s,\n", strconv.Itoa(int(ranges[i])), strconv.Itoa(int(ranges[i+1])))
 	}

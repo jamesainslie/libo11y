@@ -16,6 +16,8 @@ Style/Documentation:
 
 Layout/LineLength:
   Max: 150
+  Exclude:
+    - "spec/support/sql_text_cases.rb"
 
 Metrics/BlockNesting:
   Enabled: false

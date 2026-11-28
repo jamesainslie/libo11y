@@ -20,7 +20,7 @@ everything is correlated and exported over OTLP.
 | C | Implemented for C11 (`c/v0.1.0`, pure C11 ABI backed by `zig/`) | [`c/`](c/) |
 | Rust | Implemented for Rust 1.88+ (`rust/v0.1.0`; `libo11y-sqlx` requires 1.94) | [`rust/`](rust/) |
 | Ruby | Implemented for Ruby 3.3 and 3.4 | [`ruby/`](ruby/) |
-| .NET | Implemented for .NET 10 (C#) | [`dotnet/`](dotnet/) |
+| .NET | Implemented for .NET 10 (C#, `dotnet/v0.1.0`) | [`dotnet/`](dotnet/) |
 | Java | Implemented for Java 21+ (OpenTelemetry, Micrometer, Spring Boot 4) | [`java/`](java/) |
 
 ## Design principles
@@ -562,6 +562,10 @@ dotnet add package Libo11y.Db          # only for ADO.NET database instrumentati
 dotnet add package Libo11y.Testing     # hermetic recorder and OTLP/HTTP receiver
 ```
 
+A `dotnet/vX.Y.Z` tag releases every package at one version. A release
+whose packages are not on nuget.org yet attaches them to its GitHub Release,
+and its notes give the commands to install from them.
+
 Requires .NET 10 and builds on `OpenTelemetry` 1.21.0 (`System.Diagnostics.Activity`,
 `System.Diagnostics.Metrics`, and `Microsoft.Extensions.Logging`). Six projects
 ship together (`Libo11y.Spec`, `Libo11y`, `Libo11y.AspNetCore`, `Libo11y.Db`,
@@ -606,9 +610,13 @@ documentation.
 <dependency>
     <groupId>ing.o11y</groupId>
     <artifactId>libo11y-spring-boot-starter</artifactId>
-    <version>0.1.0-SNAPSHOT</version>
+    <version>0.1.0</version>
 </dependency>
 ```
+
+The artifacts are on Maven Central. Each `java/` release on GitHub also
+carries them as a Maven repository archive, which
+[`java/README.md`](java/README.md#installing-from-a-github-release) describes.
 
 Requires Java 21+ and aligns on Spring Boot 4.2.0, OpenTelemetry Java SDK 1.68.0,
 Micrometer 1.18.0, and Micrometer Tracing 1.8.0. Seven Maven artifacts ship

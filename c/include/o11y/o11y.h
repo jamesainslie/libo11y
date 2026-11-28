@@ -1,8 +1,49 @@
 /*
- * libo11y — Opinionated, elegant observability for C11 built on OpenTelemetry.
+ * libo11y for C11: traces, metrics and logs over OpenTelemetry.
  *
  * Copyright 2026 libo11y contributors.
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Conventions
+ *
+ * Errors. A function that can fail returns o11y_err_t and writes its result
+ * through an out-parameter, which it sets to NULL or zero on failure. The
+ * functions on the hot path (logging, spans, measurements, propagation)
+ * return void or a handle and never fail the host. Given a NULL handle they
+ * do nothing.
+ *
+ * Ownership. A handle belongs to the caller, who releases it with the
+ * function its declaration names: o11y_destroy for an SDK, o11y_ctx_destroy
+ * for a context, o11y_span_end for a span, and so on. A function that hands
+ * back a `char *` through an out-parameter allocates it, and the caller
+ * frees it with o11y_string_free. A `const char *` return value is borrowed,
+ * and its declaration says how long it stays valid. libo11y copies what it
+ * keeps from every argument before the call returns, with two exceptions:
+ * the callbacks and userdata pointers in o11y_options_t, which must stay
+ * valid until o11y_destroy, and the callback and userdata of an observable
+ * instrument, which must stay valid until the SDK is destroyed.
+ *
+ * Threads. Every function may be called from any thread. An SDK, its
+ * tracers and meters, instruments, contexts, records and detached carriers
+ * may be used from several threads at once. A span may be modified from
+ * several threads at once, but o11y_span_end frees the handle, so no other
+ * call on that span may run during or after it. The same holds for every
+ * destroy function. Callbacks run on the thread that triggers them, which
+ * for exporter errors and observable instruments is a libo11y thread.
+ *
+ * Signals. Hermetic handles (O11Y_ENV_HERMETIC SDKs, o11y_record_create, and
+ * o11y_test_start) never install or alter POSIX signal handlers. While at
+ * least one non-hermetic handle (networked SDK or test OTLP receiver) is live,
+ * libo11y keeps an internal I/O thread pool. If the host left SIGIO at SIG_DFL
+ * (or SIGPIPE at SIG_DFL on non-Linux POSIX targets), libo11y installs an
+ * internal no-op handler and restores the prior disposition only if still
+ * unchanged when the last networked handle is destroyed. Host handlers already
+ * installed or changed while live are preserved.
+ *
+ * Slices. Fallible (o11y_err_t) functions reject a non-zero length paired with
+ * a NULL pointer with O11Y_ERR_INVALID_ARGUMENT. Hot-path void or handle
+ * functions (attributes, links, histogram buckets, o11y_redact_mask) treat a
+ * NULL pointer as empty.
  */
 
 #ifndef O11Y_H
@@ -11,6 +52,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "o11y/spec.h"
 
@@ -22,7 +64,13 @@ extern "C" {
  * Version & error codes
  * ========================================================================= */
 
-/** Returns the libo11y C library semantic version (e.g. "0.1.0"). */
+/** The version of these headers. o11y_version() reports the library's. */
+#define O11Y_VERSION_MAJOR 0
+#define O11Y_VERSION_MINOR 1
+#define O11Y_VERSION_PATCH 0
+#define O11Y_VERSION "0.1.0"
+
+/** Returns the semantic version of the linked library, such as "0.1.0". */
 const char *o11y_version(void);
 
 /** Typed error codes returned by fallible libo11y C API calls. */
@@ -42,24 +90,24 @@ typedef enum o11y_err {
     O11Y_ERR_INVALID_CARRIER = 12,
     O11Y_ERR_TIMEOUT = 13,
     O11Y_ERR_SHUTDOWN = 14,
-    O11Y_ERR_NOT_FOUND = 15,
-    O11Y_ERR_CONFORMANCE_FAILED = 16,
-    O11Y_ERR_CORRELATION_FAILED = 17,
-    O11Y_ERR_TRIANGLE_FAILED = 18,
-    O11Y_ERR_VIOLATIONS = 19,
-    O11Y_ERR_IO = 20
+    O11Y_ERR_IO = 15,
+    O11Y_ERR_UNSUPPORTED_PROPAGATOR = 16
 } o11y_err_t;
 
-/** Returns a static human-readable name for err (never NULL). */
+/** Returns the name of err as a static string, such as "O11Y_ERR_TIMEOUT". Never NULL. */
 const char *o11y_err_name(o11y_err_t err);
 
-/** Stack-allocatable diagnostic buffer populated on setup/init failures. */
+/**
+ * Receives the reason o11y_setup, o11y_init or o11y_test_start failed, as
+ * NUL-terminated text of len bytes. Those functions clear it first, so it is
+ * empty after a success. A message longer than the buffer is truncated.
+ */
 typedef struct o11y_diagnostic {
     char message[1024];
     size_t len;
 } o11y_diagnostic_t;
 
-/** Frees a heap string returned by libo11y (NULL-safe). */
+/** Frees a string libo11y returned through a `char **` out-parameter. NULL is accepted. */
 void o11y_string_free(char *s);
 
 /* =========================================================================
@@ -74,7 +122,6 @@ typedef struct o11y_meter o11y_meter_t;
 typedef struct o11y_record o11y_record_t;
 typedef struct o11y_detached_carrier o11y_detached_carrier_t;
 typedef struct o11y_linked_span o11y_linked_span_t;
-typedef struct o11y_registration o11y_registration_t;
 
 /* =========================================================================
  * Trace & Span IDs
@@ -93,7 +140,11 @@ typedef struct o11y_span_context {
     o11y_span_id_t span_id;
     uint8_t trace_flags;
     bool remote;
-    /** Optional NUL-terminated W3C tracestate header (NULL or "" when empty). */
+    /**
+     * The W3C tracestate header, or NULL when it is empty. In a value libo11y
+     * returns, the text belongs to the handle it was read from and stays
+     * valid until that handle is ended or destroyed.
+     */
     const char *trace_state;
 } o11y_span_context_t;
 
@@ -101,7 +152,9 @@ bool o11y_trace_id_is_valid(o11y_trace_id_t id);
 bool o11y_span_id_is_valid(o11y_span_id_t id);
 bool o11y_span_context_is_valid(o11y_span_context_t sc);
 bool o11y_span_context_is_sampled(o11y_span_context_t sc);
+/** Writes 32 lowercase hex chars + NUL to out (NULL is ignored). */
 void o11y_trace_id_hex(o11y_trace_id_t id, char out[33]);
+/** Writes 16 lowercase hex chars + NUL to out (NULL is ignored). */
 void o11y_span_id_hex(o11y_span_id_t id, char out[17]);
 bool o11y_trace_id_parse_hex(const char *hex, o11y_trace_id_t *out);
 bool o11y_span_id_parse_hex(const char *hex, o11y_span_id_t *out);
@@ -391,15 +444,27 @@ static inline o11y_log_attr_t o11y_log_kv_map(const char *key, const o11y_log_at
 const char *o11y_redact_secret(void);
 
 /**
- * Masks value into out as a run of 'X' matching the UTF-8 code point count of
- * value. Writes a NUL terminator if out_cap > 0. Returns the full un-truncated
- * rune count (excluding NUL).
+ * Masks value into out as one 'X' for each UTF-8 code point of value, and
+ * each byte of an invalid sequence counts as one code point. It writes at
+ * most out_cap - 1 characters and a NUL terminator, and nothing when out is
+ * NULL or out_cap is 0. Returns the code point count of value, which is the
+ * length an untruncated mask has.
  */
 size_t o11y_redact_mask(const char *value, size_t value_len, char *out, size_t out_cap);
 
-/** Convenience log attribute carrying the capture-time literal "REDACTED". */
+/** Returns a log attribute whose value is the literal "REDACTED". */
 static inline o11y_log_attr_t o11y_log_kv_secret(const char *key) {
     return o11y_log_kv_str(key, "REDACTED");
+}
+
+/**
+ * Returns a log attribute whose value is value masked into buf, one 'X' for
+ * each UTF-8 code point. buf must stay valid until the attribute is logged.
+ * A value longer than buf_cap - 1 code points is truncated.
+ */
+static inline o11y_log_attr_t o11y_log_kv_masked(const char *key, const char *value, char *buf, size_t buf_cap) {
+    (void)o11y_redact_mask(value, value != NULL ? strlen(value) : 0, buf, buf_cap);
+    return o11y_log_kv_str(key, buf_cap > 0 ? buf : "");
 }
 
 /* =========================================================================
@@ -407,7 +472,11 @@ static inline o11y_log_attr_t o11y_log_kv_secret(const char *key) {
  * ========================================================================= */
 
 typedef enum o11y_env_mode {
-    /** Read standard OTEL_* variables from the process environment (default). */
+    /**
+     * Read standard OTEL_* variables from the process environment during setup.
+     * Only OTEL_* variables are inspected and copied transiently. The host must
+     * not concurrently mutate process environ while o11y_setup/o11y_init runs.
+     */
     O11Y_ENV_PROCESS = 0,
     /** Hermetic mode: ignore all OTEL_* variables; disable un-injected signals. */
     O11Y_ENV_HERMETIC = 1,
@@ -448,7 +517,10 @@ typedef enum o11y_console_target {
     O11Y_CONSOLE_CUSTOM = 2
 } o11y_console_target_t;
 
-/** Custom console write callback. Return O11Y_OK on success or error to reject. */
+/**
+ * Custom console write callback. Return O11Y_OK on success or error to reject.
+ * Runs under an internal console lock, so it must not log back to the same SDK.
+ */
 typedef o11y_err_t (*o11y_console_write_fn)(void *userdata, const uint8_t *bytes, size_t len);
 
 typedef enum o11y_pii_mode {
@@ -498,14 +570,35 @@ typedef struct o11y_histogram_buckets {
     size_t boundaries_len;
 } o11y_histogram_buckets_t;
 
+/** Opaque replacement builder passed to o11y_attr_replacer_fn. Valid only during the callback. */
+typedef struct o11y_attr_replacement o11y_attr_replacement_t;
+
+/**
+ * Sets the replacement attribute key inside o11y_attr_replacer_fn, copying key
+ * immediately into pipeline storage before returning. Returns O11Y_OK,
+ * O11Y_ERR_INVALID_ARGUMENT on NULL inputs, or O11Y_ERR_OUT_OF_MEMORY.
+ */
+o11y_err_t o11y_attr_replacement_set_key(o11y_attr_replacement_t *dst, const char *key);
+
+/**
+ * Sets the replacement attribute value inside o11y_attr_replacer_fn, deep-copying
+ * strings, bytes, arrays, and maps immediately into pipeline storage before
+ * returning. Returns O11Y_OK, O11Y_ERR_INVALID_ARGUMENT on NULL or cyclic inputs,
+ * or O11Y_ERR_OUT_OF_MEMORY.
+ */
+o11y_err_t o11y_attr_replacement_set_value(o11y_attr_replacement_t *dst, const o11y_log_value_t *value);
+
 /**
  * Attribute replacer callback invoked once per leaf log attribute before
  * per-leg sensitivity classification.
  *
  * To drop the attribute, return false.
- * To keep unchanged, leave out_key_buf[0] == '\0' and return true.
- * To rename the key (or replace a string value), write NUL-terminated text into
- * out_key_buf / out_str_val_buf and set *out_replace_str_val = true if replacing value.
+ * To keep unchanged, return true without calling either setter on
+ * out_replacement.
+ * To rename the key or replace the value, call o11y_attr_replacement_set_key
+ * and/or o11y_attr_replacement_set_value with out_replacement before returning
+ * true. All data is deep-copied synchronously during the setter call. If a
+ * setter fails, the attribute is dropped even if the callback returns true.
  */
 typedef bool (*o11y_attr_replacer_fn)(
     void *userdata,
@@ -513,11 +606,7 @@ typedef bool (*o11y_attr_replacer_fn)(
     size_t groups_len,
     const char *key,
     const o11y_log_value_t *value,
-    char *out_key_buf,
-    size_t out_key_cap,
-    char *out_str_val_buf,
-    size_t out_str_val_cap,
-    bool *out_replace_str_val);
+    o11y_attr_replacement_t *out_replacement);
 
 /** Extra log sink callbacks (post-classification, correlated). */
 typedef struct o11y_log_sink {
@@ -533,10 +622,64 @@ typedef struct o11y_log_sink {
         size_t attrs_len);
 } o11y_log_sink_t;
 
-typedef bool (*o11y_baggage_egress_allow_fn)(const char *key, size_t key_len);
+/**
+ * A text carrier, such as a set of HTTP headers. libo11y calls get and set
+ * during the call the carrier is passed to and never keeps the carrier.
+ */
+typedef struct o11y_carrier {
+    void *userdata;
+    /**
+     * Returns the NUL-terminated value for key, or NULL when absent.
+     * libo11y copies the string before calling get for the next key.
+     */
+    const char *(*get)(void *userdata, const char *key);
+    /** Stores value for key. Both strings are valid only during the call. */
+    void (*set)(void *userdata, const char *key, const char *value);
+} o11y_carrier_t;
+
+typedef enum o11y_propagator_kind {
+    /** W3C Trace Context: the traceparent and tracestate headers. */
+    O11Y_PROPAGATOR_TRACE_CONTEXT = 0,
+    /** W3C Baggage: the baggage header. */
+    O11Y_PROPAGATOR_BAGGAGE = 1,
+    /** The inject and extract callbacks of the o11y_propagator_t. */
+    O11Y_PROPAGATOR_CUSTOM = 2
+} o11y_propagator_kind_t;
+
+/**
+ * One propagator in o11y_options_t.propagators. Only kind is read unless it
+ * is O11Y_PROPAGATOR_CUSTOM. A custom propagator sets inject, extract or
+ * both.
+ */
+typedef struct o11y_propagator {
+    o11y_propagator_kind_t kind;
+    void *userdata;
+    /** Writes what ctx carries into carrier. ctx is valid only during the call. */
+    void (*inject)(void *userdata, const o11y_ctx_t *ctx, const o11y_carrier_t *carrier);
+    /**
+     * Reads carrier and returns a new context derived from parent, for
+     * example with o11y_ctx_with_span_context, or NULL when the carrier
+     * holds nothing. libo11y destroys the context it returns. parent is
+     * valid only during the call.
+     */
+    o11y_ctx_t *(*extract)(void *userdata, const o11y_ctx_t *parent, const o11y_carrier_t *carrier);
+    /** The carrier keys inject sets. */
+    const char *const *fields;
+    size_t fields_len;
+} o11y_propagator_t;
+
+/** Reports whether the baggage member named key may leave the process. */
+typedef bool (*o11y_baggage_egress_allow_fn)(void *userdata, const char *key);
+/** Receives one export failure as NUL-terminated text, valid only during the call. */
 typedef void (*o11y_error_handler_fn)(void *userdata, const char *message);
 
 typedef struct o11y_options {
+    /**
+     * Must be sizeof(o11y_options_t), initialized by o11y_options_default().
+     * Zero-initialized or mismatched structs are rejected with O11Y_ERR_INVALID_ARGUMENT.
+     */
+    size_t struct_size;
+
     o11y_env_mode_t env_mode;
     const o11y_env_pair_t *env_pairs;
     size_t env_pairs_len;
@@ -581,7 +724,19 @@ typedef struct o11y_options {
     o11y_sampler_kind_t sampler_kind;
     double sampler_ratio;
 
+    /**
+     * Replaces the default propagators, W3C Trace Context and Baggage, when
+     * propagators_len is not 0. To add a legacy format, list the two W3C
+     * kinds beside the custom propagator.
+     */
+    const o11y_propagator_t *propagators;
+    size_t propagators_len;
+    /**
+     * Filters the baggage that inject writes, whatever the propagators are.
+     * NULL allows every key. Extraction is never filtered.
+     */
     o11y_baggage_egress_allow_fn baggage_egress_allow;
+    void *baggage_egress_allow_userdata;
 
     const o11y_histogram_buckets_t *histogram_buckets;
     size_t histogram_buckets_len;
@@ -594,7 +749,14 @@ typedef struct o11y_options {
     void *error_handler_userdata;
 } o11y_options_t;
 
-/** Returns an options struct populated with libo11y defaults. */
+/**
+ * Returns the default options. Always start from this value: several
+ * defaults are not zero (struct_size = sizeof(o11y_options_t),
+ * strict_identity = true, log_level = O11Y_LEVEL_INFO, console_enabled = true,
+ * log_export = true, sampler_ratio = 1.0, runtime_metrics = true,
+ * startup_summary = true). Zero-initialized structs and enum fields outside the
+ * values defined in this header fail setup with O11Y_ERR_INVALID_ARGUMENT.
+ */
 o11y_options_t o11y_options_default(void);
 
 typedef struct o11y_shutdown_report {
@@ -609,10 +771,14 @@ static inline bool o11y_shutdown_report_ok(o11y_shutdown_report_t r) {
 
 /**
  * Builds an SDK, emits the o11y.telemetry.configured startup canary, and
- * acquires the process-global double-setup guard.
+ * takes the process-wide setup guard, which o11y_shutdown or o11y_destroy
+ * releases.
  *
- * Fails with O11Y_ERR_ALREADY_SETUP if another setup instance is active.
- * Never aborts or exits the process.
+ * On success it stores the SDK in *out_sdk, and the caller releases it with
+ * o11y_destroy. On failure it sets *out_sdk to NULL, writes the reason to
+ * diag when diag is not NULL, and returns the error, which is
+ * O11Y_ERR_ALREADY_SETUP while another o11y_setup SDK is active. A NULL
+ * options pointer means the defaults. It never aborts or exits the process.
  */
 o11y_err_t o11y_setup(
     const o11y_options_t *options,
@@ -620,8 +786,9 @@ o11y_err_t o11y_setup(
     o11y_diagnostic_t *diag);
 
 /**
- * Builds an independent SDK without touching process globals or emitting the
- * startup canary. Safe for parallel tests and multiple instances.
+ * Builds an independent SDK without the setup guard and without the startup
+ * canary, for tests and for several SDKs in one process. Its arguments and
+ * results are those of o11y_setup.
  */
 o11y_err_t o11y_init(
     const o11y_options_t *options,
@@ -631,23 +798,37 @@ o11y_err_t o11y_init(
 /**
  * Shuts down logs, metrics, and traces concurrently under one shared timeout
  * (0 uses the 5000 ms default). Idempotent: concurrent and later callers wait
- * and receive the same per-signal report.
+ * and receive the same per-signal report. Accepts NULL sdk (zeroes out_report
+ * and returns O11Y_OK).
  */
 o11y_err_t o11y_shutdown(
     o11y_sdk_t *sdk,
     uint64_t timeout_ms,
     o11y_shutdown_report_t *out_report);
 
-/** Flushes all three signals under one shared timeout (0 = 5000 ms default). */
+/**
+ * Flushes logs, metrics, and traces sequentially under one shared timeout
+ * (0 uses the 5000 ms default). Accepts NULL sdk (zeroes out_report and
+ * returns O11Y_OK).
+ */
 o11y_err_t o11y_force_flush(
     o11y_sdk_t *sdk,
     uint64_t timeout_ms,
     o11y_shutdown_report_t *out_report);
 
-/** Shuts down if not already shut down and frees all SDK memory (NULL-safe). */
+/**
+ * Shuts the SDK down if o11y_shutdown has not run, then frees it and every
+ * tracer, meter and instrument obtained from it. Spans, contexts, records
+ * and carriers are separate handles: end or destroy them first. NULL is
+ * accepted.
+ */
 void o11y_destroy(o11y_sdk_t *sdk);
 
-/** Returns the single-line effective configuration summary (valid for SDK lifetime). */
+/**
+ * Returns the effective configuration as one line of key=value pairs. The
+ * string belongs to the SDK and stays valid until o11y_destroy. Returns ""
+ * for a NULL SDK.
+ */
 const char *o11y_effective_config(const o11y_sdk_t *sdk);
 
 /** Signal-driven graceful shutdown options. */
@@ -657,7 +838,10 @@ typedef struct o11y_signal_options {
     /** Optional hook invoked after signal receipt and before telemetry shutdown. */
     void (*before_shutdown)(void *userdata);
     void *before_shutdown_userdata;
-    /** POSIX signal numbers (NULL/0 defaults to SIGINT and SIGTERM). */
+    /**
+     * POSIX signal numbers, at most 16. signals_len 0 means SIGINT and
+     * SIGTERM.
+     */
     const int *signals;
     size_t signals_len;
 } o11y_signal_options_t;
@@ -665,6 +849,9 @@ typedef struct o11y_signal_options {
 /**
  * Installs signal handlers, blocks until a signal arrives, restores SIG_DFL,
  * invokes before_shutdown, and shuts down sdk under one shared deadline.
+ * Zeroes out_report on entry. Returns O11Y_ERR_INVALID_ARGUMENT, without
+ * waiting, for a NULL sdk, more than 16 signals, non-catchable signals
+ * (SIGKILL, SIGSTOP), or OS-invalid signal numbers.
  */
 o11y_err_t o11y_shutdown_on_signals(
     o11y_sdk_t *sdk,
@@ -675,26 +862,45 @@ o11y_err_t o11y_shutdown_on_signals(
  * Context
  * ========================================================================= */
 
-/** Creates a new empty context (NULL is also accepted anywhere as background). */
+/*
+ * A context is immutable. Each function below that returns an o11y_ctx_t *
+ * allocates a new context, which the caller releases with o11y_ctx_destroy,
+ * and returns NULL when memory runs out. A context copies the span context
+ * and the baggage it carries, so it stays valid after the parent context is
+ * destroyed and after the span it was derived from ends. It borrows only the
+ * record of o11y_ctx_with_record, which must outlive it. NULL is accepted
+ * wherever a `const o11y_ctx_t *` is, and means the background context.
+ */
+
+/** Creates an empty context. */
 o11y_ctx_t *o11y_ctx_create(void);
+/** Frees a context. NULL is accepted. */
 void o11y_ctx_destroy(o11y_ctx_t *ctx);
 
-/** Derives a new context carrying span (caller must destroy returned context). */
+/** Derives a context whose current span is span. */
 o11y_ctx_t *o11y_ctx_with_span(const o11y_ctx_t *parent, o11y_span_t *span);
-/** Derives a new context carrying a remote span context. */
+/** Derives a context whose current span is the remote span sc. */
 o11y_ctx_t *o11y_ctx_with_span_context(const o11y_ctx_t *parent, o11y_span_context_t sc);
-/** Derives a new context whose log records bypass level gates. */
+/** Derives a context whose log records bypass level gates, for audit records. */
 o11y_ctx_t *o11y_ctx_with_force_emit(const o11y_ctx_t *parent);
-/** Derives a new context carrying wide-event accumulator record. */
+/** Derives a context that accumulates into the wide-event record. */
 o11y_ctx_t *o11y_ctx_with_record(const o11y_ctx_t *parent, o11y_record_t *record);
-/** Derives a new context with a baggage key/value added or replaced. */
+/**
+ * Derives a context with the baggage member key set to value, replacing a
+ * member of the same name. Enforces W3C token validation on key, UTF-8
+ * validation on key and value, and W3C limits (64 members, 8192 bytes).
+ * An invalid or NULL/empty key returns a copy of parent.
+ */
 o11y_ctx_t *o11y_ctx_with_baggage_item(const o11y_ctx_t *parent, const char *key, const char *value);
 
-/** Reads the active span context from ctx (invalid when none). */
+/** Returns the current span context of ctx, which is invalid when it has none. */
 o11y_span_context_t o11y_ctx_span_context(const o11y_ctx_t *ctx);
-/** Reads a baggage value by key from ctx, or NULL if absent (valid for ctx lifetime). */
+/**
+ * Returns the baggage value for key, or NULL when ctx has no such member.
+ * The string belongs to ctx and stays valid until o11y_ctx_destroy.
+ */
 const char *o11y_ctx_baggage_get(const o11y_ctx_t *ctx, const char *key);
-/** Returns the wide-event record attached to ctx, or NULL. */
+/** Returns the wide-event record of ctx, or NULL. The record is not owned by ctx. */
 o11y_record_t *o11y_ctx_record(const o11y_ctx_t *ctx);
 
 /* =========================================================================
@@ -733,7 +939,11 @@ typedef struct o11y_span_start_options {
     bool new_root;
 } o11y_span_start_options_t;
 
-/** Returns a tracer scoped to name (valid for the lifetime of sdk). */
+/**
+ * Returns the tracer for the instrumentation scope name. It belongs to sdk
+ * and stays valid until o11y_destroy. A NULL sdk gives a tracer whose spans
+ * record nothing.
+ */
 o11y_tracer_t *o11y_tracer(o11y_sdk_t *sdk, const char *name);
 o11y_tracer_t *o11y_tracer_with_scope(
     o11y_sdk_t *sdk,
@@ -741,13 +951,18 @@ o11y_tracer_t *o11y_tracer_with_scope(
     const char *version,
     const char *schema_url);
 
-/** Starts a span. Call o11y_span_end() to end and release the handle. */
+/**
+ * Starts a span as a child of the current span of ctx, or as a root span.
+ * The caller ends it with o11y_span_end, which frees the handle. Returns
+ * NULL when memory runs out, and every span function accepts NULL.
+ */
 o11y_span_t *o11y_tracer_start(
     o11y_tracer_t *tracer,
     const o11y_ctx_t *ctx,
     const char *name,
     const o11y_span_start_options_t *options);
 
+/** Returns the span's context. Its trace_state stays valid until the span ends. */
 o11y_span_context_t o11y_span_context(const o11y_span_t *span);
 bool o11y_span_is_recording(const o11y_span_t *span);
 void o11y_span_set_name(o11y_span_t *span, const char *name);
@@ -816,7 +1031,11 @@ void o11y_observation_f64_observe(
     const o11y_attr_t *attrs,
     size_t attrs_len);
 
-/** Returns a meter scoped to name (valid for the lifetime of sdk). */
+/**
+ * Returns the meter for the instrumentation scope name. It belongs to sdk
+ * and stays valid until o11y_destroy, as do the instruments created from it.
+ * A NULL sdk gives a meter whose instruments record nothing.
+ */
 o11y_meter_t *o11y_meter(o11y_sdk_t *sdk, const char *name);
 o11y_meter_t *o11y_meter_with_scope(
     o11y_sdk_t *sdk,
@@ -842,25 +1061,29 @@ void o11y_histogram_f64_record(o11y_histogram_f64_t inst, const o11y_ctx_t *ctx,
 void o11y_gauge_i64_record(o11y_gauge_i64_t inst, const o11y_ctx_t *ctx, int64_t value, const o11y_attr_t *attrs, size_t attrs_len);
 void o11y_gauge_f64_record(o11y_gauge_f64_t inst, const o11y_ctx_t *ctx, double value, const o11y_attr_t *attrs, size_t attrs_len);
 
-/** Registers an observable instrument with an observation callback. */
-o11y_err_t o11y_meter_observable_counter_i64(
-    o11y_meter_t *meter,
-    const char *name,
-    const o11y_instrument_options_t *opts,
-    o11y_observe_i64_fn callback,
-    void *userdata);
-
-o11y_err_t o11y_meter_observable_gauge_f64(
-    o11y_meter_t *meter,
-    const char *name,
-    const o11y_instrument_options_t *opts,
-    o11y_observe_f64_fn callback,
-    void *userdata);
+/*
+ * Observable instruments. Each function registers callback, which libo11y
+ * calls with userdata at every metric collection, on the collecting thread.
+ * The callback reports values with o11y_observation_i64_observe or
+ * o11y_observation_f64_observe under an internal provider lock, so callbacks
+ * must not create or register instruments on the same meter or block past the
+ * export deadline. The registration lasts until the SDK is destroyed, so
+ * callback and userdata must stay valid until then. Returns
+ * O11Y_ERR_INVALID_ARGUMENT for a NULL meter or callback, O11Y_ERR_SHUTDOWN
+ * after shutdown, or O11Y_ERR_OUT_OF_MEMORY if allocation fails.
+ */
+o11y_err_t o11y_meter_observable_counter_i64(o11y_meter_t *meter, const char *name, const o11y_instrument_options_t *opts, o11y_observe_i64_fn callback, void *userdata);
+o11y_err_t o11y_meter_observable_counter_f64(o11y_meter_t *meter, const char *name, const o11y_instrument_options_t *opts, o11y_observe_f64_fn callback, void *userdata);
+o11y_err_t o11y_meter_observable_updown_i64(o11y_meter_t *meter, const char *name, const o11y_instrument_options_t *opts, o11y_observe_i64_fn callback, void *userdata);
+o11y_err_t o11y_meter_observable_updown_f64(o11y_meter_t *meter, const char *name, const o11y_instrument_options_t *opts, o11y_observe_f64_fn callback, void *userdata);
+o11y_err_t o11y_meter_observable_gauge_i64(o11y_meter_t *meter, const char *name, const o11y_instrument_options_t *opts, o11y_observe_i64_fn callback, void *userdata);
+o11y_err_t o11y_meter_observable_gauge_f64(o11y_meter_t *meter, const char *name, const o11y_instrument_options_t *opts, o11y_observe_f64_fn callback, void *userdata);
 
 /* =========================================================================
  * Structured logging, Events, and Wide Events (Record)
  * ========================================================================= */
 
+/** Emits a structured log record. Unrecognized level values fall back to O11Y_LEVEL_INFO. */
 void o11y_log(
     o11y_sdk_t *sdk,
     o11y_level_t level,
@@ -913,18 +1136,27 @@ void o11y_record_emit_event(
  * W3C Context Propagation, Detached Work, and Child Process / Framed Sockets
  * ========================================================================= */
 
-typedef struct o11y_carrier {
-    void *userdata;
-    /** Return NUL-terminated value for key, or NULL when absent. */
-    const char *(*get)(void *userdata, const char *key);
-    /** Store key/value (copied by callee if kept past return). */
-    void (*set)(void *userdata, const char *key, const char *value);
-} o11y_carrier_t;
-
+/**
+ * Writes the span context and the egress-filtered baggage of ctx into
+ * carrier with the SDK's propagators. It uses no process global, so it also
+ * serves framed sockets and any other string-pair transport.
+ */
 void o11y_inject(const o11y_sdk_t *sdk, const o11y_ctx_t *ctx, const o11y_carrier_t *carrier);
+/**
+ * Returns a new context derived from parent with what the SDK's propagators
+ * read from carrier. The caller releases it with o11y_ctx_destroy. With a
+ * NULL sdk or carrier it returns a copy of parent.
+ */
 o11y_ctx_t *o11y_extract(const o11y_sdk_t *sdk, const o11y_ctx_t *parent, const o11y_carrier_t *carrier);
 
-/** Detached work propagation (URL-query-encoded carrier, <= 32 KiB). */
+/*
+ * Detached work: a job or a queue message that outlives the request that
+ * created it. o11y_detached_capture stores the span context and the
+ * egress-filtered baggage in a carrier, which marshals to text of at most
+ * 32 KiB. The worker unmarshals it and starts a root span linked to the
+ * captured one. The caller releases a carrier with o11y_detached_destroy
+ * and the text of o11y_detached_marshal with o11y_string_free.
+ */
 o11y_err_t o11y_detached_capture(
     const o11y_sdk_t *sdk,
     const o11y_ctx_t *ctx,
@@ -941,11 +1173,28 @@ o11y_linked_span_t *o11y_detached_start_linked(
     const o11y_detached_carrier_t *carrier,
     const char *name,
     const o11y_span_start_options_t *options);
+/**
+ * Returns the context of the linked span, with the carrier's baggage merged
+ * in. It belongs to linked and stays valid until o11y_linked_span_end.
+ */
 const o11y_ctx_t *o11y_linked_span_ctx(const o11y_linked_span_t *linked);
+/**
+ * Returns the linked span for the o11y_span_* functions. It belongs to
+ * linked: end it with o11y_linked_span_end, never with o11y_span_end.
+ */
 o11y_span_t *o11y_linked_span_handle(o11y_linked_span_t *linked);
+/** Ends the linked span and frees linked, its context and its span handle. */
 void o11y_linked_span_end(o11y_linked_span_t *linked);
 
-/** Child-process environment propagation (TRACEPARENT / TRACESTATE, no baggage). */
+/*
+ * Child processes. o11y_proc_env_entries returns "TRACEPARENT=..." and
+ * "TRACESTATE=..." entries for a child's environment, which the caller
+ * frees with o11y_string_free. It returns false, with both out-parameters
+ * NULL, when ctx has no valid span context or memory runs out. Baggage never
+ * travels through the environment. o11y_proc_extract_env returns a new
+ * context from the two variables' values, which the caller releases with
+ * o11y_ctx_destroy.
+ */
 bool o11y_proc_env_entries(
     const o11y_ctx_t *ctx,
     char **out_traceparent_entry,
@@ -976,7 +1225,13 @@ bool o11y_derive_instance_id(
 /** Sanitizes an OTLP endpoint URL (strips userinfo/query/fragment; "unparseable" on ambiguity). */
 o11y_err_t o11y_sanitize_endpoint(const char *raw, size_t raw_len, char **out);
 
-/** Computes Go-exact PII canonical rendering and hmac-sha256:<32hex> token. */
+/**
+ * Computes Go-exact PII canonical rendering and hmac-sha256:<32hex> token.
+ * Zeroes out_canonical and out_token on entry before checking inputs.
+ * Note that out_canonical is a NUL-terminated C string; if a length-delimited
+ * string value contains embedded NUL bytes, all bytes are hashed into out_token
+ * while C string callers reading *out_canonical stop at the first NUL byte.
+ */
 o11y_err_t o11y_pii_hash_value(
     const o11y_log_value_t *value,
     const uint8_t *key,
@@ -994,6 +1249,32 @@ o11y_err_t o11y_app_registry_check_bytes(
     size_t content_len,
     char **out_want,
     int *out_status);
+
+/* Verify standard int-sized enum ABI (reject -fshort-enums at compile time). */
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+#define O11Y_ENUM_ABI_ASSERT(T) _Static_assert(sizeof(T) == sizeof(int), "libo11y requires int-sized enums (do not compile with -fshort-enums)")
+#elif defined(__cplusplus) && __cplusplus >= 201103L
+#define O11Y_ENUM_ABI_ASSERT(T) static_assert(sizeof(T) == sizeof(int), "libo11y requires int-sized enums (do not compile with -fshort-enums)")
+#endif
+#ifdef O11Y_ENUM_ABI_ASSERT
+O11Y_ENUM_ABI_ASSERT(o11y_sensitivity_t);
+O11Y_ENUM_ABI_ASSERT(o11y_cardinality_t);
+O11Y_ENUM_ABI_ASSERT(o11y_err_t);
+O11Y_ENUM_ABI_ASSERT(o11y_attr_kind_t);
+O11Y_ENUM_ABI_ASSERT(o11y_log_value_kind_t);
+O11Y_ENUM_ABI_ASSERT(o11y_env_mode_t);
+O11Y_ENUM_ABI_ASSERT(o11y_protocol_t);
+O11Y_ENUM_ABI_ASSERT(o11y_level_t);
+O11Y_ENUM_ABI_ASSERT(o11y_console_format_t);
+O11Y_ENUM_ABI_ASSERT(o11y_console_target_t);
+O11Y_ENUM_ABI_ASSERT(o11y_pii_mode_t);
+O11Y_ENUM_ABI_ASSERT(o11y_sampler_kind_t);
+O11Y_ENUM_ABI_ASSERT(o11y_exemplar_filter_t);
+O11Y_ENUM_ABI_ASSERT(o11y_propagator_kind_t);
+O11Y_ENUM_ABI_ASSERT(o11y_span_kind_t);
+O11Y_ENUM_ABI_ASSERT(o11y_status_code_t);
+#undef O11Y_ENUM_ABI_ASSERT
+#endif
 
 #ifdef __cplusplus
 } /* extern "C" */

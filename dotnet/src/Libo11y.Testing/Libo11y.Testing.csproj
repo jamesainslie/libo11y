@@ -2,6 +2,7 @@
   <PropertyGroup>
     <RootNamespace>Libo11y.Testing</RootNamespace>
     <AssemblyName>Libo11y.Testing</AssemblyName>
+    <Description>Hermetic test harness for libo11y on .NET: an in-memory recorder with conformance and correlation assertions, and an in-process OTLP/HTTP receiver.</Description>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\Libo11y\Libo11y.csproj" />

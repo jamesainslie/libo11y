@@ -541,12 +541,19 @@ static void test_conformance_app_registry_cases(void) {
             want[--want_len] = '\0';
         }
 
+        int want_status = 1;
+        if (strncmp(want, "ok ", 3) == 0) {
+            want_status = 0;
+        } else if (strncmp(want, "parse:", 6) == 0) {
+            want_status = 2;
+        }
+
         char *got = NULL;
         int status = -1;
         o11y_err_t rc = o11y_app_registry_check_bytes(yaml, yaml_len, &got, &status);
-        if (rc != O11Y_OK || got == NULL || strcmp(want, got) != 0) {
-            fprintf(stderr, "  FAIL appregistry case %s:\n    want: %s\n    got:  %s\n",
-                    ent->d_name, want, got ? got : "(null)");
+        if (rc != O11Y_OK || got == NULL || strcmp(want, got) != 0 || status != want_status) {
+            fprintf(stderr, "  FAIL appregistry case %s:\n    want (status=%d): %s\n    got  (status=%d): %s\n",
+                    ent->d_name, want_status, want, status, got ? got : "(null)");
             o11y_string_free(got);
             free(yaml);
             free(want);

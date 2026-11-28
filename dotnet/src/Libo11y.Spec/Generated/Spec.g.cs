@@ -3,369 +3,699 @@
 #nullable enable
 
 using System.Collections.Frozen;
-using System.Collections.Generic;
 
 namespace Libo11y.Spec;
 
+/// <summary>Version facts about the libo11y specification this library implements.</summary>
 public static class SpecConstants
 {
+    /// <summary>The schema URL of the specification version this library implements.</summary>
     public const string SchemaUrl = "https://schemas.o11y.ing/libo11y/1.3.0";
+    /// <summary>The libo11y specification version.</summary>
     public const string SpecVersion = "1.3.0";
+    /// <summary>The OpenTelemetry semantic conventions release the specification pins.</summary>
     public const string SemconvVersion = "1.41.0";
+    /// <summary>The attribute key that carries an event's name.</summary>
     public const string EventNameKey = "event.name";
 }
 
+/// <summary>The values of the <c>o11y.outcome</c> attribute. Outcome of the operation the record describes. Required on wide events and audit records.</summary>
 public static class Outcome
 {
+    /// <summary>The operation completed as intended.</summary>
     public const string Success = "success";
+    /// <summary>The operation failed.</summary>
     public const string Failure = "failure";
+    /// <summary>The outcome could not be determined.</summary>
     public const string Unknown = "unknown";
 
+    /// <summary>Every value of <c>o11y.outcome</c> this class defines.</summary>
     public static readonly FrozenSet<string> All = FrozenSet.ToFrozenSet(new string[] { Success, Failure, Unknown });
+
+    /// <summary>Reports whether <paramref name="value"/> is one of these values.</summary>
+    /// <param name="value">The value to check.</param>
+    /// <returns><see langword="true"/> when <see cref="All"/> holds <paramref name="value"/>.</returns>
     public static bool IsValid(string value) => All.Contains(value);
 }
 
+/// <summary>The values of the <c>o11y.record.class</c> attribute. Structural marking for special record classes.</summary>
 public static class RecordClass
 {
+    /// <summary>Always-emit record: exempt from sampling, level gates, and trace-based dropping.</summary>
     public const string Audit = "audit";
 
+    /// <summary>Every value of <c>o11y.record.class</c> this class defines.</summary>
     public static readonly FrozenSet<string> All = FrozenSet.ToFrozenSet(new string[] { Audit });
+
+    /// <summary>Reports whether <paramref name="value"/> is one of these values.</summary>
+    /// <param name="value">The value to check.</param>
+    /// <returns><see langword="true"/> when <see cref="All"/> holds <paramref name="value"/>.</returns>
     public static bool IsValid(string value) => All.Contains(value);
 }
 
+/// <summary>The values of the <c>o11y.data.classification</c> attribute. Classification of the data the workload processes, used by collector redaction pipelines.</summary>
 public static class DataClassification
 {
+    /// <summary>Public data.</summary>
     public const string Public = "public";
+    /// <summary>Internal data.</summary>
     public const string Internal = "internal";
+    /// <summary>Confidential data.</summary>
     public const string Confidential = "confidential";
+    /// <summary>Personally identifiable information.</summary>
     public const string Pii = "pii";
 
+    /// <summary>Every value of <c>o11y.data.classification</c> this class defines.</summary>
     public static readonly FrozenSet<string> All = FrozenSet.ToFrozenSet(new string[] { Public, Internal, Confidential, Pii });
+
+    /// <summary>Reports whether <paramref name="value"/> is one of these values.</summary>
+    /// <param name="value">The value to check.</param>
+    /// <returns><see langword="true"/> when <see cref="All"/> holds <paramref name="value"/>.</returns>
     public static bool IsValid(string value) => All.Contains(value);
 }
 
+/// <summary>The values of the <c>o11y.signal</c> attribute. The telemetry signal a record refers to.</summary>
 public static class Signal
 {
+    /// <summary>The trace signal.</summary>
     public const string Traces = "traces";
+    /// <summary>The metric signal.</summary>
     public const string Metrics = "metrics";
+    /// <summary>The log signal.</summary>
     public const string Logs = "logs";
+    /// <summary>The telemetry resource shared by every signal.</summary>
     public const string Resource = "resource";
 
+    /// <summary>Every value of <c>o11y.signal</c> this class defines.</summary>
     public static readonly FrozenSet<string> All = FrozenSet.ToFrozenSet(new string[] { Traces, Metrics, Logs, Resource });
+
+    /// <summary>Reports whether <paramref name="value"/> is one of these values.</summary>
+    /// <param name="value">The value to check.</param>
+    /// <returns><see langword="true"/> when <see cref="All"/> holds <paramref name="value"/>.</returns>
     public static bool IsValid(string value) => All.Contains(value);
 }
 
+/// <summary>The values of the <c>o11y.log.source</c> attribute. Where a log record entered the pipeline. Implementations that capture console output mark those records console.</summary>
 public static class LogSource
 {
+    /// <summary>The record came through the libo11y logger or a log bridge.</summary>
     public const string Logger = "logger";
+    /// <summary>The record came from a captured console call.</summary>
     public const string Console = "console";
 
+    /// <summary>Every value of <c>o11y.log.source</c> this class defines.</summary>
     public static readonly FrozenSet<string> All = FrozenSet.ToFrozenSet(new string[] { Logger, Console });
+
+    /// <summary>Reports whether <paramref name="value"/> is one of these values.</summary>
+    /// <param name="value">The value to check.</param>
+    /// <returns><see langword="true"/> when <see cref="All"/> holds <paramref name="value"/>.</returns>
     public static bool IsValid(string value) => All.Contains(value);
 }
 
+/// <summary>The values of the <c>o11y.rum.vital.attribution.interaction_type</c> attribute. INP attribution. The kind of the slowest interaction.</summary>
 public static class RumVitalAttributionInteractionType
 {
+    /// <summary>A pointer or touch interaction.</summary>
     public const string Pointer = "pointer";
+    /// <summary>A keyboard interaction.</summary>
     public const string Keyboard = "keyboard";
 
+    /// <summary>Every value of <c>o11y.rum.vital.attribution.interaction_type</c> this class defines.</summary>
     public static readonly FrozenSet<string> All = FrozenSet.ToFrozenSet(new string[] { Pointer, Keyboard });
+
+    /// <summary>Reports whether <paramref name="value"/> is one of these values.</summary>
+    /// <param name="value">The value to check.</param>
+    /// <returns><see langword="true"/> when <see cref="All"/> holds <paramref name="value"/>.</returns>
     public static bool IsValid(string value) => All.Contains(value);
 }
 
+/// <summary>The values of the <c>o11y.rum.vital.attribution.load_state</c> attribute. INP and CLS attribution. The document's load state when the interaction or shift happened.</summary>
 public static class RumVitalAttributionLoadState
 {
+    /// <summary>The document was loading.</summary>
     public const string Loading = "loading";
+    /// <summary>The DOM was interactive.</summary>
     public const string DomInteractive = "dom-interactive";
+    /// <summary>The DOM content loaded event had fired.</summary>
     public const string DomContentLoaded = "dom-content-loaded";
+    /// <summary>The document had loaded.</summary>
     public const string Complete = "complete";
 
+    /// <summary>Every value of <c>o11y.rum.vital.attribution.load_state</c> this class defines.</summary>
     public static readonly FrozenSet<string> All = FrozenSet.ToFrozenSet(new string[] { Loading, DomInteractive, DomContentLoaded, Complete });
+
+    /// <summary>Reports whether <paramref name="value"/> is one of these values.</summary>
+    /// <param name="value">The value to check.</param>
+    /// <returns><see langword="true"/> when <see cref="All"/> holds <paramref name="value"/>.</returns>
     public static bool IsValid(string value) => All.Contains(value);
 }
 
+/// <summary>The values of the <c>o11y.rum.resource.type</c> attribute. The kind of a resource the view loaded, from its initiator type.</summary>
 public static class RumResourceType
 {
+    /// <summary>A script.</summary>
     public const string Script = "script";
+    /// <summary>A stylesheet.</summary>
     public const string Stylesheet = "stylesheet";
+    /// <summary>An image.</summary>
     public const string Image = "image";
+    /// <summary>A font.</summary>
     public const string Font = "font";
+    /// <summary>Audio or video.</summary>
     public const string Media = "media";
+    /// <summary>A frame's document.</summary>
     public const string Document = "document";
+    /// <summary>Any other resource.</summary>
     public const string Other = "other";
 
+    /// <summary>Every value of <c>o11y.rum.resource.type</c> this class defines.</summary>
     public static readonly FrozenSet<string> All = FrozenSet.ToFrozenSet(new string[] { Script, Stylesheet, Image, Font, Media, Document, Other });
+
+    /// <summary>Reports whether <paramref name="value"/> is one of these values.</summary>
+    /// <param name="value">The value to check.</param>
+    /// <returns><see langword="true"/> when <see cref="All"/> holds <paramref name="value"/>.</returns>
     public static bool IsValid(string value) => All.Contains(value);
 }
 
+/// <summary>The values of the <c>o11y.rum.platform</c> attribute. The RUM platform that recorded the telemetry.</summary>
 public static class RumPlatform
 {
+    /// <summary>A web page.</summary>
     public const string Web = "web";
+    /// <summary>A browser extension.</summary>
     public const string Webext = "webext";
+    /// <summary>A React Native app.</summary>
     public const string ReactNative = "react_native";
+    /// <summary>A native iOS app.</summary>
     public const string Ios = "ios";
+    /// <summary>A native Android app.</summary>
     public const string Android = "android";
 
+    /// <summary>Every value of <c>o11y.rum.platform</c> this class defines.</summary>
     public static readonly FrozenSet<string> All = FrozenSet.ToFrozenSet(new string[] { Web, Webext, ReactNative, Ios, Android });
+
+    /// <summary>Reports whether <paramref name="value"/> is one of these values.</summary>
+    /// <param name="value">The value to check.</param>
+    /// <returns><see langword="true"/> when <see cref="All"/> holds <paramref name="value"/>.</returns>
     public static bool IsValid(string value) => All.Contains(value);
 }
 
+/// <summary>The values of the <c>o11y.rum.span.shape</c> attribute. Which RUM span shape a span follows. Every view, action and app_load span carries it, so a gateway or a query can tell the shapes apart without inferring them from other attributes.</summary>
 public static class RumSpanShape
 {
+    /// <summary>A view span.</summary>
     public const string View = "view";
+    /// <summary>An action span.</summary>
     public const string Action = "action";
+    /// <summary>A document load or app start span.</summary>
     public const string AppLoad = "app_load";
 
+    /// <summary>Every value of <c>o11y.rum.span.shape</c> this class defines.</summary>
     public static readonly FrozenSet<string> All = FrozenSet.ToFrozenSet(new string[] { View, Action, AppLoad });
+
+    /// <summary>Reports whether <paramref name="value"/> is one of these values.</summary>
+    /// <param name="value">The value to check.</param>
+    /// <returns><see langword="true"/> when <see cref="All"/> holds <paramref name="value"/>.</returns>
     public static bool IsValid(string value) => All.Contains(value);
 }
 
+/// <summary>The values of the <c>o11y.rum.view.kind</c> attribute. How the view started.</summary>
 public static class RumViewKind
 {
+    /// <summary>The first view of a page load.</summary>
     public const string Initial = "initial";
+    /// <summary>A client-side navigation in a single-page app.</summary>
     public const string Soft = "soft";
+    /// <summary>A page restored from the back/forward cache.</summary>
     public const string BfcacheRestore = "bfcache_restore";
+    /// <summary>A prerendered page that was activated.</summary>
     public const string Prerender = "prerender";
+    /// <summary>A screen in a native or React Native app.</summary>
     public const string Screen = "screen";
 
+    /// <summary>Every value of <c>o11y.rum.view.kind</c> this class defines.</summary>
     public static readonly FrozenSet<string> All = FrozenSet.ToFrozenSet(new string[] { Initial, Soft, BfcacheRestore, Prerender, Screen });
+
+    /// <summary>Reports whether <paramref name="value"/> is one of these values.</summary>
+    /// <param name="value">The value to check.</param>
+    /// <returns><see langword="true"/> when <see cref="All"/> holds <paramref name="value"/>.</returns>
     public static bool IsValid(string value) => All.Contains(value);
 }
 
+/// <summary>The values of the <c>o11y.rum.action.type</c> attribute. The kind of user interaction.</summary>
 public static class RumActionType
 {
+    /// <summary>A pointer click.</summary>
     public const string Click = "click";
+    /// <summary>A touch tap.</summary>
     public const string Tap = "tap";
+    /// <summary>A touch long press.</summary>
     public const string LongPress = "long_press";
+    /// <summary>A touch swipe.</summary>
     public const string Swipe = "swipe";
+    /// <summary>A deliberate scroll.</summary>
     public const string Scroll = "scroll";
+    /// <summary>A form submission.</summary>
     public const string Submit = "submit";
+    /// <summary>A key press that triggers behaviour.</summary>
     public const string KeyPress = "key_press";
+    /// <summary>An action the application recorded itself.</summary>
     public const string Custom = "custom";
 
+    /// <summary>Every value of <c>o11y.rum.action.type</c> this class defines.</summary>
     public static readonly FrozenSet<string> All = FrozenSet.ToFrozenSet(new string[] { Click, Tap, LongPress, Swipe, Scroll, Submit, KeyPress, Custom });
+
+    /// <summary>Reports whether <paramref name="value"/> is one of these values.</summary>
+    /// <param name="value">The value to check.</param>
+    /// <returns><see langword="true"/> when <see cref="All"/> holds <paramref name="value"/>.</returns>
     public static bool IsValid(string value) => All.Contains(value);
 }
 
+/// <summary>The values of the <c>o11y.rum.frustration.type</c> attribute. The kind of frustration signal.</summary>
 public static class RumFrustrationType
 {
+    /// <summary>Repeated rapid interactions on one element.</summary>
     public const string Rage = "rage";
+    /// <summary>An interaction that produced no response.</summary>
     public const string Dead = "dead";
+    /// <summary>An interaction followed by an error.</summary>
     public const string Error = "error";
 
+    /// <summary>Every value of <c>o11y.rum.frustration.type</c> this class defines.</summary>
     public static readonly FrozenSet<string> All = FrozenSet.ToFrozenSet(new string[] { Rage, Dead, Error });
+
+    /// <summary>Reports whether <paramref name="value"/> is one of these values.</summary>
+    /// <param name="value">The value to check.</param>
+    /// <returns><see langword="true"/> when <see cref="All"/> holds <paramref name="value"/>.</returns>
     public static bool IsValid(string value) => All.Contains(value);
 }
 
+/// <summary>The values of the <c>o11y.rum.error.source</c> attribute. Where an error RUM recorded came from.</summary>
 public static class RumErrorSource
 {
+    /// <summary>An uncaught exception.</summary>
     public const string Uncaught = "uncaught";
+    /// <summary>An unhandled promise rejection.</summary>
     public const string UnhandledRejection = "unhandled_rejection";
+    /// <summary>A captured console error.</summary>
     public const string Console = "console";
+    /// <summary>An error a UI framework boundary caught.</summary>
     public const string Boundary = "boundary";
+    /// <summary>A resource that failed to load.</summary>
     public const string Resource = "resource";
+    /// <summary>A Content Security Policy violation.</summary>
     public const string Csp = "csp";
+    /// <summary>A failed network request.</summary>
     public const string Network = "network";
+    /// <summary>A native crash.</summary>
     public const string Crash = "crash";
+    /// <summary>An Android application-not-responding event.</summary>
     public const string Anr = "anr";
+    /// <summary>A main-thread hang.</summary>
     public const string Hang = "hang";
+    /// <summary>An error the application reported itself.</summary>
     public const string Custom = "custom";
 
+    /// <summary>Every value of <c>o11y.rum.error.source</c> this class defines.</summary>
     public static readonly FrozenSet<string> All = FrozenSet.ToFrozenSet(new string[] { Uncaught, UnhandledRejection, Console, Boundary, Resource, Csp, Network, Crash, Anr, Hang, Custom });
+
+    /// <summary>Reports whether <paramref name="value"/> is one of these values.</summary>
+    /// <param name="value">The value to check.</param>
+    /// <returns><see langword="true"/> when <see cref="All"/> holds <paramref name="value"/>.</returns>
     public static bool IsValid(string value) => All.Contains(value);
 }
 
+/// <summary>The values of the <c>o11y.rum.device.class</c> attribute. Coarse class of the user's device.</summary>
 public static class RumDeviceClass
 {
+    /// <summary>A desktop or laptop.</summary>
     public const string Desktop = "desktop";
+    /// <summary>A phone.</summary>
     public const string Mobile = "mobile";
+    /// <summary>A tablet.</summary>
     public const string Tablet = "tablet";
+    /// <summary>A television or set-top device.</summary>
     public const string Tv = "tv";
+    /// <summary>An automated client.</summary>
     public const string Bot = "bot";
+    /// <summary>The class could not be determined.</summary>
     public const string Unknown = "unknown";
 
+    /// <summary>Every value of <c>o11y.rum.device.class</c> this class defines.</summary>
     public static readonly FrozenSet<string> All = FrozenSet.ToFrozenSet(new string[] { Desktop, Mobile, Tablet, Tv, Bot, Unknown });
+
+    /// <summary>Reports whether <paramref name="value"/> is one of these values.</summary>
+    /// <param name="value">The value to check.</param>
+    /// <returns><see langword="true"/> when <see cref="All"/> holds <paramref name="value"/>.</returns>
     public static bool IsValid(string value) => All.Contains(value);
 }
 
+/// <summary>The values of the <c>o11y.rum.connection.type</c> attribute. The physical network the device used.</summary>
 public static class RumConnectionType
 {
+    /// <summary>Wi-Fi.</summary>
     public const string Wifi = "wifi";
+    /// <summary>A cellular network.</summary>
     public const string Cellular = "cellular";
+    /// <summary>A wired network.</summary>
     public const string Ethernet = "ethernet";
+    /// <summary>No network.</summary>
     public const string Offline = "offline";
+    /// <summary>The type could not be determined.</summary>
     public const string Unknown = "unknown";
 
+    /// <summary>Every value of <c>o11y.rum.connection.type</c> this class defines.</summary>
     public static readonly FrozenSet<string> All = FrozenSet.ToFrozenSet(new string[] { Wifi, Cellular, Ethernet, Offline, Unknown });
+
+    /// <summary>Reports whether <paramref name="value"/> is one of these values.</summary>
+    /// <param name="value">The value to check.</param>
+    /// <returns><see langword="true"/> when <see cref="All"/> holds <paramref name="value"/>.</returns>
     public static bool IsValid(string value) => All.Contains(value);
 }
 
+/// <summary>The values of the <c>o11y.rum.connection.effective</c> attribute. The effective connection speed the platform estimated.</summary>
 public static class RumConnectionEffective
 {
+    /// <summary>Effective speed of slow 2G.</summary>
     public const string Slow2g = "slow-2g";
+    /// <summary>Effective speed of 2G.</summary>
     public const string Type2g = "2g";
+    /// <summary>Effective speed of 3G.</summary>
     public const string Type3g = "3g";
+    /// <summary>Effective speed of 4G or better.</summary>
     public const string Type4g = "4g";
 
+    /// <summary>Every value of <c>o11y.rum.connection.effective</c> this class defines.</summary>
     public static readonly FrozenSet<string> All = FrozenSet.ToFrozenSet(new string[] { Slow2g, Type2g, Type3g, Type4g });
+
+    /// <summary>Reports whether <paramref name="value"/> is one of these values.</summary>
+    /// <param name="value">The value to check.</param>
+    /// <returns><see langword="true"/> when <see cref="All"/> holds <paramref name="value"/>.</returns>
     public static bool IsValid(string value) => All.Contains(value);
 }
 
+/// <summary>The values of the <c>o11y.rum.vital.rating</c> attribute. The vital's rating against its published thresholds.</summary>
 public static class RumVitalRating
 {
+    /// <summary>Within the good threshold.</summary>
     public const string Good = "good";
+    /// <summary>Between the good and poor thresholds.</summary>
     public const string NeedsImprovement = "needs-improvement";
+    /// <summary>Beyond the poor threshold.</summary>
     public const string Poor = "poor";
 
+    /// <summary>Every value of <c>o11y.rum.vital.rating</c> this class defines.</summary>
     public static readonly FrozenSet<string> All = FrozenSet.ToFrozenSet(new string[] { Good, NeedsImprovement, Poor });
+
+    /// <summary>Reports whether <paramref name="value"/> is one of these values.</summary>
+    /// <param name="value">The value to check.</param>
+    /// <returns><see langword="true"/> when <see cref="All"/> holds <paramref name="value"/>.</returns>
     public static bool IsValid(string value) => All.Contains(value);
 }
 
+/// <summary>The values of the <c>o11y.rum.session.retained</c> attribute. Why a session's telemetry was kept.</summary>
 public static class RumSessionRetained
 {
+    /// <summary>Kept by the per-session head sample.</summary>
     public const string HeadSampled = "head_sampled";
+    /// <summary>Kept by retroactive sampling because of an error.</summary>
     public const string Error = "error";
+    /// <summary>Kept by retroactive sampling because of a frustration signal.</summary>
     public const string Frustration = "frustration";
 
+    /// <summary>Every value of <c>o11y.rum.session.retained</c> this class defines.</summary>
     public static readonly FrozenSet<string> All = FrozenSet.ToFrozenSet(new string[] { HeadSampled, Error, Frustration });
+
+    /// <summary>Reports whether <paramref name="value"/> is one of these values.</summary>
+    /// <param name="value">The value to check.</param>
+    /// <returns><see langword="true"/> when <see cref="All"/> holds <paramref name="value"/>.</returns>
     public static bool IsValid(string value) => All.Contains(value);
 }
 
+/// <summary>The base values of <c>deployment.environment.name</c>. An application may configure further values at setup, so a value outside this set is not necessarily invalid.</summary>
 public static class DeploymentEnvironment
 {
+    /// <summary>The value <c>production</c>.</summary>
     public const string Production = "production";
+    /// <summary>The value <c>staging</c>.</summary>
     public const string Staging = "staging";
+    /// <summary>The value <c>development</c>.</summary>
     public const string Development = "development";
+    /// <summary>The value <c>test</c>.</summary>
     public const string Test = "test";
 
+    /// <summary>Every value of <c>deployment.environment.name</c> this class defines.</summary>
     public static readonly FrozenSet<string> All = FrozenSet.ToFrozenSet(new string[] { Production, Staging, Development, Test });
+
+    /// <summary>Reports whether <paramref name="value"/> is one of these values.</summary>
+    /// <param name="value">The value to check.</param>
+    /// <returns><see langword="true"/> when <see cref="All"/> holds <paramref name="value"/>.</returns>
     public static bool IsValid(string value) => All.Contains(value);
 }
 
+/// <summary>Attribute keys: the ones the libo11y specification mints, then the upstream ones it copies.</summary>
 public static class SpecAttributes
 {
+    /// <summary>Outcome of the operation the record describes. Required on wide events and audit records. Sensitivity: public. Cardinality: enum.</summary>
     public const string Outcome = "o11y.outcome";
+    /// <summary>Structural marking for special record classes. Sensitivity: public. Cardinality: enum.</summary>
     public const string RecordClass = "o11y.record.class";
+    /// <summary>Team that owns the emitting service. Sensitivity: public. Cardinality: bounded.</summary>
     public const string TeamName = "o11y.team.name";
+    /// <summary>Tenant identity. Resource form is permitted only for single-tenant-per-deployment topologies; in shared services it is a span or log attribute propagated via baggage. Never a metric label. Sensitivity: internal. Cardinality: unbounded.</summary>
     public const string TenantId = "o11y.tenant.id";
+    /// <summary>Cost attribution identifier, normally injected at deploy time. Sensitivity: internal. Cardinality: bounded.</summary>
     public const string CostCenter = "o11y.cost_center";
+    /// <summary>Classification of the data the workload processes, used by collector redaction pipelines. Sensitivity: internal. Cardinality: enum.</summary>
     public const string DataClassification = "o11y.data.classification";
+    /// <summary>Free-form user key-value pairs, the single sanctioned map for tenant-supplied labels. Never metric labels. Sensitivity: internal. Cardinality: unbounded.</summary>
     public const string Label = "o11y.label";
+    /// <summary>Whether the binary was built from a modified (dirty) source tree. Sensitivity: public. Cardinality: enum.</summary>
     public const string BuildModified = "o11y.build.modified";
+    /// <summary>VCS commit timestamp of the built revision, RFC 3339. Sensitivity: public. Cardinality: bounded.</summary>
     public const string BuildTime = "o11y.build.time";
+    /// <summary>Resolved configuration keys reported by the startup summary event (o11y.config.traces, o11y.config.metrics, o11y.config.logs, o11y.config.console, o11y.config.level, o11y.config.sampler, o11y.config.propagators, o11y.config.runtime_metrics, o11y.config.service_version_fallback, o11y.config.endpoint, o11y.config.traces_endpoint, o11y.config.metrics_endpoint, o11y.config.logs_endpoint). Endpoint values carry no userinfo, query, or fragment. Sensitivity: public. Cardinality: bounded.</summary>
     public const string Config = "o11y.config";
+    /// <summary>The telemetry signal a record refers to. Sensitivity: public. Cardinality: enum.</summary>
     public const string Signal = "o11y.signal";
+    /// <summary>The specification rule a schema violation breached. Sensitivity: public. Cardinality: bounded.</summary>
     public const string Rule = "o11y.rule";
+    /// <summary>Duration of the operation described by a wide event, in seconds. Sensitivity: public. Cardinality: unbounded.</summary>
     public const string Duration = "o11y.duration";
+    /// <summary>Where a log record entered the pipeline. Implementations that capture console output mark those records console. Sensitivity: public. Cardinality: enum.</summary>
     public const string LogSource = "o11y.log.source";
+    /// <summary>The recent actions, view changes and requests before the error, oldest first, one per line, each as "&lt;kind&gt; &lt;label&gt; -&lt;age&gt;ms". A request label is the method, host and status, never a path. Sensitivity: internal. Cardinality: unbounded.</summary>
     public const string RumErrorBreadcrumbs = "o11y.rum.error.breadcrumbs";
+    /// <summary>INP attribution. Seconds from the interaction to the start of its event handlers. Sensitivity: public. Cardinality: unbounded.</summary>
     public const string RumVitalAttributionInputDelay = "o11y.rum.vital.attribution.input_delay";
+    /// <summary>INP attribution. Seconds the interaction's event handlers ran. Sensitivity: public. Cardinality: unbounded.</summary>
     public const string RumVitalAttributionProcessingDuration = "o11y.rum.vital.attribution.processing_duration";
+    /// <summary>INP attribution. Seconds from the end of the handlers to the next paint. Sensitivity: public. Cardinality: unbounded.</summary>
     public const string RumVitalAttributionPresentationDelay = "o11y.rum.vital.attribution.presentation_delay";
+    /// <summary>INP attribution. The kind of the slowest interaction. Sensitivity: public. Cardinality: enum.</summary>
     public const string RumVitalAttributionInteractionType = "o11y.rum.vital.attribution.interaction_type";
+    /// <summary>LCP attribution. Seconds until the document's first byte. Sensitivity: public. Cardinality: unbounded.</summary>
     public const string RumVitalAttributionTimeToFirstByte = "o11y.rum.vital.attribution.time_to_first_byte";
+    /// <summary>LCP attribution. Seconds from the first byte until the LCP resource started loading. Sensitivity: public. Cardinality: unbounded.</summary>
     public const string RumVitalAttributionResourceLoadDelay = "o11y.rum.vital.attribution.resource_load_delay";
+    /// <summary>LCP attribution. Seconds the LCP resource took to load. Sensitivity: public. Cardinality: unbounded.</summary>
     public const string RumVitalAttributionResourceLoadDuration = "o11y.rum.vital.attribution.resource_load_duration";
+    /// <summary>LCP attribution. Seconds from the end of the resource load until the LCP element rendered. Sensitivity: public. Cardinality: unbounded.</summary>
     public const string RumVitalAttributionElementRenderDelay = "o11y.rum.vital.attribution.element_render_delay";
+    /// <summary>CLS attribution. The score of the largest single layout shift. Sensitivity: public. Cardinality: unbounded.</summary>
     public const string RumVitalAttributionLargestShiftValue = "o11y.rum.vital.attribution.largest_shift_value";
+    /// <summary>CLS attribution. Seconds from the time origin to the largest layout shift. Sensitivity: public. Cardinality: unbounded.</summary>
     public const string RumVitalAttributionLargestShiftTime = "o11y.rum.vital.attribution.largest_shift_time";
+    /// <summary>INP and CLS attribution. The document's load state when the interaction or shift happened. Sensitivity: public. Cardinality: enum.</summary>
     public const string RumVitalAttributionLoadState = "o11y.rum.vital.attribution.load_state";
+    /// <summary>The kind of a resource the view loaded, from its initiator type. Sensitivity: public. Cardinality: enum.</summary>
     public const string RumResourceType = "o11y.rum.resource.type";
+    /// <summary>The metric name of one Server-Timing entry on a resource's response. Sensitivity: public. Cardinality: bounded.</summary>
     public const string RumServerTimingName = "o11y.rum.server_timing.name";
+    /// <summary>The duration of one Server-Timing entry, in seconds. Sensitivity: public. Cardinality: unbounded.</summary>
     public const string RumServerTimingDuration = "o11y.rum.server_timing.duration";
+    /// <summary>0-based index of this summary within its view. The gateway counts a view once, at index 0. Sensitivity: public. Cardinality: unbounded.</summary>
     public const string RumSummarySeq = "o11y.rum.summary.seq";
+    /// <summary>Seconds the view was visible since the previous summary of the same view. Sensitivity: public. Cardinality: unbounded.</summary>
     public const string RumSummaryTimeOnView = "o11y.rum.summary.time_on_view";
+    /// <summary>Requests the view started since the previous summary. Sensitivity: public. Cardinality: unbounded.</summary>
     public const string RumSummaryRequests = "o11y.rum.summary.requests";
+    /// <summary>Long animation frames on the view since the previous summary. Sensitivity: public. Cardinality: unbounded.</summary>
     public const string RumSummaryLongAnimationFrames = "o11y.rum.summary.long_animation_frames";
+    /// <summary>Uncaught exceptions since the previous summary. Sensitivity: public. Cardinality: unbounded.</summary>
     public const string RumSummaryErrorsUncaught = "o11y.rum.summary.errors.uncaught";
+    /// <summary>Unhandled promise rejections since the previous summary. Sensitivity: public. Cardinality: unbounded.</summary>
     public const string RumSummaryErrorsUnhandledRejection = "o11y.rum.summary.errors.unhandled_rejection";
+    /// <summary>Captured console errors since the previous summary. Sensitivity: public. Cardinality: unbounded.</summary>
     public const string RumSummaryErrorsConsole = "o11y.rum.summary.errors.console";
+    /// <summary>Errors a UI framework boundary caught since the previous summary. Sensitivity: public. Cardinality: unbounded.</summary>
     public const string RumSummaryErrorsBoundary = "o11y.rum.summary.errors.boundary";
+    /// <summary>Resources that failed to load since the previous summary. Sensitivity: public. Cardinality: unbounded.</summary>
     public const string RumSummaryErrorsResource = "o11y.rum.summary.errors.resource";
+    /// <summary>Content Security Policy violations since the previous summary. Sensitivity: public. Cardinality: unbounded.</summary>
     public const string RumSummaryErrorsCsp = "o11y.rum.summary.errors.csp";
+    /// <summary>Failed network requests since the previous summary. Sensitivity: public. Cardinality: unbounded.</summary>
     public const string RumSummaryErrorsNetwork = "o11y.rum.summary.errors.network";
+    /// <summary>Native crashes since the previous summary. Sensitivity: public. Cardinality: unbounded.</summary>
     public const string RumSummaryErrorsCrash = "o11y.rum.summary.errors.crash";
+    /// <summary>Application-not-responding events since the previous summary. Sensitivity: public. Cardinality: unbounded.</summary>
     public const string RumSummaryErrorsAnr = "o11y.rum.summary.errors.anr";
+    /// <summary>Main-thread hangs since the previous summary. Sensitivity: public. Cardinality: unbounded.</summary>
     public const string RumSummaryErrorsHang = "o11y.rum.summary.errors.hang";
+    /// <summary>Errors the application reported itself since the previous summary. Sensitivity: public. Cardinality: unbounded.</summary>
     public const string RumSummaryErrorsCustom = "o11y.rum.summary.errors.custom";
+    /// <summary>Rage interactions since the previous summary. Sensitivity: public. Cardinality: unbounded.</summary>
     public const string RumSummaryFrustrationsRage = "o11y.rum.summary.frustrations.rage";
+    /// <summary>Dead interactions since the previous summary. Sensitivity: public. Cardinality: unbounded.</summary>
     public const string RumSummaryFrustrationsDead = "o11y.rum.summary.frustrations.dead";
+    /// <summary>Interactions followed by an error since the previous summary. Sensitivity: public. Cardinality: unbounded.</summary>
     public const string RumSummaryFrustrationsError = "o11y.rum.summary.frustrations.error";
+    /// <summary>Largest Contentful Paint of the view in seconds. Sensitivity: public. Cardinality: unbounded.</summary>
     public const string RumSummaryLcpValue = "o11y.rum.summary.lcp.value";
+    /// <summary>Interaction to Next Paint of the view in seconds. Sensitivity: public. Cardinality: unbounded.</summary>
     public const string RumSummaryInpValue = "o11y.rum.summary.inp.value";
+    /// <summary>Cumulative Layout Shift of the view, which has no unit. Sensitivity: public. Cardinality: unbounded.</summary>
     public const string RumSummaryClsValue = "o11y.rum.summary.cls.value";
+    /// <summary>First Contentful Paint of the view in seconds. Sensitivity: public. Cardinality: unbounded.</summary>
     public const string RumSummaryFcpValue = "o11y.rum.summary.fcp.value";
+    /// <summary>Time to First Byte of the view's document in seconds. Sensitivity: public. Cardinality: unbounded.</summary>
     public const string RumSummaryTtfbValue = "o11y.rum.summary.ttfb.value";
+    /// <summary>The RUM platform that recorded the telemetry. Sensitivity: public. Cardinality: enum.</summary>
     public const string RumPlatform = "o11y.rum.platform";
+    /// <summary>Which RUM span shape a span follows. Every view, action and app_load span carries it, so a gateway or a query can tell the shapes apart without inferring them from other attributes. Sensitivity: public. Cardinality: enum.</summary>
     public const string RumSpanShape = "o11y.rum.span.shape";
+    /// <summary>Name of the view: the route template on the web (never the raw URL) or the screen name on mobile. Sensitivity: public. Cardinality: bounded.</summary>
     public const string RumViewName = "o11y.rum.view.name";
+    /// <summary>Random identifier of one view instance within a session. Sensitivity: internal. Cardinality: unbounded.</summary>
     public const string RumViewId = "o11y.rum.view.id";
+    /// <summary>How the view started. Sensitivity: public. Cardinality: enum.</summary>
     public const string RumViewKind = "o11y.rum.view.kind";
+    /// <summary>The kind of user interaction. Sensitivity: public. Cardinality: enum.</summary>
     public const string RumActionType = "o11y.rum.action.type";
+    /// <summary>Name of the action: the element's data-o11y label (or the platform's equivalent), or a privacy-safe accessible name. Never free text the user typed. Sensitivity: internal. Cardinality: bounded.</summary>
     public const string RumActionName = "o11y.rum.action.name";
+    /// <summary>The kind of frustration signal. Sensitivity: public. Cardinality: enum.</summary>
     public const string RumFrustrationType = "o11y.rum.frustration.type";
+    /// <summary>Where an error RUM recorded came from. Sensitivity: public. Cardinality: enum.</summary>
     public const string RumErrorSource = "o11y.rum.error.source";
+    /// <summary>Stable grouping key for an error, computed after symbolication. Sensitivity: internal. Cardinality: bounded.</summary>
     public const string RumErrorFingerprint = "o11y.rum.error.fingerprint";
+    /// <summary>Selector or view identifier of the UI element an action, vital, or frustration signal refers to. Sensitivity: internal. Cardinality: unbounded.</summary>
     public const string RumElementSelector = "o11y.rum.element.selector";
+    /// <summary>Visible text of a UI element. PII by default, because UI text can show names, addresses and other personal data. Sensitivity: pii. Cardinality: unbounded.</summary>
     public const string RumElementText = "o11y.rum.element.text";
+    /// <summary>Coarse class of the user's device. Sensitivity: public. Cardinality: enum.</summary>
     public const string RumDeviceClass = "o11y.rum.device.class";
+    /// <summary>The physical network the device used. Sensitivity: public. Cardinality: enum.</summary>
     public const string RumConnectionType = "o11y.rum.connection.type";
+    /// <summary>The effective connection speed the platform estimated. Sensitivity: public. Cardinality: enum.</summary>
     public const string RumConnectionEffective = "o11y.rum.connection.effective";
+    /// <summary>The vital's rating against its published thresholds. Sensitivity: public. Cardinality: enum.</summary>
     public const string RumVitalRating = "o11y.rum.vital.rating";
+    /// <summary>Why a session's telemetry was kept. Sensitivity: public. Cardinality: enum.</summary>
     public const string RumSessionRetained = "o11y.rum.session.retained";
+    /// <summary>Index of the replay segment within the session. Sensitivity: public. Cardinality: unbounded.</summary>
     public const string RumReplaySegment = "o11y.rum.replay.segment";
+    /// <summary>Version of the remote configuration the session ran under. Sensitivity: public. Cardinality: bounded.</summary>
     public const string RumConfigVersion = "o11y.rum.config.version";
+    /// <summary>Identifier of the over-the-air update a mobile app runs, such as an Expo Updates update ID. Absent when the app runs its embedded bundle. Source maps for the update are looked up by service.version and this ID. Sensitivity: public. Cardinality: bounded.</summary>
     public const string RumAppUpdateId = "o11y.rum.app.update_id";
+    /// <summary>Browser family parsed from the user agent by the gateway. Sensitivity: public. Cardinality: bounded.</summary>
     public const string RumBrowserFamily = "o11y.rum.browser.family";
+    /// <summary>The upstream <c>cloud.account.id</c> attribute key. Sensitivity: internal.</summary>
     public const string CloudAccountId = "cloud.account.id";
+    /// <summary>The upstream <c>cloud.availability_zone</c> attribute key. Sensitivity: internal.</summary>
     public const string CloudAvailabilityZone = "cloud.availability_zone";
+    /// <summary>The upstream <c>cloud.platform</c> attribute key. Sensitivity: internal.</summary>
     public const string CloudPlatform = "cloud.platform";
+    /// <summary>The upstream <c>cloud.provider</c> attribute key. Sensitivity: internal.</summary>
     public const string CloudProvider = "cloud.provider";
+    /// <summary>The upstream <c>cloud.region</c> attribute key. Sensitivity: internal.</summary>
     public const string CloudRegion = "cloud.region";
+    /// <summary>The upstream <c>container.id</c> attribute key. Sensitivity: internal.</summary>
     public const string ContainerId = "container.id";
+    /// <summary>The upstream <c>faas.instance</c> attribute key. Sensitivity: internal.</summary>
     public const string FaasInstance = "faas.instance";
+    /// <summary>The upstream <c>faas.name</c> attribute key. Sensitivity: internal.</summary>
     public const string FaasName = "faas.name";
+    /// <summary>The upstream <c>faas.version</c> attribute key. Sensitivity: internal.</summary>
     public const string FaasVersion = "faas.version";
+    /// <summary>The upstream <c>host.arch</c> attribute key. Sensitivity: public.</summary>
     public const string HostArch = "host.arch";
+    /// <summary>The upstream <c>host.id</c> attribute key. Sensitivity: internal.</summary>
     public const string HostId = "host.id";
+    /// <summary>The upstream <c>host.name</c> attribute key. Sensitivity: internal.</summary>
     public const string HostName = "host.name";
+    /// <summary>The upstream <c>k8s.cluster.name</c> attribute key. Sensitivity: internal.</summary>
     public const string K8sClusterName = "k8s.cluster.name";
+    /// <summary>The upstream <c>k8s.container.name</c> attribute key. Sensitivity: internal.</summary>
     public const string K8sContainerName = "k8s.container.name";
+    /// <summary>The upstream <c>k8s.deployment.name</c> attribute key. Sensitivity: internal.</summary>
     public const string K8sDeploymentName = "k8s.deployment.name";
+    /// <summary>The upstream <c>k8s.namespace.name</c> attribute key. Sensitivity: internal.</summary>
     public const string K8sNamespaceName = "k8s.namespace.name";
+    /// <summary>The upstream <c>k8s.node.name</c> attribute key. Sensitivity: internal.</summary>
     public const string K8sNodeName = "k8s.node.name";
+    /// <summary>The upstream <c>k8s.pod.name</c> attribute key. Sensitivity: internal.</summary>
     public const string K8sPodName = "k8s.pod.name";
+    /// <summary>The upstream <c>k8s.pod.uid</c> attribute key. Sensitivity: internal.</summary>
     public const string K8sPodUid = "k8s.pod.uid";
+    /// <summary>The upstream <c>os.type</c> attribute key. Sensitivity: public.</summary>
     public const string OsType = "os.type";
+    /// <summary>The upstream <c>process.pid</c> attribute key. Sensitivity: internal.</summary>
     public const string ProcessPid = "process.pid";
+    /// <summary>The upstream <c>process.runtime.name</c> attribute key. Sensitivity: public.</summary>
     public const string ProcessRuntimeName = "process.runtime.name";
+    /// <summary>The upstream <c>process.runtime.version</c> attribute key. Sensitivity: public.</summary>
     public const string ProcessRuntimeVersion = "process.runtime.version";
+    /// <summary>The upstream <c>vcs.ref.head.name</c> attribute key. Sensitivity: public.</summary>
     public const string VcsRefHeadName = "vcs.ref.head.name";
+    /// <summary>The upstream <c>vcs.ref.head.revision</c> attribute key. Sensitivity: public.</summary>
     public const string VcsRefHeadRevision = "vcs.ref.head.revision";
 }
 
+/// <summary>Registered event names.</summary>
 public static class SpecEvents
 {
+    /// <summary>Startup summary, emitted once by Setup after the pipeline is constructed and verified (the record doubles as the init canary).</summary>
     public const string TelemetryConfigured = "o11y.telemetry.configured";
+    /// <summary>Wide event: one per request, flushed at request end (fires on panic), carrying identity, outcome, duration, and everything accumulated on the request record. The primary analytics record.</summary>
     public const string RequestSummary = "o11y.request.summary";
+    /// <summary>Buffered telemetry could not be flushed at shutdown. Emitted best-effort to surviving sinks so the loss is never silent.</summary>
     public const string TelemetryDropped = "o11y.telemetry.dropped";
+    /// <summary>An error RUM captured, with its source and, after symbolication, its fingerprint.</summary>
     public const string RumError = "o11y.rum.error";
+    /// <summary>A frustration signal on a UI element.</summary>
     public const string RumFrustration = "o11y.rum.frustration";
+    /// <summary>A RUM session started.</summary>
     public const string RumSessionStart = "o11y.rum.session.start";
+    /// <summary>A RUM session ended, with the reason its telemetry was kept.</summary>
     public const string RumSessionEnd = "o11y.rum.session.end";
+    /// <summary>A view's counts, time on view and vitals since the previous summary of the same view. Every consented session sends it, whatever its sampling, and the gateway derives the standard RUM metrics from it.</summary>
     public const string RumViewSummary = "o11y.rum.view.summary";
 }
 
+/// <summary>Registered metric names.</summary>
 public static class SpecMetrics
 {
+    /// <summary>Count of telemetry records that violated the libo11y specification, by signal and rule. Emitted only when schema validation is enabled. Instrument: counter. Unit: <c>{violation}</c>.</summary>
     public const string SchemaViolations = "o11y.schema.violations";
+    /// <summary>Largest Contentful Paint of a view. Derived by the gateway from o11y.rum.view.summary. Clients do not export it. The rating label comes from the thresholds in SPEC.md. Instrument: histogram. Unit: <c>s</c>.</summary>
     public const string RumVitalLcp = "o11y.rum.vital.lcp";
+    /// <summary>Interaction to Next Paint of a view. Derived by the gateway from o11y.rum.view.summary. Clients do not export it. The rating label comes from the thresholds in SPEC.md. Instrument: histogram. Unit: <c>s</c>.</summary>
     public const string RumVitalInp = "o11y.rum.vital.inp";
+    /// <summary>Cumulative Layout Shift of a view, a unitless score. Derived by the gateway from o11y.rum.view.summary. Clients do not export it. The rating label comes from the thresholds in SPEC.md. Instrument: histogram. Unit: <c>1</c>.</summary>
     public const string RumVitalCls = "o11y.rum.vital.cls";
+    /// <summary>First Contentful Paint of a view. Derived by the gateway from o11y.rum.view.summary. Clients do not export it. The rating label comes from the thresholds in SPEC.md. Instrument: histogram. Unit: <c>s</c>.</summary>
     public const string RumVitalFcp = "o11y.rum.vital.fcp";
+    /// <summary>Time to First Byte of a view's document. Derived by the gateway from o11y.rum.view.summary. Clients do not export it. The rating label comes from the thresholds in SPEC.md. Instrument: histogram. Unit: <c>s</c>.</summary>
     public const string RumVitalTtfb = "o11y.rum.vital.ttfb";
+    /// <summary>Count of long animation frames on a view. Derived by the gateway from o11y.rum.view.summary. Clients do not export it. Instrument: counter. Unit: <c>{frame}</c>.</summary>
     public const string RumBrowserLongAnimationFrames = "o11y.rum.browser.long_animation_frames";
+    /// <summary>Count of views RUM recorded. Derived by the gateway from o11y.rum.view.summary. Clients do not export it. Instrument: counter. Unit: <c>{view}</c>.</summary>
     public const string RumViews = "o11y.rum.views";
+    /// <summary>Count of errors RUM recorded, by source. Derived by the gateway from o11y.rum.view.summary. Clients do not export it. Instrument: counter. Unit: <c>{error}</c>.</summary>
     public const string RumErrors = "o11y.rum.errors";
+    /// <summary>Count of frustration signals RUM recorded, by type. Derived by the gateway from o11y.rum.view.summary. Clients do not export it. Instrument: counter. Unit: <c>{signal}</c>.</summary>
     public const string RumFrustrations = "o11y.rum.frustrations";
 }

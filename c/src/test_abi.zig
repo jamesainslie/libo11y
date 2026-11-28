@@ -24,6 +24,7 @@ const RecorderHandle = struct {
     opt_arena: std.heap.ArenaAllocator,
     /// Scratch arena for returning NUL-terminated C strings valid until reset/destroy.
     str_arena: std.heap.ArenaAllocator,
+    str_mutex: rt.Mutex = .{},
 };
 
 const SpanView = struct {
@@ -52,6 +53,8 @@ const GrpcReceiverHandle = struct {
 };
 
 fn dupeRecorderZ(rec: *RecorderHandle, s: []const u8) [*:0]const u8 {
+    rec.str_mutex.lock();
+    defer rec.str_mutex.unlock();
     const z = rt.dupeZ(rec.str_arena.allocator(), s) catch return "";
     return z.ptr;
 }
@@ -69,38 +72,73 @@ export fn o11y_test_start(
     out_rec: ?*?*RecorderHandle,
     diag_out: ?*c.Diagnostic,
 ) c.Err {
+    if (diag_out) |d| {
+        d.message[0] = 0;
+        d.len = 0;
+    }
     const out = out_rec orelse {
         abi.writeDiagnosticText(diag_out, "o11ytest: out_rec pointer must not be null");
         return .invalid_argument;
     };
     out.* = null;
 
-    const opts = if (opts_ptr) |p| p.* else c.TestOptions{};
+    const opts = if (opts_ptr) |p| blk: {
+        if (p.struct_size != @sizeOf(c.TestOptions)) {
+            abi.writeDiagnosticText(diag_out, "o11ytest: invalid options struct_size; initialize with o11y_test_options_default()");
+            return .invalid_argument;
+        }
+        break :blk p.*;
+    } else c.TestOptions{};
+
+    out.* = startRecorder(opts, diag_out) catch |err| return abi.mapBuildError(err);
+    return .ok;
+}
+
+/// Converts the C options and starts the recorder. Every failure path
+/// releases what it allocated.
+fn startRecorder(opts: c.TestOptions, diag_out: ?*c.Diagnostic) (o11y.SetupError || abi.OptionError)!*RecorderHandle {
     var opt_arena: std.heap.ArenaAllocator = .init(gpa);
     errdefer opt_arena.deinit();
     const arena = opt_arena.allocator();
 
+    if (opts.resource_attributes_len > 0 and opts.resource_attributes == null) {
+        return abi.invalidOption(diag_out, "resource_attributes pointer must not be null when resource_attributes_len > 0");
+    }
+    if (opts.pii_hash_key_len > 0 and opts.pii_hash_key == null) {
+        return abi.invalidOption(diag_out, "pii_hash_key pointer must not be null when pii_hash_key_len > 0");
+    }
+
     const attr_replacer: ?o11y.AttrReplacer = if (opts.attr_replacer_fn) |f| blk: {
-        const tr = arena.create(abi.AttrReplacerTrampoline) catch return .out_of_memory;
+        const tr = try arena.create(abi.AttrReplacerTrampoline);
         tr.* = .{ .func = f, .userdata = opts.attr_replacer_userdata };
         break :blk .{ .ptr = tr, .replace = abi.AttrReplacerTrampoline.replace };
     } else null;
 
-    const baggage_fn = abi.installBaggageAllow(opts.baggage_egress_allow);
-
-    const extra_envs = abi.buildExtraEnvs(arena, opts.extra_environments, opts.extra_environments_len) catch return .out_of_memory;
-    const res_attrs = abi.convertAttrs(arena, opts.resource_attributes, opts.resource_attributes_len) catch return .out_of_memory;
-    const extra_sinks = abi.buildExtraSinks(arena, opts.extra_log_sinks, opts.extra_log_sinks_len) catch return .out_of_memory;
-    const app_regs = abi.buildAppRegistries(arena, opts.app_registries, opts.app_registries_len) catch return .out_of_memory;
-    const hist_buckets = abi.buildHistogramBuckets(arena, opts.histogram_buckets, opts.histogram_buckets_len) catch return .out_of_memory;
-    const build_info = abi.buildBuildInfo(arena, opts.build_info) catch return .out_of_memory;
-    const pii_key: []const u8 = if (opts.pii_hash_key_len > 0 and opts.pii_hash_key != null)
-        (arena.dupe(u8, opts.pii_hash_key.?[0..opts.pii_hash_key_len]) catch return .out_of_memory)
+    const propagators = try abi.buildPropagators(
+        arena,
+        .hermetic,
+        opts.propagators,
+        opts.propagators_len,
+        opts.baggage_egress_allow,
+        opts.baggage_egress_allow_userdata,
+        diag_out,
+    );
+    const extra_envs = try abi.buildExtraEnvs(arena, opts.extra_environments, opts.extra_environments_len, diag_out);
+    const res_attrs = try abi.convertAttrs(arena, opts.resource_attributes, opts.resource_attributes_len);
+    const extra_sinks = try abi.buildExtraSinks(arena, opts.extra_log_sinks, opts.extra_log_sinks_len, diag_out);
+    const app_regs = try abi.buildAppRegistries(arena, opts.app_registries, opts.app_registries_len, diag_out);
+    const hist_buckets = try abi.buildHistogramBuckets(arena, opts.histogram_buckets, opts.histogram_buckets_len, diag_out);
+    const build_info = try abi.buildBuildInfo(arena, opts.build_info);
+    const pii_key: []const u8 = if (opts.pii_hash_key_len > 0)
+        try arena.dupe(u8, opts.pii_hash_key.?[0..opts.pii_hash_key_len])
     else
         "";
 
+    const io = rt.acquireHermeticIo();
+    errdefer rt.releaseHermeticIo();
+
     var zig_diag: o11y.Diagnostic = .{};
-    const rec = o11ytest.start(gpa, rt.globalIo(), .{
+    const rec = o11ytest.start(gpa, io, .{
         .service_name = rt.cStrOpt(opts.service_name),
         .service_version = rt.cStrOpt(opts.service_version),
         .service_namespace = rt.cStrOpt(opts.service_namespace),
@@ -110,23 +148,19 @@ export fn o11y_test_start(
         .resource_attributes = res_attrs,
         .build_info = build_info,
         .build_info_enabled = opts.build_info.enabled,
-        .log_level = abi.toZigLevel(opts.log_level),
+        .log_level = try abi.checkedLevel(opts.log_level, diag_out),
         .console_enabled = opts.console_enabled,
-        .console_format = switch (opts.console_format) {
-            .json => .json,
-            .text => .text,
-            _ => .json,
-        },
+        .console_format = try abi.toZigConsoleFormat(opts.console_format, diag_out),
         .log_export = opts.log_export,
         .attr_replacer = attr_replacer,
         .extra_log_sinks = extra_sinks,
-        .pii_mode = abi.toZigPiiMode(opts.pii_mode),
+        .pii_mode = try abi.checkedPiiMode(opts.pii_mode, diag_out),
         .pii_hash_key = pii_key,
         .app_registries = app_regs,
-        .sampler = abi.toZigSampler(opts.sampler_kind, opts.sampler_ratio) orelse .always_on,
-        .baggage_egress_allow = baggage_fn,
+        .sampler = (try abi.checkedSampler(opts.sampler_kind, opts.sampler_ratio, diag_out)) orelse .always_on,
+        .propagators = propagators,
         .histogram_buckets = hist_buckets,
-        .exemplar_filter = abi.toZigExemplarFilter(opts.exemplar_filter) orelse .trace_based,
+        .exemplar_filter = (try abi.checkedExemplarFilter(opts.exemplar_filter, diag_out)) orelse .trace_based,
         .runtime_metrics = opts.runtime_metrics,
         .diagnostic = &zig_diag,
         .sdk_language = "c",
@@ -134,12 +168,12 @@ export fn o11y_test_start(
         .emit_process_runtime = false,
     }) catch |err| {
         abi.writeDiagnostic(diag_out, &zig_diag);
-        return abi.mapSetupError(err);
+        return err;
     };
     errdefer rec.deinit();
 
-    const eff_z = rt.dupeZ(arena, rec.telemetry().effectiveConfig()) catch return .out_of_memory;
-    const h = gpa.create(RecorderHandle) catch return .out_of_memory;
+    const eff_z = try rt.dupeZ(arena, rec.telemetry().effectiveConfig());
+    const h = try gpa.create(RecorderHandle);
     h.* = .{
         .rec = rec,
         .sdk_view = .{
@@ -151,17 +185,19 @@ export fn o11y_test_start(
         .opt_arena = opt_arena,
         .str_arena = .init(gpa),
     };
-    out.* = h;
-    return .ok;
+    return h;
 }
 
 export fn o11y_test_destroy(rec: ?*RecorderHandle) void {
     const h = rec orelse return;
+    const callbacks = abi.detachObservableCallbacks(h.rec.telemetry().meterProvider());
     h.rec.deinit();
+    abi.freeObservableCallbacks(callbacks);
     h.sdk_view.arena.deinit();
     h.str_arena.deinit();
     h.opt_arena.deinit();
     gpa.destroy(h);
+    rt.releaseHermeticIo();
 }
 
 export fn o11y_test_sdk(rec: ?*RecorderHandle) ?*abi.SdkHandle {
@@ -172,6 +208,8 @@ export fn o11y_test_sdk(rec: ?*RecorderHandle) ?*abi.SdkHandle {
 export fn o11y_test_reset(rec: ?*RecorderHandle) void {
     const h = rec orelse return;
     h.rec.reset();
+    h.str_mutex.lock();
+    defer h.str_mutex.unlock();
     _ = h.str_arena.reset(.retain_capacity);
 }
 
@@ -180,6 +218,8 @@ export fn o11y_test_reset(rec: ?*RecorderHandle) void {
 // =========================================================================
 
 fn wrapSpan(owner: *RecorderHandle, data: *const o11y.SpanData) ?*const SpanView {
+    owner.str_mutex.lock();
+    defer owner.str_mutex.unlock();
     const v = owner.str_arena.allocator().create(SpanView) catch return null;
     v.* = .{ .data = data, .owner = owner };
     return v;
@@ -187,14 +227,21 @@ fn wrapSpan(owner: *RecorderHandle, data: *const o11y.SpanData) ?*const SpanView
 
 export fn o11y_test_span_count(rec: ?*RecorderHandle) usize {
     const h = rec orelse return 0;
-    return h.rec.spans().len;
+    h.rec.span_recorder.mutex.lockUncancelable(h.rec.io);
+    defer h.rec.span_recorder.mutex.unlock(h.rec.io);
+    return h.rec.span_recorder.spans.items.len;
 }
 
 export fn o11y_test_span_at(rec: ?*RecorderHandle, index: usize) ?*const SpanView {
     const h = rec orelse return null;
-    const list = h.rec.spans();
-    if (index >= list.len) return null;
-    return wrapSpan(h, list[index]);
+    const sp: *const o11y.SpanData = blk: {
+        h.rec.span_recorder.mutex.lockUncancelable(h.rec.io);
+        defer h.rec.span_recorder.mutex.unlock(h.rec.io);
+        const items = h.rec.span_recorder.spans.items;
+        if (index >= items.len) return null;
+        break :blk items[index];
+    };
+    return wrapSpan(h, sp);
 }
 
 export fn o11y_test_find_span(rec: ?*RecorderHandle, name: ?[*:0]const u8) ?*const SpanView {
@@ -234,7 +281,11 @@ export fn o11y_test_span_context(span: ?*const SpanView) c.SpanContext {
 
 export fn o11y_test_span_parent_context(span: ?*const SpanView) c.SpanContext {
     const v = span orelse return .{};
-    return abi.fromZigSpanContext(v.data.parent, null);
+    const ts_z: ?[*:0]const u8 = if (v.data.parent.trace_state.header.len > 0)
+        dupeRecorderZ(v.owner, v.data.parent.trace_state.header)
+    else
+        null;
+    return abi.fromZigSpanContext(v.data.parent, ts_z);
 }
 
 fn findAttr(attrs: []const o11y.Attribute, key: []const u8) ?o11y.AttributeValue {
@@ -364,6 +415,8 @@ export fn o11y_test_span_resource_attr_str(span: ?*const SpanView, key: ?[*:0]co
 // =========================================================================
 
 fn wrapLog(owner: *RecorderHandle, lr: *const o11ytest.LogRecord) ?*const LogView {
+    owner.str_mutex.lock();
+    defer owner.str_mutex.unlock();
     const v = owner.str_arena.allocator().create(LogView) catch return null;
     v.* = .{ .rec = lr, .owner = owner };
     return v;
@@ -371,14 +424,21 @@ fn wrapLog(owner: *RecorderHandle, lr: *const o11ytest.LogRecord) ?*const LogVie
 
 export fn o11y_test_log_count(rec: ?*RecorderHandle) usize {
     const h = rec orelse return 0;
-    return h.rec.logs().len;
+    h.rec.log_capture.mutex.lockUncancelable(h.rec.io);
+    defer h.rec.log_capture.mutex.unlock(h.rec.io);
+    return h.rec.log_capture.records.items.len;
 }
 
 export fn o11y_test_log_at(rec: ?*RecorderHandle, index: usize) ?*const LogView {
     const h = rec orelse return null;
-    const list = h.rec.logs();
-    if (index >= list.len) return null;
-    return wrapLog(h, &list[index]);
+    const lr: *const o11ytest.LogRecord = blk: {
+        h.rec.log_capture.mutex.lockUncancelable(h.rec.io);
+        defer h.rec.log_capture.mutex.unlock(h.rec.io);
+        const items = h.rec.log_capture.records.items;
+        if (index >= items.len) return null;
+        break :blk items[index];
+    };
+    return wrapLog(h, lr);
 }
 
 export fn o11y_test_find_log(rec: ?*RecorderHandle, message: ?[*:0]const u8) ?*const LogView {
@@ -405,7 +465,11 @@ export fn o11y_test_log_level(log: ?*const LogView) c.Level {
 
 export fn o11y_test_log_span_context(log: ?*const LogView) c.SpanContext {
     const v = log orelse return .{};
-    return abi.fromZigSpanContext(v.rec.span_context, null);
+    const ts_z: ?[*:0]const u8 = if (v.rec.span_context.trace_state.header.len > 0)
+        dupeRecorderZ(v.owner, v.rec.span_context.trace_state.header)
+    else
+        null;
+    return abi.fromZigSpanContext(v.rec.span_context, ts_z);
 }
 
 export fn o11y_test_log_has_attr(log: ?*const LogView, key: ?[*:0]const u8) bool {
@@ -459,13 +523,14 @@ export fn o11y_test_log_attr_bool(log: ?*const LogView, key: ?[*:0]const u8, out
 }
 
 export fn o11y_test_console_output(rec: ?*RecorderHandle, out_len: ?*usize) [*:0]const u8 {
-    const h = rec orelse {
-        if (out_len) |l| l.* = 0;
-        return "";
-    };
+    if (out_len) |l| l.* = 0;
+    const h = rec orelse return "";
     const raw = h.rec.consoleOutput();
+    h.str_mutex.lock();
+    defer h.str_mutex.unlock();
+    const z = rt.dupeZ(h.str_arena.allocator(), raw) catch return "";
     if (out_len) |l| l.* = raw.len;
-    return dupeRecorderZ(h, raw);
+    return z.ptr;
 }
 
 export fn o11y_test_otlp_log_count(rec: ?*RecorderHandle) usize {
@@ -483,6 +548,12 @@ export fn o11y_test_has_metric(rec: ?*RecorderHandle, name: ?[*:0]const u8) bool
     return m != null;
 }
 
+fn doubleToI64(d: f64) ?i64 {
+    if (!std.math.isFinite(d)) return null;
+    if (d < -9223372036854775808.0 or d >= 9223372036854775808.0) return null;
+    return @intFromFloat(d);
+}
+
 export fn o11y_test_metric_sum_i64(rec: ?*RecorderHandle, name: ?[*:0]const u8, out: ?*i64) bool {
     const h = rec orelse return false;
     const dst = out orelse return false;
@@ -491,11 +562,11 @@ export fn o11y_test_metric_sum_i64(rec: ?*RecorderHandle, name: ?[*:0]const u8, 
     switch (m.data) {
         .sum => |s| for (s.data_points) |dp| switch (dp.value) {
             .int => |n| total +|= n,
-            .double => |d| total +|= @intFromFloat(d),
+            .double => |d| total +|= doubleToI64(d) orelse return false,
         },
         .gauge => |g| for (g.data_points) |dp| switch (dp.value) {
             .int => |n| total +|= n,
-            .double => |d| total +|= @intFromFloat(d),
+            .double => |d| total +|= doubleToI64(d) orelse return false,
         },
         .histogram => return false,
     }
@@ -586,7 +657,10 @@ export fn o11y_test_exemplar_at(
 
 export fn o11y_test_violations(rec: ?*RecorderHandle, signal: ?[*:0]const u8, rule: ?[*:0]const u8) i64 {
     const h = rec orelse return 0;
-    const sig: ?o11y.spec.Signal = if (rt.cStrOpt(signal)) |s| o11y.spec.Signal.parse(s) else null;
+    const sig: ?o11y.spec.Signal = if (rt.cStrOpt(signal)) |s|
+        (o11y.spec.Signal.parse(s) orelse return 0)
+    else
+        null;
     return h.rec.violations(sig, rt.cStrOpt(rule)) catch 0;
 }
 
@@ -655,6 +729,32 @@ export fn o11y_test_report_destroy(report: ?*ReportHandle) void {
 // In-Process OTLP/HTTP Receiver
 // =========================================================================
 
+const ReceiverError = error{ OutOfMemory, Io, InvalidArgument };
+
+fn mapReceiverError(err: ReceiverError) c.Err {
+    return switch (err) {
+        error.OutOfMemory => .out_of_memory,
+        error.Io => .io,
+        error.InvalidArgument => .invalid_argument,
+    };
+}
+
+fn tlsOptions(comptime T: type, tls: c.TestTlsOptions) error{InvalidArgument}!?T {
+    if (!tls.enabled) return null;
+    const cert = rt.cStrOpt(tls.cert_pem);
+    const key = rt.cStrOpt(tls.key_pem);
+    if ((cert != null) != (key != null)) return error.InvalidArgument;
+    return .{
+        .cert_pem = cert orelse o11ytest.certs.server,
+        .key_pem = key orelse o11ytest.certs.server_key,
+        .client_ca_pem = rt.cStrOpt(tls.client_ca_pem),
+    };
+}
+
+fn millis(ms: u64) Io.Duration {
+    return .fromMilliseconds(@intCast(@min(ms, std.math.maxInt(i64))));
+}
+
 export fn o11y_test_http_receiver_start(
     opts_ptr: ?*const c.TestHttpReceiverOptions,
     out_rx: ?*?*HttpReceiverHandle,
@@ -662,48 +762,49 @@ export fn o11y_test_http_receiver_start(
     const out = out_rx orelse return .invalid_argument;
     out.* = null;
     const opts = if (opts_ptr) |p| p.* else c.TestHttpReceiverOptions{};
+    out.* = startHttpReceiver(opts) catch |err| return mapReceiverError(err);
+    return .ok;
+}
 
+fn startHttpReceiver(opts: c.TestHttpReceiverOptions) ReceiverError!*HttpReceiverHandle {
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    const replies: []o11ytest.HttpReply = if (opts.replies_len > 0 and opts.replies != null) blk: {
-        const arr = arena.alloc(o11ytest.HttpReply, opts.replies_len) catch return .out_of_memory;
-        for (opts.replies.?[0..opts.replies_len], arr) |src, *dst| {
-            dst.* = .{
-                .status = if (src.status == 0) 200 else src.status,
-                .retry_after = rt.cStrOpt(src.retry_after),
-                .body = if (src.body_len > 0 and src.body != null) src.body.?[0..src.body_len] else "",
-                .content_type = rt.cStrOpt(src.content_type) orelse "application/x-protobuf",
-                .delay = .fromMilliseconds(@intCast(@min(src.delay_ms, std.math.maxInt(i64)))),
-                .hang = src.hang,
-                .close_after = src.close_after,
-            };
-        }
-        break :blk arr;
-    } else &.{};
+    if (opts.replies_len > 0 and opts.replies == null) return error.InvalidArgument;
+    const raw: []const c.TestHttpReply = if (opts.replies_len > 0) opts.replies.?[0..opts.replies_len] else &.{};
+    const replies = try arena.alloc(o11ytest.HttpReply, raw.len);
+    for (raw, replies) |src, *dst| {
+        if (src.body_len > 0 and src.body == null) return error.InvalidArgument;
+        dst.* = .{
+            .status = if (src.status == 0) 200 else src.status,
+            .retry_after = rt.cStrOpt(src.retry_after),
+            .body = if (src.body_len > 0) src.body.?[0..src.body_len] else "",
+            .content_type = rt.cStrOpt(src.content_type) orelse "application/x-protobuf",
+            .delay = millis(src.delay_ms),
+            .hang = src.hang,
+            .close_after = src.close_after,
+        };
+    }
 
-    const tls_opts: ?o11ytest.HttpTlsOptions = if (opts.tls.enabled) .{
-        .cert_pem = rt.cStrOpt(opts.tls.cert_pem) orelse o11ytest.certs.server,
-        .key_pem = rt.cStrOpt(opts.tls.key_pem) orelse o11ytest.certs.server_key,
-        .client_ca_pem = rt.cStrOpt(opts.tls.client_ca_pem),
-    } else null;
+    const tls = try tlsOptions(o11ytest.HttpTlsOptions, opts.tls);
+    const io = rt.acquireIo();
+    errdefer rt.releaseIo();
 
-    const rx = o11ytest.HttpReceiver.start(gpa, rt.globalIo(), .{
+    const rx = o11ytest.HttpReceiver.start(gpa, io, .{
         .replies = replies,
-        .tls = tls_opts,
-    }) catch return .io;
+        .tls = tls,
+    }) catch |err| return if (err == error.OutOfMemory) error.OutOfMemory else error.Io;
     errdefer rx.deinit();
 
-    const base_url = rx.baseUrl(gpa) catch return .out_of_memory;
+    const base_url = try rx.baseUrl(gpa);
     defer gpa.free(base_url);
-    const url_z = rt.dupeZ(gpa, base_url) catch return .out_of_memory;
-    errdefer gpa.free(url_z[0 .. url_z.len + 1]);
+    const url_z = try rt.dupeZ(gpa, base_url);
+    errdefer rt.freeZ(gpa, url_z.ptr);
 
-    const h = gpa.create(HttpReceiverHandle) catch return .out_of_memory;
+    const h = try gpa.create(HttpReceiverHandle);
     h.* = .{ .rx = rx, .url_z = url_z.ptr };
-    out.* = h;
-    return .ok;
+    return h;
 }
 
 export fn o11y_test_http_receiver_destroy(rx: ?*HttpReceiverHandle) void {
@@ -711,6 +812,7 @@ export fn o11y_test_http_receiver_destroy(rx: ?*HttpReceiverHandle) void {
     h.rx.deinit();
     rt.freeZ(gpa, h.url_z);
     gpa.destroy(h);
+    rt.releaseIo();
 }
 
 export fn o11y_test_http_receiver_url(rx: ?*const HttpReceiverHandle) [*:0]const u8 {
@@ -769,8 +871,7 @@ export fn o11y_test_http_receiver_decode_errors(rx: ?*HttpReceiverHandle) usize 
 
 export fn o11y_test_http_receiver_wait_requests(rx: ?*HttpReceiverHandle, min_count: usize, timeout_ms: u64) bool {
     const h = rx orelse return false;
-    const dur: Io.Duration = .fromMilliseconds(@intCast(@min(timeout_ms, std.math.maxInt(i64))));
-    h.rx.waitForRequests(min_count, dur) catch return false;
+    h.rx.waitForRequests(min_count, millis(timeout_ms)) catch return false;
     return true;
 }
 
@@ -785,46 +886,46 @@ export fn o11y_test_grpc_receiver_start(
     const out = out_rx orelse return .invalid_argument;
     out.* = null;
     const opts = if (opts_ptr) |p| p.* else c.TestGrpcReceiverOptions{};
+    out.* = startGrpcReceiver(opts) catch |err| return mapReceiverError(err);
+    return .ok;
+}
 
+fn startGrpcReceiver(opts: c.TestGrpcReceiverOptions) ReceiverError!*GrpcReceiverHandle {
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    const replies: []o11ytest.GrpcReply = if (opts.replies_len > 0 and opts.replies != null) blk: {
-        const arr = arena.alloc(o11ytest.GrpcReply, opts.replies_len) catch return .out_of_memory;
-        for (opts.replies.?[0..opts.replies_len], arr) |src, *dst| {
-            dst.* = .{
-                .http_status = if (src.http_status == 0) 200 else src.http_status,
-                .grpc_status = src.grpc_status,
-                .grpc_message = rt.cStrOpt(src.grpc_message),
-                .delay = .fromMilliseconds(@intCast(@min(src.delay_ms, std.math.maxInt(i64)))),
-                .hang = src.hang,
-            };
-        }
-        break :blk arr;
-    } else &.{};
+    if (opts.replies_len > 0 and opts.replies == null) return error.InvalidArgument;
+    const raw: []const c.TestGrpcReply = if (opts.replies_len > 0) opts.replies.?[0..opts.replies_len] else &.{};
+    const replies = try arena.alloc(o11ytest.GrpcReply, raw.len);
+    for (raw, replies) |src, *dst| {
+        dst.* = .{
+            .http_status = if (src.http_status == 0) 200 else src.http_status,
+            .grpc_status = src.grpc_status,
+            .grpc_message = rt.cStrOpt(src.grpc_message),
+            .delay = millis(src.delay_ms),
+            .hang = src.hang,
+        };
+    }
 
-    const tls_opts: ?o11ytest.GrpcTlsOptions = if (opts.tls.enabled) .{
-        .cert_pem = rt.cStrOpt(opts.tls.cert_pem) orelse o11ytest.certs.server,
-        .key_pem = rt.cStrOpt(opts.tls.key_pem) orelse o11ytest.certs.server_key,
-        .client_ca_pem = rt.cStrOpt(opts.tls.client_ca_pem),
-    } else null;
+    const tls = try tlsOptions(o11ytest.GrpcTlsOptions, opts.tls);
+    const io = rt.acquireIo();
+    errdefer rt.releaseIo();
 
-    const rx = o11ytest.GrpcReceiver.start(gpa, rt.globalIo(), .{
+    const rx = o11ytest.GrpcReceiver.start(gpa, io, .{
         .replies = replies,
-        .tls = tls_opts,
-    }) catch return .io;
+        .tls = tls,
+    }) catch |err| return if (err == error.OutOfMemory) error.OutOfMemory else error.Io;
     errdefer rx.deinit();
 
-    const ep = rx.url(gpa) catch return .out_of_memory;
-    defer gpa.free(ep);
-    const ep_z = rt.dupeZ(gpa, ep) catch return .out_of_memory;
-    errdefer gpa.free(ep_z[0 .. ep_z.len + 1]);
+    const endpoint = try rx.url(gpa);
+    defer gpa.free(endpoint);
+    const endpoint_z = try rt.dupeZ(gpa, endpoint);
+    errdefer rt.freeZ(gpa, endpoint_z.ptr);
 
-    const h = gpa.create(GrpcReceiverHandle) catch return .out_of_memory;
-    h.* = .{ .rx = rx, .endpoint_z = ep_z.ptr };
-    out.* = h;
-    return .ok;
+    const h = try gpa.create(GrpcReceiverHandle);
+    h.* = .{ .rx = rx, .endpoint_z = endpoint_z.ptr };
+    return h;
 }
 
 export fn o11y_test_grpc_receiver_destroy(rx: ?*GrpcReceiverHandle) void {
@@ -832,6 +933,7 @@ export fn o11y_test_grpc_receiver_destroy(rx: ?*GrpcReceiverHandle) void {
     h.rx.deinit();
     rt.freeZ(gpa, h.endpoint_z);
     gpa.destroy(h);
+    rt.releaseIo();
 }
 
 export fn o11y_test_grpc_receiver_endpoint(rx: ?*const GrpcReceiverHandle) [*:0]const u8 {
@@ -866,8 +968,7 @@ export fn o11y_test_grpc_receiver_decode_errors(rx: ?*GrpcReceiverHandle) usize 
 
 export fn o11y_test_grpc_receiver_wait_requests(rx: ?*GrpcReceiverHandle, min_count: usize, timeout_ms: u64) bool {
     const h = rx orelse return false;
-    const dur: Io.Duration = .fromMilliseconds(@intCast(@min(timeout_ms, std.math.maxInt(i64))));
-    h.rx.waitForRequests(min_count, dur) catch return false;
+    h.rx.waitForRequests(min_count, millis(timeout_ms)) catch return false;
     return true;
 }
 

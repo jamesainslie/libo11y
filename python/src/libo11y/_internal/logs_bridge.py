@@ -53,7 +53,13 @@ def severity_for_level(levelno: int) -> tuple[SeverityNumber, str]:
 
 
 class PolicyLogRecordProcessor(LogRecordProcessor):
-    """Wraps a LogRecordProcessor to classify log record attributes via SensitivityPolicy."""
+    """Wraps a LogRecordProcessor to classify log record attributes via SensitivityPolicy.
+
+    A record emitted directly to an OpenTelemetry logger is classified and
+    its violations counted here, once. A record from the libo11y logging
+    handler arrives through emit_otel_log already classified and counted, and
+    passes through untouched.
+    """
 
     def __init__(self, inner: LogRecordProcessor, policy: SensitivityPolicy) -> None:
         self._inner = inner
@@ -146,18 +152,24 @@ def emit_otel_log(
     provider: LoggerProvider,
     *,
     timestamp_ns: int,
+    observed_timestamp_ns: int,
     levelno: int,
     body: str,
     attributes: Mapping[str, Any],
     span_context: SpanContext | None,
     logger_name: str,
 ) -> None:
-    """Emit a classified log record into LoggerProvider without double-counting."""
+    """Emit a classified log record into LoggerProvider without double-counting.
+
+    timestamp_ns is when the event happened and observed_timestamp_ns is when
+    the pipeline captured it. The record is marked as classified so
+    PolicyLogRecordProcessor does not classify or count it a second time.
+    """
     sev_num, sev_text = severity_for_level(levelno)
     otel_logger = provider.get_logger(logger_name or "libo11y")
     kwargs: dict[str, Any] = {
         "timestamp": timestamp_ns,
-        "observed_timestamp": timestamp_ns,
+        "observed_timestamp": observed_timestamp_ns,
         "severity_number": sev_num,
         "severity_text": sev_text,
         "body": body,

@@ -52,6 +52,43 @@
 # SHA256SUMS, and publishes the GitHub Release titled `libo11y-c vX.Y.Z`
 # (never marked Latest).
 #
+# A dotnet/vX.Y.Z tag validates dotnet/Directory.Build.props,
+# dotnet/CHANGELOG.md, `make dotnet-check`, and
+# `scripts/dotnet-release-check.sh`, which packs every Libo11y.* package and
+# restores an external consumer from them. It pushes the packages to
+# nuget.org through NuGet trusted publishing when the NUGET_USER repository
+# variable names the nuget.org profile that owns the policy, runs a live
+# consumer smoke test against nuget.org, and publishes the GitHub Release
+# titled `libo11y-dotnet vX.Y.Z` (never marked Latest) with every package,
+# symbol package and SHA256SUMS attached. While NUGET_USER is unset it
+# pushes nothing to nuget.org and the release notes say how to install from
+# the attached packages.
+#
+# A ruby/vX.Y.Z tag validates ruby/lib/libo11y/version.rb, ruby/CHANGELOG.md,
+# `make ruby-check`, and the built gem as an external consumer
+# (scripts/ruby-release-check.sh). It pushes the gem to RubyGems.org through
+# trusted publishing, so no RubyGems API key is stored. Trusted publishing
+# pushes to a gem RubyGems.org already has. While the gem is new there, the
+# release completes without the push unless the RUBYGEMS_OWNER_ID repository
+# variable names the account whose pending trusted publisher creates it
+# (scripts/ruby-gem-plan.sh). After a push, a smoke job installs the version
+# from RubyGems.org. The GitHub Release is titled `libo11y-ruby vX.Y.Z` (never
+# marked Latest) and attaches the gem and SHA256SUMS either way.
+#
+# A java/vX.Y.Z tag validates every java/ POM and java/CHANGELOG.md, runs
+# `make java-check`, builds the jars with sources and javadoc into a Maven
+# repository layout and runs a throwaway consumer against it
+# (scripts/java-release-check.sh). It signs every file, publishes them to
+# Maven Central through the Central Publisher Portal
+# (scripts/java-central-publish.sh), and then publishes the GitHub Release
+# titled `libo11y-java vX.Y.Z` (never marked Latest) with the six jars, the
+# signed repository layout as libo11y-java-vX.Y.Z-maven-repository.tar.gz
+# and SHA256SUMS. It needs the repository secrets MAVEN_CENTRAL_USERNAME,
+# MAVEN_CENTRAL_PASSWORD and MAVEN_GPG_PRIVATE_KEY (with
+# MAVEN_GPG_PASSPHRASE). A fork without them releases on GitHub alone, with a
+# warning. Rerunning is safe: a version Maven Central already serves is
+# skipped.
+#
 # An ops/vX.Y.Z tag validates the ops pack (generator drift, the gateway name
 # catalog, query lint, promtool checks and unit tests, kustomize), runs
 # scripts/ops-release-check.sh, and publishes the GitHub Release titled
@@ -60,7 +97,7 @@
 # matches what the check validated.
 #
 # scripts/release-tag.sh routes the tag. The verify job's kind output (go,
-# ts, zig, python, rust, c or ops) selects the jobs and steps that run.
+# ts, zig, python, rust, c, dotnet, ruby, java or ops) selects the jobs and steps that run.
 name: release
 
 on:
@@ -76,6 +113,9 @@ on:
       - "python/v*"
       - "rust/v*"
       - "c/v*"
+      - "dotnet/v*"
+      - "ruby/v*"
+      - "java/v*"
       - "ops/v*"
 
 permissions:
@@ -115,7 +155,7 @@ jobs:
         run: |
           # The script explains a refused tag on stderr.
           if ! scripts/release-tag.sh "$TAG" >"$RUNNER_TEMP/release-tag.out"; then
-            echo "::error::$TAG is not a release tag with a semantic version (go/vX.Y.Z, go/<submodule>/vX.Y.Z, go/o11yrum/vX.Y.Z, ts/vX.Y.Z, zig/vX.Y.Z, python/vX.Y.Z, rust/vX.Y.Z, c/vX.Y.Z or ops/vX.Y.Z)"
+            echo "::error::$TAG is not a release tag with a semantic version (go/vX.Y.Z, go/<submodule>/vX.Y.Z, go/o11yrum/vX.Y.Z, ts/vX.Y.Z, zig/vX.Y.Z, python/vX.Y.Z, rust/vX.Y.Z, c/vX.Y.Z, dotnet/vX.Y.Z, ruby/vX.Y.Z, java/vX.Y.Z or ops/vX.Y.Z)"
             exit 1
           fi
           cat "$RUNNER_TEMP/release-tag.out" >>"$GITHUB_OUTPUT"
@@ -368,6 +408,75 @@ jobs:
           VERSION: ${{ steps.tag.outputs.version }}
           ZIG_BUILD_J: "4"
         run: scripts/c-release-check.sh "v$VERSION"
+
+      # The .NET branch. dotnet/Directory.Build.props must carry the tag's
+      # version and dotnet/CHANGELOG.md must hold its release notes.
+      - name: Require dotnet/Directory.Build.props at the tag's version
+        if: steps.tag.outputs.kind == 'dotnet'
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          got="$(sed -nE 's|.*<Version>([^<]+)</Version>.*|\1|p' dotnet/Directory.Build.props | head -n 1)"
+          if [[ "$got" != "$VERSION" ]]; then
+            echo "::error::dotnet/Directory.Build.props is at version ${got:-unset}, not $VERSION"
+            exit 1
+          fi
+      - name: Check the .NET changelog has release notes
+        if: steps.tag.outputs.kind == 'dotnet'
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: scripts/release-notes.sh "$VERSION" dotnet/CHANGELOG.md
+      - uses: actions/setup-dotnet@v4
+        if: steps.tag.outputs.kind == 'dotnet'
+        with:
+          dotnet-version: "10.0.x"
+      - if: steps.tag.outputs.kind == 'dotnet'
+        run: make dotnet-check DOTNET_MAXCPU=4
+      - name: Validate the packed .NET packages and an external consumer
+        if: steps.tag.outputs.kind == 'dotnet'
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+          DOTNET_MAXCPU: "4"
+        run: scripts/dotnet-release-check.sh "v$VERSION"
+
+      # The Ruby branch. scripts/ruby-release-check.sh requires
+      # ruby/lib/libo11y/version.rb at the tag's version and release notes
+      # in ruby/CHANGELOG.md before it builds the gem.
+      - uses: ruby/setup-ruby@v1
+        if: steps.tag.outputs.kind == 'ruby'
+        with:
+          ruby-version: "3.4"
+          bundler-cache: true
+          working-directory: ruby
+      - if: steps.tag.outputs.kind == 'ruby'
+        run: make ruby-check
+      - name: Build and validate the gem as an external consumer
+        if: steps.tag.outputs.kind == 'ruby'
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: scripts/ruby-release-check.sh "v$VERSION"
+
+      # The Java branch. The release check requires every POM at the tag's
+      # version and a java/CHANGELOG.md section before it builds anything.
+      - name: Check the Java changelog has release notes
+        if: steps.tag.outputs.kind == 'java'
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: scripts/release-notes.sh "$VERSION" java/CHANGELOG.md
+      - uses: actions/setup-java@v4
+        if: steps.tag.outputs.kind == 'java'
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+          cache-dependency-path: java/**/pom.xml
+      - if: steps.tag.outputs.kind == 'java'
+        run: make java-check java-central-publish-test
+      - name: Build the Java artifacts and run a consumer against them
+        if: steps.tag.outputs.kind == 'java'
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: scripts/java-release-check.sh "v$VERSION"
 
       # The ops branch: the pack's own checks, then the release check, which
       # requires version.go, a dated ops/CHANGELOG.md section, generated
@@ -1276,6 +1385,481 @@ jobs:
             gh release upload "$TAG" "$dist/libo11y-c-v$VERSION-linux-x86_64.tar.gz" "$dist/SHA256SUMS" --clobber
           else
             gh release create "$TAG" "$dist/libo11y-c-v$VERSION-linux-x86_64.tar.gz" "$dist/SHA256SUMS" --title "$title" --notes-file "$notes" --verify-tag --prerelease="$PRERELEASE" --latest=false
+          fi
+
+  # Packs the Libo11y.* packages, checks them, and pushes them to nuget.org
+  # through NuGet trusted publishing: the job's OIDC identity is exchanged
+  # for an API key that lives one hour, and no NuGet key is stored. The
+  # NUGET_USER repository variable names the nuget.org profile that owns the
+  # trusted publishing policy for release.yml. While the variable is unset
+  # the job pushes nothing and says so, and the GitHub Release still carries
+  # the packages. Rerunning is safe: a version nuget.org already has is
+  # skipped.
+  publish-nuget:
+    needs: verify
+    if: needs.verify.outputs.kind == 'dotnet'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      # OIDC identity authenticates to nuget.org through trusted publishing.
+      id-token: write
+    outputs:
+      published: ${{ steps.plan.outputs.published }}
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+      NUGET_USER: ${{ vars.NUGET_USER }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - name: Pack the packages and check them with an external consumer
+        env:
+          DOTNET_MAXCPU: "4"
+        run: scripts/dotnet-release-check.sh "v$VERSION" --out "$RUNNER_TEMP/dotnet-dist"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dotnet-packages
+          path: ${{ runner.temp }}/dotnet-dist
+          if-no-files-found: error
+      - name: Decide whether to publish to nuget.org
+        id: plan
+        run: |
+          if [[ -n "$NUGET_USER" ]]; then
+            echo "published=true" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "published=false" >>"$GITHUB_OUTPUT"
+          echo "::warning::The NUGET_USER repository variable is unset, so nothing was pushed to nuget.org. The GitHub Release carries the packages."
+          {
+            echo "### Not published to nuget.org"
+            echo
+            echo "The \`NUGET_USER\` repository variable is unset. Create a trusted publishing policy on nuget.org for \`release.yml\` in \`$GITHUB_REPOSITORY\`, set \`NUGET_USER\` to the nuget.org profile name that owns it, and rerun this workflow."
+          } >>"$GITHUB_STEP_SUMMARY"
+      - name: Exchange the OIDC identity for a short-lived NuGet API key
+        if: steps.plan.outputs.published == 'true'
+        id: login
+        uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
+        with:
+          user: ${{ vars.NUGET_USER }}
+      - name: Push the packages to nuget.org in dependency order
+        if: steps.plan.outputs.published == 'true'
+        env:
+          NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
+        run: |
+          dist="$RUNNER_TEMP/dotnet-dist"
+          # Each push also sends the .snupkg beside the package to the
+          # symbol server.
+          for id in Libo11y.Spec Libo11y Libo11y.AspNetCore Libo11y.Db Libo11y.Testing Libo11y.Cli; do
+            dotnet nuget push "$dist/$id.$VERSION.nupkg" --api-key "$NUGET_API_KEY" \
+              --source https://api.nuget.org/v3/index.json --skip-duplicate
+          done
+
+  nuget-smoke:
+    needs: [verify, publish-nuget]
+    if: needs.verify.outputs.kind == 'dotnet' && needs.publish-nuget.outputs.published == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - name: Wait for nuget.org to serve every package at the released version
+        run: |
+          # nuget.org validates and indexes a pushed package before serving it.
+          for id in libo11y.spec libo11y libo11y.aspnetcore libo11y.db libo11y.testing libo11y.cli; do
+            url="https://api.nuget.org/v3-flatcontainer/$id/$VERSION/$id.nuspec"
+            served=false
+            for attempt in $(seq 1 60); do
+              if curl -fsS -o /dev/null "$url" 2>/dev/null; then
+                served=true
+                break
+              fi
+              echo "attempt $attempt: nuget.org does not serve $id $VERSION yet" >&2
+              sleep 30
+            done
+            if [[ "$served" != true ]]; then
+              echo "::error::nuget.org did not serve $id $VERSION"
+              exit 1
+            fi
+          done
+      - name: Restore from nuget.org into a fresh consumer and run the smoke test
+        env:
+          DOTNET_MAXCPU: "4"
+        run: scripts/dotnet-release-check.sh "v$VERSION" --from-nuget
+
+  # Runs after the smoke test when the packages went to nuget.org, and
+  # straight after packing when they did not.
+  release-dotnet:
+    needs: [verify, publish-nuget, nuget-smoke]
+    if: ${{ !cancelled() && needs.verify.outputs.kind == 'dotnet' && needs.publish-nuget.result == 'success' && (needs.nuget-smoke.result == 'success' || needs.nuget-smoke.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: dotnet-packages
+          path: ${{ runner.temp }}/dotnet-dist
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.verify.outputs.version }}
+          PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+          PUBLISHED: ${{ needs.publish-nuget.outputs.published }}
+        run: |
+          dist="$RUNNER_TEMP/dotnet-dist"
+          shopt -s nullglob
+          assets=("$dist"/*.nupkg "$dist"/*.snupkg)
+          if ((${#assets[@]} != 12)) || [[ ! -f "$dist/SHA256SUMS" ]]; then
+            echo "::error::the dotnet-packages artifact does not hold six packages, six symbol packages and SHA256SUMS"
+            exit 1
+          fi
+          assets+=("$dist/SHA256SUMS")
+          notes="$RUNNER_TEMP/release-notes.md"
+          scripts/release-notes.sh "$VERSION" dotnet/CHANGELOG.md >"$notes"
+          if [[ "$PUBLISHED" != "true" ]]; then
+            {
+              echo
+              echo "These packages are not on nuget.org yet. Until they are, download the \`.nupkg\` files attached to this release into one directory and add it as a package source:"
+              echo
+              echo '```sh'
+              echo "dotnet nuget add source /path/to/that/directory --name libo11y"
+              echo "dotnet add package Libo11y --version $VERSION"
+              echo '```'
+            } >>"$notes"
+          fi
+          title="libo11y-dotnet v$VERSION"
+          # The Go main module's release stays the repository's Latest release.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "$TAG already has a release; replacing its title, notes and assets"
+            gh release edit "$TAG" --title "$title" --notes-file "$notes" --prerelease="$PRERELEASE" --latest=false
+            gh release upload "$TAG" "${assets[@]}" --clobber
+          else
+            gh release create "$TAG" "${assets[@]}" --title "$title" --notes-file "$notes" --verify-tag --prerelease="$PRERELEASE" --latest=false
+          fi
+
+  # Builds the gem the release ships, validates it once more as an external
+  # consumer, and pushes it to RubyGems.org when the plan says so. The gem
+  # and its checksum go to the GitHub Release whether or not it pushes.
+  publish-rubygems:
+    needs: verify
+    if: needs.verify.outputs.kind == 'ruby'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      # The workflow's OIDC identity authenticates to RubyGems.org through
+      # trusted publishing. No RubyGems API key is stored.
+      id-token: write
+    outputs:
+      # The version as RubyGems prints it: 0.2.0-rc.1 is 0.2.0.pre.rc.1.
+      gem_version: ${{ steps.plan.outputs.gem_version }}
+      # true when RubyGems.org serves this version once the job is done.
+      on_rubygems: ${{ steps.plan.outputs.on_rubygems }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # No bundle: the gem builds from the gemspec, and the consumer check
+      # installs it with its dependencies from RubyGems.org.
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4"
+      - name: Build and validate the gem
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: scripts/ruby-release-check.sh "v$VERSION" --out "$RUNNER_TEMP/gem"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ruby-gem
+          path: |
+            ${{ runner.temp }}/gem/*.gem
+            ${{ runner.temp }}/gem/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 30
+      # Trusted publishing pushes to a gem RubyGems.org already has. A gem
+      # new to RubyGems.org pushes only through a pending trusted publisher,
+      # which needs the owning account's ID in RUBYGEMS_OWNER_ID.
+      - name: Plan what publishes to RubyGems.org
+        id: plan
+        env:
+          OWNER_ID: ${{ vars.RUBYGEMS_OWNER_ID }}
+        run: |
+          shopt -s nullglob
+          gems=("$RUNNER_TEMP"/gem/libo11y-*.gem)
+          if ((${#gems[@]} != 1)); then
+            echo "::error::expected one built gem, found ${#gems[@]}"
+            exit 1
+          fi
+          gem_version="$(basename "${gems[0]}" .gem)"
+          gem_version="${gem_version#libo11y-}"
+          action="$(scripts/ruby-gem-plan.sh libo11y "$gem_version")"
+          push=false
+          on_rubygems=false
+          case "$action" in
+            publish)
+              push=true
+              on_rubygems=true
+              summary="push to RubyGems.org"
+              ;;
+            present)
+              on_rubygems=true
+              summary="already on RubyGems.org"
+              ;;
+            new)
+              if [[ -n "$OWNER_ID" ]]; then
+                push=true
+                on_rubygems=true
+                summary="first push to RubyGems.org, through the pending trusted publisher of account $OWNER_ID"
+              else
+                summary="not on RubyGems.org yet: the gem is on the GitHub Release only"
+                echo "::warning::libo11y is not on RubyGems.org yet, so this release attaches the gem to the GitHub Release and does not push it. Push its first version by hand, or configure a pending trusted publisher and set the RUBYGEMS_OWNER_ID repository variable (docs/CONVENTIONS.md)."
+              fi
+              ;;
+            *)
+              echo "::error::ruby-gem-plan.sh printed \"$action\""
+              exit 1
+              ;;
+          esac
+          {
+            echo "gem_file=${gems[0]}"
+            echo "gem_version=$gem_version"
+            echo "action=$action"
+            echo "push=$push"
+            echo "on_rubygems=$on_rubygems"
+          } >>"$GITHUB_OUTPUT"
+          {
+            echo "### RubyGems.org publish plan"
+            echo
+            echo "\`libo11y\` $gem_version: $summary"
+          } >>"$GITHUB_STEP_SUMMARY"
+      # Exports GEM_HOST_API_KEY, a short-lived key scoped to this gem.
+      - name: Exchange the workflow's OIDC identity for a RubyGems.org key
+        if: steps.plan.outputs.push == 'true'
+        uses: rubygems/configure-rubygems-credentials@c6ca7f4bac0e29c9bde8eeae0a0a986b27efa05f # v2.2.0
+        with:
+          owner: ${{ steps.plan.outputs.action == 'new' && vars.RUBYGEMS_OWNER_ID || '' }}
+      - name: Push the gem to RubyGems.org
+        if: steps.plan.outputs.push == 'true'
+        env:
+          GEM_FILE: ${{ steps.plan.outputs.gem_file }}
+        run: gem push --norc "$GEM_FILE"
+
+  rubygems-smoke:
+    needs: [verify, publish-rubygems]
+    if: needs.publish-rubygems.outputs.on_rubygems == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+      GEM_VERSION: ${{ needs.publish-rubygems.outputs.gem_version }}
+    steps:
+      # Only scripts/ checked out: the gem comes from RubyGems.org.
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4"
+      - name: Wait for RubyGems.org to serve libo11y at the released version
+        run: |
+          for attempt in $(seq 1 20); do
+            if [[ "$(scripts/ruby-gem-plan.sh libo11y "$GEM_VERSION" || true)" == "present" ]]; then
+              exit 0
+            fi
+            echo "attempt $attempt: RubyGems.org does not serve libo11y $GEM_VERSION yet" >&2
+            sleep 30
+          done
+          echo "::error::RubyGems.org did not serve libo11y $GEM_VERSION"
+          exit 1
+      # The install index can trail the versions API by a few seconds.
+      - name: Install from RubyGems.org into a fresh gem home and run the consumer smoke test
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if scripts/ruby-release-check.sh "v$VERSION" --from-rubygems; then
+              exit 0
+            fi
+            echo "attempt $attempt: libo11y $GEM_VERSION did not install and run from RubyGems.org" >&2
+            sleep 30
+          done
+          echo "::error::libo11y $GEM_VERSION did not install and run from RubyGems.org"
+          exit 1
+
+  # The GitHub Release waits for the smoke job when the gem was pushed, so
+  # it exists only once the gem installs from RubyGems.org. Without a push
+  # the smoke job is skipped and the release carries the gem alone.
+  release-ruby:
+    needs: [verify, publish-rubygems, rubygems-smoke]
+    if: ${{ !cancelled() && needs.publish-rubygems.result == 'success' && (needs.rubygems-smoke.result == 'success' || needs.rubygems-smoke.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: ruby-gem
+          path: ${{ runner.temp }}/gem
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.verify.outputs.version }}
+          GEM_VERSION: ${{ needs.publish-rubygems.outputs.gem_version }}
+          ON_RUBYGEMS: ${{ needs.publish-rubygems.outputs.on_rubygems }}
+          PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+        run: |
+          dist="$RUNNER_TEMP/gem"
+          gem_file="$dist/libo11y-$GEM_VERSION.gem"
+          if [[ ! -f "$gem_file" || ! -f "$dist/SHA256SUMS" ]]; then
+            echo "::error::the ruby-gem artifact lacks libo11y-$GEM_VERSION.gem or SHA256SUMS"
+            exit 1
+          fi
+          notes="$RUNNER_TEMP/release-notes.md"
+          scripts/release-notes.sh "$VERSION" ruby/CHANGELOG.md >"$notes"
+          # While the gem is not on RubyGems.org, the notes say how to
+          # install it from this release or from the tag.
+          if [[ "$ON_RUBYGEMS" != "true" ]]; then
+            {
+              echo
+              echo "\`libo11y\` $GEM_VERSION is not on RubyGems.org yet. Install it from the tag with Bundler:"
+              echo
+              echo '```ruby'
+              echo "gem \"libo11y\", git: \"https://github.com/$GH_REPO\", tag: \"$TAG\", glob: \"ruby/*.gemspec\""
+              echo '```'
+              echo
+              echo "Or download \`libo11y-$GEM_VERSION.gem\` from this release and run \`gem install ./libo11y-$GEM_VERSION.gem\`."
+            } >>"$notes"
+          fi
+          title="libo11y-ruby v$VERSION"
+          # The Go main module's release stays the repository's Latest release.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "$TAG already has a release; replacing its title, notes, and assets"
+            gh release edit "$TAG" --title "$title" --notes-file "$notes" --prerelease="$PRERELEASE" --latest=false
+            gh release upload "$TAG" "$gem_file" "$dist/SHA256SUMS" --clobber
+          else
+            gh release create "$TAG" "$gem_file" "$dist/SHA256SUMS" --title "$title" --notes-file "$notes" --verify-tag --prerelease="$PRERELEASE" --latest=false
+          fi
+
+  # A java/vX.Y.Z tag builds the artifacts once. The same files go to Maven
+  # Central, when the repository holds the credentials for it, and onto the
+  # GitHub Release.
+  java-release:
+    needs: verify
+    if: needs.verify.outputs.kind == 'java'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+          cache-dependency-path: java/**/pom.xml
+      # Maven Central takes only signed files from a verified namespace, so
+      # publishing there needs a Central Portal user token and a signing key
+      # as repository secrets. Without them the release still completes, from
+      # the GitHub Release alone. A partial set is a mistake, not a choice.
+      - name: Decide whether to publish to Maven Central
+        id: central
+        env:
+          MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          MAVEN_CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          MAVEN_GPG_PRIVATE_KEY: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
+        run: |
+          missing=()
+          for name in MAVEN_CENTRAL_USERNAME MAVEN_CENTRAL_PASSWORD MAVEN_GPG_PRIVATE_KEY; do
+            if [[ -z "${!name}" ]]; then
+              missing+=("$name")
+            fi
+          done
+          if [[ "${#missing[@]}" -eq 0 ]]; then
+            echo "configured=true" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "${#missing[@]}" -lt 3 ]]; then
+            echo "::error::Maven Central publishing is half configured; these repository secrets are not set: ${missing[*]}"
+            exit 1
+          fi
+          echo "configured=false" >>"$GITHUB_OUTPUT"
+          echo "::warning::Maven Central publishing is not configured, so $VERSION is released on GitHub only"
+          {
+            echo "### Not published to Maven Central"
+            echo
+            echo "The repository secrets MAVEN_CENTRAL_USERNAME, MAVEN_CENTRAL_PASSWORD and MAVEN_GPG_PRIVATE_KEY are not set."
+            echo "The artifacts are attached to the GitHub Release. Rerun this workflow once the secrets exist to publish $VERSION."
+          } >>"$GITHUB_STEP_SUMMARY"
+      - name: Build the release assets
+        env:
+          CENTRAL: ${{ steps.central.outputs.configured }}
+          MAVEN_GPG_PRIVATE_KEY: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+        run: |
+          args=(--dist "$RUNNER_TEMP/java-dist")
+          if [[ "$CENTRAL" == "true" ]]; then
+            args+=(--central-bundle "$RUNNER_TEMP/java-central-bundle.zip")
+          fi
+          scripts/java-release-check.sh "v$VERSION" "${args[@]}"
+      - name: Publish to Maven Central
+        if: steps.central.outputs.configured == 'true'
+        env:
+          MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          MAVEN_CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+        run: scripts/java-central-publish.sh "v$VERSION" "$RUNNER_TEMP/java-central-bundle.zip"
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+          CENTRAL: ${{ steps.central.outputs.configured }}
+        run: |
+          notes="$RUNNER_TEMP/release-notes.md"
+          dist="$RUNNER_TEMP/java-dist"
+          scripts/release-notes.sh "$VERSION" java/CHANGELOG.md >"$notes"
+          if [[ "$CENTRAL" != "true" ]]; then
+            {
+              echo
+              echo "Maven Central does not have this version. Install it from \`libo11y-java-v$VERSION-maven-repository.tar.gz\`, attached to this release, as [java/README.md](https://github.com/$GH_REPO/blob/$TAG/java/README.md#installing-from-a-github-release) describes."
+            } >>"$notes"
+          fi
+          title="libo11y-java v$VERSION"
+          assets=("$dist"/*)
+          # The Go main module's release stays the repository's Latest release.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "$TAG already has a release; replacing its title, notes, and assets"
+            gh release edit "$TAG" --title "$title" --notes-file "$notes" --prerelease="$PRERELEASE" --latest=false
+            gh release upload "$TAG" "${assets[@]}" --clobber
+          else
+            gh release create "$TAG" "${assets[@]}" --title "$title" --notes-file "$notes" --verify-tag --prerelease="$PRERELEASE" --latest=false
           fi
 
   ops-release:

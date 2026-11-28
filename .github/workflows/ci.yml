@@ -74,7 +74,7 @@ jobs:
           go-version: "1.26.x"
           check-latest: true
           cache-dependency-path: go/go.sum
-      - run: make spec-check spec-drift schema-published-test release-notes-test release-tag-test
+      - run: make spec-check spec-drift schema-published-test release-notes-test release-tag-test ruby-gem-plan-test
 
   # The ops pack: generator drift, the metric catalog from the gateway built
   # from this checkout, query lint, promtool checks and unit tests of the
@@ -469,7 +469,7 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "10.0.x"
-      - run: make dotnet-check
+      - run: make dotnet-check DOTNET_MAXCPU=4
 
   # The Java Maven reactor on Linux and macOS (JDK 21, Spring Boot 4.2, Micrometer).
   java:
@@ -488,7 +488,8 @@ jobs:
           distribution: temurin
           java-version: "21"
           cache: maven
-      - run: make java-check
+          cache-dependency-path: java/**/pom.xml
+      - run: make java-check java-central-publish-test
 
   vuln:
     runs-on: ubuntu-latest
@@ -554,4 +555,19 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, 2026-10-16
         with:
           toolchain: "1.95.0"
+      # The .NET half packs the Libo11y.* packages and restores a consumer from them.
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      # The Ruby half builds the gem and installs it into a throwaway gem home.
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4"
+      # The Java half builds the release artifacts and runs a consumer against them.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+          cache-dependency-path: java/**/pom.xml
       - run: make release-check ZIG_BUILD_J=4

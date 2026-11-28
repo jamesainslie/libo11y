@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"testing/slogtest"
@@ -329,5 +330,157 @@ func TestLegErrorsJoined(t *testing.T) {
 	// The healthy leg must still have received the record.
 	if got := len(parseJSONLines(t, &buf)); got != 1 {
 		t.Errorf("healthy leg got %d records, want 1", got)
+	}
+}
+
+// A reserved attribute is written once, first, at the top level. Nothing
+// else can put its key there, and the replacer never sees it. An attribute
+// with the same key inside a named group is a different key and stays.
+func TestReservedAttributeIsWrittenOnce(t *testing.T) {
+	t.Parallel()
+	rename := func(_ []string, a slog.Attr) slog.Attr {
+		if a.Key == "alias" {
+			a.Key = "event.name"
+		}
+		return a
+	}
+	cases := map[string]func(*slog.Logger, context.Context){
+		"record attribute": func(l *slog.Logger, ctx context.Context) {
+			l.InfoContext(ctx, "m", "event.name", "forged")
+		},
+		"bound attribute": func(l *slog.Logger, ctx context.Context) {
+			l.With("event.name", "forged").InfoContext(ctx, "m")
+		},
+		"inline group": func(l *slog.Logger, ctx context.Context) {
+			l.InfoContext(ctx, "m", slog.Group("", slog.String("event.name", "forged")))
+		},
+		"renamed by the replacer": func(l *slog.Logger, ctx context.Context) {
+			l.InfoContext(ctx, "m", "alias", "forged")
+		},
+		"bound and renamed": func(l *slog.Logger, ctx context.Context) {
+			l.With("alias", "forged").InfoContext(ctx, "m")
+		},
+		"group opened under the key": func(l *slog.Logger, ctx context.Context) {
+			l.WithGroup("event.name").InfoContext(ctx, "m", "member", "forged")
+		},
+		"group attribute under the key": func(l *slog.Logger, ctx context.Context) {
+			l.InfoContext(ctx, "m", slog.Group("event.name", slog.String("member", "forged")))
+		},
+	}
+	for name, emit := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			var buf bytes.Buffer
+			var seen []string
+			handler := fanout.New(fanout.Config{
+				Legs: []slog.Handler{slog.NewJSONHandler(&buf, nil)},
+				Replace: func(groups []string, a slog.Attr) slog.Attr {
+					seen = append(seen, a.Value.String())
+					return rename(groups, a)
+				},
+			})
+			emit(slog.New(handler), fanout.WithReserved(context.Background(), slog.String("event.name", "genuine")))
+			line := buf.String()
+			if strings.Contains(line, "forged") || strings.Count(line, `"event.name"`) != 1 {
+				t.Errorf("want one event.name and nothing forged: %s", line)
+			}
+			if !strings.Contains(line, `"msg":"m","event.name":"genuine"`) {
+				t.Errorf("reserved attribute is not the first attribute: %s", line)
+			}
+			if slices.Contains(seen, "genuine") {
+				t.Errorf("replacer saw the reserved attribute: %v", seen)
+			}
+		})
+	}
+}
+
+// The reserved key is top-level only: inside a named group the same key is
+// an ordinary attribute.
+func TestReservedKeyInsideAGroupIsKept(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	handler := fanout.New(fanout.Config{Legs: []slog.Handler{slog.NewJSONHandler(&buf, nil)}})
+	ctx := fanout.WithReserved(context.Background(), slog.String("event.name", "genuine"))
+	slog.New(handler).InfoContext(ctx, "m", slog.Group("nested", slog.String("event.name", "grouped")))
+	records := parseJSONLines(t, &buf)
+	if len(records) != 1 || records[0]["event.name"] != "genuine" {
+		t.Fatalf("records = %v, want one with event.name genuine", records)
+	}
+	if nested, _ := records[0]["nested"].(map[string]any); nested["event.name"] != "grouped" {
+		t.Errorf("nested = %v, want its own event.name kept", records[0]["nested"])
+	}
+}
+
+// The force and reserved marks share one context value, so setting one
+// keeps the other, in either order.
+func TestForceAndReservedMarksCompose(t *testing.T) {
+	t.Parallel()
+	reserved := slog.String("event.name", "genuine")
+	orders := map[string]context.Context{
+		"force then reserve": fanout.WithReserved(fanout.WithForce(context.Background()), reserved),
+		"reserve then force": fanout.WithForce(fanout.WithReserved(context.Background(), reserved)),
+	}
+	for name, ctx := range orders {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			var buf bytes.Buffer
+			handler := fanout.New(fanout.Config{
+				Legs:  []slog.Handler{slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError})},
+				Level: slog.LevelError,
+			})
+			slog.New(handler).DebugContext(ctx, "m")
+			if records := parseJSONLines(t, &buf); len(records) != 1 || records[0]["event.name"] != "genuine" {
+				t.Fatalf("records = %v, want the forced record with its reserved attribute", records)
+			}
+		})
+	}
+}
+
+// Without a reserved attribute on the context, a record's own attributes
+// are untouched.
+func TestNoReservedAttributeLeavesRecordAlone(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	handler := fanout.New(fanout.Config{Legs: []slog.Handler{slog.NewJSONHandler(&buf, nil)}})
+	slog.New(handler).Info("m", "event.name", "own")
+	if records := parseJSONLines(t, &buf); len(records) != 1 || records[0]["event.name"] != "own" {
+		t.Fatalf("records = %v, want the record's own event.name", records)
+	}
+}
+
+// A replacer cannot rename an attribute to a correlation key at the top
+// level. Inside a named group the key is not reserved.
+func TestReplacerCannotRenameToCorrelationKeys(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	handler := fanout.New(fanout.Config{
+		Legs: []slog.Handler{fanout.Correlate(slog.NewJSONHandler(&buf, nil))},
+		Replace: func(_ []string, a slog.Attr) slog.Attr {
+			switch a.Key {
+			case "t":
+				a.Key = fanout.TraceIDKey
+			case "s":
+				a.Key = fanout.SpanIDKey
+			}
+			return a
+		},
+	})
+	sc := spanContext(t)
+	ctx := trace.ContextWithSpanContext(context.Background(), sc)
+	slog.New(handler).InfoContext(ctx, "m", "t", "forged-trace", "s", "forged-span",
+		slog.Group("", slog.String("t", "forged-inline")),
+		slog.Group("nested", slog.String("t", "grouped")))
+	records := parseJSONLines(t, &buf)
+	if len(records) != 1 {
+		t.Fatalf("records = %d, want 1", len(records))
+	}
+	if strings.Contains(buf.String(), "forged") {
+		t.Errorf("record carries a forged correlation key: %s", buf.String())
+	}
+	if records[0][fanout.TraceIDKey] != sc.TraceID().String() || records[0][fanout.SpanIDKey] != sc.SpanID().String() {
+		t.Errorf("correlation = %v/%v, want the span's", records[0][fanout.TraceIDKey], records[0][fanout.SpanIDKey])
+	}
+	if nested, _ := records[0]["nested"].(map[string]any); nested[fanout.TraceIDKey] != "grouped" {
+		t.Errorf("nested = %v, want its own trace_id kept", records[0]["nested"])
 	}
 }

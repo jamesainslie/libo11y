@@ -8,7 +8,7 @@ GO_TEST_P ?= 4
 # gate runs on each module separately.
 GO_MODULES := go go/o11ygin go/o11yconnect go/o11ysql go/o11yrum ops
 
-.PHONY: spec-check spec-generate spec-drift ops-generate ops-check ops-integration-up ops-integration-down ops-integration ops-promtool-test ops-release-check ops-release-check-test test lint vet tidy-check vuln release-check zig-release-check python-release-check rust-release-check rust-release-check-test c-release-check o11yrum-release-check print-o11yrum-release-version o11yrum-image schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-rn-bundle-test ts-npm-plan-test ts-install ts-check ts-size ts-browser-test ts-rn-check rum-e2e rust-check rust-msrv zig-check zig-integrations-check zig-hygiene-test python-check python-hygiene-test c-check ruby-check dotnet-check java-check ci
+.PHONY: spec-check spec-generate spec-drift ops-generate ops-check ops-integration-up ops-integration-down ops-integration ops-promtool-test ops-release-check ops-release-check-test test lint vet tidy-check vuln release-check zig-release-check python-release-check rust-release-check rust-release-check-test c-release-check dotnet-release-check o11yrum-release-check print-o11yrum-release-version o11yrum-image schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-rn-bundle-test ts-npm-plan-test ts-install ts-check ts-size ts-browser-test ts-rn-check rum-e2e rust-check rust-msrv zig-check zig-integrations-check zig-hygiene-test python-check python-hygiene-test c-check c-sanitize ruby-check ruby-release-check ruby-gem-plan-test dotnet-check java-check java-release-check java-central-publish-test ci
 
 # Validate the spec registry against the libo11y policy suite (naming,
 # ownership, sensitivity, cardinality, events, units).
@@ -184,6 +184,18 @@ RUST_RELEASE_VERSION ?= v0.1.0
 # Moves only in a release commit.
 C_RELEASE_VERSION ?= v0.1.0
 
+# The version dotnet/Directory.Build.props carries, which
+# dotnet-release-check.sh validates. Moves only in a release commit.
+DOTNET_RELEASE_VERSION ?= v0.1.0
+
+# The version ruby/lib/libo11y/version.rb carries, which
+# ruby-release-check.sh validates. Moves only in a release commit.
+RUBY_RELEASE_VERSION ?= v0.1.0
+
+# The version every java/ POM carries, which java-release-check.sh
+# validates. Moves only in a release commit.
+JAVA_RELEASE_VERSION ?= v0.1.0
+
 # The o11yrum gateway module's own version line (go/o11yrum/vX.Y.Z), which
 # o11yrum-release-check.sh validates and the release workflow requires to
 # match the tag. Moves only in a release commit, together with the
@@ -223,6 +235,36 @@ rust-release-check-test:
 c-release-check:
 	scripts/c-release-check.sh $(C_RELEASE_VERSION)
 
+# Validate the .NET packages at DOTNET_RELEASE_VERSION: the version in
+# dotnet/Directory.Build.props, the changelog, the packed Libo11y.* packages,
+# a throwaway consumer restored from them against an in-process OTLP/HTTP
+# receiver, and the Libo11y.Cli tool. It needs the .NET 10 SDK and nuget.org.
+dotnet-release-check:
+	scripts/dotnet-release-check.sh $(DOTNET_RELEASE_VERSION)
+
+# Build the gem at RUBY_RELEASE_VERSION, verify what it ships, install it
+# into a throwaway gem home, and run a consumer smoke test against the
+# recorder, an in-process OTLP/HTTP receiver, and the installed CLI.
+ruby-release-check:
+	scripts/ruby-release-check.sh $(RUBY_RELEASE_VERSION)
+
+# Validate the Java reactor at JAVA_RELEASE_VERSION: every POM and the
+# changelog, the jars with sources and javadoc in a Maven repository layout,
+# and a throwaway consumer that resolves them from that layout, exports all
+# three signals to an in-process OTLP/HTTP receiver and runs the CLI.
+# Needs JDK 21 and Maven 3.9.
+java-release-check:
+	scripts/java-release-check.sh $(JAVA_RELEASE_VERSION)
+
+# Test java-central-publish.sh against a fake curl.
+java-central-publish-test:
+	scripts/java-central-publish_test.sh
+
+# Test ruby-gem-plan.sh, which decides in the release workflow whether a
+# gem version publishes to RubyGems.org, against a fake curl.
+ruby-gem-plan-test:
+	scripts/ruby-gem-plan_test.sh
+
 # Validate the release sequence (go/RELEASE_VERSION and
 # go/<sub>/RELEASE_VERSION for every Go submodule, o11ygin, o11yconnect
 # and o11ysql, on HEAD) against a throwaway local remote. Then build and
@@ -231,8 +273,11 @@ c-release-check:
 # browser packages for the browser, validate the Zig consumer tarball at
 # ZIG_RELEASE_VERSION, validate the Python wheel and sdist at
 # PYTHON_RELEASE_VERSION, validate the Rust workspace at
-# RUST_RELEASE_VERSION, and validate the C11 install prefix at
-# C_RELEASE_VERSION. The o11yrum module is checked at
+# RUST_RELEASE_VERSION, validate the C11 install prefix at
+# C_RELEASE_VERSION, validate the .NET packages at
+# DOTNET_RELEASE_VERSION, validate the Ruby gem at
+# RUBY_RELEASE_VERSION, and validate the Java artifacts at
+# JAVA_RELEASE_VERSION. The o11yrum module is checked at
 # O11YRUM_RELEASE_VERSION after the lockstep Go modules, and the ops pack
 # and its release archive at OPS_RELEASE_VERSION.
 # Needs a clean working tree.
@@ -244,6 +289,9 @@ release-check:
 	scripts/python-release-check.sh $(PYTHON_RELEASE_VERSION)
 	scripts/rust-release-check.sh $(RUST_RELEASE_VERSION)
 	scripts/c-release-check.sh $(C_RELEASE_VERSION)
+	scripts/dotnet-release-check.sh $(DOTNET_RELEASE_VERSION)
+	scripts/ruby-release-check.sh $(RUBY_RELEASE_VERSION)
+	scripts/java-release-check.sh $(JAVA_RELEASE_VERSION)
 	scripts/ops-release-check.sh $(OPS_RELEASE_VERSION)
 
 # Validate the o11yrum release at O11YRUM_RELEASE_VERSION against a
@@ -368,32 +416,79 @@ python-hygiene-test:
 	scripts/python-hygiene_test.sh
 
 # C11 library (c/): formatting and hygiene on the Zig ABI layer, static/shared
-# library & CLI build, full C11 unit/conformance/wire test suites in Debug and
-# ReleaseSafe, CLI verification, and standalone host C compiler static link check.
+# library & CLI build, full C11 unit/conformance/wire test suites and the ABI
+# layout test in Debug and ReleaseSafe, the same suites under ASan and UBSan
+# with the host C compiler, CLI verification, and standalone host C compiler
+# static link check.
+C_SANITIZE_J ?= 4
 c-check:
 	zig fmt --check --exclude c/.zig-cache --exclude c/zig-pkg --exclude c/zig-out c
 	scripts/zig-hygiene.sh c/build.zig c/src
 	cd c && zig build -j$(ZIG_BUILD_J) -Doptimize=Debug && zig build test -j$(ZIG_BUILD_J) -Doptimize=Debug
+	C_SANITIZE_J=$(C_SANITIZE_J) c/tests/run_sanitized.sh c/zig-out conformance
 	cd c && zig build -j$(ZIG_BUILD_J) -Doptimize=ReleaseSafe && zig build test -j$(ZIG_BUILD_J) -Doptimize=ReleaseSafe
 	c/tests/test_cli.sh c/zig-out/bin/libo11y
-	@tmp="$$(mktemp)"; \
-	cc -std=c11 -Wall -Wextra -Werror -Wpedantic -Ic/zig-out/include c/examples/quickstart.c c/zig-out/lib/libo11y.a -lpthread -lm -o "$$tmp" && "$$tmp"; \
-	rc=$$?; rm -f "$$tmp"; exit $$rc
+	@tmp="$$(mktemp -d)"; \
+	trap 'rm -rf "$$tmp"' EXIT; \
+	set -eu; \
+	cc -std=c11 -Wall -Wextra -Werror -Wpedantic -Ic/zig-out/include c/examples/quickstart.c c/zig-out/lib/libo11y.a -lpthread -lm -o "$$tmp/qs-static" && "$$tmp/qs-static"; \
+	cc -std=c11 -Wall -Wextra -Werror -Wpedantic -Ic/zig-out/include c/examples/quickstart.c -Lc/zig-out/lib -Wl,-rpath,"$$(pwd)/c/zig-out/lib" -lo11y -lpthread -lm -o "$$tmp/qs-shared" && "$$tmp/qs-shared"; \
+	printf '%s\n' \
+		'#include "o11y/o11y.h"' \
+		'#include "o11y/test.h"' \
+		'int main() {' \
+		'    o11y_options_t opts = o11y_options_default();' \
+		'    opts.env_mode = O11Y_ENV_HERMETIC;' \
+		'    opts.service_name = "cpp-smoke";' \
+		'    opts.environment = O11Y_ENVIRONMENT_TEST;' \
+		'    opts.console_enabled = false;' \
+		'    opts.runtime_metrics = false;' \
+		'    o11y_sdk_t *sdk = nullptr;' \
+		'    if (o11y_init(&opts, &sdk, nullptr) != O11Y_OK) return 1;' \
+		'    o11y_span_t *sp = o11y_tracer_start(o11y_tracer(sdk, "cpp"), nullptr, "op", nullptr);' \
+		'    o11y_ctx_t *ctx = o11y_ctx_with_span(nullptr, sp);' \
+		'    o11y_log_info(sdk, ctx, "cpp ok", nullptr, 0);' \
+		'    o11y_counter_i64_t c = o11y_meter_counter_i64(o11y_meter(sdk, "cpp"), "cpp.n", nullptr);' \
+		'    o11y_counter_i64_add(c, ctx, 1, nullptr, 0);' \
+		'    o11y_ctx_destroy(ctx);' \
+		'    o11y_span_end(sp);' \
+		'    o11y_shutdown_report_t report{};' \
+		'    o11y_err_t serr = o11y_shutdown(sdk, 5000, &report);' \
+		'    o11y_destroy(sdk);' \
+		'    return (serr == O11Y_OK && o11y_shutdown_report_ok(report)) ? 0 : 2;' \
+		'}' >"$$tmp/cpp_smoke.cc"; \
+	c++ -std=c++17 -Wall -Wextra -Werror -Wpedantic -Ic/zig-out/include "$$tmp/cpp_smoke.cc" -Lc/zig-out/lib -Wl,-rpath,"$$(pwd)/c/zig-out/lib" -lo11y -lpthread -lm -o "$$tmp/qs-cpp" && "$$tmp/qs-cpp"; \
+	if [ "$$(uname -s)" = "Linux" ]; then \
+		readelf -dW c/zig-out/lib/libo11y.so | grep -Eq 'SONAME.*libo11y\.so\.[0-9]+\.[0-9]+' || { echo "c-check: bad ELF SONAME"; exit 1; }; \
+		! readelf -lW c/zig-out/lib/libo11y.so | grep -q 'GNU_STACK.*RWE' || { echo "c-check: executable GNU_STACK on libo11y.so"; exit 1; }; \
+		bad="$$(nm -D --defined-only c/zig-out/lib/libo11y.so | awk '$$2 ~ /[TWDBR]/ && $$3 !~ /^o11y_/ {print $$3}')"; \
+		[ -z "$$bad" ] || { echo "c-check: non-o11y exported symbols: $$bad"; exit 1; }; \
+	elif [ "$$(uname -s)" = "Darwin" ]; then \
+		otool -D c/zig-out/lib/libo11y.dylib | grep -Eq 'libo11y\.[0-9]+\.[0-9]+\.dylib' || { echo "c-check: bad Mach-O install_name"; exit 1; }; \
+	fi
+
+# The C11 suites under AddressSanitizer (with leak detection on Linux) and
+# UndefinedBehaviorSanitizer, against a Debug build of the library.
+c-sanitize:
+	cd c && zig build -j$(ZIG_BUILD_J) -Doptimize=Debug
+	C_SANITIZE_J=$(C_SANITIZE_J) c/tests/run_sanitized.sh c/zig-out conformance
 
 # Ruby gem (ruby/): install locked/bundle deps, RSpec (including shared
 # conformance, integrations, and OTLP wire suites), RuboCop, and hygiene check.
 ruby-check:
-	cd ruby && bundle check || bundle install
+	cd ruby && (bundle check || bundle install)
 	cd ruby && bundle exec rspec
 	cd ruby && bundle exec rubocop --format simple
 	scripts/ruby-hygiene.sh ruby/lib
 
 # .NET solution (dotnet/): build with TreatWarningsAsErrors, xUnit suites
 # (including shared conformance, integrations, and OTLP wire tests), CLI check,
-# and hygiene check.
+# and hygiene check. DOTNET_MAXCPU caps the MSBuild node count.
+DOTNET_MAXCPU ?= 4
 dotnet-check:
-	cd dotnet && dotnet test Libo11y.sln --configuration Release
-	cd dotnet && dotnet run --project src/Libo11y.Cli -- registry check ../conformance/appregistry/valid.yaml
+	cd dotnet && dotnet build Libo11y.sln --configuration Release -maxcpucount:$(DOTNET_MAXCPU) --disable-build-servers
+	cd dotnet && dotnet test Libo11y.sln --configuration Release --no-build
+	cd dotnet && dotnet run --project src/Libo11y.Cli --configuration Release --no-build -- registry check ../conformance/appregistry/valid.yaml
 	scripts/dotnet-hygiene.sh dotnet/src
 
 # Java Maven reactor (java/): compile with -Xlint:all -Werror on Java 21, run
@@ -405,4 +500,4 @@ java-check:
 
 # vuln runs last: it depends on the advisory database and the toolchain's
 # patch level, so local runs exercise every other gate first.
-ci: lint vet test tidy-check spec-check spec-drift ops-check ops-integration ts-check ts-size ts-browser-test ts-rn-check rum-e2e o11yrum-image rust-check rust-msrv zig-check python-check c-check ruby-check dotnet-check java-check schema-published-test release-notes-test release-tag-test ops-promtool-test ops-release-check-test rust-release-check-test ts-browser-bundle-test ts-rn-bundle-test ts-npm-plan-test release-check vuln
+ci: lint vet test tidy-check spec-check spec-drift ops-check ops-integration ts-check ts-size ts-browser-test ts-rn-check rum-e2e o11yrum-image rust-check rust-msrv zig-check python-check c-check ruby-check dotnet-check java-check schema-published-test release-notes-test release-tag-test ops-promtool-test ops-release-check-test rust-release-check-test java-central-publish-test ts-browser-bundle-test ts-rn-bundle-test ts-npm-plan-test ruby-gem-plan-test release-check vuln

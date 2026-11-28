@@ -402,7 +402,9 @@ def test_logging_handler_features_force_emit_replacer_text_and_bounds() -> None:
     assert "forced_in" in out
     assert "drop_me" not in out
     assert "renamed=ok" in out
-    assert "truncated" in out
+    # The cyclic mapping is cut at the cycle, emptied, and dropped whole.
+    assert "cyc=" not in out
+    assert "truncated" not in out
 
 
 def test_redact_types_and_decorator_typo_rejection() -> None:
