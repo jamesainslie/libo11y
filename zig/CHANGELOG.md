@@ -10,6 +10,26 @@ Requires Zig 0.17.1.
 
 ## [Unreleased]
 
+### Added
+
+- `o11y`: the `o11y.identity`, `o11y.pii`, `o11y.endpoint`, and
+  `o11y.appregistry` namespaces are public. They hold the
+  `service.instance.id` derivation, the canonical PII rendering and HMAC
+  token, the endpoint sanitizer, and the application registry loader and
+  validator.
+- `o11y`: `Options.sdk_language`, `Options.sdk_version`, and
+  `Options.emit_process_runtime` let a language binding built on this
+  package, such as the C library, report its own `telemetry.sdk.*` values
+  and leave out `process.runtime.*`. `o11ytest.Options` has the same fields.
+
+### Changed
+
+- `o11y.spec` is generated from spec 1.3.0. `spec.schema_url` is
+  `https://schemas.o11y.ing/libo11y/1.3.0`, so every resource carries that
+  schema URL. The module gains the RUM view summary, detail, and span shape
+  attribute keys and the enums `RumSpanShape`, `RumResourceType`,
+  `RumVitalAttributionInteractionType`, and `RumVitalAttributionLoadState`.
+
 ## [0.1.0] - 2026-11-26
 
 ### Added

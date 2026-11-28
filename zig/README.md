@@ -1,7 +1,7 @@
 # libo11y Zig
 
 OpenTelemetry observability library for Zig 0.17.1 implementing the libo11y
-design contract ([docs/DESIGN.md](../docs/DESIGN.md)) and specification 1.2.0
+design contract ([docs/DESIGN.md](../docs/DESIGN.md)) and specification 1.3.0
 (semconv v1.41.0).
 
 libo11y Zig owns its telemetry pipeline over vendored `opentelemetry-proto`
