@@ -3,6 +3,7 @@ package s3store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"maps"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -27,6 +29,47 @@ type fakeS3 struct {
 	objects map[string][]byte
 	puts    []http.Header
 	fail    bool
+	deletes int
+	pages   int
+}
+
+// listPageSize is the fake's ListObjectsV2 page size, small so a test
+// crosses pages.
+const listPageSize = 2
+
+// list answers ListObjectsV2 for the bucket in the path, in key order,
+// paged at listPageSize keys. The continuation token is the last key of
+// the previous page. f.mu is held.
+func (f *fakeS3) list(w http.ResponseWriter, r *http.Request) {
+	f.pages++
+	bucket := "/" + strings.Trim(r.URL.Path, "/") + "/"
+	q := r.URL.Query()
+	prefix, after := q.Get("prefix"), q.Get("continuation-token")
+	var keys []string
+	for p := range f.objects {
+		if k, ok := strings.CutPrefix(p, bucket); ok && strings.HasPrefix(k, prefix) && k > after {
+			keys = append(keys, k)
+		}
+	}
+	slices.Sort(keys)
+	truncated := len(keys) > listPageSize
+	if truncated {
+		keys = keys[:listPageSize]
+	}
+	var b strings.Builder
+	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?><ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">`)
+	fmt.Fprintf(&b, "<Name>%s</Name><Prefix>%s</Prefix><KeyCount>%d</KeyCount><MaxKeys>1000</MaxKeys><IsTruncated>%t</IsTruncated>",
+		strings.Trim(bucket, "/"), prefix, len(keys), truncated)
+	for _, k := range keys {
+		fmt.Fprintf(&b, "<Contents><Key>%s</Key><LastModified>2026-11-27T10:00:00.000Z</LastModified><Size>%d</Size></Contents>",
+			k, len(f.objects[bucket+k]))
+	}
+	if truncated {
+		fmt.Fprintf(&b, "<NextContinuationToken>%s</NextContinuationToken>", keys[len(keys)-1])
+	}
+	b.WriteString("</ListBucketResult>")
+	w.Header().Set("Content-Type", "application/xml")
+	_, _ = io.WriteString(w, b.String())
 }
 
 func newFake(t *testing.T) (*s3.Client, *fakeS3) {
@@ -47,6 +90,10 @@ func newFake(t *testing.T) (*s3.Client, *fakeS3) {
 			f.objects[r.URL.Path] = b
 			f.puts = append(f.puts, r.Header.Clone())
 		case http.MethodGet:
+			if r.URL.Query().Get("list-type") == "2" {
+				f.list(w, r)
+				return
+			}
 			b, ok := f.objects[r.URL.Path]
 			if !ok {
 				w.Header().Set("Content-Type", "application/xml")
@@ -55,6 +102,10 @@ func newFake(t *testing.T) (*s3.Client, *fakeS3) {
 				return
 			}
 			_, _ = w.Write(b)
+		case http.MethodDelete:
+			f.deletes++
+			delete(f.objects, r.URL.Path)
+			w.WriteHeader(http.StatusNoContent)
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
@@ -155,4 +206,75 @@ func TestNewUsesEndpointAndPathStyle(t *testing.T) {
 	if path != "/maps/p/k.map" {
 		t.Fatalf("path %q", path)
 	}
+}
+
+func TestStoreListAcrossPages(t *testing.T) {
+	client, f := newFake(t)
+	s := NewWithClient(client, "maps", "o11yrum/")
+	ctx := context.Background()
+	keys := []string{"replay/a/s1/000004", "replay/a/s1/000000", "replay/a/s1/000003", "replay/a/s1/000001", "replay/a/s1/000002"}
+	for _, k := range keys {
+		if err := s.Put(ctx, k, []byte("xyz")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Put(ctx, "replay/a/s2/000000", []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	err := s.List(ctx, "replay/a/s1/", func(o o11yrum.ObjectInfo) error {
+		got = append(got, o.Key)
+		if o.Size != 3 || !o.Modified.Equal(time.Date(2026, 11, 27, 10, 0, 0, 0, time.UTC)) {
+			t.Errorf("%s: size %d modified %v", o.Key, o.Size, o.Modified)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := slices.Clone(keys)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Fatalf("list %v, want %v", got, want)
+	}
+	f.mu.Lock()
+	pages := f.pages
+	f.mu.Unlock()
+	if pages != 3 {
+		t.Fatalf("%d pages, want 3", pages)
+	}
+	stop := errors.New("stop")
+	calls := 0
+	if err := s.List(ctx, "replay/", func(o11yrum.ObjectInfo) error { calls++; return stop }); !errors.Is(err, stop) || calls != 1 {
+		t.Fatalf("fn error: %d calls, %v", calls, err)
+	}
+	var _ o11yrum.ObjectLister = s
+}
+
+func TestStoreDelete(t *testing.T) {
+	client, f := newFake(t)
+	s := NewWithClient(client, "maps", "o11yrum/")
+	ctx := context.Background()
+	if err := s.Put(ctx, "replay/a/s1/000000", []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Delete(ctx, "replay/a/s1/000000"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Get(ctx, "replay/a/s1/000000"); !errors.Is(err, o11yrum.ErrNotFound) {
+		t.Fatalf("after delete: %v", err)
+	}
+	if err := s.Delete(ctx, "replay/a/s1/000000"); err != nil {
+		t.Fatalf("deleting a missing key: %v", err)
+	}
+	f.mu.Lock()
+	f.fail = true
+	f.mu.Unlock()
+	if err := s.Delete(ctx, "k"); err == nil || !strings.Contains(err.Error(), "s3store") {
+		t.Fatalf("failed delete: %v", err)
+	}
+	if err := s.List(ctx, "", func(o11yrum.ObjectInfo) error { return nil }); err == nil || !strings.Contains(err.Error(), "s3store") {
+		t.Fatalf("failed list: %v", err)
+	}
+	var _ o11yrum.ObjectDeleter = s
 }

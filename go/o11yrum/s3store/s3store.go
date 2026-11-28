@@ -1,4 +1,5 @@
-// Package s3store keeps o11yrum objects (source maps) in Amazon S3 or an
+// Package s3store keeps o11yrum objects (source maps and session replay
+// segments) in Amazon S3 or an
 // S3-compatible store.
 //
 // New authenticates with the AWS SDK's default credential chain, which
@@ -12,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -46,7 +48,11 @@ type Store struct {
 	prefix string
 }
 
-var _ o11yrum.ObjectStore = (*Store)(nil)
+var (
+	_ o11yrum.ObjectStore   = (*Store)(nil)
+	_ o11yrum.ObjectLister  = (*Store)(nil)
+	_ o11yrum.ObjectDeleter = (*Store)(nil)
+)
 
 // New builds a store with credentials from the AWS SDK's default chain.
 // It makes no request, so a missing permission shows on first use.
@@ -114,4 +120,44 @@ func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
 		return nil, fmt.Errorf("s3store: get %s: %w", key, err)
 	}
 	return b, nil
+}
+
+// List calls fn for every object whose key starts with the prefixed
+// prefix, in key order (S3 lists in UTF-8 binary order), with the store's
+// prefix removed from each key.
+func (s *Store) List(ctx context.Context, prefix string, fn func(o11yrum.ObjectInfo) error) error {
+	pages := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{
+		Bucket: aws.String(s.bucket),
+		Prefix: aws.String(s.prefix + prefix),
+	})
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+		if err != nil {
+			return fmt.Errorf("s3store: list %s: %w", prefix, err)
+		}
+		for _, o := range page.Contents {
+			key, ok := strings.CutPrefix(aws.ToString(o.Key), s.prefix)
+			if !ok {
+				continue
+			}
+			info := o11yrum.ObjectInfo{Key: key, Size: aws.ToInt64(o.Size), Modified: aws.ToTime(o.LastModified)}
+			if err := fn(info); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// Delete removes the prefixed key. S3 answers success for a key it does
+// not hold, so a missing key is not an error.
+func (s *Store) Delete(ctx context.Context, key string) error {
+	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(s.prefix + key),
+	})
+	if err != nil {
+		return fmt.Errorf("s3store: delete %s: %w", key, err)
+	}
+	return nil
 }
