@@ -6,10 +6,13 @@ import json
 import logging
 import sys
 import threading
+import time
+import traceback
 from collections.abc import Generator, Mapping
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from datetime import UTC, datetime
+from types import TracebackType
 from typing import Any, Final, TextIO
 
 from opentelemetry import trace
@@ -52,9 +55,42 @@ _STANDARD_LOG_ATTRS: Final[frozenset[str]] = frozenset(
 )
 
 
+# Correlation keys only the pipeline writes, at the top level of every record
+# emitted inside a valid span (go/internal/fanout/fanout.go).
+TRACE_ID_KEY: Final[str] = "trace_id"
+SPAN_ID_KEY: Final[str] = "span_id"
+_RESERVED_ATTR_KEYS: Final[frozenset[str]] = frozenset({TRACE_ID_KEY, SPAN_ID_KEY})
+
+# Top-level console keys the formatter writes itself; user attributes never duplicate them.
+_CONSOLE_KEYS: Final[frozenset[str]] = frozenset(
+    {"time", "level", "msg", TRACE_ID_KEY, SPAN_ID_KEY}
+)
+
+_EXCEPTION_TYPE: Final[str] = "exception.type"
+_EXCEPTION_MESSAGE: Final[str] = "exception.message"
+_EXCEPTION_STACKTRACE: Final[str] = "exception.stacktrace"
+
+type _ExcInfo = (
+    tuple[type[BaseException], BaseException, TracebackType | None] | tuple[None, None, None]
+)
+
+
 @contextmanager
 def force_emit() -> Generator[None]:
-    """Context manager whose log records bypass configured level gates."""
+    """Context manager whose log records bypass the libo11y handler's level gates.
+
+    Inside the block the libo11y logging handler accepts a record at any
+    level and delivers it to every leg (console, OTLP and each extra log
+    handler) whatever that leg's own level. Filters, attribute replacement,
+    sensitivity classification and correlation still apply.
+
+    The gate it bypasses is the handler's, not the standard library's. A
+    record the originating logger's own level rejects (for example a DEBUG
+    call on a logger that inherits the root INFO level) is dropped by
+    logging before any handler runs, so force_emit cannot deliver it. Lower
+    that logger's level, or use Telemetry.event, which builds the record
+    itself and is the structural always-emit path.
+    """
     token = _FORCE_EMIT.set(True)
     try:
         yield
@@ -114,7 +150,8 @@ def _format_console_line(
         if span_id:
             parts.append(f"span_id={span_id}")
         for k, v in attrs.items():
-            parts.append(f"{k}={_format_logfmt_value(v)}")
+            if k not in _CONSOLE_KEYS:
+                parts.append(f"{k}={_format_logfmt_value(v)}")
         return " ".join(parts) + "\n"
 
     payload: dict[str, Any] = {
@@ -127,7 +164,7 @@ def _format_console_line(
     if span_id:
         payload["span_id"] = span_id
     for k, v in attrs.items():
-        if k not in ("time", "level", "msg", "trace_id", "span_id"):
+        if k not in _CONSOLE_KEYS:
             payload[k] = v
     return json.dumps(payload, separators=(",", ":"), default=_json_default) + "\n"
 
@@ -139,6 +176,53 @@ def _extract_extra(record: logging.LogRecord) -> dict[str, Any]:
             continue
         out[k] = v
     return out
+
+
+def _without_reserved(attrs: Mapping[str, Any]) -> dict[str, Any]:
+    """Drop top-level trace_id and span_id, which only the pipeline writes (SPEC section 4)."""
+    return {k: v for k, v in attrs.items() if k not in _RESERVED_ATTR_KEYS}
+
+
+def _exception_type_name(exc_type: type[BaseException]) -> str:
+    """Qualified class name, rendered as the OpenTelemetry Python SDK renders it."""
+    module = exc_type.__module__
+    qualname = exc_type.__qualname__
+    return f"{module}.{qualname}" if module and module != "builtins" else qualname
+
+
+def _add_exception_attributes(attrs: dict[str, Any], exc_info: _ExcInfo | None) -> None:
+    """Map a record's exc_info to the semconv exception attributes the caller did not set."""
+    if not exc_info:
+        return
+    exc_type, exc, tb = exc_info
+    if exc_type is None or exc is None:
+        return
+    attrs.setdefault(_EXCEPTION_TYPE, _exception_type_name(exc_type))
+    attrs.setdefault(_EXCEPTION_MESSAGE, str(exc))
+    attrs.setdefault(_EXCEPTION_STACKTRACE, "".join(traceback.format_exception(exc_type, exc, tb)))
+
+
+def _sink_record(
+    record: logging.LogRecord,
+    attrs: Mapping[str, Any],
+    trace_id: str | None,
+    span_id: str | None,
+) -> logging.LogRecord:
+    """Build the record an extra log handler receives.
+
+    It keeps the standard fields of the application's record and carries only
+    the classified attributes, prefixed with the correlation ids inside a
+    valid span as Go's fanout.Correlate does. The application's record is
+    never mutated.
+    """
+    fields: dict[str, Any] = {k: v for k, v in record.__dict__.items() if k in _STANDARD_LOG_ATTRS}
+    if trace_id is not None and span_id is not None:
+        fields[TRACE_ID_KEY] = trace_id
+        fields[SPAN_ID_KEY] = span_id
+    for k, v in attrs.items():
+        if k not in _STANDARD_LOG_ATTRS:
+            fields.setdefault(k, v)
+    return logging.makeLogRecord(fields)
 
 
 class O11yLoggingHandler(logging.Handler):
@@ -219,12 +303,16 @@ class O11yLoggingHandler(logging.Handler):
         if not forced and record.levelno < self._min_level:
             return
 
+        observed_ns = time.time_ns()
         token = _IN_HANDLER.set(True)
         try:
-            raw_attrs = (
-                dict(explicit_attrs) if explicit_attrs is not None else _extract_extra(record)
+            source = explicit_attrs if explicit_attrs is not None else _extract_extra(record)
+            raw_attrs = _without_reserved(source)
+            _add_exception_attributes(raw_attrs, record.exc_info)
+            # Filter again so a replacer cannot rename a key into a reserved one.
+            classified = _without_reserved(
+                self._policy.classify_log_attributes(raw_attrs, self._attr_replacer)
             )
-            classified = self._policy.classify_log_attributes(raw_attrs, self._attr_replacer)
 
             span = trace.get_current_span()
             sc = span.get_span_context()
@@ -261,6 +349,7 @@ class O11yLoggingHandler(logging.Handler):
                     emit_otel_log(
                         self._logger_provider,
                         timestamp_ns=ts_ns,
+                        observed_timestamp_ns=observed_ns,
                         levelno=record.levelno,
                         body=message,
                         attributes=classified,
@@ -273,9 +362,11 @@ class O11yLoggingHandler(logging.Handler):
                     self._report_error(exc)
 
             for extra_handler in self._extra_handlers:
+                if not forced and record.levelno < extra_handler.level:
+                    continue
                 try:
-                    if forced or record.levelno >= extra_handler.level:
-                        extra_handler.emit(record)
+                    # handle() applies the handler's filters and lock before emit().
+                    extra_handler.handle(_sink_record(record, classified, trace_id, span_id))
                 except Exception as exc:
                     if raise_on_error:
                         raise

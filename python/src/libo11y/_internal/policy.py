@@ -213,7 +213,7 @@ class SensitivityPolicy:
         active: set[int],
         replacer: AttrReplacer | None,
     ) -> tuple[dict[str, Any], bool]:
-        """Classify the members of one mapping, returning what survives and whether any was dropped."""
+        """Classify one mapping's members: what survives, and whether any member was dropped."""
         out: dict[str, Any] = {}
         changed = False
         for raw_k, raw_v in mapping.items():
@@ -272,7 +272,7 @@ class SensitivityPolicy:
         if not isinstance(value, (Mapping, Sequence)):
             return str(value), True, False
 
-        oid = id(value)
+        oid = id(cast(object, value))
         if (
             depth >= MAX_COMPOSITE_DEPTH
             or len(path) > MAX_COMPOSITE_DEPTH
