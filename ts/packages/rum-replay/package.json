@@ -1,0 +1,27 @@
+{
+  "name": "@libo11y/rum-replay",
+  "version": "0.2.1",
+  "private": true,
+  "description": "Privacy-first session replay for @libo11y/rum: text masked by default, inputs never recorded, every event scrubbed against an attribute allow-list before it is buffered.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jamesainslie/libo11y.git",
+    "directory": "ts/packages/rum-replay"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "api": "api-extractor run --local",
+    "api:check": "api-extractor run"
+  },
+  "dependencies": {
+    "@libo11y/core": "workspace:*",
+    "@rrweb/record": "2.2.2",
+    "@rrweb/types": "2.2.2"
+  }
+}
