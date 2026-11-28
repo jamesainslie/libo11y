@@ -4,9 +4,13 @@
  * Each record goes through one pipeline, in Go's order:
  * 1. the level gate, which a forced context (forceEmit) bypasses;
  * 2. the attributes: the child bindings, then the record's. Top-level trace_id and span_id are
- *    dropped, and the Error argument, or else the first top-level Error value, expands to
- *    exception.type, exception.message and exception.stacktrace;
- * 3. the user replacer, once per leaf with its group path;
+ *    dropped, and the Error argument, or else the first top-level Error value under a key the
+ *    policy keeps, expands to exception.type, exception.message and exception.stacktrace. An Error
+ *    under a key the policy drops or tokenizes stays under that key as String(err), so the policy
+ *    judges it as it would a string;
+ * 3. the user replacer, once per leaf with its group path. Top-level trace_id and span_id are
+ *    dropped again from what it returns, and a record captured from the console gets
+ *    o11y.log.source=console back whatever the replacer did with it;
  * 4. per sink, the sensitivity policy (which counts once per sink), then the write.
  *
  * The console line carries trace_id and span_id inside a valid span context. The OTLP leg emits
@@ -22,6 +26,7 @@
  * A report names the step, the class of the error and the attribute key. It never repeats the
  * error's message, which can quote the value that made the hook fail (internal/report.ts).
  */
+import { ATTR_LOG_SOURCE, LOG_SOURCE_VALUE_CONSOLE } from "@libo11y/spec";
 import {
   type Context,
   context,
@@ -122,16 +127,28 @@ function exceptionAttrs(err: Error): MutableAttrs {
   return out;
 }
 
+function reserved(key: string): boolean {
+  return key === "trace_id" || key === "span_id";
+}
+
 // buildAttributes drops the reserved correlation keys and undefined values from normalized
-// attributes, and expands one Error into exception.*. An Error that cannot be read is dropped.
-function buildAttributes(attrs: LogAttributes, err: Error | undefined, report: Report): MutableAttrs {
+// attributes, and expands one Error into exception.*. Only an Error under a key the policy keeps
+// expands: expanding discards the key, so an Error under a secret or PII key would leave in clear
+// text. Any other Error stays under its key as a string, for the policy to judge on that key. An
+// Error that cannot be read is dropped.
+function buildAttributes(
+  attrs: LogAttributes,
+  err: Error | undefined,
+  policy: SensitivityPolicy,
+  report: Report,
+): MutableAttrs {
   const out: MutableAttrs = {};
   let expanded = err !== undefined;
   for (const [k, v] of Object.entries(attrs)) {
-    if (k === "trace_id" || k === "span_id" || v === undefined) continue;
+    if (reserved(k) || v === undefined) continue;
     if (isError(v)) {
-      const expand = !expanded;
-      expanded = true;
+      const expand = !expanded && policy.actionFor(k) === "keep";
+      expanded ||= expand;
       try {
         if (expand) Object.assign(out, exceptionAttrs(v));
         else out[k] = String(v);
@@ -148,6 +165,18 @@ function buildAttributes(attrs: LogAttributes, err: Error | undefined, report: R
     } catch (cause) {
       report(unreadable([], "exception", cause));
     }
+  }
+  return out;
+}
+
+// seal applies the logger's own rules to what the replacer returned: the reserved correlation
+// keys are dropped at the top level, and a record captured from the console carries
+// o11y.log.source=console, first, as capture gave it.
+function seal(attrs: MutableAttrs, captured: boolean): MutableAttrs {
+  const out: MutableAttrs = captured ? { [ATTR_LOG_SOURCE]: LOG_SOURCE_VALUE_CONSOLE } : {};
+  for (const [k, v] of Object.entries(attrs)) {
+    if (reserved(k) || (captured && k === ATTR_LOG_SOURCE)) continue;
+    out[k] = v;
   }
   return out;
 }
@@ -318,6 +347,11 @@ export interface EmitOptions {
   readonly force?: boolean;
   /** Reshapes the attributes once they have been read, before they are normalized, as events do. */
   readonly shape?: (attrs: LogAttributes) => LogAttributes;
+  /**
+   * The record was captured from console output. It carries o11y.log.source=console on every sink,
+   * set after the replacer, so the replacer cannot drop or change it.
+   */
+  readonly captured?: boolean;
 }
 
 /** What one sink threw for one record. */
@@ -415,12 +449,15 @@ export class LogPipeline {
     let merged: LogAttributes = attrs === undefined ? bound : this.bind(bound, attrs);
     if (opts.shape !== undefined) merged = opts.shape(merged);
     const walk: Walk = { report: this.report, onPath: [], copies: undefined };
-    let built: LogAttributes = buildAttributes(
+    const captured = opts.captured === true;
+    let built: MutableAttrs = buildAttributes(
       normalize(merged, undefined, [], walk),
       opts.error,
+      this.policy,
       this.report,
     );
     if (this.replacer !== undefined) built = normalize(built, this.replacer, [], walk);
+    if (this.replacer !== undefined || captured) built = seal(built, captured);
     const time = this.now();
     const failures: SinkFailure[] = [];
 
@@ -468,6 +505,15 @@ export class CoreLogger implements Logger {
       bound: this.bound,
       ...(error === undefined ? {} : { error }),
       ...(ctx === undefined ? {} : { ctx }),
+    });
+  }
+
+  /** Emits a record captured from console output, marked o11y.log.source=console, at level. */
+  captured(level: LogLevel, msg: string, error?: Error): void {
+    this.pipeline.emit(level, msg, undefined, {
+      bound: this.bound,
+      captured: true,
+      ...(error === undefined ? {} : { error }),
     });
   }
 

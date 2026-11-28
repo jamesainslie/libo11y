@@ -149,6 +149,10 @@ function deadline(ms: number): { readonly expired: Promise<void>; cancel(): void
 
 const EXPIRED: unique symbol = Symbol("expired") as never;
 
+// DEADLINE_ERROR_TYPE is the error.type of o11y.telemetry.dropped for a signal that missed the
+// shutdown deadline: the name JavaScript gives a timeout, as AbortSignal.timeout does.
+const DEADLINE_ERROR_TYPE = "TimeoutError";
+
 async function settle(step: () => Promise<void>, expired: Promise<void>): Promise<unknown> {
   try {
     const result = await Promise.race([step().then(() => undefined), expired.then(() => EXPIRED)]);
@@ -440,6 +444,7 @@ class TelemetryHandle implements Telemetry {
       }
     }
     const errors: { signal: Signal; error: unknown }[] = [];
+    const errorTypes: string[] = [];
     steps.forEach((step, i) => {
       const outcome = outcomes[i];
       if (outcome === undefined) return;
@@ -450,16 +455,19 @@ class TelemetryHandle implements Telemetry {
             ? new Error(`o11y: shutdown ${step.signal}: deadline exceeded`)
             : wrap(`o11y: shutdown ${step.signal}`, outcome),
       });
+      // The event names the class of what failed, as a background export failure does, not the
+      // wrapper's. A missed deadline has no error of its own, so it has a fixed name.
+      errorTypes.push(outcome === EXPIRED ? DEADLINE_ERROR_TYPE : errorClass(outcome));
     });
     // The OTLP leg is down, so the loss reaches the console sink, or the diagnostic stream when the
     // console sink is off. Never rate limited: it is the last word on each signal.
-    for (const { signal, error } of errors) {
+    errors.forEach(({ signal }, i) => {
       try {
-        this.parts.sayDropped(signal, error instanceof Error ? error.constructor.name : typeof error);
+        this.parts.sayDropped(signal, errorTypes[i] ?? "unknown");
       } catch {
         // Delivery is best effort.
       }
-    }
+    });
     if (this.installed !== undefined) {
       try {
         uninstall(this.installed);
@@ -496,7 +504,9 @@ function selectExporters(config: ResolvedConfig, options: TelemetryOptions, buil
       config.logs === "none"
         ? undefined
         : (options.logExporter ?? (wants(config.logs) ? built.logExporter : undefined)),
-    logProcessor: config.logs === "none" ? undefined : options.logProcessor,
+    // A log processor runs whatever the log route is, as Go's extra log handler does, and is off
+    // only with the SDK disabled, as everything injected is.
+    logProcessor: config.sdkDisabled ? undefined : options.logProcessor,
   };
 }
 

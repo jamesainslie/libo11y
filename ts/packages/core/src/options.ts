@@ -70,6 +70,8 @@ export interface TelemetryOptions {
   /**
    * A log record processor, after the redacting processor and before the batch processor of
    * logExporter, so it sees each classified record synchronously in onEmit (Go WithExtraLogHandler).
+   * It is a leg beside the log exporter and does not change where records are exported. It runs
+   * with logExport false and in hermetic mode too, and is off only with OTEL_SDK_DISABLED=true.
    */
   logProcessor?: LogRecordProcessor;
 }

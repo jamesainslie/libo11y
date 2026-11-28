@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { runInNewContext } from "node:vm";
+import { InMemoryLogRecordExporter, LoggerProvider, SimpleLogRecordProcessor } from "@opentelemetry/sdk-logs";
 import { captureConsole, formatConsoleArgs } from "./console-capture.ts";
 import { ConsoleSink } from "./console-sink.ts";
 import { CoreLogger, LogPipeline } from "./logger.ts";
+import type { AttrReplacer } from "./options.ts";
 import type { PlatformConsole } from "./platform.ts";
 import { SensitivityPolicy } from "./policy.ts";
 
@@ -161,5 +163,33 @@ for (const order of ["AB", "BA"] as const) {
     if (order === "AB") assert.equal(linesB.length, 2);
     else assert.deepEqual([linesA.length, linesB.length], [1, 1]);
     if (order === "BA") assert.ok(METHODS.every((m, i) => target[m] === originals[i]));
+  });
+}
+
+// SPEC section 4: a record captured from console output MUST carry o11y.log.source=console. The
+// marker is record metadata, so the replacer cannot drop, rename or change it on either sink.
+for (const [name, replacer] of [
+  ["drops", (key: string, value: unknown) => (key === "o11y.log.source" ? undefined : [key, value])],
+  ["renames", (key: string, value: unknown) => [key === "o11y.log.source" ? "moved" : key, value]],
+  ["changes", (key: string, value: unknown) => [key, key === "o11y.log.source" ? "logger" : value]],
+] as const) {
+  test(`a captured record keeps o11y.log.source=console on both sinks when the replacer ${name} it`, () => {
+    const { target } = fakeConsole();
+    const lines: string[] = [];
+    const exporter = new InMemoryLogRecordExporter();
+    const provider = new LoggerProvider({ processors: [new SimpleLogRecordProcessor({ exporter })] });
+    const pipeline = new LogPipeline({
+      level: "trace",
+      policy: SensitivityPolicy.create({ pii: "drop", registries: [] }),
+      console: new ConsoleSink("json", (line) => lines.push(line)),
+      otlp: provider.getLogger("@libo11y/core"),
+      replacer: replacer as AttrReplacer,
+      now: () => new Date(0),
+    });
+    const restore = captureConsole(target, new CoreLogger(pipeline));
+    target.log("a");
+    restore();
+    assert.equal(parsed(lines[0])["o11y.log.source"], "console");
+    assert.equal(exporter.getFinishedLogRecords()[0]?.attributes["o11y.log.source"], "console");
   });
 }
