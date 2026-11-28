@@ -52,6 +52,7 @@ import { ExemplarStore } from "./exemplars.ts";
 import { ExportWatch } from "./export-watch.ts";
 import { gatedLogRecordProcessor, gatedSampler, gatedSpanProcessor } from "./gate.ts";
 import { buildResource } from "./identity.ts";
+import { registerExemplarViews } from "./internal/exemplar-views.ts";
 import { errorClass, REPORT_KEY } from "./internal/report.ts";
 import { seams } from "./internal/seams.ts";
 import { registerExemplarStore } from "./internal/stores.ts";
@@ -568,11 +569,11 @@ async function build(options: TelemetryOptions, platform: Platform): Promise<Par
   );
 
   const readers: IMetricReader[] = exporters.metricReader === undefined ? [] : [exporters.metricReader];
-  const sdkMeterProvider = new SdkMeterProvider({
-    resource,
-    readers,
-    views: [...(options.views ?? []), ...bucketViews(options.histogramBuckets)],
-  });
+  const views = [...(options.views ?? []), ...bucketViews(options.histogramBuckets)];
+  // sdk-metrics refuses a view with a name whose instrumentName is missing or a wildcard, so every
+  // renaming view the store learns maps its stream back to one instrument.
+  const sdkMeterProvider = new SdkMeterProvider({ resource, readers, views });
+  registerExemplarViews(exemplars, views);
   const violations = new ViolationRecorder(sdkMeterProvider);
   policy = policy.withRecorder(violations);
   for (const [rule, n] of built.violations) violations.add("resource", rule, n);

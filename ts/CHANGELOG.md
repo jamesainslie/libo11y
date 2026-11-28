@@ -36,6 +36,10 @@ adhere to [Semantic Versioning](https://semver.org/).
   screen and after other screens. The `./expo` entry's `setupRumExpo`
   keeps it all in the app's documents, as `setupExpo` does. The fixture
   Expo app runs it under jest-expo.
+- `@libo11y/spec`: `validateCompiledAppRegistry` and
+  `CompiledAppRegistryResult`. It checks a compiled registry with the
+  rules that still apply to that form, with the rule IDs and messages of
+  `validateAppRegistry`.
 
 ### Changed
 
@@ -60,6 +64,14 @@ adhere to [Semantic Versioning](https://semver.org/).
   the presigned-URL keys the OpenTelemetry HTTP semantic conventions name.
   Before, only the user name and password were removed, so a presigned
   URL's signature was exported with the span.
+- `@libo11y/core`: the `registry` option now validates a compiled
+  registry too. One whose namespace is reserved or not one snake_case
+  segment, whose `classes` is empty or not an object, that classifies a
+  key outside its namespace or with a bad name, or that names a class
+  other than `public`, `internal`, `pii` or `secret` fails init with
+  `INVALID_APP_REGISTRY`, named `registry N`. Before, a hand-built or
+  deserialized compiled registry was used as is and could reclassify spec
+  keys. Anything `compileAppRegistry` returned still passes.
 
 ### Fixed
 
@@ -68,6 +80,15 @@ adhere to [Semantic Versioning](https://semver.org/).
   context, as before `setup`, after shutdown or with
   `OTEL_SDK_DISABLED=true`. It used to send an all-zero traceparent. The
   response now goes out without the entry, as in Go.
+- `@libo11y/core`: exemplar series keep the types of their attribute
+  values. A counter recorded with `{ slot: 3 }` and with `{ slot: "3" }`
+  has two data points, and each now gets its own exemplars. Before, both
+  sets shared one series, so one point got every exemplar and the other
+  none.
+- `@libo11y/core`: a metric stream that a view in the `views` option
+  renames now carries the exemplars of the instrument it derives from.
+  When one instrument feeds several streams, each stream's points get
+  the samples. Before, a renamed stream had no exemplars.
 
 ## [0.4.0] - 2026-11-27
 

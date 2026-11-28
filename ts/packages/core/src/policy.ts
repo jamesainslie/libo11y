@@ -14,6 +14,7 @@ import {
   SENSITIVITY_OF,
   type Sensitivity,
   validateAppRegistry,
+  validateCompiledAppRegistry,
 } from "@libo11y/spec";
 import type { Attributes } from "@opentelemetry/api";
 import { compareCodePoints, MAX_DEPTH, renderCanonical, WALK_BUDGET } from "./canonical.ts";
@@ -70,8 +71,9 @@ export interface PolicyOptions {
 }
 
 /**
- * Turns the registry option into compiled registries. A plain registry is validated first; one that
- * breaks a rule throws INVALID_APP_REGISTRY naming it as "registry N" (its 1-based position).
+ * Turns the registry option into compiled registries. Every registry is validated first, a compiled
+ * one with the rules that still apply to it; one that breaks a rule throws INVALID_APP_REGISTRY
+ * naming it as "registry N" (its 1-based position).
  */
 export function compileRegistries(
   registry: AppRegistry | CompiledAppRegistry | readonly (AppRegistry | CompiledAppRegistry)[] | undefined,
@@ -81,15 +83,16 @@ export function compileRegistries(
     ? registry
     : [registry as AppRegistry | CompiledAppRegistry];
   return list.map((reg, i) => {
-    if ("classes" in reg) return reg;
-    const result = validateAppRegistry(reg);
+    // A compiled registry is a structural type anyone can build, so it is validated too: one that
+    // claimed a reserved namespace or keys outside its own would reclassify spec keys.
+    const result = "classes" in reg ? validateCompiledAppRegistry(reg) : validateAppRegistry(reg);
     if (!result.ok) {
       throw invalidAppRegistryError(
         `registry ${i + 1}`,
         result.violations.map((v) => v.toString()),
       );
     }
-    return compileAppRegistry(reg);
+    return "classes" in reg ? reg : compileAppRegistry(reg);
   });
 }
 
