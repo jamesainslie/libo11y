@@ -61,6 +61,18 @@ Requires Zig 0.17.1.
   outgoing request started a new trace and logs lost their trace ID.
 - `Telemetry.tracerProvider()` returns null while `OTEL_SDK_DISABLED` is
   set. It returned a provider whose tracers still recorded spans in memory.
+- `o11yhttp.Client` returns a `304 Not Modified` response, and any response
+  to a `HEAD` request, as `std.http.Client` does. It treated them as
+  redirects to follow, so a conditional GET failed with
+  `error.HttpRedirectLocationMissing`.
+- `o11yhttp.Client` removes `traceparent`, `tracestate` and `baggage`
+  headers the caller supplied when `propagate_fn` denies the destination.
+  It skipped injection but left those headers on the first request and on
+  same-origin redirects.
+- `o11yhttp.Client` fails the request with `error.OutOfMemory` when it
+  cannot build the header list for a hop. It fell back to the caller's
+  original headers, which on a cross-origin redirect still held the trace
+  context and privileged headers it was meant to strip.
 
 ## [0.1.0] - 2026-11-26
 

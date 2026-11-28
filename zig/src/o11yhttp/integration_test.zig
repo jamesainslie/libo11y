@@ -758,6 +758,64 @@ test "o11yhttp loopback: cross-origin redirect strips propagated trace and bagga
     }
 }
 
+test "o11yhttp client: a 304 and a redirect answer to HEAD are final responses, as in std.http.Client" {
+    const rec = try o11ytest.start(testing.allocator, testing.io, .{});
+    defer rec.deinit();
+
+    const Handler = struct {
+        fn run(sreq: *o11yhttp.ServerRequest) !void {
+            if (std.mem.eql(u8, sreq.path(), "/cached")) {
+                // A conditional GET the cache still satisfies: 304, no Location.
+                try sreq.respond("", .{ .status = .not_modified });
+                return;
+            }
+            if (std.mem.eql(u8, sreq.path(), "/moved")) {
+                try sreq.respond("", .{
+                    .status = .moved_permanently,
+                    .extra_headers = &.{.{ .name = "location", .value = "/landing" }},
+                });
+                return;
+            }
+            try sreq.respond("landed", .{ .status = .ok });
+        }
+    };
+    const srv = try LoopbackServer(void, Handler.run).start(testing.allocator, testing.io, .{
+        .telemetry = rec.telemetry(),
+        .operation = "origin",
+    }, {});
+    defer srv.deinit();
+
+    var std_client: std.http.Client = .{ .allocator = testing.allocator, .io = testing.io };
+    defer std_client.deinit();
+    const client = o11yhttp.Client.init(&std_client, .{ .telemetry = rec.telemetry() });
+
+    const cached_url = try srv.url(testing.allocator, "/cached");
+    defer testing.allocator.free(cached_url);
+    const moved_url = try srv.url(testing.allocator, "/moved");
+    defer testing.allocator.free(moved_url);
+
+    // The wrapper answers exactly as the client it wraps does.
+    const plain_cached = try std_client.fetch(.{
+        .location = .{ .url = cached_url },
+        .extra_headers = &.{.{ .name = "if-none-match", .value = "\"v1\"" }},
+    });
+    try testing.expectEqual(std.http.Status.not_modified, plain_cached.status);
+    const cached = try client.fetch(.background, .{
+        .location = .{ .url = cached_url },
+        .extra_headers = &.{.{ .name = "if-none-match", .value = "\"v1\"" }},
+    });
+    try testing.expectEqual(std.http.Status.not_modified, cached.status);
+
+    const plain_head = try std_client.fetch(.{ .location = .{ .url = moved_url }, .method = .HEAD });
+    try testing.expectEqual(std.http.Status.moved_permanently, plain_head.status);
+    const head = try client.fetch(.background, .{ .location = .{ .url = moved_url }, .method = .HEAD });
+    try testing.expectEqual(std.http.Status.moved_permanently, head.status);
+
+    // A GET still follows the redirect.
+    const followed = try client.fetch(.background, .{ .location = .{ .url = moved_url } });
+    try testing.expectEqual(std.http.Status.ok, followed.status);
+}
+
 test "o11yhttp loopback: recordStatus after direct raw.respond prevents double-write on handler error" {
     const rec = try o11ytest.start(testing.allocator, testing.io, .{});
     defer rec.deinit();
