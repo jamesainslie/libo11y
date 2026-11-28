@@ -150,7 +150,10 @@ page. Block the parts of a page where they carry personal data:
   Block it.
 - **CSS** is kept with its URLs stripped. A stylesheet or a `style`
   attribute that holds personal data in a string that is not a URL, such
-  as a custom property, keeps it.
+  as a custom property, keeps it. A bare URL is found where a value or a
+  word in it starts. One written right after other punctuation
+  (`--x:=/a?token=1`), behind an escaped property name, or with a scheme
+  outside the web ones (`ssh:`) keeps its query.
 - **URL paths** are kept. Only the query and fragment are stripped, so a
   path that holds an email address or an account number keeps it.
 - **`id`, `class` and `name`** are kept.
