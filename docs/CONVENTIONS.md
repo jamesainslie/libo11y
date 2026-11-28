@@ -280,7 +280,11 @@ container (`O11Y_PG_TEST_DSN`).
   for 2FA on a direct publish from CI. The `ts/v0.2.0` release never
   reached npm either, because the trusted publishers allowed only staged
   publishing, so `@libo11y/web` and `@libo11y/webext` first appear at
-  0.2.1. Every package keeps
+  0.2.1. `@libo11y/rum`, `@libo11y/rum-react`,
+  `@libo11y/rum-tanstack-router`, `@libo11y/rum-connect` and
+  `@libo11y/sourcemaps` first ship in `ts/v0.3.0`, which implements spec
+  1.3.0. They are new to npm, so they install from the tarballs attached
+  to that GitHub Release until their first npm publish. Every package keeps
   `"private": true` in the source tree, and `release.ts pack` drops it
   from each packed `package.json`, so only packed tarballs publish.
   `make release-check` also runs `scripts/ts-release-check.sh` for
@@ -297,7 +301,9 @@ container (`O11Y_PG_TEST_DSN`).
   package versions.
 - To release TypeScript version X.Y.Z:
   1. Run `bun ts/scripts/release.ts version X.Y.Z`, which sets the
-     version in every package.
+     version in every package. Then run `bun run api` in `ts/`, so the
+     API reports of the packages that export `VERSION` carry the new
+     version.
   2. Move the `ts/CHANGELOG.md` entries into a `## [X.Y.Z] - date`
      section and update the link references.
   3. Set `TS_RELEASE_VERSION` in the `Makefile` and the default in
