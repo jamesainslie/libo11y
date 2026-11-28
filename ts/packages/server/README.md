@@ -114,7 +114,7 @@ propagator is handed the request's headers and its error can quote them.
 | `route`          | resolves the route template of a request, such as `/projects/:id`, for the span name, `http.route` and the metric. A template that starts with a method and a space, such as `GET /x`, names the span verbatim                         |
 | `publicEndpoint` | an internet-facing server. Inbound trace context starts a new root span linked to it, instead of becoming its parent. Baggage is still extracted                                                                                       |
 | `ignorePaths`    | URL paths to leave uninstrumented, as Go `path.Match` patterns such as `/healthz` or `/debug/*`, matched against the decoded path as Go matches them                                                                                   |
-| `serverTiming`   | adds `Server-Timing: traceparent;desc="00-<trace>-<span>-<flags>"` to `text/html` responses, so the page can join the server's trace                                                                                                   |
+| `serverTiming`   | adds `Server-Timing: traceparent;desc="00-<trace>-<span>-<flags>"` to `text/html` responses, so the page can join the server's trace. A span without a valid span context, as with no tracer provider set up, adds no entry            |
 | `canonicalLine`  | emits one `o11y.request.summary` event per request with the request's wide record. It needs `telemetry`                                                                                                                                |
 | `watchBody`      | `watchBody(res)` decides which responses end the span when the body finishes. Default: `text/html` and `text/event-stream` bodies. Other responses end the span when the handler returns, and keep their `Content-Length` and sendfile |
 
@@ -131,6 +131,11 @@ none of the diagnostics channels that Node's upstream instrumentation
 reads. Each request gets a CLIENT span named by method and the
 `http.client.request.duration` histogram. The span ends when the response
 headers arrive. A 4xx or 5xx response or a failed request marks it failed.
+The span's `url.full` attribute is the request URL without its user name
+and password. The values of the query keys that the OpenTelemetry HTTP
+semantic conventions name for presigned URLs, `AWSAccessKeyId`,
+`Signature`, `sig` and `X-Goog-Signature`, are replaced by `REDACTED`. The
+keys match case-sensitively, and every other query value is kept as sent.
 The trace context goes into a copy of the request headers, and the caller's
 `Request` and `init` are never changed.
 
