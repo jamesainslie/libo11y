@@ -222,10 +222,6 @@ matrix, none has a known defect. `ts/v0.2.1` fixed the last ones, which
 - **Metrics.** The `views` option is not applied, and the bucket
   boundaries of the HTTP and DB duration histograms are the SDK defaults,
   because the SDK ignores advisory boundaries.
-- **Detached work.** `Detached::Carrier` serializes as JSON, where every
-  other implementation uses the URL-encoded form, so carriers do not cross
-  languages. `start_linked` drops the caller's baggage. A child process
-  can inherit a stale `TRACESTATE`.
 - **HTTP.** The Rack middleware adds `Server-Timing` to responses that are
   not HTML and puts an unknown request method on metrics as given.
   `HttpClient` raises on a method `Net::HTTP` has no class for.
