@@ -5,6 +5,7 @@ import type { ReadableSpan } from "@opentelemetry/sdk-trace";
 import { type FakeRuntime, fakeRuntime } from "../test-support/fake-runtime.ts";
 import {
   RESOURCE_APP_LOAD_WAIT_MILLIS,
+  RESOURCE_MAX_WAIT_MILLIS,
   type ResourceEntryLike,
   type ResourcesEnv,
   resourcesWith,
@@ -256,4 +257,47 @@ test("resource types come from the initiator type, with fonts and images loaded 
   assert.equal(t("css", "https://app.test/bg.webp"), "image");
   assert.equal(t("link", "https://app.test/app.js"), "script");
   assert.equal(t("img", "https://app.test/font.woff"), "image");
+});
+
+test("a hide records the load resources still waiting for app_load", async () => {
+  const rt = fakeRuntime({ realViews: true });
+  rt.views.begin();
+  const e = env(rt, { loadEventEnd: 0 });
+  resourcesWith({}, e).start(rt);
+  e.emit([{ name: "https://app.test/a.js", initiatorType: "script", startTime: 100, responseEnd: 200 }]);
+  rt.hide();
+  const [js] = await resourceSpans(rt);
+  assert.equal(js?.name, "resource script");
+  assert.equal(js?.parentSpanContext, undefined);
+});
+
+test("load resources stop waiting after RESOURCE_MAX_WAIT_MILLIS even when the load never ends", async () => {
+  const rt = fakeRuntime({ realViews: true });
+  rt.views.begin();
+  const e = env(rt, { loadEventEnd: 0 });
+  resourcesWith({}, e).start(rt);
+  e.emit([{ name: "https://app.test/a.js", initiatorType: "script", startTime: 100, responseEnd: 200 }]);
+  rt.fakeEnv().advance(RESOURCE_MAX_WAIT_MILLIS - 200);
+  assert.equal((await resourceSpans(rt)).length, 0);
+  rt.fakeEnv().advance(400);
+  assert.equal((await resourceSpans(rt)).length, 1);
+  assert.equal(rt.fakeEnv().clock.pending(), 0, "no poll keeps running");
+});
+
+test("waiting load resources count toward maxPerView", async () => {
+  const rt = fakeRuntime({ realViews: true });
+  rt.views.begin();
+  const e = env(rt, { loadEventEnd: 0 });
+  resourcesWith({ maxPerView: 2 }, e).start(rt);
+  e.emit(
+    Array.from({ length: 5 }, (_, i) => ({
+      name: `https://app.test/${i}.js`,
+      initiatorType: "script",
+      startTime: 100 + i,
+      responseEnd: 200 + i,
+    })),
+  );
+  rt.views.appLoadStarted(APP_LOAD);
+  rt.fakeEnv().advance(100);
+  assert.equal((await resourceSpans(rt)).length, 2);
 });

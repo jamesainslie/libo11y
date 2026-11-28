@@ -752,8 +752,9 @@ test("an event with a body goes out with that body, the event name and the sessi
   });
 });
 
-test("an event with a body is buffered for an unkept session and dropped without consent", async () => {
-  const h = harness();
+test("an event with a body is buffered for an unkept session and sent once the session is kept", async () => {
+  const retentionQueue = createMemoryQueue({ ...RETENTION_QUEUE_DEFAULTS });
+  const h = harness({ retentionQueue });
   open = await setupRumWith(
     { ...OPTS, consent: { initial: "granted" }, rum: { sessionSampleRate: 0 } },
     h.deps,
@@ -762,15 +763,62 @@ test("an event with a body is buffered for an unkept session and dropped without
   assert.ok(rt);
   rt.emit("browser.web_vital", {}, undefined, { name: "lcp", value: 1, delta: 1, id: "a" });
   await open.forceFlush();
+  await new Promise((r) => setTimeout(r, 0));
   assert.equal(sentEvents(h.transport).includes("browser.web_vital"), false);
+  const held = await retentionQueue.claim(Date.now(), 100, 0);
+  assert.ok(
+    held.some((e) => e.body.includes("browser.web_vital")),
+    "the record waits in the retention buffer",
+  );
+  rt.session.retain("error");
+  await until(() => sentEvents(h.transport).includes("browser.web_vital"), "the retained record");
+});
+
+test("an event with a body is not emitted while consent is not granted", async () => {
+  const h = harness();
+  open = await setupRumWith({ ...OPTS, consent: { initial: "granted" } }, h.deps);
+  const rt = runtimeOf(open);
+  assert.ok(rt);
+  const id = open.rum.sessionId();
   await open.consent.revoke();
-  rt.emit("browser.web_vital", {}, undefined, { name: "lcp", value: 1, delta: 1, id: "b" });
-  open.consent.grant();
-  await until(() => open?.rum.sessionId() !== undefined, "the session");
-  runtimeOf(open)?.session.retain("error");
-  await new Promise((r) => setTimeout(r, 50));
+  let reached = 0;
+  const logger = open.loggerProvider.getLogger("@libo11y/rum");
+  const original = logger.emit.bind(logger);
+  logger.emit = (r) => {
+    reached++;
+    original(r);
+  };
+  rt.emit("browser.web_vital", { "session.id": id ?? "" }, undefined, {
+    name: "lcp",
+    value: 1,
+    delta: 1,
+    id: "b",
+  });
+  assert.equal(reached, 0);
+});
+
+test("an event with a body is not correlated to the span active when it is emitted", async () => {
+  const h = harness();
+  open = await setupRumWith({ ...OPTS, consent: { initial: "granted" } }, h.deps);
+  const rt = runtimeOf(open);
+  assert.ok(rt);
+  open.tracerProvider.getTracer("app").startActiveSpan("unrelated", (span) => {
+    rt.emit("browser.web_vital", {}, undefined, { name: "cls", value: 0, delta: 0, id: "c" });
+    span.end();
+  });
   await open.forceFlush();
-  assert.equal(sentEvents(h.transport).includes("browser.web_vital"), false);
+  const records = h.transport.requests
+    .filter((r) => r.signal === "logs")
+    .flatMap((r) =>
+      (
+        JSON.parse(r.body) as {
+          resourceLogs: { scopeLogs: { logRecords: { traceId?: string; attributes: OtlpAttr[] }[] }[] }[];
+        }
+      ).resourceLogs.flatMap((rl) => rl.scopeLogs.flatMap((sl) => sl.logRecords)),
+    );
+  const vital = records.find((lr) => lr.attributes.some((a) => a.value.stringValue === "browser.web_vital"));
+  assert.ok(vital);
+  assert.equal(vital.traceId ?? "", "");
 });
 
 test("the runtime ignores the OTLP endpoints and the app's ignoreUrls", async () => {
@@ -833,6 +881,39 @@ for (const [how, hide] of [
     assert.equal(summary?.["o11y.rum.summary.cls.value"], 0.1);
   });
 }
+
+test("a rotated session's start goes out when the page is hidden before the election ends", async () => {
+  let now = 1_000_000;
+  const h = harness({ now: () => now });
+  open = await setupRumWith({ ...OPTS, consent: { initial: "granted" } }, h.deps);
+  now += IDLE;
+  runtimeOf(open)?.session.touch();
+  const rotated = open.rum.sessionId();
+  h.document.hide();
+  await open.forceFlush();
+  const starts = logRecords(h.transport)
+    .filter((r) => r["event.name"] === "o11y.rum.session.start")
+    .map((r) => r["session.id"]);
+  assert.ok(starts.includes(rotated), "the rotated session's start was sent on visibilitychange");
+});
+
+test("a pageshow that is not a back/forward cache restore does not re-arm the hide hooks", async () => {
+  const h = harness();
+  open = await setupRumWith({ ...OPTS, consent: { initial: "granted" } }, h.deps);
+  const rt = runtimeOf(open);
+  assert.ok(rt);
+  let hooks = 0;
+  rt.onHide(() => hooks++);
+  h.document.hide();
+  h.deps.window?.dispatchEvent(new Event("pageshow"));
+  h.deps.window?.dispatchEvent(new Event("pagehide"));
+  assert.equal(hooks, 1);
+  const restored = new Event("pageshow");
+  Object.defineProperty(restored, "persisted", { value: true });
+  h.deps.window?.dispatchEvent(restored);
+  h.deps.window?.dispatchEvent(new Event("pagehide"));
+  assert.equal(hooks, 2);
+});
 
 test("a page shown again is hidden again: the hooks run once per hide", async () => {
   const h = harness();

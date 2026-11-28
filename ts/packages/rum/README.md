@@ -182,8 +182,9 @@ Each vital goes into the view summary once, as
 known. FCP and TTFB are known when the browser reports them. LCP, CLS and
 INP keep changing while the page is visible, so RUM takes their latest
 values when the page is first hidden, just before that hide sends the
-summary. A CLS or INP change after the page returns from hidden stays out
-of the summary. A kept session still records it as detail. CrUX reports
+summary. A CLS or INP value after the page returns from hidden stays out
+of the summary, even when it is the first INP of the page. A kept session
+still records it as detail. CrUX reports
 the final value at page unload, so on long-lived pages the p75 of CLS and
 INP can differ from CrUX. LCP, INP, FCP and TTFB are in seconds. CLS has no
 unit.
@@ -201,6 +202,11 @@ thresholds the spec publishes.
 
 A browser that does not support a vital records nothing for it. Firefox
 and WebKit, for example, report no CLS.
+
+On a navigation away, Chromium fires `pagehide` before the page is hidden,
+and RUM takes the values at `pagehide`. An interaction that the browser has
+not yet reported by then, such as the click that started the navigation,
+is not in INP.
 
 ### `resources()`
 
@@ -225,6 +231,9 @@ must send `Timing-Allow-Origin` for those details.
   and `o11y.rum.server_timing.duration` in seconds.
 - At most 150 resource spans per view. Change it with
   `resources({ maxPerView })`.
+
+A page hidden before `app_load` is known records the resources of its load
+as root spans at once, so leaving a slow page still records them.
 
 Resource spans are detail, so only kept sessions send them. They are not
 requests of the view, so they do not count in `o11y.rum.summary.requests`.

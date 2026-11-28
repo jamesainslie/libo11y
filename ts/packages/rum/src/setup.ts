@@ -47,7 +47,7 @@ import {
   type SetupDeps,
   setupWithDeps,
 } from "@libo11y/web/internal";
-import { type Attributes, diag, SeverityNumber, type Span } from "@opentelemetry/api";
+import { type Attributes, diag, ROOT_CONTEXT, SeverityNumber, type Span } from "@opentelemetry/api";
 import { type ExportResult, ExportResultCode } from "@opentelemetry/core";
 import { ConsoleSpanExporter, type SpanExporter, type SpanProcessor } from "@opentelemetry/sdk-trace";
 import { recordInstantAction } from "./actions/record.ts";
@@ -362,7 +362,7 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
   const hideHooks = new Set<() => void>();
   let hideHandled = false;
   /** What a hide sends, once setup finished. */
-  let afterHide: ((pagehide: boolean) => void) | undefined;
+  let afterHide: (() => void) | undefined;
   const runHide = (): void => {
     if (hideHandled) return;
     hideHandled = true;
@@ -378,7 +378,7 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
   const onVisibility = (): void => {
     if (hidden()) {
       runHide();
-      afterHide?.(false);
+      afterHide?.();
     } else {
       hideHandled = false;
       summary.visibility(true);
@@ -387,10 +387,12 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
   };
   const onPageHide = (): void => {
     runHide();
-    afterHide?.(true);
+    afterHide?.();
   };
-  const onPageShow = (): void => {
-    hideHandled = false;
+  // Only a page restored from the back/forward cache was hidden and is shown again; the pageshow
+  // of a load that finished in a background tab is not.
+  const onPageShow = (e: Event): void => {
+    if ((e as Event & { persisted?: boolean }).persisted === true) hideHandled = false;
   };
   const removeHideListeners = (): void => {
     doc?.removeEventListener("visibilitychange", onVisibility);
@@ -462,7 +464,8 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
         severityText: "INFO",
         body: { ...body },
         attributes: { ...(merged as Attributes), [EVENT_NAME_KEY]: name },
-        ...(ctx === undefined ? {} : { context: ctx }),
+        // Body events report page-level values at a hide, so the span active then is unrelated.
+        context: ctx ?? ROOT_CONTEXT,
       });
     },
     onRequestStart(hook) {
@@ -623,8 +626,10 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
     else if (everStarted) stopRecording();
   });
 
-  afterHide = (pagehide) => {
-    if (pagehide) settleStarts();
+  // A hidden page may never run again (frozen or discarded on mobile), so a start still waiting for
+  // its election goes out now if its session is still current.
+  afterHide = () => {
+    settleStarts();
     summary.flush();
     void t.forceFlush();
   };

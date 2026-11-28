@@ -104,3 +104,40 @@ test("a count with no open view is dropped", () => {
   acc.close("v0");
   assert.equal(got[0]?.["o11y.rum.summary.requests"], undefined);
 });
+
+test("a pinned closed view is not forgotten until it is unpinned", () => {
+  const got: Record<string, string | number>[] = [];
+  const acc = createSummaryAccumulator({
+    platform: "web",
+    emit: (a) => got.push(a),
+    now: () => 0,
+    visible: () => true,
+  });
+  acc.open(V0);
+  acc.pin("v0", true);
+  acc.close("v0");
+  for (let i = 1; i <= 12; i++) {
+    acc.open({ ...V0, id: `v${i}` });
+    acc.close(`v${i}`);
+  }
+  acc.vital("v0", "lcp", 1.5);
+  acc.pin("v0", false);
+  acc.flush();
+  assert.equal(
+    got.find((s) => s["o11y.rum.view.id"] === "v0" && s["o11y.rum.summary.seq"] === 1)?.[
+      "o11y.rum.summary.lcp.value"
+    ],
+    1.5,
+  );
+  for (let i = 13; i <= 24; i++) {
+    acc.open({ ...V0, id: `v${i}` });
+    acc.close(`v${i}`);
+  }
+  acc.vital("v0", "cls", 0.1);
+  acc.flush();
+  assert.equal(
+    got.some((s) => s["o11y.rum.summary.cls.value"] !== undefined),
+    false,
+    "unpinned, it is forgotten again",
+  );
+});

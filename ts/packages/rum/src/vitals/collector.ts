@@ -47,15 +47,26 @@ interface Held {
   readonly view: ViewState;
 }
 
-/** For tests: the vitals collector over an injected registration function. */
-export function vitalsWith(register: VitalRegistrar): RumCollector {
+/** How long the views a page loaded are remembered as already hidden once. */
+const MAX_HIDDEN_VIEWS = 16;
+const CHANGE_AFTER_HIDE: ReadonlySet<VitalName> = new Set(["inp", "cls"]);
+
+/** For tests: the vitals collector over an injected registration function and task scheduler. */
+export function vitalsWith(
+  register: VitalRegistrar,
+  defer: (cb: () => void) => void = (cb) => setTimeout(cb, 0),
+): RumCollector {
   let registered = false;
   let running: RumRuntime | undefined;
   let load: ViewState | undefined;
+  /** Bumped by every start and stop, so a deferred report of an earlier run is dropped. */
+  let generation = 0;
   /** The latest uncommitted report of each metric instance, by web-vitals id. */
   const held = new Map<string, Held>();
   /** The value last committed for each metric instance, in web-vitals units. */
   const committed = new Map<string, number>();
+  /** Load views the page has been hidden on at least once: later INP and CLS values are detail only. */
+  const hiddenOnce = new Set<string>();
 
   const target = (rt: RumRuntime, m: VitalMetric): ViewState | undefined => {
     if (m.navigationType !== "back-forward-cache") return load;
@@ -68,7 +79,7 @@ export function vitalsWith(register: VitalRegistrar): RumCollector {
     committed.set(m.id, m.value);
     const name = m.name.toLowerCase() as VitalName;
     const value = vitalValue(name, m.value);
-    rt.summary.vital(view.id, name, value);
+    if (!(CHANGE_AFTER_HIDE.has(name) && hiddenOnce.has(view.id))) rt.summary.vital(view.id, name, value);
     rt.emit(
       EVENT_BROWSER_WEB_VITAL,
       { ...attributionAttributes(m), [ATTR_SESSION_ID]: view.sessionId, [ATTR_RUM_VIEW_ID]: view.id },
@@ -76,47 +87,114 @@ export function vitalsWith(register: VitalRegistrar): RumCollector {
       { name, value, delta: vitalValue(name, m.value - (previous ?? 0)), id: m.id },
     );
   };
+  const accept = (rt: RumRuntime, m: VitalMetric): void => {
+    const view = target(rt, m);
+    if (view === undefined) return;
+    if (FINAL_AT_REPORT.has(m.name)) {
+      commit(rt, { metric: m, view });
+      return;
+    }
+    held.set(m.id, { metric: m, view });
+    // Pinned until committed, so the load view is not forgotten after many soft views.
+    rt.summary.pin(view.id, true);
+  };
   const report = (m: VitalMetric): void => {
     const rt = running;
     if (rt === undefined || !rt.gate.recording()) return;
-    const view = target(rt, m);
-    if (view === undefined) return;
-    if (FINAL_AT_REPORT.has(m.name)) commit(rt, { metric: m, view });
-    else held.set(m.id, { metric: m, view });
+    if (m.navigationType !== "back-forward-cache") {
+      accept(rt, m);
+      return;
+    }
+    // web-vitals reports a restore from its own pageshow listener, which may run before the view
+    // tracker's has started the bfcache_restore view, so a restore's report waits a task.
+    const gen = generation;
+    defer(() => {
+      if (gen === generation && running === rt && rt.gate.recording()) accept(rt, m);
+    });
+  };
+  const unpinHeld = (rt: RumRuntime): void => {
+    for (const h of held.values()) rt.summary.pin(h.view.id, false);
+    held.clear();
   };
 
   return {
     name: "vitals",
     start(rt) {
+      generation++;
       const v = rt.views.loadView();
       load = v !== undefined && v.sessionId === rt.session.current()?.id ? v : undefined;
       running = rt;
       const offHide = rt.onHide(() => {
         if (running !== rt || !rt.gate.recording()) return;
         const due = [...held.values()];
-        held.clear();
+        unpinHeld(rt);
         for (const h of due) commit(rt, h);
+        for (const view of [load, rt.views.loadView()]) {
+          if (view === undefined) continue;
+          hiddenOnce.delete(view.id);
+          hiddenOnce.add(view.id);
+        }
+        while (hiddenOnce.size > MAX_HIDDEN_VIEWS)
+          hiddenOnce.delete(hiddenOnce.values().next().value as string);
       });
       if (!registered) {
         registered = true;
         register(report);
       }
       return () => {
+        generation++;
         offHide();
+        unpinHeld(rt);
         if (running === rt) running = undefined;
         load = undefined;
-        held.clear();
       };
     },
   };
 }
 
-function generateTarget(node: Node | null): string | undefined {
-  return typeof Element !== "undefined" && node instanceof Element ? elementSelector(node) : undefined;
+/** The attribution fields that hold an element selector. */
+const TARGET_FIELDS = ["target", "interactionTarget", "largestShiftTarget"] as const;
+const MAX_TRUSTED_TARGETS = 64;
+
+/**
+ * Element selectors RUM built. web-vitals calls generateTarget only for an element still in the
+ * page; otherwise it falls back to "#" plus the element's raw ID (LCP) or the browser's own
+ * targetSelector (INP), which skip RUM's rules for generated IDs. clean keeps a selector field only
+ * when generateTarget returned that selector recently, and drops it otherwise.
+ */
+export function trustedTargets(
+  select: (node: Node | null) => string | undefined,
+  max: number = MAX_TRUSTED_TARGETS,
+): {
+  generateTarget(node: Node | null): string | undefined;
+  clean(attribution: Readonly<Record<string, unknown>>): Record<string, unknown>;
+} {
+  const made = new Set<string>();
+  return {
+    generateTarget(node) {
+      const selector = select(node);
+      if (selector === undefined) return undefined;
+      made.delete(selector);
+      made.add(selector);
+      while (made.size > max) made.delete(made.values().next().value as string);
+      return selector;
+    },
+    clean(attribution) {
+      const out: Record<string, unknown> = { ...attribution };
+      for (const field of TARGET_FIELDS) {
+        const v = out[field];
+        if (v !== undefined && !(typeof v === "string" && made.has(v))) delete out[field];
+      }
+      return out;
+    },
+  };
 }
 
 const registerWebVitals: VitalRegistrar = (report) => {
-  const opts = { reportAllChanges: true, generateTarget };
+  const targets = trustedTargets((node) =>
+    typeof Element !== "undefined" && node instanceof Element ? elementSelector(node) : undefined,
+  );
+  const opts = { reportAllChanges: true, generateTarget: targets.generateTarget };
   const forward = (m: {
     name: VitalMetric["name"];
     value: number;
@@ -131,7 +209,7 @@ const registerWebVitals: VitalRegistrar = (report) => {
       delta: m.delta,
       id: m.id,
       navigationType: m.navigationType,
-      attribution: m.attribution as Readonly<Record<string, unknown>>,
+      attribution: targets.clean(m.attribution as Readonly<Record<string, unknown>>),
     });
   onLCP(forward, opts);
   onINP(forward, opts);

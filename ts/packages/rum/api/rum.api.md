@@ -259,6 +259,7 @@ export interface SummaryAccumulator {
     count(key: SummaryCountKey, n?: number): void;
     flush(): void;
     open(view: SummaryView): void;
+    pin(viewId: string, pinned: boolean): void;
     // (undocumented)
     rename(viewId: string, name: string): void;
     reset(): void;

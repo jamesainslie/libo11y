@@ -14,13 +14,15 @@
  *
  * A resource that started before loadEventEnd, or while the load is under way, belongs to the load
  * view and is a child of app_load (web's documentLoad span). Such resources wait until app_load is
- * known, polling every RESOURCE_POLL_MILLIS, and after the load ended they wait at most
- * RESOURCE_APP_LOAD_WAIT_MILLIS before they are recorded as roots. Any other resource belongs to
+ * known, polling every RESOURCE_POLL_MILLIS. They are recorded as roots once the load ended
+ * RESOURCE_APP_LOAD_WAIT_MILLIS ago, once RESOURCE_MAX_WAIT_MILLIS passed since the first of them
+ * waited, or when the page is hidden (runtime.onHide), so a page left before app_load still records
+ * its load resources. Any other resource belongs to
  * the current view and is a root linked to that view's span when it is known. A Server-Timing
  * traceparent adds a link to the server span; every other Server-Timing entry becomes a
  * server_timing span event at the span's start with o11y.rum.server_timing.name and
- * o11y.rum.server_timing.duration (seconds). At most maxPerView spans per view. Stop drops
- * resources still waiting and stops observing.
+ * o11y.rum.server_timing.duration (seconds). At most maxPerView spans per view, waiting ones
+ * included. Stop drops resources still waiting and stops observing.
  */
 import {
   ATTR_RUM_RESOURCE_TYPE,
@@ -74,6 +76,10 @@ const DEFAULT_MAX_PER_VIEW = 150;
 export const RESOURCE_POLL_MILLIS = 100;
 /** How long after the load ended resources of the load wait for app_load before they become roots. */
 export const RESOURCE_APP_LOAD_WAIT_MILLIS = 1000;
+/** The longest a resource of the load waits for app_load, even when the load never ends. */
+export const RESOURCE_MAX_WAIT_MILLIS = 10_000;
+/** How many views' resource counts a start remembers. */
+const MAX_COUNTED_VIEWS = 8;
 
 const SKIPPED_INITIATORS: ReadonlySet<string> = new Set(["fetch", "xmlhttprequest", "beacon"]);
 
@@ -159,12 +165,19 @@ export function resourcesWith(opts: ResourcesOptions, env: ResourcesEnv): RumCol
       const waiting: { entry: ResourceEntryLike; view: ViewState }[] = [];
       let poll: unknown;
       let giveUpAt: number | undefined;
+      let waitUntil: number | undefined;
       let stopped = false;
 
-      const record = (entry: ResourceEntryLike, view: ViewState, inLoad: boolean): void => {
+      /** Takes one of the view's maxPerView slots, false when none is left. */
+      const take = (view: ViewState): boolean => {
         const n = perView.get(view.id) ?? 0;
-        if (n >= maxPerView) return;
+        if (n >= maxPerView) return false;
+        perView.delete(view.id);
         perView.set(view.id, n + 1);
+        while (perView.size > MAX_COUNTED_VIEWS) perView.delete(perView.keys().next().value as string);
+        return true;
+      };
+      const record = (entry: ResourceEntryLike, view: ViewState, inLoad: boolean): void => {
         const url = httpUrl(entry.name);
         if (url === undefined) return;
         const type = resourceType(entry);
@@ -202,14 +215,24 @@ export function resourcesWith(opts: ResourcesOptions, env: ResourcesEnv): RumCol
         span.end(env.timeOrigin + Math.max(entry.responseEnd, entry.startTime));
       };
 
+      const release = (): void => {
+        if (poll !== undefined) env.clearTimeout(poll);
+        poll = undefined;
+        giveUpAt = undefined;
+        waitUntil = undefined;
+        for (const w of waiting.splice(0)) record(w.entry, w.view, true);
+      };
       const drain = (): void => {
         poll = undefined;
         if (stopped) return;
-        const known = rt.views.appLoad() !== undefined;
-        const loaded = env.loadEventEnd() > 0;
-        if (loaded && giveUpAt === undefined) giveUpAt = rt.now() + RESOURCE_APP_LOAD_WAIT_MILLIS;
-        if (known || (giveUpAt !== undefined && rt.now() >= giveUpAt)) {
-          for (const w of waiting.splice(0)) record(w.entry, w.view, true);
+        const now = rt.now();
+        if (env.loadEventEnd() > 0 && giveUpAt === undefined) giveUpAt = now + RESOURCE_APP_LOAD_WAIT_MILLIS;
+        if (
+          rt.views.appLoad() !== undefined ||
+          (giveUpAt !== undefined && now >= giveUpAt) ||
+          (waitUntil !== undefined && now >= waitUntil)
+        ) {
+          release();
           return;
         }
         poll = env.setTimeout(drain, RESOURCE_POLL_MILLIS);
@@ -229,19 +252,26 @@ export function resourcesWith(opts: ResourcesOptions, env: ResourcesEnv): RumCol
           const loadEnd = env.loadEventEnd();
           const inLoad = loadEnd === 0 || entry.startTime < loadEnd;
           const view = inLoad ? rt.views.loadView() : rt.views.current();
-          if (view === undefined) continue;
-          if (inLoad && rt.views.appLoad() === undefined) waiting.push({ entry, view });
-          else record(entry, view, inLoad);
+          if (view === undefined || !take(view)) continue;
+          if (inLoad && rt.views.appLoad() === undefined) {
+            waitUntil ??= rt.now() + RESOURCE_MAX_WAIT_MILLIS;
+            waiting.push({ entry, view });
+          } else record(entry, view, inLoad);
         }
         if (waiting.length > 0 && poll === undefined) drain();
       };
 
       const unobserve = env.observe(onEntries);
+      // A page hidden before app_load is known may never come back: record what waits now.
+      const offHide = rt.onHide(() => {
+        if (!stopped && rt.gate.recording()) release();
+      });
       return () => {
         stopped = true;
         waiting.length = 0;
         if (poll !== undefined) env.clearTimeout(poll);
         poll = undefined;
+        offHide();
         unobserve();
       };
     },
