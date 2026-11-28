@@ -4,9 +4,10 @@
 #
 # Usage: java-hygiene.sh [ROOT]
 #
-# ROOT defaults to java. Files under src/test, target, libo11y-cli and the
-# generated spec package are not checked. A ROOT that cannot be searched
-# fails the gate with status 2.
+# ROOT defaults to java. Files under src/test, target and the generated spec
+# package are not checked. The CLI is checked too: it hands System.out and
+# System.err to Main.run as streams, which the pattern does not match. A ROOT
+# that cannot be searched fails the gate with status 2.
 set -euo pipefail
 
 ROOT="${1:-java}"
@@ -22,7 +23,7 @@ fi
 fail=0
 while IFS= read -r -d '' file; do
   case "$file" in
-    */src/test/*|*/target/*|*/libo11y-cli/*|*/spec/generated/*) continue ;;
+    */src/test/*|*/target/*|*/spec/generated/*) continue ;;
   esac
   if grep -nE "$pattern" "$file" >/dev/null 2>&1; then
     echo "java-hygiene: disallowed stdout/stderr print or printStackTrace in $file:" >&2
