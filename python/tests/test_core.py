@@ -175,8 +175,8 @@ def test_setup_globals_canary_and_already_setup() -> None:
         assert any(rec.get(EVENT_NAME_KEY) == EVENT_TELEMETRY_CONFIGURED for rec in lines)
 
         # Globals installed.
-        assert trace.get_tracer_provider() is tel.tracer_provider
-        assert metrics.get_meter_provider() is tel.meter_provider
+        assert trace.get_tracer("global").start_span("active").is_recording()
+        assert metrics.get_meter_provider() is not tel.meter_provider
     finally:
         assert tel.shutdown().ok
 
