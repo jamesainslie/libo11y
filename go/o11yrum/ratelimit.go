@@ -67,6 +67,23 @@ func (l *limiter) allow(key uint64) (ok bool, retryAfter time.Duration) {
 	return false, time.Duration((1 - b.tokens) / l.rate * float64(time.Second))
 }
 
+// blocked reports whether key's bucket is empty, and how long until it
+// holds a token, without taking one. An untracked key is never blocked
+// and stays untracked.
+func (l *limiter) blocked(key uint64) (bool, time.Duration) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	b, found := l.buckets[key]
+	if !found {
+		return false, 0
+	}
+	tokens := min(l.burst, b.tokens+l.now().Sub(b.last).Seconds()*l.rate)
+	if tokens >= 1 {
+		return false, 0
+	}
+	return true, time.Duration((1 - tokens) / l.rate * float64(time.Second))
+}
+
 // sweepLocked drops buckets idle long enough to have refilled completely.
 func (l *limiter) sweepLocked(now time.Time) {
 	full := time.Duration(l.burst / l.rate * float64(time.Second))

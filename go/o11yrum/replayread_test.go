@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -213,6 +214,9 @@ func TestReplayReadAuth(t *testing.T) {
 		"two tokens":   "Bearer " + readToken + " " + readToken2,
 	} {
 		for _, p := range paths {
+			// The refusals are spaced out so the failed-token limit
+			// (TestReplayReadLimitsFailedTokens) never applies here.
+			f.clock.advance(time.Minute)
 			w := readRequest(t, f.read, p.method, p.path, auth)
 			if w.Code != http.StatusUnauthorized {
 				t.Errorf("%s %s %s: status %d", name, p.method, p.path, w.Code)
@@ -652,5 +656,123 @@ func TestReplayReadHandlerIsStable(t *testing.T) {
 	f := newReadFixture(t, nil, "")
 	if f.h.ReplayReadHandler() != f.read {
 		t.Error("ReplayReadHandler builds a new handler on each call")
+	}
+}
+
+// readFrom is readRequest from the TCP peer addr.
+func readFrom(t *testing.T, h http.Handler, addr, method, path, auth string) *httptest.ResponseRecorder {
+	t.Helper()
+	r := httptest.NewRequest(method, path, nil)
+	r.RemoteAddr = addr
+	if auth != "" {
+		r.Header.Set("Authorization", auth)
+	}
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	return w
+}
+
+func TestReplayReadLimitsFailedTokens(t *testing.T) {
+	f := newReadFixture(t, nil, "")
+	f.seed(t)
+	const peer, other = "10.1.2.3:41000", "10.1.2.4:41000"
+	path := sessionPath("shop-web", replaySession)
+	good, bad := "Bearer "+readToken, "Bearer not-the-token-at-all-000"
+	// Successful requests never spend the failure budget.
+	for i := range 3 * readFailuresPerMinute {
+		if w := readFrom(t, f.read, peer, http.MethodGet, path, good); w.Code != http.StatusOK {
+			t.Fatalf("good request %d: %d", i, w.Code)
+		}
+	}
+	for i := range readFailuresPerMinute {
+		if w := readFrom(t, f.read, peer, http.MethodGet, path, bad); w.Code != http.StatusUnauthorized {
+			t.Fatalf("failure %d inside the budget: %d", i, w.Code)
+		}
+	}
+	// Past the budget the peer is refused before its token is compared, so
+	// a guess that happens to be right learns nothing either.
+	for name, auth := range map[string]string{"wrong": bad, "right": good, "none": ""} {
+		w := readFrom(t, f.read, peer, http.MethodGet, path, auth)
+		if w.Code != http.StatusTooManyRequests {
+			t.Fatalf("%s token past the budget: %d", name, w.Code)
+		}
+		if ra, err := strconv.Atoi(w.Header().Get("Retry-After")); err != nil || ra < 1 {
+			t.Errorf("%s: Retry-After %q", name, w.Header().Get("Retry-After"))
+		}
+		if strings.Contains(w.Body.String(), replaySession) {
+			t.Errorf("%s: the refusal leaks %q", name, w.Body)
+		}
+	}
+	// Another peer is not locked out.
+	if w := readFrom(t, f.read, other, http.MethodGet, path, good); w.Code != http.StatusOK {
+		t.Fatalf("another peer: %d", w.Code)
+	}
+	// The budget refills.
+	f.clock.advance(time.Minute)
+	if w := readFrom(t, f.read, peer, http.MethodGet, path, good); w.Code != http.StatusOK {
+		t.Fatalf("after the window: %d", w.Code)
+	}
+	reads := sumPoints(t, metricByName(t, f.rec.Metrics(), "o11yrum.replay.reads"))
+	if got := reads[set(telOperation, "list", telOutcome, "rate_limited")]; got != 3 {
+		t.Errorf("rate-limited lists %d, want 3", got)
+	}
+}
+
+func TestReplayReadReloadTokens(t *testing.T) {
+	f := newReadFixture(t, nil, readToken+"\n")
+	f.seed(t)
+	file := f.h.cfg.resolvePath(f.h.cfg.Replay.ReadTokenFile)
+	path := sessionPath("shop-web", replaySession)
+	status := func(token string) int {
+		t.Helper()
+		f.clock.advance(time.Minute) // keep clear of the failed-token limit
+		return readRequest(t, f.read, http.MethodGet, path, "Bearer "+token).Code
+	}
+	if got := status(readToken2); got != http.StatusUnauthorized {
+		t.Fatalf("second token before the reload: %d", got)
+	}
+	if err := os.WriteFile(file, []byte(readToken2+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Nothing changes until the reload.
+	if got := status(readToken); got != http.StatusOK {
+		t.Fatalf("first token before the reload: %d", got)
+	}
+	if err := f.h.ReloadReplayReadTokens(); err != nil {
+		t.Fatal(err)
+	}
+	if got := status(readToken); got != http.StatusUnauthorized {
+		t.Errorf("rotated-out token: %d", got)
+	}
+	if got := status(readToken2); got != http.StatusOK {
+		t.Errorf("rotated-in token: %d", got)
+	}
+	// A bad file fails the reload and keeps the tokens in use.
+	for name, content := range map[string]string{"short": "short-secret\n", "empty": "", "missing": ""} {
+		if name == "missing" {
+			if err := os.Remove(file); err != nil {
+				t.Fatal(err)
+			}
+		} else if err := os.WriteFile(file, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		err := f.h.ReloadReplayReadTokens()
+		if err == nil || !strings.Contains(err.Error(), file) || strings.Contains(err.Error(), "short-secret") {
+			t.Errorf("%s: err %v, want it to name the file and no token", name, err)
+		}
+		if got := status(readToken2); got != http.StatusOK {
+			t.Errorf("%s: the token in use stopped working: %d", name, got)
+		}
+	}
+}
+
+func TestReplayReadReloadWithoutTokenFile(t *testing.T) {
+	yaml := strings.Replace(readConfig, "read_token_file: %q", "max_events: 50", 1)
+	f := newReadFixtureYAML(t, nil, yaml)
+	if err := f.h.ReloadReplayReadTokens(); err != nil {
+		t.Errorf("reload without a token file: %v", err)
+	}
+	if w := readRequest(t, f.read, http.MethodGet, sessionPath("shop-web", replaySession), "Bearer "+readToken); w.Code != http.StatusUnauthorized {
+		t.Errorf("after the reload: %d", w.Code)
 	}
 }

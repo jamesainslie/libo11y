@@ -11,16 +11,30 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
+	"net/netip"
 	"os"
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
 // minReadTokenLength is the shortest bearer token the read API accepts.
 const minReadTokenLength = 16
+
+// The failed-token limit: each TCP peer of the read listener may fail
+// authentication readFailuresPerMinute times in a burst, refilled evenly
+// over a minute. Past it every request from the peer answers 429 before
+// its token is compared. At most readMaxTrackedPeers peers are tracked;
+// past that a new peer is not limited, as on the public edge, so memory
+// stays bounded and real callers are never locked out by a flood.
+const (
+	readFailuresPerMinute = 10
+	readMaxTrackedPeers   = 1024
+)
 
 // Read API operations and outcomes, for o11yrum.replay.reads.
 const (
@@ -33,6 +47,7 @@ const (
 	readUnauthorized = "unauthorized"
 	readBadRequest   = "bad_request"
 	readNotFound     = "not_found"
+	readRateLimited  = "rate_limited"
 	readError        = "error"
 )
 
@@ -49,9 +64,13 @@ var routeOps = map[string]string{routeList: readOpList, routeGet: readOpGet, rou
 type replayReader struct {
 	h   *Handler
 	mux *http.ServeMux
-	// tokens are the SHA-256 sums of the accepted bearer tokens. With
-	// none, every request answers 401.
-	tokens [][32]byte
+	// tokenFile is the resolved replay.read_token_file, "" without one.
+	tokenFile string
+	// tokens holds the SHA-256 sums of the accepted bearer tokens,
+	// swapped whole on a reload. With none, every request answers 401.
+	tokens atomic.Pointer[[][32]byte]
+	// failures counts failed authentications per TCP peer.
+	failures *limiter
 }
 
 // ReplayReadHandler returns the session replay read API, for a player
@@ -74,17 +93,40 @@ type replayReader struct {
 // that have stopped, and is idempotent.
 func (h *Handler) ReplayReadHandler() http.Handler { return h.reader }
 
+// ReloadReplayReadTokens reads replay.read_token_file again and swaps the
+// read API's tokens for its contents, so tokens rotate without a restart.
+// Requests already authenticated finish; later ones need a new token. On
+// an error, which names the file and never a token, the tokens in use
+// stay. Without a token file it does nothing. The o11yrum-gateway command
+// calls it on SIGHUP.
+func (h *Handler) ReloadReplayReadTokens() error {
+	rr := h.reader
+	if rr.tokenFile == "" {
+		return nil
+	}
+	sums, err := loadReadTokens(rr.tokenFile)
+	if err != nil {
+		return fmt.Errorf("o11yrum: %w", err)
+	}
+	rr.tokens.Store(&sums)
+	return nil
+}
+
 // newReplayReader loads the read tokens and builds the routes.
 func newReplayReader(h *Handler, tokenFile string) (*replayReader, error) {
-	rr := &replayReader{h: h, mux: http.NewServeMux()}
+	rr := &replayReader{
+		h: h, mux: http.NewServeMux(), tokenFile: tokenFile,
+		failures: newLimiter(readFailuresPerMinute, readMaxTrackedPeers, h.now),
+	}
 	if tokenFile != "" {
 		if err := checkReplayStore(h.store); err != nil {
 			return nil, fmt.Errorf("%w (replay.read_token_file is set)", err)
 		}
-		var err error
-		if rr.tokens, err = loadReadTokens(tokenFile); err != nil {
+		sums, err := loadReadTokens(tokenFile)
+		if err != nil {
 			return nil, fmt.Errorf("o11yrum: %w", err)
 		}
+		rr.tokens.Store(&sums)
 	}
 	rr.mux.HandleFunc(routeList, rr.list)
 	rr.mux.HandleFunc(routeGet, rr.get)
@@ -144,12 +186,13 @@ func printableASCII(s string) bool {
 // timing does not depend on which token matched or on its length.
 func (rr *replayReader) authorized(r *http.Request) bool {
 	scheme, token, ok := strings.Cut(r.Header.Get("Authorization"), " ")
-	if !ok || !strings.EqualFold(scheme, "Bearer") || len(rr.tokens) == 0 {
+	tokens := rr.tokens.Load()
+	if !ok || !strings.EqualFold(scheme, "Bearer") || tokens == nil || len(*tokens) == 0 {
 		return false
 	}
 	got := sha256.Sum256([]byte(strings.TrimSpace(token)))
 	match := 0
-	for _, want := range rr.tokens {
+	for _, want := range *tokens {
 		match |= subtle.ConstantTimeCompare(got[:], want[:])
 	}
 	return match == 1
@@ -165,7 +208,19 @@ func (rr *replayReader) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		op = readOpOther
 	}
+	peer, tracked := rr.peerKey(r)
+	if tracked {
+		if blocked, wait := rr.failures.blocked(peer); blocked {
+			rr.h.tel.replayRead(r.Context(), op, readRateLimited)
+			w.Header().Set("Retry-After", strconv.FormatInt(max(1, int64(math.Ceil(wait.Seconds()))), 10))
+			http.Error(w, "too many failed authentications", http.StatusTooManyRequests)
+			return
+		}
+	}
 	if !rr.authorized(r) {
+		if tracked {
+			rr.failures.allow(peer)
+		}
 		rr.h.tel.replayRead(r.Context(), op, readUnauthorized)
 		w.Header().Set("WWW-Authenticate", `Bearer realm="o11yrum-replay"`)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -175,6 +230,18 @@ func (rr *replayReader) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		rr.h.tel.replayRead(r.Context(), op, readNotFound)
 	}
 	rr.mux.ServeHTTP(w, r)
+}
+
+// peerKey keys the request's TCP peer for the failed-token limit. The
+// read listener is cluster-internal and reached directly, so forwarding
+// headers are not consulted. ok is false when the peer address does not
+// parse, which leaves the request unlimited.
+func (rr *replayReader) peerKey(r *http.Request) (key uint64, ok bool) {
+	ap, err := netip.ParseAddrPort(r.RemoteAddr)
+	if err != nil {
+		return 0, false
+	}
+	return rr.h.keyer.key(ap.Addr().Unmap()), true
 }
 
 // session resolves the service and session path values to the session's

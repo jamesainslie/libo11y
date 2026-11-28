@@ -310,7 +310,9 @@ lags. The gateway also sweeps the store every `replay.sweep_interval`
 written longer ago than the retention. It runs for any store that can
 list and delete, even when no app records now, so recordings stored
 before replay was switched off still expire. On a store that holds only
-source maps, set `sweep_interval: 0s` to skip the listing. The first
+source maps, no app records, and nothing was ever recorded, set
+`sweep_interval: 0s` to skip the hourly listing of an empty prefix;
+remove it when an app turns replay on. The first
 pass runs one interval after start, so a restart does not sweep at once.
 Several replicas sweeping at the same time is harmless. `o11yrum.replay.swept` counts the objects a pass deleted
 (`o11yrum.outcome=ok`) or failed to delete (`error`). A failed delete
@@ -366,8 +368,24 @@ session's recording. It is cluster-internal only:
   byte order mark at the start of the file is ignored. A library user who serves
   `Handler.ReplayReadHandler` without the file gets 401 for every
   request. Several lines let a token rotate without downtime: add the
-  new one, restart, move the caller over, remove the old one, restart.
-  The gateway reads the file at start.
+  new one, send `SIGHUP`, move the caller over, remove the old one, send
+  `SIGHUP` again. The gateway reads the file at start and again on each
+  `SIGHUP`, and logs `reloaded replay.read_token_file` or, when the file
+  is missing or invalid, `keeping the tokens in use` with the reason. A
+  failed reload never drops the tokens in use. A library user calls
+  `Handler.ReloadReplayReadTokens`. In Kubernetes, the kubelet updates a
+  Secret mounted as a volume in place, but not one mounted with
+  `subPath`. The image has no shell or `kill`, so the signal comes from
+  a sidecar in a pod with `shareProcessNamespace: true`. Without one,
+  roll the Deployment instead, which restarts the pods with the new file.
+- Each TCP peer may fail authentication 10 times in a burst, refilled
+  evenly over a minute. Past that every request from the peer answers
+  429 with `Retry-After`, before its token is compared, so guessing gains
+  nothing while it lasts. Peers are keyed by the connection's address,
+  never a forwarding header, and at most 1024 are tracked; past that a
+  new peer is not limited, so memory stays bounded and a flood of
+  addresses cannot lock real callers out. A valid request never spends
+  the budget.
 
 ```yaml
 replay:
@@ -387,8 +405,14 @@ headers. A request without a valid token answers 401 with
 unauthenticated caller nothing, not even which routes exist. The gateway
 never logs a token or a session ID. `o11yrum.replay.reads` counts
 requests by `o11yrum.operation` (`list`, `get`, `delete` or `other`) and
-`o11yrum.outcome` (`ok`, `unauthorized`, `bad_request`, `not_found` or
-`error`).
+`o11yrum.outcome` (`ok`, `unauthorized`, `rate_limited`, `bad_request`,
+`not_found` or `error`).
+
+The list route lists the session's objects, then reads each segment's
+metadata object one at a time, so a list costs one store list plus one
+get per segment. A 30-minute session cut into 30-second segments is about
+60 gets, each a round trip on S3. That is fine for a player that lists a
+session once before it plays it. Do not poll it.
 
 The segment route answers the object as stored, which is gzipped JSON.
 The S3 store labels every object `application/json`, so the read API sets
