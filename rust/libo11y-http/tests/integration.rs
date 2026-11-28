@@ -309,6 +309,50 @@ async fn server_ignore_paths_and_filters_exclude_matching_requests() {
 }
 
 #[tokio::test]
+async fn server_ignore_paths_match_the_percent_decoded_path() {
+    let rec = Recorder::start("http-server-ignore-decoded");
+    let layer = ServerLayer::new(rec.sdk()).with_ignore_paths(["/healthz", "/debug/*"]);
+    let mut svc = layer.layer(service_fn(|_req: Request<()>| async {
+        Ok::<_, Infallible>(Response::new(String::new()))
+    }));
+
+    for uri in ["/%68ealthz", "/debug/%76ars", "/bad%zz", "/work"] {
+        let req = Request::builder().uri(uri).body(()).unwrap();
+        let _ = svc.ready().await.unwrap().call(req).await.unwrap();
+    }
+
+    let spans = rec.spans();
+    let paths: Vec<_> = spans.iter().map(|s| span_attr(s, "url.path")).collect();
+    assert_eq!(
+        paths,
+        [Some("/bad%zz".to_owned()), Some("/work".to_owned())],
+        "encoded ignored paths must be excluded, an invalid escape falls back to the raw path"
+    );
+}
+
+#[tokio::test]
+async fn client_ignore_paths_match_the_percent_decoded_path() {
+    let rec = Recorder::start("http-client-ignore-decoded");
+    let mut client_svc = ClientLayer::new(rec.sdk())
+        .with_ignore_paths(["/healthz"])
+        .layer(service_fn(|_req: Request<()>| async {
+            Ok::<_, Infallible>(Response::new(()))
+        }));
+
+    for uri in ["http://example.com/%68ealthz", "http://example.com/ok"] {
+        let req = Request::builder().uri(uri).body(()).unwrap();
+        let _ = client_svc.ready().await.unwrap().call(req).await.unwrap();
+    }
+
+    let spans = rec.spans();
+    assert_eq!(spans.len(), 1);
+    assert_eq!(
+        span_attr(&spans[0], "url.full").as_deref(),
+        Some("http://example.com/ok")
+    );
+}
+
+#[tokio::test]
 async fn server_canonical_line_enriches_record_and_passes_triangle_and_conformance() {
     let rec = Recorder::start("http-canonical-line");
     let layer = ServerLayer::new(rec.sdk())
