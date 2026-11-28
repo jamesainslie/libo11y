@@ -8,7 +8,7 @@ GO_TEST_P ?= 4
 # gate runs on each module separately.
 GO_MODULES := go go/o11ygin go/o11yconnect go/o11ysql go/o11yrum ops
 
-.PHONY: spec-check spec-generate spec-drift ops-generate ops-check ops-integration-up ops-integration-down ops-integration ops-promtool-test ops-release-check ops-release-check-test test lint vet tidy-check vuln release-check zig-release-check python-release-check rust-release-check rust-release-check-test c-release-check dotnet-release-check o11yrum-release-check print-o11yrum-release-version o11yrum-image schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-rn-bundle-test ts-npm-plan-test ts-install ts-check ts-size ts-browser-test ts-rn-check rum-e2e rust-check rust-msrv zig-check zig-integrations-check zig-hygiene-test python-check python-hygiene-test c-check c-sanitize ruby-check ruby-release-check ruby-gem-plan-test dotnet-check java-check java-release-check java-central-publish-test ci
+.PHONY: spec-check spec-generate spec-drift ops-generate ops-check ops-integration-up ops-integration-down ops-integration ops-promtool-test ops-release-check ops-release-check-test test lint vet tidy-check vuln release-check zig-release-check python-release-check rust-release-check rust-release-check-test c-release-check dotnet-release-check o11yrum-release-check print-o11yrum-release-version o11yrum-image schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-rn-bundle-test ts-npm-plan-test ts-install ts-check ts-size ts-browser-test ts-rn-check rum-e2e rust-check rust-msrv zig-check zig-integrations-check zig-hygiene-test python-check python-hygiene-test c-check c-sanitize ruby-check ruby-release-check ruby-gem-plan-test dotnet-check java-check java-hygiene-test java-release-check java-central-publish-test ci
 
 # Validate the spec registry against the libo11y policy suite (naming,
 # ownership, sensitivity, cardinality, events, units).
@@ -521,12 +521,20 @@ dotnet-check:
 	cd dotnet && dotnet run --project src/Libo11y.Cli --configuration Release --no-build -- registry check ../conformance/appregistry/valid.yaml
 	scripts/dotnet-hygiene.sh dotnet/src
 
-# Java Maven reactor (java/): compile with -Xlint:all -Werror on Java 21, run
-# all unit, shared conformance, Micrometer, Spring Boot, CLI, and OTLP wire
-# suites, plus the hygiene gate.
-java-check:
-	cd java && mvn -B test
+# Java Maven reactor (java/): compile on Java 21 with -Xlint:all minus the
+# processing, serial and try categories, and -Werror; run all unit, shared
+# conformance, Micrometer, Spring Boot, CLI, and OTLP wire suites; run the CLI
+# from the built classes against a valid registry; then the hygiene gate and
+# its test.
+java-check: java-hygiene-test
+	cd java && mvn -B test dependency:build-classpath -Dmdep.includeScope=runtime -Dmdep.outputFile=target/runtime-classpath.txt
+	@out="$$(java -cp "java/libo11y-cli/target/classes:$$(cat java/libo11y-cli/target/runtime-classpath.txt)" ing.o11y.libo11y.cli.Main registry check conformance/appregistry/valid.yaml)" || { echo "java-check: the CLI rejected conformance/appregistry/valid.yaml" >&2; exit 1; }; \
+	case "$$out" in "conformance/appregistry/valid.yaml: ok ("*) echo "$$out" ;; *) echo "java-check: unexpected CLI output: $$out" >&2; exit 1 ;; esac
 	scripts/java-hygiene.sh java
+
+# Test java-hygiene.sh against fixture trees.
+java-hygiene-test:
+	scripts/java-hygiene_test.sh
 
 # vuln runs last: it depends on the advisory database and the toolchain's
 # patch level, so local runs exercise every other gate first.

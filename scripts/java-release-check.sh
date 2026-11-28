@@ -337,7 +337,9 @@ namespace: smoke
 attributes:
   smoke.order.id: {type: string, sensitivity: internal, cardinality: unbounded}
 EOF
-(cd "$tmp" && java -cp "$classpath" ing.o11y.libo11y.cli.Main registry check registry.yaml)
+good_out="$(cd "$tmp" && java -cp "$classpath" ing.o11y.libo11y.cli.Main registry check registry.yaml)"
+[[ "$good_out" == "registry.yaml: ok (1 attribute in namespace smoke)" ]] ||
+	fail "libo11y registry check printed \"$good_out\" for a valid registry"
 cat >"$tmp/bad-registry.yaml" <<'EOF'
 schema: libo11y.app-registry/v1
 namespace: smoke
@@ -346,10 +348,12 @@ attributes:
 EOF
 bad_status=0
 (cd "$tmp" && java -cp "$classpath" ing.o11y.libo11y.cli.Main registry check bad-registry.yaml >"$tmp/bad.out" 2>&1) || bad_status=$?
-if [[ "$bad_status" -eq 0 ]]; then
+if [[ "$bad_status" -ne 1 ]]; then
 	cat "$tmp/bad.out" >&2
-	fail "libo11y registry check accepted an attribute outside its namespace"
+	fail "libo11y registry check exited $bad_status for an attribute outside its namespace, want 1"
 fi
+grep -qF "bad-registry.yaml: libo11y_app_attr_outside_namespace: attribute other.order.id" "$tmp/bad.out" ||
+	fail "libo11y registry check did not name the attribute outside its namespace"
 echo "java-release-check: libo11y registry check accepts a valid registry and refuses an invalid one"
 
 if [[ -z "$dist" ]]; then
