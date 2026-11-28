@@ -1,6 +1,13 @@
 //! Builds upstream's OTLP span and log exporters for a resolved
 //! [`SignalExport`]: the protocol, endpoint, timeout, headers, compression,
 //! insecure flag and TLS material resolved through [`EnvLookup`].
+//!
+//! Upstream's exporters also read the header variables from the process
+//! environment and lay them over the headers given in code. A lookup other
+//! than the process environment would then send the process's headers,
+//! which may hold another collector's credentials, to the collector the
+//! lookup names. [`header_corrections`] lists what upstream adds, and the
+//! exporter's transport undoes it on every request.
 
 #[cfg(feature = "otlp-http")]
 use std::collections::HashMap;
@@ -46,6 +53,160 @@ fn signal_http_headers(env: &EnvLookup, upper: &str) -> HashMap<String, String> 
         .collect()
 }
 
+/// Every header variable upstream's exporter may read from the process
+/// environment for a signal: both the signal's own and the general one, so
+/// neither a blank signal variable nor disjoint keys can leak ambient values.
+fn ambient_headers(upper: &str) -> Vec<String> {
+    [
+        format!("OTEL_EXPORTER_OTLP_{upper}_HEADERS"),
+        "OTEL_EXPORTER_OTLP_HEADERS".to_owned(),
+    ]
+    .into_iter()
+    .filter_map(|var| std::env::var(var).ok())
+    .filter(|val| !val.trim().is_empty())
+    .collect()
+}
+
+/// The header variable the lookup resolves for a signal, untrimmed names
+/// and percent-decoded values, as the metric exporter reads it.
+fn lookup_headers(env: &EnvLookup, upper: &str) -> Vec<(String, String)> {
+    env.trimmed(&format!("OTEL_EXPORTER_OTLP_{upper}_HEADERS"))
+        .or_else(|| env.trimmed("OTEL_EXPORTER_OTLP_HEADERS"))
+        .map(|raw| crate::metrics::sink::parse_headers(&raw))
+        .unwrap_or_default()
+}
+
+/// What to do about each header upstream may add from `ambient`, the process
+/// environment's header variables: the lowercase name, with the value the
+/// lookup resolved for it, or `None` when the lookup resolved none and the
+/// header must not be sent. Empty when the process environment sets no
+/// header.
+fn header_corrections(
+    ambient: &[String],
+    resolved: &[(String, String)],
+) -> Vec<(String, Option<String>)> {
+    let mut corrections: Vec<(String, Option<String>)> = Vec::new();
+    for raw in ambient {
+        for (name, _) in crate::metrics::sink::parse_headers(raw) {
+            let name = name.to_ascii_lowercase();
+            if corrections.iter().any(|(seen, _)| *seen == name) {
+                continue;
+            }
+            // The last entry of a repeated name wins, as in a header map.
+            let value = resolved
+                .iter()
+                .rev()
+                .find(|(key, _)| key.eq_ignore_ascii_case(&name))
+                .map(|(_, value)| value.clone());
+            corrections.push((name, value));
+        }
+    }
+    corrections
+}
+
+/// An HTTP client that puts the lookup's headers back over the ones
+/// upstream's exporter took from the process environment.
+#[cfg(feature = "otlp-http")]
+#[derive(Debug)]
+struct LookupHeaders<C> {
+    inner: C,
+    corrections: Vec<(http::HeaderName, Option<http::HeaderValue>)>,
+}
+
+#[cfg(feature = "otlp-http")]
+impl<C> LookupHeaders<C> {
+    /// Wraps `inner`. A correction whose name or value is not a valid
+    /// header removes the header, so nothing ambient is sent in its place.
+    fn new(inner: C, corrections: Vec<(String, Option<String>)>) -> Self {
+        let corrections = corrections
+            .into_iter()
+            .filter_map(|(name, value)| {
+                let name = http::HeaderName::from_bytes(name.as_bytes()).ok()?;
+                let value = value.and_then(|value| http::HeaderValue::from_str(&value).ok());
+                Some((name, value))
+            })
+            .collect();
+        Self { inner, corrections }
+    }
+}
+
+#[cfg(feature = "otlp-http")]
+#[async_trait::async_trait]
+impl<C: opentelemetry_http::HttpClient> opentelemetry_http::HttpClient for LookupHeaders<C> {
+    async fn send_bytes(
+        &self,
+        mut request: opentelemetry_http::Request<opentelemetry_http::Bytes>,
+    ) -> Result<
+        opentelemetry_http::Response<opentelemetry_http::Bytes>,
+        opentelemetry_http::HttpError,
+    > {
+        for (name, value) in &self.corrections {
+            match value {
+                Some(value) => {
+                    request.headers_mut().insert(name, value.clone());
+                }
+                None => {
+                    request.headers_mut().remove(name);
+                }
+            }
+        }
+        self.inner.send_bytes(request).await
+    }
+}
+
+/// A tonic interceptor that puts the lookup's metadata back over the
+/// entries upstream's exporter took from the process environment. Upstream
+/// runs a caller's interceptor after it adds its own metadata.
+#[cfg(feature = "otlp-grpc")]
+#[derive(Debug, Clone)]
+struct LookupMetadata {
+    corrections: std::sync::Arc<[LookupMetadataEntry]>,
+}
+
+#[cfg(feature = "otlp-grpc")]
+type LookupMetadataEntry = (
+    tonic::metadata::MetadataKey<tonic::metadata::Ascii>,
+    Option<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>,
+);
+
+#[cfg(feature = "otlp-grpc")]
+impl LookupMetadata {
+    /// A correction whose name or value is not valid metadata removes the
+    /// entry, so nothing ambient is sent in its place.
+    fn new(corrections: Vec<(String, Option<String>)>) -> Self {
+        let corrections = corrections
+            .into_iter()
+            .filter_map(|(name, value)| {
+                let key = tonic::metadata::MetadataKey::from_bytes(name.as_bytes()).ok()?;
+                let value =
+                    value.and_then(|value| tonic::metadata::MetadataValue::try_from(value).ok());
+                Some((key, value))
+            })
+            .collect();
+        Self { corrections }
+    }
+}
+
+#[cfg(feature = "otlp-grpc")]
+impl tonic::service::Interceptor for LookupMetadata {
+    fn call(
+        &mut self,
+        mut request: tonic::Request<()>,
+    ) -> Result<tonic::Request<()>, tonic::Status> {
+        for (key, value) in self.corrections.iter() {
+            match value {
+                Some(value) => {
+                    request.metadata_mut().insert(key.clone(), value.clone());
+                }
+                None => {
+                    request.metadata_mut().remove(key);
+                }
+            }
+        }
+        Ok(request)
+    }
+}
+
 /// Resolves `OTEL_EXPORTER_OTLP_<SIGNAL>_HEADERS`, else
 /// `OTEL_EXPORTER_OTLP_HEADERS`, into a tonic `MetadataMap`.
 #[cfg(feature = "otlp-grpc")]
@@ -88,6 +249,7 @@ macro_rules! build_otlp {
         let upper: &str = $upper;
         let tls: Option<TlsMaterial> = export.tls.load()?;
         let compression = signal_compression(env, upper);
+        let corrections = header_corrections(&ambient_headers(upper), &lookup_headers(env, upper));
         match export.protocol {
             #[cfg(feature = "otlp-http")]
             Protocol::HttpProtobuf | Protocol::HttpJson => {
@@ -109,8 +271,16 @@ macro_rules! build_otlp {
                 if let Some(comp) = compression {
                     builder = builder.with_compression(comp);
                 }
-                if let Some(tls) = &tls {
-                    builder = builder.with_http_client(tls.blocking_client(export.timeout)?);
+                if corrections.is_empty() {
+                    if let Some(tls) = &tls {
+                        builder = builder.with_http_client(tls.blocking_client(export.timeout)?);
+                    }
+                } else {
+                    let client = match &tls {
+                        Some(tls) => tls.blocking_client(export.timeout)?,
+                        None => crate::export::tls::blocking_client(None, None, export.timeout)?,
+                    };
+                    builder = builder.with_http_client(LookupHeaders::new(client, corrections));
                 }
                 Ok(builder.build()?)
             }
@@ -133,6 +303,9 @@ macro_rules! build_otlp {
                 }
                 if let Some(comp) = compression {
                     builder = builder.with_compression(comp);
+                }
+                if !corrections.is_empty() {
+                    builder = builder.with_interceptor(LookupMetadata::new(corrections));
                 }
                 // Only attach TLS for https:// endpoints or explicit TLS
                 // material; never for plaintext http:// or Unix sockets.
@@ -214,6 +387,77 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn no_ambient_headers_need_no_correction() {
+        let resolved = pairs(&[("authorization", "Bearer explicit")]);
+        assert!(header_corrections(&[], &resolved).is_empty());
+        assert!(header_corrections(&[String::new()], &resolved).is_empty());
+        assert!(header_corrections(&[" , =x".to_owned()], &resolved).is_empty());
+    }
+
+    #[test]
+    fn an_ambient_header_takes_the_lookups_value_or_is_removed() {
+        let resolved = pairs(&[
+            ("Authorization", "Bearer stale"),
+            ("authorization", "Bearer explicit"),
+            ("x-explicit", "1"),
+        ]);
+        assert_eq!(
+            header_corrections(
+                &[
+                    "AUTHORIZATION=Bearer%20ambient, x-ambient=1,authorization=again".to_owned(),
+                    "x-general=2".to_owned(),
+                ],
+                &resolved
+            ),
+            vec![
+                (
+                    "authorization".to_owned(),
+                    Some("Bearer explicit".to_owned())
+                ),
+                ("x-ambient".to_owned(), None),
+                ("x-general".to_owned(), None),
+            ]
+        );
+        assert_eq!(
+            header_corrections(&["authorization=Bearer%20ambient".to_owned()], &[]),
+            vec![("authorization".to_owned(), None)]
+        );
+    }
+
+    #[cfg(feature = "otlp-grpc")]
+    #[test]
+    fn the_interceptor_restores_the_lookups_metadata() {
+        use tonic::service::Interceptor as _;
+
+        let mut interceptor = LookupMetadata::new(vec![
+            (
+                "authorization".to_owned(),
+                Some("Bearer explicit".to_owned()),
+            ),
+            ("x-ambient".to_owned(), None),
+            ("x-bad-value".to_owned(), Some("line\nbreak".to_owned())),
+        ]);
+        let mut request = tonic::Request::new(());
+        for (key, value) in [
+            ("authorization", "Bearer ambient"),
+            ("x-ambient", "1"),
+            ("x-bad-value", "ambient"),
+            ("x-kept", "yes"),
+        ] {
+            request
+                .metadata_mut()
+                .append(key, value.parse().expect("metadata value"));
+        }
+        let request = interceptor.call(request).expect("intercepted");
+        let metadata = request.metadata();
+        let get = |key: &str| metadata.get(key).and_then(|value| value.to_str().ok());
+        assert_eq!(get("authorization"), Some("Bearer explicit"));
+        assert_eq!(get("x-ambient"), None);
+        assert_eq!(get("x-bad-value"), None, "an ambient value survived");
+        assert_eq!(get("x-kept"), Some("yes"));
+    }
+
     #[cfg(feature = "otlp-http")]
     #[test]
     fn http_exporters_build_for_both_encodings() {
@@ -250,6 +494,7 @@ mod tests {
         span_exporter(&export, &EnvLookup::empty()).expect("a span exporter with TLS");
     }
 
+    #[cfg(feature = "otlp-http")]
     #[test]
     fn an_unreadable_certificate_fails_the_build() {
         let export = traces(&pairs(&[(

@@ -124,6 +124,14 @@ public sealed class O11yHttpMiddleware
         {
             context.Response.OnStarting(() =>
             {
+                ReadOnlySpan<char> mediaType = context.Response.ContentType.AsSpan();
+                int parameters = mediaType.IndexOf(';');
+                if (parameters >= 0) mediaType = mediaType[..parameters];
+                if (!mediaType.Trim().Equals("text/html", StringComparison.OrdinalIgnoreCase))
+                {
+                    return Task.CompletedTask;
+                }
+
                 string flags = activity.Recorded ? "01" : "00";
                 string tp = $"00-{activity.TraceId.ToHexString()}-{activity.SpanId.ToHexString()}-{flags}";
                 string entry = $"traceparent;desc=\"{tp}\"";

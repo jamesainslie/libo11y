@@ -358,12 +358,102 @@ impl Reservoir {
     }
 }
 
-/// Identifies an instrumentation scope by name, version, and schema URL.
+/// Identifies an instrumentation scope by name, version, schema URL, and
+/// canonicalized scope attributes.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub(crate) struct ScopeKey {
     pub(crate) name: String,
     pub(crate) version: String,
     pub(crate) schema_url: String,
+    pub(crate) attributes: Vec<(String, String)>,
+}
+
+impl ScopeKey {
+    /// Builds a [`ScopeKey`] from an OpenTelemetry [`InstrumentationScope`].
+    pub(crate) fn from_scope(scope: &opentelemetry::InstrumentationScope) -> Self {
+        use opentelemetry_proto::tonic::common::v1::KeyValue as ProtoKeyValue;
+
+        let proto_attrs: Vec<ProtoKeyValue> = scope.attributes().map(ProtoKeyValue::from).collect();
+        Self {
+            name: scope.name().to_owned(),
+            version: scope.version().unwrap_or_default().to_owned(),
+            schema_url: scope.schema_url().unwrap_or_default().to_owned(),
+            attributes: canonical_proto_attrs(&proto_attrs),
+        }
+    }
+
+    /// Builds a [`ScopeKey`] from an OTLP protobuf scope and its `schema_url`.
+    pub(crate) fn from_proto(
+        scope: Option<&opentelemetry_proto::tonic::common::v1::InstrumentationScope>,
+        schema_url: &str,
+    ) -> Self {
+        Self {
+            name: scope.map_or("", |s| s.name.as_str()).to_owned(),
+            version: scope.map_or("", |s| s.version.as_str()).to_owned(),
+            schema_url: schema_url.to_owned(),
+            attributes: scope.map_or_else(Vec::new, |s| canonical_proto_attrs(&s.attributes)),
+        }
+    }
+}
+
+/// Canonical, order-independent representation of OTLP protobuf attributes
+/// with last-value-wins deduplication on duplicate keys.
+fn canonical_proto_attrs(
+    attrs: &[opentelemetry_proto::tonic::common::v1::KeyValue],
+) -> Vec<(String, String)> {
+    let mut pairs: Vec<(String, String)> = attrs
+        .iter()
+        .map(|kv| {
+            let encoded = kv
+                .value
+                .as_ref()
+                .and_then(|v| v.value.as_ref())
+                .map_or_else(|| "none".to_owned(), canonical_proto_value);
+            (kv.key.clone(), encoded)
+        })
+        .collect();
+    pairs.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut deduped: Vec<(String, String)> = Vec::with_capacity(pairs.len());
+    for (k, v) in pairs {
+        if let Some(last) = deduped.last_mut()
+            && last.0 == k
+        {
+            last.1 = v;
+        } else {
+            deduped.push((k, v));
+        }
+    }
+    deduped
+}
+
+fn canonical_proto_value(
+    value: &opentelemetry_proto::tonic::common::v1::any_value::Value,
+) -> String {
+    use opentelemetry_proto::tonic::common::v1::any_value::Value as ProtoValue;
+    match value {
+        ProtoValue::StringValue(s) => format!("s:{s}"),
+        ProtoValue::BoolValue(b) => format!("b:{b}"),
+        ProtoValue::IntValue(i) => format!("i:{i}"),
+        ProtoValue::DoubleValue(f) => format!("f:{:016x}", f.to_bits()),
+        ProtoValue::BytesValue(bytes) => format!("bytes:{bytes:?}"),
+        ProtoValue::ArrayValue(arr) => {
+            let items: Vec<String> = arr
+                .values
+                .iter()
+                .map(|v| {
+                    v.value
+                        .as_ref()
+                        .map_or_else(|| "none".to_owned(), canonical_proto_value)
+                })
+                .collect();
+            format!("a:{items:?}")
+        }
+        ProtoValue::KvlistValue(list) => {
+            let inner = canonical_proto_attrs(&list.values);
+            format!("kv:{inner:?}")
+        }
+        ProtoValue::StringValueStrindex(idx) => format!("stridx:{idx}"),
+    }
 }
 
 /// Identifies a metric stream within a reader's exemplar store.

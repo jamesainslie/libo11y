@@ -206,22 +206,34 @@ impl TlsMaterial {
                 })
             })
             .transpose()?;
-        let built = std::thread::Builder::new()
-            .name("libo11y-http-client".to_owned())
-            .spawn(move || {
-                let mut builder = reqwest::blocking::Client::builder().timeout(timeout);
-                if let Some(roots) = roots {
-                    builder = builder.tls_certs_only(roots);
-                }
-                if let Some(identity) = identity {
-                    builder = builder.identity(identity);
-                }
-                builder.build()
-            })?
-            .join()
-            .map_err(|_| "the thread building the HTTP client panicked")?;
-        Ok(built?)
+        blocking_client(roots, identity, timeout)
     }
+}
+
+/// Builds a blocking reqwest client on a helper thread (reqwest cannot build a
+/// blocking client on a thread running an async runtime), optionally trusting
+/// only `roots` and presenting `identity`.
+#[cfg(feature = "otlp-http")]
+pub(crate) fn blocking_client(
+    roots: Option<Vec<reqwest::Certificate>>,
+    identity: Option<reqwest::Identity>,
+    timeout: std::time::Duration,
+) -> Result<reqwest::blocking::Client, crate::BoxError> {
+    let built = std::thread::Builder::new()
+        .name("libo11y-http-client".to_owned())
+        .spawn(move || {
+            let mut builder = reqwest::blocking::Client::builder().timeout(timeout);
+            if let Some(roots) = roots {
+                builder = builder.tls_certs_only(roots);
+            }
+            if let Some(identity) = identity {
+                builder = builder.identity(identity);
+            }
+            builder.build()
+        })?
+        .join()
+        .map_err(|_| "the thread building the HTTP client panicked")?;
+    Ok(built?)
 }
 
 #[cfg(feature = "otlp-grpc")]
