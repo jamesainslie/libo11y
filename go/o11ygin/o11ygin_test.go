@@ -176,3 +176,44 @@ func TestIgnorePathsFilters(t *testing.T) {
 		t.Errorf("span name = %q, want %q", got, want)
 	}
 }
+
+// TestFilterRunsOnceBeforeContextMutation checks that WithFilter predicates
+// run once per request on the incoming request context, even when
+// WithServerTiming is enabled. A filter that inspects the context sees the
+// unmodified request and is never called again after middleware wraps it.
+func TestFilterRunsOnceBeforeContextMutation(t *testing.T) {
+	sdk, recorder := newSDK(t)
+	var calls int
+	var incomingCtx context.Context
+	var filterSawOriginal bool
+
+	router := newRouter(sdk,
+		o11ygin.WithServerTiming(),
+		o11ygin.WithFilter(func(r *http.Request) bool {
+			calls++
+			filterSawOriginal = r.Context() == incomingCtx
+			return true
+		}),
+	)
+	router.GET("/page", func(c *gin.Context) {
+		c.Data(http.StatusOK, "text/html", []byte("<p>hi</p>"))
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/page", nil)
+	incomingCtx = req.Context()
+	recorded := httptest.NewRecorder()
+	router.ServeHTTP(recorded, req)
+
+	if calls != 1 {
+		t.Errorf("filter called %d times, want 1", calls)
+	}
+	if !filterSawOriginal {
+		t.Error("filter saw a modified request context instead of the incoming one")
+	}
+	if got := len(recorder.Ended()); got != 1 {
+		t.Fatalf("got %d spans, want 1", got)
+	}
+	if got := recorded.Result().Header.Get("Server-Timing"); got == "" {
+		t.Error("Server-Timing header missing for admitted HTML request")
+	}
+}

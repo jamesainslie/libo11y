@@ -50,7 +50,7 @@ type Option func(*config)
 
 type config struct {
 	sdk           *o11y.SDK
-	filters       []otelgin.Filter
+	filters       []func(*http.Request) bool
 	nameFormatter func(*gin.Context) string
 	serverTiming  bool
 }
@@ -67,12 +67,12 @@ func WithSDK(sdk *o11y.SDK) Option {
 
 // WithFilter adds a predicate; requests for which it returns false are not
 // traced or measured. All filters must pass for a request to be recorded.
-// A filter may run more than once per request, so it must be deterministic
-// and free of side effects. A nil allow adds no filter.
+// Each filter runs once per request, on the request as it arrived, before
+// instrumentation modifies the request context. A nil allow adds no filter.
 func WithFilter(allow func(*http.Request) bool) Option {
 	return func(c *config) {
 		if allow != nil {
-			c.filters = append(c.filters, otelgin.Filter(allow))
+			c.filters = append(c.filters, allow)
 		}
 	}
 }
@@ -136,7 +136,7 @@ func Middleware(operation string, opts ...Option) gin.HandlerFunc {
 		}
 	}
 
-	ginOpts := make([]otelgin.Option, 0, 5)
+	ginOpts := make([]otelgin.Option, 0, 4)
 	var tracerProvider trace.TracerProvider
 	if cfg.sdk != nil {
 		tracerProvider = cfg.sdk.TracerProvider()
@@ -154,22 +154,25 @@ func Middleware(operation string, opts ...Option) gin.HandlerFunc {
 	if tracerProvider != nil {
 		ginOpts = append(ginOpts, otelgin.WithTracerProvider(tracerProvider))
 	}
-	if len(cfg.filters) > 0 {
-		ginOpts = append(ginOpts, otelgin.WithFilter(cfg.filters...))
-	}
 	if cfg.nameFormatter != nil {
 		ginOpts = append(ginOpts, otelgin.WithSpanNameFormatter(cfg.nameFormatter))
 	}
+	// Filters are evaluated once below, before either timingWriter or otelgin
+	// modifies the request context, so otelgin receives no filters of its own.
 	instrumented := otelgin.Middleware(operation, ginOpts...)
-	if !cfg.serverTiming {
+	if !cfg.serverTiming && len(cfg.filters) == 0 {
 		return instrumented
 	}
 	return func(c *gin.Context) {
 		for _, allow := range cfg.filters {
 			if !allow(c.Request) {
-				instrumented(c) // filtered: otelgin starts no span, so there is nothing to name
+				c.Next()
 				return
 			}
+		}
+		if !cfg.serverTiming {
+			instrumented(c)
+			return
 		}
 		savedWriter, savedCtx := c.Writer, c.Request.Context()
 		w := &timingWriter{ResponseWriter: savedWriter}
