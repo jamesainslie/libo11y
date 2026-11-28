@@ -3,7 +3,8 @@
  * source importing from @libo11y/* with a budget, and deltas, each a source measured against a base
  * entry, which is what installing one collector adds. A size is the minified, gzip-compressed bytes
  * of the source bundled for the browser. An entry may name external modules, such as react for an
- * adapter whose framework the app bundles anyway; they are left out of its bundle.
+ * adapter whose framework the app bundles anyway; they are left out of its bundle. An entry may name
+ * export conditions, such as react-native for a React Native package, which Metro resolves with.
  *
  *   bun scripts/size.ts [--check] [--summary FILE] [--json FILE]
  *
@@ -20,7 +21,15 @@ import { join, resolve } from "node:path";
 export interface BudgetFile {
   readonly unit: string;
   readonly entries: Readonly<
-    Record<string, { readonly code: string; readonly budget: number; readonly external?: readonly string[] }>
+    Record<
+      string,
+      {
+        readonly code: string;
+        readonly budget: number;
+        readonly external?: readonly string[];
+        readonly conditions?: readonly string[];
+      }
+    >
   >;
   readonly deltas: Readonly<
     Record<string, { readonly base: string; readonly code: string; readonly budget: number }>
@@ -100,7 +109,11 @@ function workspaceResolver(): unknown {
 }
 
 /** The Bun.build options for one measured source file. */
-export function buildOptions(file: string, external: readonly string[] | undefined): Record<string, unknown> {
+export function buildOptions(
+  file: string,
+  external: readonly string[] | undefined,
+  conditions?: readonly string[],
+): Record<string, unknown> {
   return {
     entrypoints: [file],
     target: "browser",
@@ -109,6 +122,7 @@ export function buildOptions(file: string, external: readonly string[] | undefin
     splitting: false,
     plugins: [workspaceResolver()],
     ...(external === undefined ? {} : { external: [...external] }),
+    ...(conditions === undefined ? {} : { conditions: [...conditions] }),
   };
 }
 
@@ -118,10 +132,11 @@ async function measure(
   name: string,
   code: string,
   external?: readonly string[],
+  conditions?: readonly string[],
 ): Promise<number> {
   const file = join(dir, `${name.replace(/[^a-z0-9]+/gi, "-")}.ts`);
   writeFileSync(file, code);
-  const result = await bun.build(buildOptions(file, external));
+  const result = await bun.build(buildOptions(file, external, conditions));
   const output = result.outputs[0];
   if (!result.success || output === undefined) {
     for (const log of result.logs) console.error(log);
@@ -144,7 +159,7 @@ async function main(args: readonly string[]): Promise<number> {
   mkdirSync(dir, { recursive: true });
   const absolute: Record<string, number> = {};
   for (const [name, e] of Object.entries(file.entries))
-    absolute[name] = await measure(bun, dir, name, e.code, e.external);
+    absolute[name] = await measure(bun, dir, name, e.code, e.external, e.conditions);
   for (const [name, d] of Object.entries(file.deltas)) absolute[name] = await measure(bun, dir, name, d.code);
   const rows = compareBudgets(file, absolute);
   const table = formatTable(rows);

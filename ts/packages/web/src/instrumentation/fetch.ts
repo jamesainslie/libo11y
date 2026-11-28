@@ -47,9 +47,9 @@ export function instrumentFetch(
 export function instrumentFetchWith(
   base: typeof fetch,
   opts: HttpInstrumentationOptions,
-  internals: Pick<HttpInternals, "scope"> = {},
+  internals?: Pick<HttpInternals, "scope">,
 ): typeof fetch {
-  const instruments = instrumentResolver(opts.telemetry, internals.scope);
+  const instruments = instrumentResolver(opts.telemetry, internals?.scope);
   const propagateTo = opts.propagateTo ?? [];
   const ignoreUrls = opts.ignoreUrls ?? [];
 

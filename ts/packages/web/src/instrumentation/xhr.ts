@@ -137,7 +137,7 @@ export function installXhrInstrumentation(opts: HttpInstrumentationOptions = {})
 /** installXhrInstrumentation with the internals a platform other than the browser sets. Internal. */
 export function installXhrInstrumentationWith(
   opts: HttpInstrumentationOptions,
-  internals: HttpInternals = {},
+  internals?: HttpInternals,
 ): () => void {
   const Xhr = (globalThis as { XMLHttpRequest?: typeof XMLHttpRequest }).XMLHttpRequest;
   if (installed || typeof Xhr !== "function") return () => {};
@@ -145,7 +145,7 @@ export function installXhrInstrumentationWith(
   const originalOpen = proto.open;
   const originalSend = proto.send;
   const originalSetRequestHeader = proto.setRequestHeader;
-  const instruments = instrumentResolver(opts.telemetry, internals.scope);
+  const instruments = instrumentResolver(opts.telemetry, internals?.scope);
   const propagateTo = opts.propagateTo ?? [];
   const ignoreUrls = opts.ignoreUrls ?? [];
   const requests = new WeakMap<XMLHttpRequest, Opened>();
@@ -170,7 +170,7 @@ export function installXhrInstrumentationWith(
   };
 
   const send = function (this: XMLHttpRequest, ...args: unknown[]): void {
-    const opened = done || internals.skip?.() ? undefined : requests.get(this);
+    const opened = done || internals?.skip?.() ? undefined : requests.get(this);
     // A send the XHR will refuse (one in flight, or done without a reopen) gets no span of its own.
     const sendable = opened?.finish === undefined && this.readyState === OPENED;
     const resolved =

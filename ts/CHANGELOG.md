@@ -4,7 +4,7 @@ All notable changes to the libo11y TypeScript packages are documented
 here: `@libo11y/spec`, `@libo11y/core`, `@libo11y/server`,
 `@libo11y/test`, `@libo11y/web`, `@libo11y/webext`, `@libo11y/rum`,
 `@libo11y/rum-react`, `@libo11y/rum-tanstack-router`, `@libo11y/rum-connect`,
-`@libo11y/rum-replay` and `@libo11y/sourcemaps`, which release together at one version from a `ts/vX.Y.Z`
+`@libo11y/rum-replay`, `@libo11y/react-native` and `@libo11y/sourcemaps`, which release together at one version from a `ts/vX.Y.Z`
 tag. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the packages
 adhere to [Semantic Versioning](https://semver.org/).
@@ -28,6 +28,23 @@ adhere to [Semantic Versioning](https://semver.org/).
   tighten replay. rrweb's recorder, `@rrweb/record`, is pinned at 2.2.2.
 - `conformance/rum-replay/`, the replay scrubbing vectors that the
   collector and the RUM gateway both run.
+- `@libo11y/react-native`, the platform for React Native apps on Hermes.
+  In development; it is not released and not on npm. `setupReactNative`
+  builds telemetry over the OpenTelemetry JS providers with a mobile
+  resource (`o11y.rum.platform` `react_native`, `os.name` and
+  `o11y.rum.device.class`) and batch settings suited to a phone. Every
+  batch is saved in a retry queue on a pluggable key-value storage, with
+  the AsyncStorage shape, before it is sent, so a batch exported just
+  before the app stops goes out on the next launch. The queue passes the
+  web queue conformance suite, writes nothing before consent is granted,
+  and holds at most 2 MiB, 500 batches and 24 hours. Going to the
+  background flushes and coming back drains the queue. Fetch and XHR get
+  client spans under the scope `@libo11y/react-native`, one per request
+  even when fetch runs over XHR, and `traceFetch` wraps a fetch the global
+  patch does not reach, such as `expo/fetch` imported directly. Trace
+  context goes only to the origins in `propagateTo`. Every endpoint must be
+  an absolute http or https URL.
+- `@libo11y/core` exports `sha1`, for platforms without Web Crypto.
 
 ### Changed
 
@@ -38,7 +55,9 @@ adhere to [Semantic Versioning](https://semver.org/).
   they are for libo11y packages only, follow the package version, carry no
   compatibility promise and have no API report. Tests check that neither
   reaches a browser-only module and that both load with every browser
-  global removed. Browser behavior is unchanged.
+  global removed. Browser behavior is unchanged. `@libo11y/web/portable`
+  also exports `parseResourceAttributes` and the fetch and XHR
+  instrumentation with an instrumentation scope of the caller's choosing.
 
 ### Fixed
 
