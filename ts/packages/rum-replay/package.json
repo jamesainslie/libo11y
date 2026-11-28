@@ -30,6 +30,7 @@
     "@libo11y/rum": "workspace:*"
   },
   "devDependencies": {
-    "@libo11y/rum": "workspace:*"
+    "@libo11y/rum": "workspace:*",
+    "@rrweb/replay": "2.2.2"
   }
 }

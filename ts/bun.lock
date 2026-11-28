@@ -115,6 +115,7 @@
       },
       "devDependencies": {
         "@libo11y/rum": "workspace:*",
+        "@rrweb/replay": "2.2.2",
       },
       "peerDependencies": {
         "@libo11y/rum": "workspace:*",
@@ -330,6 +331,8 @@
     "@playwright/test": ["@playwright/test@1.64.1", "", { "dependencies": { "playwright": "1.64.1" }, "bin": { "playwright": "cli.js" } }, "sha512-IaYGml/nSOiZWROfPtuIL7neuu9qDOZ3TNvNljUIrhDMxiGTgPjzj/g9p9RxpS2tSepPDRY+UwAaEeiKtUvIAg=="],
 
     "@rrweb/record": ["@rrweb/record@2.2.2", "", { "dependencies": { "@rrweb/types": "^2.2.2", "@rrweb/utils": "^2.2.2", "rrweb": "^2.2.2" } }, "sha512-/UkJQaMIDBKqoqIovVY0iIPyn9O2VLHhby+AoNI7PVmWdZBk6BEqYIAwangcXPpuTjGMIeFQIvPDPGDyet6a1Q=="],
+
+    "@rrweb/replay": ["@rrweb/replay@2.2.2", "", { "dependencies": { "@rrweb/types": "^2.2.2", "rrweb": "^2.2.2" } }, "sha512-PumY+65QmOUje7H5TBBhpgMhucmgC9aYpkwfYoy4rhTWQzE93IuvXPivU/YGr0/QNHs+MynffrakMwcXsRcZLQ=="],
 
     "@rrweb/types": ["@rrweb/types@2.2.2", "", {}, "sha512-b9BNYEBcQF9dGQ5JJOoqBEFM7HlLmOdKgCfS2qkQj3gevF1wyuJIGPDGpaAYpl0H24fFOHGw6IdbYH6qrZNk1w=="],
 
