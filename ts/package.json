@@ -9,14 +9,15 @@
   ],
   "scripts": {
     "lint": "biome check .",
-    "typecheck": "tsc -p tsconfig.json && tsc -p packages/web/tsconfig.json && tsc -p packages/webext/tsconfig.json && tsc -p packages/rum/tsconfig.json && tsc -p tsconfig.browser.json",
+    "typecheck": "tsc -p tsconfig.json && tsc -p packages/web/tsconfig.json && tsc -p packages/webext/tsconfig.json && tsc -p packages/rum/tsconfig.json && tsc -p packages/sourcemaps/tsconfig.json && tsc -p packages/rum-react/tsconfig.json && tsc -p packages/rum-tanstack-router/tsconfig.json && tsc -p packages/rum-connect/tsconfig.json && tsc -p tsconfig.browser.json",
     "build": "bun run --filter './packages/*' build",
     "api": "bun run --filter './packages/*' api",
     "api:check": "bun run --filter './packages/*' api:check",
     "test": "bun run test:bun && bun run test:node",
     "test:bun": "bun test",
     "test:node": "node --test --test-concurrency=8 \"packages/*/src/**/*.test.ts\" \"examples/*/*.test.ts\" \"scripts/**/*.test.ts\"",
-    "test:browser": "playwright test --workers=2"
+    "test:browser": "playwright test --workers=2",
+    "bench:browser": "playwright test -c playwright.bench.config.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.8",

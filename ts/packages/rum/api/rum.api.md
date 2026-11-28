@@ -36,6 +36,27 @@ export interface AddErrorOptions {
     readonly source?: "custom" | "boundary";
 }
 
+// @public
+export type BootstrapEntry = {
+    readonly kind: "error";
+    readonly at: number;
+    readonly error: unknown;
+    readonly message: string;
+} | {
+    readonly kind: "rejection";
+    readonly at: number;
+    readonly reason: unknown;
+} | {
+    readonly kind: "csp";
+    readonly at: number;
+    readonly directive: string;
+    readonly blocked: string;
+} | {
+    readonly kind: "click";
+    readonly at: number;
+    readonly target: Element;
+};
+
 // @public (undocumented)
 export type CollectorName = "views" | "actions" | "errors" | "vitals" | "resources" | "long_animation_frames";
 
@@ -54,6 +75,72 @@ export { HttpRequestInfo }
 
 // @public
 export function longAnimationFrames(): RumCollector;
+
+// @public
+export interface RemoteConfig {
+    open(o: RemoteConfigOpenOptions): RemoteConfigConnection;
+    readonly url?: string;
+}
+
+// @public
+export function remoteConfig(opts?: RemoteConfigOptions): RemoteConfig;
+
+// @public (undocumented)
+export interface RemoteConfigClient {
+    clear(): void;
+    current(): RemoteConfigDocument | undefined;
+    find(version: string | undefined): RemoteConfigDocument | undefined;
+    refresh(): Promise<boolean>;
+    start(onChange: (doc: RemoteConfigDocument | undefined) => void): () => void;
+}
+
+// @public
+export interface RemoteConfigConnection extends RemoteConfigClient {
+    apply<S extends RumSettings>(code: S, doc: RemoteConfigDocument | undefined): S & {
+        readonly enabledByRemote: boolean;
+    };
+}
+
+// @public
+export interface RemoteConfigDocument {
+    readonly collectors?: Readonly<Partial<Record<CollectorName, boolean>>>;
+    readonly enabled?: boolean;
+    readonly sessionSampleRate?: number;
+    readonly version: string;
+}
+
+// @public
+export interface RemoteConfigLimits {
+    readonly sessionSampleRate?: readonly [min: number, max: number];
+}
+
+// @public
+export interface RemoteConfigOpenOptions {
+    // (undocumented)
+    readonly fetch: typeof fetch;
+    // (undocumented)
+    readonly storage?: Pick<Storage, "getItem" | "setItem" | "removeItem">;
+    // (undocumented)
+    readonly timers: RemoteConfigTimers;
+    readonly url: string;
+    // (undocumented)
+    readonly visible: () => boolean;
+}
+
+// @public
+export interface RemoteConfigOptions {
+    readonly limits?: RemoteConfigLimits;
+    readonly refreshMillis?: number;
+    readonly url?: string;
+}
+
+// @public
+export interface RemoteConfigTimers {
+    // (undocumented)
+    clearTimeout(handle: unknown): void;
+    // (undocumented)
+    setTimeout(cb: () => void, ms: number): unknown;
+}
 
 // @public (undocumented)
 export type RequestStartHook = (span: Span, request: HttpRequestInfo) => void;
@@ -100,6 +187,7 @@ export interface RumOptions {
     readonly clientToken?: string;
     readonly collectors?: readonly RumCollector[];
     readonly queryAllowList?: readonly string[];
+    readonly remoteConfig?: RemoteConfig;
     readonly retention?: {
         readonly maxBytes?: number;
         readonly maxAgeMillis?: number;
@@ -195,6 +283,12 @@ export type RumSignal = {
     readonly kind: string;
     readonly label: string;
     readonly at: number;
+    readonly key?: string;
+}
+/** An event the bootstrap buffered before RUM loaded, replayed once the collectors started (R3d). */
+| {
+    readonly type: "bootstrap";
+    readonly entry: BootstrapEntry;
 };
 
 // @public
@@ -292,6 +386,7 @@ export type ViewEvent = {
     readonly view: ViewState;
     readonly previous?: ViewState;
     readonly cause?: SpanContext;
+    readonly rendered?: true;
 } | {
     readonly type: "rename";
     readonly view: ViewState;
@@ -300,6 +395,7 @@ export type ViewEvent = {
 | {
     readonly type: "rendered";
     readonly view: ViewState;
+    readonly at?: number;
 } | {
     readonly type: "end";
     readonly view: ViewState;
@@ -319,6 +415,7 @@ export interface ViewStartOptions {
     // (undocumented)
     readonly kind: RUMViewKind;
     readonly name?: string;
+    readonly rendered?: boolean;
     readonly startTime?: number;
 }
 
@@ -347,7 +444,7 @@ export interface ViewTracker {
     loadView(): ViewState | undefined;
     // (undocumented)
     rename(name: string): void;
-    rendered(): void;
+    rendered(at?: number): void;
     start(opts: ViewStartOptions): ViewState;
     // (undocumented)
     subscribe(listener: (event: ViewEvent) => void): () => void;

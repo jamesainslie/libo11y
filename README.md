@@ -19,6 +19,8 @@ everything is correlated and exported over OTLP.
 | Python | Implemented for Python 3.12, 3.13, and 3.14 (`python/v0.1.0`) | [`python/`](python/) |
 | C | Implemented for C11 (`c/v0.1.0`, pure C11 ABI backed by `zig/`) | [`c/`](c/) |
 | Rust | Implemented for Rust 1.88+ (`rust/v0.1.0`; `libo11y-sqlx` requires 1.94) | [`rust/`](rust/) |
+| Ruby | Implemented for Ruby 3.3 and 3.4 | [`ruby/`](ruby/) |
+| .NET | Implemented for .NET 10 (C#) | [`dotnet/`](dotnet/) |
 | Java | Planned | [`java/`](java/) |
 
 ## Design principles
@@ -88,11 +90,13 @@ validation tables the runtime and test harness share. See [`docs/SPEC.md`](docs/
 specification and [`docs/taxonomy/`](docs/taxonomy/) for the generated
 attribute tables.
 
-The registry generates Go, TypeScript, Rust, Zig, Python, and C outputs:
+The registry generates Go, TypeScript, Rust, Zig, Python, C, Ruby, and .NET outputs:
 `go/spec` and `go/internal/spectables`, `@libo11y/spec` in
 [`ts/packages/spec`](ts/packages/spec), `rust/libo11y-spec/src/generated`,
-`zig/src/spec/generated`, `python/src/libo11y/spec/_generated`, and
-[`c/include/o11y/spec.h`](c/include/o11y/spec.h).
+`zig/src/spec/generated`, `python/src/libo11y/spec/_generated`,
+[`c/include/o11y/spec.h`](c/include/o11y/spec.h),
+`ruby/lib/libo11y/spec/generated`, and
+`dotnet/src/Libo11y.Spec/Generated`.
 Spec 1.1.0 adds the conventions for libo11y RUM, the real-user-monitoring
 product, which [`docs/RUM.md`](docs/RUM.md) describes.
 
@@ -118,6 +122,19 @@ The Gin, Connect, and database/sql integrations (`go/o11ygin`,
 the main module at the same version. The modules require Go 1.26.0 or
 later. Build with the latest patch release of the 1.26 or 1.27 line to
 pick up the standard-library security fixes.
+
+The RUM gateway is its own Go module, `go/o11yrum`, with its own version
+line. It receives OTLP from browsers, browser extensions and React Native
+apps, validates and enriches it, derives the standard RUM metrics, and
+forwards it to your collector. Install the command or pull the image:
+
+```sh
+go install github.com/jamesainslie/libo11y/go/o11yrum/cmd/o11yrum-gateway@v0.1.0
+docker pull ghcr.io/jamesainslie/o11yrum-gateway:0.1.0
+```
+
+[`go/o11yrum/README.md`](go/o11yrum/README.md) covers configuration and
+deployment.
 
 The latest Go release, `go/v0.4.0`, implements spec 1.3.0 and stamps that
 version's schema URL on every resource. The TypeScript packages at
@@ -198,13 +215,19 @@ npm install --save-dev @libo11y/test # the hermetic recorder and the OTLP sink
 npm install @libo11y/web             # browsers: setup, consent, the offline queue, fetch and XHR spans
 npm install @libo11y/webext          # Manifest V3 extensions: the service worker and content scripts
 npm install @libo11y/rum             # RUM for browsers and extensions
+npm install @libo11y/rum-react       # RUM adapters: React, TanStack Router and Connect
+npm install @libo11y/rum-tanstack-router
+npm install @libo11y/rum-connect
+npm install --save-dev @libo11y/sourcemaps # uploads source maps to the RUM gateway
 ```
 
-The seven packages release together at one version, and they are built on
+The eleven packages release together at one version, and they are built on
 OpenTelemetry JS 3.x. `@libo11y/server` and `@libo11y/test` run on Bun
-1.3.13 and Node 24. `@libo11y/web`, `@libo11y/webext` and `@libo11y/rum` run in
-browsers, and by default they record nothing until the application grants
-consent. `@libo11y/rum` is in development and has not shipped yet.
+1.3.13 and Node 24, and so does `@libo11y/sourcemaps`, a build tool.
+`@libo11y/web`, `@libo11y/webext` and `@libo11y/rum` run in browsers, and
+by default they record nothing until the application grants consent.
+`@libo11y/rum`, its adapters and `@libo11y/sourcemaps` are in development and have not
+shipped yet.
 
 ## Quick start (TypeScript)
 
@@ -469,6 +492,91 @@ subscriber (use `Builder::build` for a global-free handle and
 [`rust/examples/httpserver`](rust/examples/httpserver) for a complete, tested
 HTTP service.
 
+## Installation (Ruby)
+
+```sh
+bundle add libo11y
+```
+
+Requires Ruby 3.3 or later (tested on Ruby 3.3 and 3.4). One RubyGem (`libo11y`)
+built on OpenTelemetry Ruby (`opentelemetry-sdk`, `opentelemetry-metrics-sdk`,
+`opentelemetry-logs-sdk`) ships the core SDK, generated specification tables,
+sensitivity policy, capture-time redaction, detached and child-process
+propagation, Rack middleware, instrumented `Net::HTTP`, DB instrumentation,
+`exe/libo11y`, and the hermetic test harness (`Libo11y::Testing`). It implements
+spec 1.3.0.
+
+## Quick start (Ruby)
+
+```ruby
+require "libo11y"
+
+Libo11y.setup(
+  service_name: "checkout",
+  version: "1.2.0",
+  environment: Libo11y::Spec::Environment::PRODUCTION
+) do |tel|
+  tracer = OpenTelemetry.tracer_provider.tracer("checkout")
+  tracer.in_span("POST /checkout") do
+    tel.logger.info("order accepted", { "order.id" => "ord-42" })
+  end
+end
+```
+
+`Libo11y.setup` installs the tracer, meter, and logger providers globally,
+installs the W3C TraceContext and Baggage propagator wrapped in the baggage
+egress filter, and runs the startup canary. Passing a block guarantees bounded
+concurrent shutdown across all three signals when the block exits. Use
+`Libo11y.init` for non-global handles in tests and dependency injection. See
+[`ruby/README.md`](ruby/README.md) for the full Ruby documentation.
+
+## Installation (.NET)
+
+```sh
+dotnet add package Libo11y
+dotnet add package Libo11y.AspNetCore  # only for ASP.NET Core and HttpClient
+dotnet add package Libo11y.Db          # only for ADO.NET database instrumentation
+dotnet add package Libo11y.Testing     # hermetic recorder and OTLP/HTTP receiver
+```
+
+Requires .NET 10 and builds on `OpenTelemetry` 1.21.0 (`System.Diagnostics.Activity`,
+`System.Diagnostics.Metrics`, and `Microsoft.Extensions.Logging`). Six projects
+ship together (`Libo11y.Spec`, `Libo11y`, `Libo11y.AspNetCore`, `Libo11y.Db`,
+`Libo11y.Testing`, and `Libo11y.Cli`). It implements spec 1.3.0.
+
+## Quick start (.NET)
+
+```csharp
+using System.Diagnostics;
+using Libo11y;
+using Libo11y.Spec;
+using Microsoft.Extensions.Logging;
+
+await using var telemetry = O11y.Setup(new O11yOptions
+{
+    ServiceName = "checkout",
+    Version = "1.2.0",
+    Environment = DeploymentEnvironment.Production,
+});
+
+using var source = new ActivitySource("checkout");
+using (source.StartActivity("POST /checkout"))
+{
+    telemetry.Log(LogLevel.Information, "order accepted", new Dictionary<string, object?>
+    {
+        ["order.id"] = "ord-42",
+    });
+}
+```
+
+`O11y.Setup` wires `TracerProvider`, `MeterProvider` (with trace-based exemplars
+and `.NET` runtime instrumentation), `ILoggerFactory` (JSON console + OTLP), and
+the egress-filtered W3C propagator, then runs the startup canary. Disposing
+(`using` / `await using`) runs bounded concurrent shutdown across all three
+signals. Use `O11y.Init` for non-global handles in tests and dependency
+injection. See [`dotnet/README.md`](dotnet/README.md) for the full .NET
+documentation.
+
 ## Versioning
 
 Each language library versions and releases independently with path-prefixed
@@ -479,7 +587,11 @@ From `go/v0.2.0`, each release also tags `go/o11yconnect/vX.Y.Z` and
 `go/o11ysql/vX.Y.Z` on that commit. Each Go release is listed in
 [`go/CHANGELOG.md`](go/CHANGELOG.md) and on the GitHub releases page.
 `make release-check` validates the tag sequence against a throwaway local
-remote before a release.
+remote before a release. The RUM gateway module releases on its own line
+as `go/o11yrum/vX.Y.Z`, listed in
+[`go/o11yrum/CHANGELOG.md`](go/o11yrum/CHANGELOG.md), and each release
+publishes the `ghcr.io/jamesainslie/o11yrum-gateway` image with attested
+build provenance.
 
 The TypeScript packages release in lockstep. One `ts/vX.Y.Z` tag publishes
 `@libo11y/spec`, `@libo11y/core`, `@libo11y/server`, `@libo11y/test`,

@@ -6,6 +6,6 @@
     "isolatedDeclarations": false,
     "declaration": false
   },
-  "include": ["playwright.config.ts", "packages/*/browser"],
+  "include": ["playwright.config.ts", "playwright.bench.config.ts", "packages/*/browser"],
   "exclude": ["packages/*/browser/dist"]
 }

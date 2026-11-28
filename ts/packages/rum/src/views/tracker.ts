@@ -66,6 +66,7 @@ export function createViewTracker(opts: ViewTrackerOptions): ViewTracker & { clo
       view,
       ...(previous === undefined ? {} : { previous }),
       ...(o.cause === undefined ? {} : { cause: o.cause }),
+      ...(o.rendered === true ? { rendered: true as const } : {}),
     });
     return view;
   };
@@ -79,7 +80,7 @@ export function createViewTracker(opts: ViewTrackerOptions): ViewTracker & { clo
 
   const unsubscribe = opts.session.subscribe((e) => {
     if (e.type !== "start" || e.previous === undefined || current === undefined) return;
-    if (current.sessionId !== e.session.id) start({ kind: "soft", name: current.name });
+    if (current.sessionId !== e.session.id) start({ kind: "soft", name: current.name, rendered: true });
   });
 
   return {
@@ -93,8 +94,9 @@ export function createViewTracker(opts: ViewTrackerOptions): ViewTracker & { clo
       opts.summary.rename(current.id, name);
       emit({ type: "rename", view: current });
     },
-    rendered() {
-      if (current !== undefined) emit({ type: "rendered", view: current });
+    rendered(at) {
+      if (current !== undefined)
+        emit({ type: "rendered", view: current, ...(at === undefined ? {} : { at }) });
     },
     appLoadStarted(ctx) {
       appLoad = ctx;

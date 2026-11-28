@@ -56,6 +56,7 @@ func TestParseConfigRefuses(t *testing.T) {
 		"negative tracked": {"edge: {max_tracked_clients: -1}\napps:\n  - {service_name: a, origins: [\"https://a\"]}\n", "max_tracked_clients"},
 		"bad country cidr": {"edge: {country: {header: CF-IPCountry, trusted_from: [\"x\"]}}\napps:\n  - {service_name: a, origins: [\"https://a\"]}\n", "edge.country.trusted_from"},
 		"negative skew":    {"edge: {clock_skew_threshold: -1s}\napps:\n  - {service_name: a, origins: [\"https://a\"]}\n", "clock_skew_threshold"},
+		"negative delay":   {"shutdown_delay: -1s\napps:\n  - {service_name: a, origins: [\"https://a\"]}\n", "shutdown_delay"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := ParseConfig([]byte(tc.yaml))
@@ -133,15 +134,15 @@ func TestParseConfigCommandSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Listen != ":8080" || cfg.Telemetry.ServiceName != "o11yrum-gateway" || cfg.Environment != "" {
-		t.Errorf("listen %q telemetry %+v environment %q", cfg.Listen, cfg.Telemetry, cfg.Environment)
+	if cfg.Listen != ":8080" || cfg.Telemetry.ServiceName != "o11yrum-gateway" || cfg.Environment != "" || cfg.ShutdownDelay != 0 {
+		t.Errorf("listen %q telemetry %+v environment %q shutdown delay %v", cfg.Listen, cfg.Telemetry, cfg.Environment, cfg.ShutdownDelay)
 	}
-	cfg, err = ParseConfig([]byte("listen: 127.0.0.1:9000\nenvironment: staging\ntelemetry: {service_name: rum-gw}\napps:\n  - {service_name: a, origins: [\"https://a\"]}\n"))
+	cfg, err = ParseConfig([]byte("listen: 127.0.0.1:9000\nenvironment: staging\nshutdown_delay: 5s\ntelemetry: {service_name: rum-gw}\napps:\n  - {service_name: a, origins: [\"https://a\"]}\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Listen != "127.0.0.1:9000" || cfg.Telemetry.ServiceName != "rum-gw" || cfg.Environment != "staging" {
-		t.Errorf("listen %q telemetry %+v environment %q", cfg.Listen, cfg.Telemetry, cfg.Environment)
+	if cfg.Listen != "127.0.0.1:9000" || cfg.Telemetry.ServiceName != "rum-gw" || cfg.Environment != "staging" || cfg.ShutdownDelay != 5*time.Second {
+		t.Errorf("listen %q telemetry %+v environment %q shutdown delay %v", cfg.Listen, cfg.Telemetry, cfg.Environment, cfg.ShutdownDelay)
 	}
 }
 

@@ -8,7 +8,9 @@ libo11y/
   spec/          telemetry specification registry: the shared,
                  language-neutral source of truth
   go/            Go modules (github.com/jamesainslie/libo11y/go and the
-                 o11ygin, o11yconnect, and o11ysql submodules)
+                 o11ygin, o11yconnect, and o11ysql submodules), and
+                 go/o11yrum, the RUM gateway module on its own version
+                 line
   ts/            TypeScript workspace: Bun, the @libo11y/* packages
   conformance/   shared cases and vectors every implementation must
                  reproduce exactly
@@ -86,6 +88,19 @@ every suite on Bun 1.3.13 and Node 24.
   over its budget. A package or collector that ships browser code adds
   its entry or delta in the same change. A budget increase is a reviewed
   diff of the file, with the measured number in the commit message.
+- **Overhead benchmark.** `bun run bench:browser` (in `ts/`) measures the
+  extra main-thread task time `@libo11y/rum` adds per soft navigation and
+  per click in Chromium, through the DevTools protocol's `TaskDuration`,
+  as the median of five runs with and without RUM. It writes
+  `ts/dist/bench/overhead.json`, and `bun scripts/overhead-report.ts` turns
+  that into a table and fails above `--max-view-ms` and
+  `--max-interaction-ms`. The `ts-bench` workflow runs both on pushes to
+  `main` and on pull requests that touch `ts/`, puts the table in the job
+  summary and uploads the JSON as the `rum-overhead` artifact. The limits
+  (8 ms per view, 4 ms per interaction) guard against regressions and are
+  not a target. It is a benchmark: never run it on a shared machine
+  without the owner's approval. CI runs it; elsewhere it skips itself
+  unless `LIBO11Y_BENCH=1` is set.
 - **Packing.** `ts/scripts/release.ts` sets the lockstep version
   (`version X.Y.Z`) and packs each package (`pack OUTDIR`). The packed
   `package.json` has exact versions in place of `workspace:` ranges, and
@@ -180,6 +195,7 @@ container (`O11Y_PG_TEST_DSN`).
 
 - Independent per-language versioning, path-prefixed tags: `go/v0.1.0`,
   `ts/v0.1.1`, `zig/v0.1.0`, `python/v0.1.0`, `c/v0.1.0`, `rust/v0.1.0`.
+  The o11yrum gateway module has its own line: `go/o11yrum/v0.1.0`.
 - Semantic versioning per language ecosystem norms.
 - No lockstep releases across languages. A change to shared docs never
   forces a release.
@@ -211,6 +227,53 @@ container (`O11Y_PG_TEST_DSN`).
   four modules), marked as a prerelease only for versions with a
   `-prerelease` suffix, and requests the version from `proxy.golang.org`
   and builds a consumer against it.
+- `go/o11yrum`, the RUM gateway module with its `o11yrum-gateway` command
+  and container image, versions independently of the four lockstep Go
+  modules. Its `go.mod` requires the parent at any released version and
+  has no `replace` directive, because `go install` of the command at a
+  tag refuses one. The `go.work` workspace resolves the parent from the
+  checkout during development, and builds with `GOWORK=off`, such as
+  `make tidy-check` and the image, use the required release. o11yrum
+  therefore builds only against parent APIs that are already released.
+  Its tag goes on any commit, on its own.
+  `O11YRUM_RELEASE_VERSION` in the `Makefile` and the default in
+  `scripts/o11yrum-release-check.sh` name the version being released and
+  move only in a release commit.
+- To release o11yrum version X.Y.Z:
+  1. Move the entries under `## [Unreleased]` in `go/o11yrum/CHANGELOG.md`
+     into a `## [X.Y.Z] - date` section, and update the link references
+     at the end of the file.
+  2. Make sure `go/o11yrum/go.mod` requires the parent at a version that
+     has a `go/vA.B.C` tag. Raise it only when o11yrum needs something
+     newer.
+  3. Set `O11YRUM_RELEASE_VERSION` in the `Makefile` and the default in
+     `scripts/o11yrum-release-check.sh` to `vX.Y.Z`.
+  4. Run `git fetch --tags origin`, because the check looks for the
+     parent's `go/` tag locally. Then run `make o11yrum-release-check` (or
+     `make release-check`) and
+     `make o11yrum-image` on the committed tree, then merge the release
+     PR.
+  5. Tag the merge commit and push the tag on its own:
+     `git tag go/o11yrum/vX.Y.Z <merge-sha> && git push origin
+     go/o11yrum/vX.Y.Z`.
+
+  The release workflow checks that the version is semantic, that the
+  parent version `go.mod` requires has a `go/` tag, that
+  `O11YRUM_RELEASE_VERSION` matches the tag, and that the changelog has
+  the section. It runs vet, the tests, the spec gates and
+  `scripts/o11yrum-release-check.sh`. It then publishes the GitHub Release
+  from `go/o11yrum/CHANGELOG.md`, never marked Latest, because the main Go
+  module keeps Latest. It requests the version from `proxy.golang.org`
+  and builds a consumer against it. The `image` job builds
+  `ghcr.io/jamesainslie/o11yrum-gateway` for `linux/amd64` and
+  `linux/arm64`, and pushes it tagged `X.Y.Z`, and also `X.Y` and
+  `latest` for a version without a `-prerelease` suffix. It attests the
+  build provenance with `actions/attest-build-provenance`, smoke-tests the
+  pushed image, and prints the digest in the job summary. Verify an image
+  with `gh attestation verify
+  oci://ghcr.io/jamesainslie/o11yrum-gateway:X.Y.Z --repo
+  jamesainslie/libo11y`. GHCR creates a new package as private. The owner
+  sets its visibility once, in the package settings on GitHub.
 - TypeScript releases are lockstep. Every `@libo11y/*` package publishes
   at one shared version from a `ts/vX.Y.Z` tag. The first version on npm
   is 0.1.1. The `ts/v0.1.0` release never reached npm, because npm asked
@@ -224,7 +287,8 @@ container (`O11Y_PG_TEST_DSN`).
   `TS_RELEASE_VERSION`. It checks every package is at that version, builds and packs
   the packages, checks each tarball's `exports` and `bin` targets, and
   installs the tarballs into a throwaway consumer that imports the server
-  packages under Node and Bun and runs the `libo11y` bin. The consumer
+  packages under Node and Bun and runs the `libo11y` and
+  `libo11y-sourcemaps` bins. The consumer
   then bundles every entry point of `@libo11y/web`, `@libo11y/webext`
   and `@libo11y/rum` with `bun build --target=browser` through
   `scripts/ts-browser-bundle-check.sh`, which fails when the module graph
@@ -263,7 +327,8 @@ container (`O11Y_PG_TEST_DSN`).
   under the `next` dist-tag. A smoke job waits up to ten minutes for the
   registry to serve the new version of every published package. It
   installs `@libo11y/server` and `@libo11y/test` into fresh projects
-  under Node and Bun, and runs the `libo11y` bin under Node. It installs
+  under Node and Bun, and runs the `libo11y` and `libo11y-sourcemaps`
+  bins under Node. It installs
   `@libo11y/web`, `@libo11y/webext` and `@libo11y/rum` into another fresh project and
   runs the same bundle check on them. In each of these installs, a
   package not on npm yet comes from its packed tarball. A last step
@@ -384,7 +449,7 @@ OTEL specification catches up.
 ## Commit messages
 
 `<area>: <type>: <description>` all lowercase, where area is one of `go`,
-`ts`, `spec`, `rust`, `java`, `zig`, `python`, `c`, `docs`, `general`, and type follows
+`ts`, `spec`, `rust`, `java`, `zig`, `python`, `c`, `ruby`, `dotnet`, `docs`, `general`, and type follows
 Conventional Commits (`feat`, `fix`, `docs`, `refactor`, `test`, `chore`,
 `build`, `ci`, `perf`, `revert`) or names a Keep a Changelog category
 (`change`, `removed`).
@@ -407,12 +472,16 @@ install that version locally. Keep the two in step when adding a gate.
 | `make test` | `go test -race` on every Go module (`GO_TEST_P` sets package parallelism), including the `testing/slogtest` handler contract, the OTLP wire tests, and the generator's golden test |
 | `make tidy-check` | each module's `go.mod` and `go.sum` tidy on its own (`GOWORK=off`) |
 | `make spec-check`, `make spec-drift` | registry policy checks and generated-artifact drift |
+| `make ops-check` | the RUM ops pack in `ops/`: the generator drift test, the metric catalog test (it builds `o11yrum-gateway` from the checkout, sends it fixture traffic and compares the families on its Prometheus endpoint with `ops/internal/catalog/testdata/exported.txt`), and the PromQL, LogQL, TraceQL and dashboard lint. `make ops-generate` rewrites the generated dashboards and rules. CI runs it in the `ops` job |
 | `make ts-check` | the TypeScript workspace: Biome, tsc, the build, the API reports, and every unit suite under Bun and Node |
 | `make ts-browser-test` | the browser suites under Playwright: `@libo11y/web` and `@libo11y/webext` in headless Chromium, and `@libo11y/rum` and its adapters in headless Chromium, Firefox and WebKit (projects `rum-chromium`, `rum-firefox` and `rum-webkit`). It needs Playwright's browsers for the pinned version, which CI installs with `bun x --no-install playwright install --with-deps chromium firefox webkit` in `ts/`. A host with only Chromium runs `bun run test:browser --project=web --project=webext --project=rum-chromium`. CI runs it in the separate `ts-browser` job |
 | `make ts-size` | the browser bundle size budgets in `ts/size-budget.json`. CI runs the same check, `bun scripts/size.ts --check --summary`, in the `ts` job and writes the table to the job summary |
+| `make rum-e2e` | builds `o11yrum-gateway` and runs the end-to-end journey in `ts/packages/sourcemaps/src/e2e` against the TS OTLP sink from `@libo11y/test`, under Node and Bun: derived metrics from a view summary, a source map upload that symbolicates an error, the 404 for an app without remote config, and the edge refusals. `make ts-check` skips the journey, because it runs only when `O11YRUM_GATEWAY_BIN` is set. CI runs it in the `rum-e2e` job |
 | `make ts-browser-bundle-test` | `scripts/ts-browser-bundle-check.sh` against fixture packages (needs bun). CI runs it in the `ts` job after `make ts-check` |
-| `make release-check` | the Go release sequence, packing and a consumer smoke test of the TypeScript packages (including the browser bundle check), the Zig consumer tarball smoke test, and the Python wheel/sdist build and consumer smoke test (needs a clean tree) |
-| `make release-notes-test`, `make release-tag-test` | the release workflow's scripts: changelog sections become release notes, and each release tag routes to its kind, module and version |
+| `make o11yrum-image` | `scripts/o11yrum-image-check.sh`: builds the `o11yrum-gateway` image from `go/o11yrum` for the local platform only, and checks the version it reports, the 40 MiB size budget, the numeric non-root user (65532), `-check-config` on the example configuration, and `/healthz` and `/readyz` from a read-only root filesystem with every capability dropped, then a clean exit on SIGTERM. It removes its container and image. CI runs it in the `o11yrum-image` job |
+| `make o11yrum-release-check` | `scripts/o11yrum-release-check.sh` at `O11YRUM_RELEASE_VERSION` against a throwaway local remote: `go.mod` has no replace directive and the parent version it requires has a `go/` tag, the module is tidy and builds, vets and tests against that release, `go install` of the command at the tag reports the version, and an external consumer builds (needs a clean tree) |
+| `make release-check` | the Go release sequence, the o11yrum release check, packing and a consumer smoke test of the TypeScript packages (including the browser bundle check), the Zig consumer tarball smoke test, and the Python wheel/sdist build and consumer smoke test (needs a clean tree) |
+| `make release-notes-test`, `make release-tag-test` | the release workflow's scripts: changelog sections become release notes, and each release tag routes to its kind, module, version, version line and changelog |
 | `make schema-published-test` | the schema URL check against a loopback HTTP server |
 | `make zig-check` | the Zig package: `zig fmt --check`, the tests through the root shim in Debug and ReleaseSafe (`ZIG_BUILD_J` caps the job count), and the hygiene check. CI runs it in the `zig` job on Linux and macOS |
 | `make zig-integrations-check` | optional Zig integrations (`-Dhttpz=true -Dpg=true -Dsqlite=true`) in Debug and ReleaseSafe; CI runs it in `zig-integrations` against PostgreSQL 17 |

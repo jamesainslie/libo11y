@@ -3,6 +3,17 @@
  */
 
 export { type ActionsOptions, actions } from "./actions/collector.ts";
+export type { BootstrapEntry } from "./bootstrap/buffer.ts";
+export type { RemoteConfigDocument, RemoteConfigLimits } from "./config/clamp.ts";
+export {
+  type RemoteConfig,
+  type RemoteConfigClient,
+  type RemoteConfigConnection,
+  type RemoteConfigOpenOptions,
+  type RemoteConfigOptions,
+  type RemoteConfigTimers,
+  remoteConfig,
+} from "./config/remote.ts";
 export type * from "./contracts/runtime.ts";
 export type {
   SessionDecision,

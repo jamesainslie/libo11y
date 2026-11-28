@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Libo11y.AspNetCore</RootNamespace>
+    <AssemblyName>Libo11y.AspNetCore</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <ProjectReference Include="..\Libo11y\Libo11y.csproj" />
+  </ItemGroup>
+</Project>

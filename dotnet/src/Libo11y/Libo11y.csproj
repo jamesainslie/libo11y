@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Libo11y</RootNamespace>
+    <AssemblyName>Libo11y</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Libo11y.Spec\Libo11y.Spec.csproj" />
+    <PackageReference Include="OpenTelemetry" Version="1.21.0" />
+    <PackageReference Include="OpenTelemetry.Exporter.Console" Version="1.21.0" />
+    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.21.0" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Runtime" Version="1.21.0" />
+  </ItemGroup>
+</Project>

@@ -187,3 +187,24 @@ test("begin after an end starts a soft view now, not another initial view", () =
   assert.equal(tracker.current()?.startTime, 120_000);
   assert.equal(tracker.loadView()?.kind, "initial", "the load view is still the page's load");
 });
+
+test("the soft view a session change starts is already on screen", () => {
+  const { tracker, session, events } = setup();
+  tracker.begin();
+  session.rotate("s2");
+  const start = events.at(-1);
+  assert.equal(start?.type === "start" && start.rendered, true);
+  assert.equal(events[0]?.type === "start" && events[0].rendered, undefined);
+});
+
+test("rendered passes the time it rendered at, when given", () => {
+  const { tracker, events } = setup();
+  tracker.begin();
+  tracker.rendered(1200);
+  tracker.rendered();
+  const rendered = events.filter((e) => e.type === "rendered");
+  assert.deepEqual(
+    rendered.map((e) => (e.type === "rendered" ? e.at : null)),
+    [1200, undefined],
+  );
+});

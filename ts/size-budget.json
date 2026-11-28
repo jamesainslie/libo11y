@@ -8,6 +8,23 @@
     "@libo11y/rum setupRum": {
       "code": "import { setupRum } from \"@libo11y/rum\"; (globalThis as Record<string, unknown>).__x = setupRum;\n",
       "budget": 87296
+    },
+    "@libo11y/rum-react RumErrorBoundary": {
+      "code": "import { RumErrorBoundary } from \"@libo11y/rum-react\"; (globalThis as Record<string, unknown>).__x = RumErrorBoundary;\n",
+      "external": ["react"],
+      "budget": 512
+    },
+    "@libo11y/rum-tanstack-router instrumentTanStackRouter": {
+      "code": "import { instrumentTanStackRouter } from \"@libo11y/rum-tanstack-router\"; (globalThis as Record<string, unknown>).__x = instrumentTanStackRouter;\n",
+      "budget": 768
+    },
+    "@libo11y/rum-connect connectRequestNaming": {
+      "code": "import { connectRequestNaming } from \"@libo11y/rum-connect\"; (globalThis as Record<string, unknown>).__x = connectRequestNaming;\n",
+      "budget": 512
+    },
+    "@libo11y/rum/bootstrap": {
+      "code": "import { afterLoad, installRumBootstrap } from \"@libo11y/rum/bootstrap\"; (globalThis as Record<string, unknown>).__x = [afterLoad, installRumBootstrap];\n",
+      "budget": 1536
     }
   },
   "deltas": {
@@ -40,6 +57,11 @@
       "base": "@libo11y/rum setupRum",
       "code": "import { setupRum, longAnimationFrames } from \"@libo11y/rum\"; (globalThis as Record<string, unknown>).__x = [setupRum, longAnimationFrames()];\n",
       "budget": 256
+    },
+    "@libo11y/rum remoteConfig()": {
+      "base": "@libo11y/rum setupRum",
+      "code": "import { remoteConfig, setupRum } from \"@libo11y/rum\"; (globalThis as Record<string, unknown>).__x = [setupRum, remoteConfig()];\n",
+      "budget": 1536
     }
   }
 }

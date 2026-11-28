@@ -36,3 +36,13 @@ test("clear empties the ring", () => {
   b.clear();
   assert.deepEqual(b.snapshot(5), []);
 });
+
+test("relabel renames every entry added with its key", () => {
+  const c = createBreadcrumbs();
+  c.add("view", "/documents/$id", 0, "v1");
+  c.add("click", "Open", 5);
+  c.add("view", "/other", 6, "v2");
+  c.relabel("v1", "/documents/$docId");
+  c.relabel("missing", "x");
+  assert.deepEqual(c.snapshot(10), ["view /documents/$docId -10ms", "click Open -5ms", "view /other -4ms"]);
+});

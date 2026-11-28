@@ -1,0 +1,19 @@
+# Thresholds the generated alert rules use. Copy this file, change values, and run
+#   go run github.com/jamesainslie/libo11y/ops/cmd/opsgen@<version> -thresholds my.yaml -out out/
+# The vital good and poor bounds default to the specification's rating table (docs/SPEC.md).
+min_views_per_hour: 200
+regression_ratio: 1.25
+errors_per_view: 0.1
+gateway_selector: 'job=~"(.*/)?o11yrum-gateway"'
+gateway_rejection_ratio: 0.05
+gateway_min_requests_per_second: 0.05
+rate_limited_ratio: 0.2
+sink_failure_ratio: 0.01
+sink_p99_seconds: 2
+aggregator_series_warn: 1800
+vitals:
+  lcp: {good: 2.5, poor: 4}
+  inp: {good: 0.2, poor: 0.5}
+  cls: {good: 0.1, poor: 0.25}
+  fcp: {good: 1.8, poor: 3}
+  ttfb: {good: 0.8, poor: 1.8}

@@ -32,7 +32,8 @@ type rejection struct {
 }
 
 // ingest runs one OTLP request through the pipeline: client address,
-// rate limit, decoding, app admission, validation, enrichment and export.
+// rate limit, decoding, app admission, validation, enrichment,
+// symbolication, export and then metric derivation.
 // Each stage is a method so later stages slot in without restructuring.
 func (h *Handler) ingest(w http.ResponseWriter, r *http.Request, sig Signal) {
 	arrived := h.now()
@@ -89,12 +90,14 @@ func (h *Handler) ingest(w http.ResponseWriter, r *http.Request, sig Signal) {
 	case SignalTraces:
 		drops = v.traces(d.traces)
 		enrich(sig, d, ci)
+		h.symbols.traces(r.Context(), service, a.namespace, d.traces)
 		remaining = d.traces.SpanCount()
 		d.traces.MarkReadOnly()
 		b.Traces = d.traces
 	case SignalLogs:
 		drops = v.logs(d.logs)
 		enrich(sig, d, ci)
+		h.symbols.logs(r.Context(), service, a.namespace, d.logs)
 		remaining = d.logs.LogRecordCount()
 		d.logs.MarkReadOnly()
 		b.Logs = d.logs

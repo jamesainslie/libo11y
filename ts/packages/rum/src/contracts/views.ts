@@ -21,10 +21,17 @@ export type ViewEvent =
       readonly previous?: ViewState;
       /** The action that caused the view, from ViewStartOptions.cause. */
       readonly cause?: SpanContext;
+      /** From ViewStartOptions.rendered: the content is already on screen. */
+      readonly rendered?: true;
     }
   | { readonly type: "rename"; readonly view: ViewState }
   /** The routed content of the view rendered (rendered()). */
-  | { readonly type: "rendered"; readonly view: ViewState }
+  | {
+      readonly type: "rendered";
+      readonly view: ViewState;
+      /** performance.now() it rendered at, when that was before now (a render reported before consent). */
+      readonly at?: number;
+    }
   | { readonly type: "end"; readonly view: ViewState };
 
 export interface ViewStartOptions {
@@ -35,6 +42,8 @@ export interface ViewStartOptions {
   readonly startTime?: number;
   /** The action that caused the view, linked from the view span (R3b). */
   readonly cause?: SpanContext;
+  /** The view's content is already on screen, as after a session change: its span ends at the next paint. */
+  readonly rendered?: boolean;
 }
 
 export interface ViewTracker {
@@ -44,8 +53,11 @@ export interface ViewTracker {
   /** Ends the current view and starts another. */
   start(opts: ViewStartOptions): ViewState;
   rename(name: string): void;
-  /** The routed view rendered: emits rendered for the current view, whose span ends at the next paint. */
-  rendered(): void;
+  /**
+   * The routed view rendered: emits rendered for the current view, whose span ends at the next
+   * paint. at (performance.now()) is when it rendered, for a render that happened earlier.
+   */
+  rendered(at?: number): void;
   /** The span processor reports web's documentLoad span here, so the initial view span can be its child. */
   appLoadStarted(ctx: SpanContext): void;
   /** The context appLoadStarted reported, once it has. */

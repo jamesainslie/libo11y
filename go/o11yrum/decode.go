@@ -50,27 +50,9 @@ func decodeBody(sig Signal, contentType, encoding string, body io.Reader, maxBod
 	default:
 		return decoded{}, errContentType
 	}
-	var inflate bool
-	switch strings.ToLower(strings.TrimSpace(encoding)) {
-	case "", "identity":
-	case "gzip", "x-gzip":
-		inflate = true
-	default:
-		return decoded{}, errEncoding
-	}
-	raw, err := io.ReadAll(io.LimitReader(body, maxBody+1))
+	raw, err := readCapped(body, encoding, maxBody, maxInflated)
 	if err != nil {
-		return decoded{}, fmt.Errorf("%w: %w", errDecode, err)
-	}
-	if int64(len(raw)) > maxBody {
-		return decoded{}, errTooLarge
-	}
-	if inflate {
-		if raw, err = gunzip(raw, maxInflated); err != nil {
-			return decoded{}, err
-		}
-	} else if int64(len(raw)) > maxInflated {
-		return decoded{}, errDecompressedTooLarge
+		return decoded{}, err
 	}
 	d := decoded{json: isJSON}
 	switch sig {
@@ -93,6 +75,34 @@ func decodeBody(sig Signal, contentType, encoding string, body io.Reader, maxBod
 		return decoded{}, fmt.Errorf("%w: %w", errDecode, err)
 	}
 	return d, nil
+}
+
+// readCapped reads a request body with an optional gzip encoding. The
+// body as sent may hold at most maxBody bytes, and at most maxInflated
+// once inflated, so a gzip bomb stops at maxInflated bytes.
+func readCapped(body io.Reader, encoding string, maxBody, maxInflated int64) ([]byte, error) {
+	var inflate bool
+	switch strings.ToLower(strings.TrimSpace(encoding)) {
+	case "", "identity":
+	case "gzip", "x-gzip":
+		inflate = true
+	default:
+		return nil, errEncoding
+	}
+	raw, err := io.ReadAll(io.LimitReader(body, maxBody+1))
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errDecode, err)
+	}
+	if int64(len(raw)) > maxBody {
+		return nil, errTooLarge
+	}
+	if inflate {
+		return gunzip(raw, maxInflated)
+	}
+	if int64(len(raw)) > maxInflated {
+		return nil, errDecompressedTooLarge
+	}
+	return raw, nil
 }
 
 // gunzip inflates raw, refusing more than maxInflated bytes of output.

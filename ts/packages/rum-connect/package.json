@@ -1,0 +1,39 @@
+{
+  "name": "@libo11y/rum-connect",
+  "version": "0.2.1",
+  "private": true,
+  "description": "Connect adapter for @libo11y/rum: names the fetch spans of Connect and gRPC-Web RPCs by service and method, with rpc.system.name and rpc.method.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jamesainslie/libo11y.git",
+    "directory": "ts/packages/rum-connect"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "api": "api-extractor run --local",
+    "api:check": "api-extractor run"
+  },
+  "peerDependencies": {
+    "@connectrpc/connect": "^1.0.0 || ^2.0.0",
+    "@libo11y/rum": "workspace:*"
+  },
+  "peerDependenciesMeta": {
+    "@connectrpc/connect": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@bufbuild/protobuf": "2.17.0",
+    "@connectrpc/connect": "2.3.0",
+    "@connectrpc/connect-web": "2.3.0",
+    "@libo11y/rum": "workspace:*",
+    "@opentelemetry/api": "1.10.0",
+    "@opentelemetry/sdk-trace": "3.1.1"
+  }
+}

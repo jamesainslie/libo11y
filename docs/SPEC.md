@@ -7,7 +7,9 @@ This document is the human-readable form of the machine registry under
 [`spec/registry`](../spec/registry). The registry is the source of truth.
 The generator produces the attribute tables in `docs/taxonomy/`, the Go
 `spec` package, the TypeScript package `@libo11y/spec`, the Zig `o11y.spec`
-namespace, the C11 header `c/include/o11y/spec.h`, and the Rust `libo11y-spec`
+namespace, the Python `libo11y.spec` package, the C11 header
+`c/include/o11y/spec.h`, the Ruby `Libo11y::Spec` module, the .NET
+`Libo11y.Spec` assembly, and the Rust `libo11y-spec`
 crate from it. Where this prose and the registry disagree, the registry wins.
 
 Where the Go implementation does not yet enforce a requirement, this

@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"sync"
@@ -200,6 +201,101 @@ func TestServeAndShutdown(t *testing.T) {
 		}
 	case <-time.After(30 * time.Second):
 		t.Fatal("the gateway did not shut down")
+	}
+}
+
+// TestReadyzFailsWhenShutdownBegins checks that /readyz answers 503 from
+// the moment shutdown begins, while the gateway keeps serving everything
+// else for shutdown_delay so a load balancer can take it out of rotation
+// before the listener closes.
+func TestReadyzFailsWhenShutdownBegins(t *testing.T) {
+	collector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer collector.Close()
+	quietTelemetry(t)
+	cfg := writeConfig(t, collector.URL)
+	f, err := os.OpenFile(cfg, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("shutdown_delay: 3s\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pr, pw := io.Pipe()
+	defer func() { _ = pw.Close() }()
+	done := make(chan int, 1)
+	go func() { done <- run(ctx, []string{"-config", cfg}, io.Discard, pw) }()
+	base := "http://" + waitForListening(t, pr)
+	client := &http.Client{Timeout: 2 * time.Second, Transport: &http.Transport{DisableKeepAlives: true}}
+	status := func(path string) int {
+		t.Helper()
+		resp, err := client.Get(base + path)
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+	if got := status("/readyz"); got != http.StatusOK {
+		t.Fatalf("/readyz before shutdown: status %d", got)
+	}
+
+	start := time.Now()
+	cancel()
+	deadline := time.Now().Add(time.Second)
+	for status("/readyz") != http.StatusServiceUnavailable {
+		if time.Now().After(deadline) {
+			t.Fatal("/readyz did not answer 503 within 1s of shutdown beginning")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := status("/healthz"); got != http.StatusOK {
+		t.Errorf("/healthz during the shutdown delay: status %d", got)
+	}
+	if got := status("/_o11y/v1/config?service=shop-web"); got != http.StatusOK {
+		t.Errorf("config during the shutdown delay: status %d", got)
+	}
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("exit %d", code)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the gateway did not shut down")
+	}
+	if elapsed := time.Since(start); elapsed < 3*time.Second {
+		t.Errorf("the gateway exited %v after shutdown began, before its 3s shutdown_delay", elapsed)
+	}
+}
+
+func TestResolveVersion(t *testing.T) {
+	info := func(v string) *debug.BuildInfo {
+		return &debug.BuildInfo{Main: debug.Module{Path: "github.com/jamesainslie/libo11y/go/o11yrum", Version: v}}
+	}
+	for name, tc := range map[string]struct {
+		linked string
+		info   *debug.BuildInfo
+		want   string
+	}{
+		"linker flag wins":         {"v0.1.0", info("v0.0.9"), "v0.1.0"},
+		"go install at a version":  {"dev", info("v0.1.0"), "v0.1.0"},
+		"pseudo-version from vcs":  {"dev", info("v0.1.1-0.20261127000000-abcdefabcdef"), "v0.1.1-0.20261127000000-abcdefabcdef"},
+		"devel build":              {"dev", info("(devel)"), "dev"},
+		"no module version":        {"dev", info(""), "dev"},
+		"no build info":            {"dev", nil, "dev"},
+		"empty flag keeps default": {"", nil, "dev"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := resolveVersion(tc.linked, tc.info); got != tc.want {
+				t.Errorf("resolveVersion(%q) = %q, want %q", tc.linked, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -460,5 +556,88 @@ func TestProducersEnvMustNameO11yrum(t *testing.T) {
 				t.Errorf("stderr %q, want it to name OTEL_METRICS_PRODUCERS and o11yrum", errOut.String())
 			}
 		})
+	}
+}
+
+func TestServeSourcemapUploads(t *testing.T) {
+	quietTelemetry(t)
+	dir := t.TempDir()
+	writeTestFile(t, filepath.Join(dir, "token"), "upload-secret\n")
+	writeTestFile(t, filepath.Join(dir, "gateway.yaml"), `listen: 127.0.0.1:0
+environment: test
+object_store: {filesystem: {root: maps}}
+apps:
+  - service_name: shop-web
+    origins: ["https://shop.example"]
+    sourcemaps: {upload_token_file: token}
+`)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pr, pw := io.Pipe()
+	defer func() { _ = pw.Close() }()
+	done := make(chan int, 1)
+	go func() { done <- run(ctx, []string{"-config", filepath.Join(dir, "gateway.yaml")}, io.Discard, pw) }()
+	base := "http://" + waitForListening(t, pr)
+	raw, err := os.ReadFile("../../internal/sourcemap/testdata/simple.js.map")
+	if err != nil {
+		t.Fatal(err)
+	}
+	post := func(token string) int {
+		req, err := http.NewRequest(http.MethodPost, base+"/_o11y/v1/sourcemaps?service=shop-web&version=1.4.2&url=/assets/app.js", bytes.NewReader(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+	if code := post(""); code != http.StatusUnauthorized {
+		t.Fatalf("without a token: %d", code)
+	}
+	if code := post("upload-secret"); code != http.StatusCreated {
+		t.Fatalf("with the token: %d", code)
+	}
+	if entries, err := os.ReadDir(filepath.Join(dir, "maps", "sourcemaps", "shop-web", "1.4.2", "_")); err != nil || len(entries) != 1 {
+		t.Fatalf("stored maps: %v %v", entries, err)
+	}
+	cancel()
+	if code := <-done; code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+}
+
+func TestCheckConfigS3Store(t *testing.T) {
+	// The default credential chain finds these and makes no request.
+	t.Setenv("AWS_ACCESS_KEY_ID", "test")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
+	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
+	t.Setenv("AWS_CONFIG_FILE", "/nonexistent")
+	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", "/nonexistent")
+	dir := t.TempDir()
+	writeTestFile(t, filepath.Join(dir, "token"), "upload-secret\n")
+	writeTestFile(t, filepath.Join(dir, "gateway.yaml"), `environment: test
+object_store:
+  s3: {bucket: maps, prefix: o11yrum/, region: eu-west-1, endpoint: "http://127.0.0.1:1", use_path_style: true}
+apps:
+  - service_name: shop-web
+    origins: ["https://shop.example"]
+    sourcemaps: {upload_token_file: token}
+`)
+	var errOut bytes.Buffer
+	if code := run(context.Background(), []string{"-check-config", "-config", filepath.Join(dir, "gateway.yaml")}, io.Discard, &errOut); code != 0 {
+		t.Fatalf("code %d: %s", code, errOut.String())
+	}
+}
+
+func writeTestFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -202,6 +202,26 @@ export function actionsWith(opts: ActionsOptions, env: ActionsEnv): RumCollector
         }
         return el;
       };
+      // A click the bootstrap buffered before RUM loaded: an instant action at its time. Its
+      // activity is past, so it feeds rage detection only.
+      const replayClick = (target: Element, at: number): void => {
+        const el = actionTarget(target);
+        const name = actionName(el);
+        const selector = elementSelector(el, env.cssEscape);
+        const when = env.timeOrigin + at;
+        rt.tracer
+          .startSpan(
+            actionSpanName("click"),
+            {
+              startTime: when,
+              ...actionSpanStart(rt, "click", name, { [ATTR_RUM_ELEMENT_SELECTOR]: selector }),
+            },
+            ROOT_CONTEXT,
+          )
+          .end(when);
+        rt.bus.publish({ type: "breadcrumb", kind: "click", label: name ?? el.tagName.toLowerCase(), at });
+        detector?.click(selector, at, false);
+      };
       const sameGesture = (timeStamp: number): boolean =>
         current !== undefined && timeStamp - current.start < GESTURE_MILLIS;
 
@@ -237,6 +257,7 @@ export function actionsWith(opts: ActionsOptions, env: ActionsEnv): RumCollector
           a?.settle.activity(s.at);
           detector?.activity(s.at);
         } else if (s.type === "error") detector?.error(s.at, a?.type === "click" && a.span === lastClickSpan);
+        else if (s.type === "bootstrap" && s.entry.kind === "click") replayClick(s.entry.target, s.entry.at);
       });
       const offViews = rt.views.subscribe((e) => {
         if (e.type !== "start") return;

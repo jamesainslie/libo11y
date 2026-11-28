@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Libo11y.Testing</RootNamespace>
+    <AssemblyName>Libo11y.Testing</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Libo11y\Libo11y.csproj" />
+    <PackageReference Include="OpenTelemetry.Exporter.InMemory" Version="1.21.0" />
+  </ItemGroup>
+</Project>

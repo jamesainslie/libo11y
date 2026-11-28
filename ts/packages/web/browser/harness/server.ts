@@ -20,6 +20,12 @@
  *   POST /sink/<id>/offline              body {"offline":true|false}: while true, sink requests are
  *                                        answered by closing the connection (a network error)
  *   GET  /sink/<id>/received             {"requests":[SinkRequest...]} in arrival order
+ *   POST /sink/<id>/config               body {"version":"...","config":{...}}: the remote configuration
+ *                                        GET /sink/<id>/v1/config serves from now on
+ *   GET  /sink/<id>/v1/config            the RUM gateway config endpoint: 404 until a document was
+ *                                        posted, then the document with ETag "<version>", or 304 when
+ *                                        If-None-Match names it; the requests count in /received as
+ *                                        configRequests
  *
  * Every sink response allows CORS from any origin, with Content-Type, Content-Encoding and any
  * requested header, and exposes Retry-After. Sinks are separate per <id>, so parallel tests never
@@ -48,6 +54,8 @@ interface Scripted {
 
 interface Sink {
   readonly requests: SinkRequest[];
+  config: { readonly version: string; readonly config: unknown } | undefined;
+  configRequests: number;
   script: Scripted[];
   offline: boolean;
 }
@@ -59,7 +67,7 @@ const sinks = new Map<string, Sink>();
 function sinkFor(id: string): Sink {
   let s = sinks.get(id);
   if (s === undefined) {
-    s = { requests: [], script: [], offline: false };
+    s = { requests: [], script: [], offline: false, config: undefined, configRequests: 0 };
     sinks.set(id, s);
   }
   return s;
@@ -72,7 +80,7 @@ function cors(req: Request, headers: Headers = new Headers()): Headers {
     "Access-Control-Allow-Headers",
     req.headers.get("Access-Control-Request-Headers") ?? "Content-Type, Content-Encoding",
   );
-  headers.set("Access-Control-Expose-Headers", "Retry-After");
+  headers.set("Access-Control-Expose-Headers", "Retry-After, ETag");
   headers.set("Access-Control-Max-Age", "600");
   headers.set("Timing-Allow-Origin", "*");
   headers.set("Vary", "Origin");
@@ -176,7 +184,26 @@ const server = Bun.serve({
     if (parts[0] === "sink" && parts[1] !== undefined) {
       const sink = sinkFor(parts[1]);
       const rest = parts.slice(2).join("/");
-      if (rest === "received" && req.method === "GET") return json(req, { requests: sink.requests });
+      if (rest === "received" && req.method === "GET") {
+        return json(req, { requests: sink.requests, configRequests: sink.configRequests });
+      }
+      if (rest === "config" && req.method === "POST") {
+        sink.config = (await req.json()) as { version: string; config: unknown };
+        return json(req, { ok: true });
+      }
+      if (rest === "v1/config" && req.method === "GET") {
+        sink.configRequests++;
+        if (sink.config === undefined) return json(req, { error: "no_remote_config" }, 404);
+        const etag = `"${sink.config.version}"`;
+        if (req.headers.get("If-None-Match") === etag) {
+          const headers = cors(req);
+          headers.set("ETag", etag);
+          return new Response(null, { status: 304, headers });
+        }
+        const res = json(req, sink.config);
+        res.headers.set("ETag", etag);
+        return res;
+      }
       if (rest === "script" && req.method === "POST") {
         const { responses } = (await req.json()) as { responses: Scripted[] };
         sink.script = [...responses];

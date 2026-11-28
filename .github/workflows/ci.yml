@@ -21,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        module: [go, go/o11ygin, go/o11yconnect, go/o11ysql, go/o11yrum]
+        module: [go, go/o11ygin, go/o11yconnect, go/o11ysql, go/o11yrum, ops]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -59,6 +59,7 @@ jobs:
             go/o11yconnect/go.sum
             go/o11ysql/go.sum
             go/o11yrum/go.sum
+            ops/go.sum
       - run: make vet test tidy-check GO_TEST_P=4
 
   spec:
@@ -74,6 +75,26 @@ jobs:
           check-latest: true
           cache-dependency-path: go/go.sum
       - run: make spec-check spec-drift schema-published-test release-notes-test release-tag-test
+
+  # The ops pack: generator drift, the metric catalog from the gateway built
+  # from this checkout, query lint, and (once the pack has them) promtool
+  # checks of the alert rules and kustomize.
+  ops:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.x"
+          check-latest: true
+          cache-dependency-path: |
+            ops/go.sum
+            go/go.sum
+            go/o11yrum/go.sum
+      - run: make ops-check GO_TEST_P=4
 
   ts:
     runs-on: ubuntu-latest
@@ -100,6 +121,47 @@ jobs:
       - name: Size budgets
         working-directory: ts
         run: bun scripts/size.ts --check --summary "$GITHUB_STEP_SUMMARY"
+
+  # The RUM gateway end-to-end journey: a built o11yrum-gateway in front of
+  # the TypeScript OTLP sink, under Node and Bun.
+  rum-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.x"
+          check-latest: true
+          cache-dependency-path: go/o11yrum/go.sum
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.13"
+      - uses: actions/cache@v6
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('ts/bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24.x"
+      - run: make rum-e2e
+
+  # The o11yrum-gateway image for the runner's platform: it builds, reports
+  # its version, fits the size budget, runs as a numeric non-root user and
+  # serves /healthz from a read-only root filesystem. The release workflow
+  # builds both platforms from the same Dockerfile.
+  o11yrum-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - run: make o11yrum-image
 
   # The browser packages' suites under Playwright: @libo11y/web and
   # @libo11y/webext in headless Chromium, @libo11y/rum and its adapters in
@@ -299,6 +361,43 @@ jobs:
           O11Y_PG_TEST_DSN: postgresql://postgres:postgres@127.0.0.1:5432/libo11y_test
         run: cd python && uv sync --frozen --all-extras --dev && uv run --frozen --no-sync pytest tests/test_dbapi.py
 
+  # The Ruby gem on Linux and macOS (Ruby 3.3 and 3.4).
+  ruby:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        ruby: ["3.3", "3.4"]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+          bundler-cache: true
+          working-directory: ruby
+      - run: make ruby-check
+
+  # The .NET solution on Linux and macOS (.NET 10).
+  dotnet:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - run: make dotnet-check
+
   vuln:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -316,6 +415,7 @@ jobs:
             go/o11yconnect/go.sum
             go/o11ysql/go.sum
             go/o11yrum/go.sum
+            ops/go.sum
       - run: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
       - run: make vuln
 
@@ -337,6 +437,7 @@ jobs:
             go/o11yconnect/go.sum
             go/o11ysql/go.sum
             go/o11yrum/go.sum
+            ops/go.sum
       # The TypeScript half packs the packages and imports them under Bun and Node.
       - uses: oven-sh/setup-bun@v2
         with:

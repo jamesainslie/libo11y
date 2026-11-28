@@ -8,6 +8,11 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-27
+
+The first release. It requires `github.com/jamesainslie/libo11y/go`
+v0.4.0 or later.
+
 ### Added
 
 - The `o11yrum` module: `NewHandler`, the configuration file format, edge
@@ -53,3 +58,40 @@ adheres to [Semantic Versioning](https://semver.org/).
   through the metric reader `OTEL_METRICS_EXPORTER` selects. It registers
   its producer as `o11yrum` and as the fallback producer, and refuses to
   start when `OTEL_METRICS_PRODUCERS` is set without `o11yrum`.
+- Object stores for source maps: the `ObjectStore` interface,
+  `NewFileStore`, `WithObjectStore`, the `object_store` configuration
+  section, and the `s3store` package, which authenticates with the AWS
+  SDK's default credential chain (EKS Pod Identity, IRSA, instance roles
+  or the environment). The `o11yrum-gateway` command builds the S3 store
+  from the configuration.
+- `POST /_o11y/v1/sourcemaps`: bearer-token source map uploads per app
+  (`apps[].sourcemaps.upload_token_file`, `sourcemaps.max_upload_bytes`,
+  default 32 MiB), keyed by namespace, `service.version`,
+  `o11y.rum.app.update_id` and script path. Maps are parsed before they
+  are stored and are never served back. Failed authentications spend the
+  client's rate limit.
+- Symbolication of JavaScript stacks in `o11y.rum.error` records, records
+  with `exception.stacktrace` and span `exception` events, through an LRU
+  cache of parsed maps with a time to live and a negative cache
+  (`symbolication`), and a store read budget per batch, before
+  export and metric derivation. Every such record gets
+  `o11y.rum.error.fingerprint` from its resolved frames. V8, Gecko and
+  WebKit stack formats are parsed.
+- Self-telemetry: `o11yrum.sourcemaps.uploads` by outcome and
+  `o11yrum.symbolication.frames` by result.
+- `/readyz` answers 503 from the moment the `o11yrum-gateway` command
+  begins shutting down. The new top-level `shutdown_delay` setting
+  (default 0) keeps the gateway serving for that long, with `/readyz`
+  failing, before it stops accepting connections and drains.
+- `o11yrum-gateway -version` reports the module version Go records in the
+  binary when no version was linked in, so `go install
+  github.com/jamesainslie/libo11y/go/o11yrum/cmd/o11yrum-gateway@v0.1.0`
+  reports `v0.1.0`.
+- The container image `ghcr.io/jamesainslie/o11yrum-gateway`: a static
+  binary on distroless for `linux/amd64` and `linux/arm64`, running as
+  user 65532 with nothing to write at runtime unless a `filesystem` object
+  store is configured, published by the release
+  workflow with attested build provenance.
+
+[Unreleased]: https://github.com/jamesainslie/libo11y/compare/go/o11yrum/v0.1.0...HEAD
+[0.1.0]: https://github.com/jamesainslie/libo11y/releases/tag/go/o11yrum/v0.1.0
