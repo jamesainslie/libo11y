@@ -35,7 +35,7 @@
     },
     "packages/core": {
       "name": "@libo11y/core",
-      "version": "0.2.1",
+      "version": "0.3.0",
       "dependencies": {
         "@libo11y/spec": "workspace:*",
         "@opentelemetry/api": "1.10.0",
@@ -52,7 +52,7 @@
     },
     "packages/rum": {
       "name": "@libo11y/rum",
-      "version": "0.2.1",
+      "version": "0.3.0",
       "dependencies": {
         "@libo11y/core": "workspace:*",
         "@libo11y/spec": "workspace:*",
@@ -71,7 +71,7 @@
     },
     "packages/rum-connect": {
       "name": "@libo11y/rum-connect",
-      "version": "0.2.1",
+      "version": "0.3.0",
       "devDependencies": {
         "@bufbuild/protobuf": "2.17.0",
         "@connectrpc/connect": "2.3.0",
@@ -90,7 +90,7 @@
     },
     "packages/rum-react": {
       "name": "@libo11y/rum-react",
-      "version": "0.2.1",
+      "version": "0.3.0",
       "devDependencies": {
         "@libo11y/rum": "workspace:*",
         "@types/react": "19.3.0",
@@ -105,16 +105,24 @@
     },
     "packages/rum-replay": {
       "name": "@libo11y/rum-replay",
-      "version": "0.2.1",
+      "version": "0.3.0",
       "dependencies": {
         "@libo11y/core": "workspace:*",
+        "@libo11y/spec": "workspace:*",
+        "@libo11y/web": "workspace:*",
         "@rrweb/record": "2.2.2",
         "@rrweb/types": "2.2.2",
+      },
+      "devDependencies": {
+        "@libo11y/rum": "workspace:*",
+      },
+      "peerDependencies": {
+        "@libo11y/rum": "workspace:*",
       },
     },
     "packages/rum-tanstack-router": {
       "name": "@libo11y/rum-tanstack-router",
-      "version": "0.2.1",
+      "version": "0.3.0",
       "devDependencies": {
         "@libo11y/rum": "workspace:*",
         "@tanstack/history": "1.162.5",
@@ -135,7 +143,7 @@
     },
     "packages/server": {
       "name": "@libo11y/server",
-      "version": "0.2.1",
+      "version": "0.3.0",
       "dependencies": {
         "@libo11y/core": "workspace:*",
         "@libo11y/spec": "workspace:*",
@@ -159,7 +167,7 @@
     },
     "packages/sourcemaps": {
       "name": "@libo11y/sourcemaps",
-      "version": "0.2.1",
+      "version": "0.3.0",
       "bin": {
         "libo11y-sourcemaps": "./src/cli.ts",
       },
@@ -169,7 +177,7 @@
     },
     "packages/spec": {
       "name": "@libo11y/spec",
-      "version": "0.2.1",
+      "version": "0.3.0",
       "bin": {
         "libo11y": "./src/cli.ts",
       },
@@ -179,7 +187,7 @@
     },
     "packages/test": {
       "name": "@libo11y/test",
-      "version": "0.2.1",
+      "version": "0.3.0",
       "dependencies": {
         "@libo11y/core": "workspace:*",
         "@libo11y/spec": "workspace:*",
@@ -195,7 +203,7 @@
     },
     "packages/web": {
       "name": "@libo11y/web",
-      "version": "0.2.1",
+      "version": "0.3.0",
       "dependencies": {
         "@libo11y/core": "workspace:*",
         "@libo11y/spec": "workspace:*",
@@ -214,7 +222,7 @@
     },
     "packages/webext": {
       "name": "@libo11y/webext",
-      "version": "0.2.1",
+      "version": "0.3.0",
       "dependencies": {
         "@libo11y/core": "workspace:*",
         "@libo11y/spec": "workspace:*",
