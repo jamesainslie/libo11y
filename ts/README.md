@@ -1,8 +1,8 @@
 # libo11y for TypeScript
 
-The TypeScript implementation of libo11y, as a Bun workspace of eleven
+The TypeScript implementation of libo11y, as a Bun workspace of twelve
 `@libo11y/*` packages. `@libo11y/server`, `@libo11y/test` and
-`@libo11y/sourcemaps` run on Bun 1.3.13 and Node 24. `@libo11y/web`, `@libo11y/webext`, `@libo11y/rum` and the
+`@libo11y/sourcemaps` run on Bun 1.3.13 and Node 24. `@libo11y/web`, `@libo11y/webext`, `@libo11y/rum`, `@libo11y/rum-replay` and the
 RUM adapters run in browsers and Manifest V3 extensions. `@libo11y/spec` and `@libo11y/core` run in
 both. The packages are built on
 OpenTelemetry JS 3.x (`@opentelemetry/api` 1.10.0, the SDK packages at
@@ -24,9 +24,10 @@ each release.
 | [`@libo11y/rum-react`](packages/rum-react)                     | the React adapter for `@libo11y/rum`: `RumProvider`, `useRum` and `RumErrorBoundary`, which records render errors with the component stack. In development                                                   |
 | [`@libo11y/rum-tanstack-router`](packages/rum-tanstack-router) | the TanStack Router adapter for `@libo11y/rum`: `instrumentTanStackRouter` names views by route template and times soft navigations. In development                                                          |
 | [`@libo11y/rum-connect`](packages/rum-connect)                 | the Connect adapter for `@libo11y/rum`: `connectRequestNaming` names the fetch spans of Connect RPCs by service and method. In development                                                                   |
+| [`@libo11y/rum-replay`](packages/rum-replay)                   | privacy-first session replay for `@libo11y/rum`: rrweb recording behind libo11y's own scrubber, with text masked by default and input values never recorded. In development. This version holds the privacy core |
 
 `@libo11y/web` and `@libo11y/webext` first ship in `ts/v0.2.1`. `@libo11y/rum`,
-its adapters and `@libo11y/sourcemaps` have not shipped yet.
+its adapters, `@libo11y/rum-replay` and `@libo11y/sourcemaps` have not shipped yet.
 [docs/PARITY.md](../docs/PARITY.md) compares every capability with Go.
 
 ## Install
@@ -49,6 +50,7 @@ npm install @libo11y/web      # pages
 npm install @libo11y/webext   # Manifest V3 service workers, content scripts and extension pages
 npm install @libo11y/rum      # RUM over @libo11y/web (in development)
 npm install @libo11y/rum-react @libo11y/rum-tanstack-router @libo11y/rum-connect   # RUM adapters (in development)
+npm install @libo11y/rum-replay   # session replay for RUM (in development)
 ```
 
 The [web README](packages/web/README.md) and the

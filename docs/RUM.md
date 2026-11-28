@@ -42,8 +42,10 @@ image, and [its README](../go/o11yrum/README.md) covers configuration and
 deployment. The browser RUM cell, `@libo11y/rum`, is in development in
 `ts/packages/rum` and has not shipped. Its adapters for React
 (`@libo11y/rum-react`), TanStack Router (`@libo11y/rum-tanstack-router`)
-and Connect (`@libo11y/rum-connect`) are in development beside it. Every
-other named cell is planned.
+and Connect (`@libo11y/rum-connect`) are in development beside it, and so
+is session replay (`@libo11y/rum-replay`), whose privacy core masks all
+text by default and never records input values. Every other named cell is
+planned.
 
 ## Data model
 

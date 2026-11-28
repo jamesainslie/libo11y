@@ -808,14 +808,14 @@ jobs:
       # scripts/ts-release-check.sh does with the packed tarballs.
       - name: Install and bundle the browser packages
         run: |
-          specs_out="$(scripts/ts-npm-plan.sh specs "$RUNNER_TEMP/packs/plan.tsv" "$VERSION" @libo11y/web @libo11y/webext @libo11y/rum @libo11y/rum-react @libo11y/rum-tanstack-router @libo11y/rum-connect)"
+          specs_out="$(scripts/ts-npm-plan.sh specs "$RUNNER_TEMP/packs/plan.tsv" "$VERSION" @libo11y/web @libo11y/webext @libo11y/rum @libo11y/rum-react @libo11y/rum-tanstack-router @libo11y/rum-connect @libo11y/rum-replay)"
           mapfile -t specs <<<"$specs_out"
           consumer="$(mktemp -d)"
           printf '{ "name": "libo11y-browser-smoke", "private": true, "type": "module" }\n' >"$consumer/package.json"
           (cd "$consumer" && npm install --no-audit --no-fund --ignore-scripts "${specs[@]}")
           scripts/ts-browser-bundle-check.sh "$consumer" @libo11y/web=setup @libo11y/webext @libo11y/rum=setupRum \
             @libo11y/rum-react=RumErrorBoundary @libo11y/rum-tanstack-router=instrumentTanStackRouter \
-            @libo11y/rum-connect=connectRequestNaming
+            @libo11y/rum-connect=connectRequestNaming @libo11y/rum-replay=VERSION
       # A package not on npm yet installs from its tarball, with its other
       # dependencies from the registry, the way a consumer installs it from
       # the GitHub Release. The check fails on an incomplete dependency tree
