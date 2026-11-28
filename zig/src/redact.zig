@@ -145,7 +145,12 @@ pub fn masked(value: anytype) Masked(@TypeOf(value)) {
 ///
 /// Validation happens at compile time: an unknown field name or an unknown tag
 /// value triggers `@compileError`. Strictest protection wins through nested
-/// structs, optionals, slices, and arrays.
+/// structs, tagged unions, optionals, slices, and arrays.
+///
+/// A tagged union renders as its live variant, and its own `o11y_tags` name
+/// variants the same way a struct's name fields. A type the walk cannot look
+/// inside, such as an untagged union or an error union, renders as
+/// `"REDACTED"`.
 pub fn Struct(comptime T: type) type {
     comptime validateStructType(T, 0);
     return struct {
@@ -184,7 +189,7 @@ pub fn toLogValue(arena: Allocator, value: anytype) Allocator.Error!log_record.V
 fn validateStructType(comptime T: type, comptime depth: usize) void {
     if (depth > max_depth) return;
     const info = @typeInfo(T);
-    if (info != .@"struct") return;
+    if (info != .@"struct" and info != .@"union") return;
     if (@hasDecl(T, "o11y_redact_kind")) return;
     if (@hasDecl(T, "o11y_tags")) {
         const tags = T.o11y_tags;
@@ -199,7 +204,12 @@ fn validateStructType(comptime T: type, comptime depth: usize) void {
             _ = Protection.fromComptimeTag(@field(tags, tf_name));
         }
     }
-    inline for (info.@"struct".field_types) |ft| {
+    const field_types = switch (info) {
+        .@"struct" => |s| s.field_types,
+        .@"union" => |u| u.field_types,
+        else => unreachable,
+    };
+    inline for (field_types) |ft| {
         validateFieldType(ft, depth + 1);
     }
 }
@@ -207,7 +217,7 @@ fn validateStructType(comptime T: type, comptime depth: usize) void {
 fn validateFieldType(comptime F: type, comptime depth: usize) void {
     if (depth > max_depth) return;
     switch (@typeInfo(F)) {
-        .@"struct" => validateStructType(F, depth),
+        .@"struct", .@"union" => validateStructType(F, depth),
         .optional => |opt| validateFieldType(opt.child, depth + 1),
         .pointer => |ptr| validateFieldType(ptr.child, depth + 1),
         .array => |arr| validateFieldType(arr.child, depth + 1),
@@ -318,7 +328,7 @@ fn formatScalar(comptime T: type, value: T, w: *Io.Writer) Io.Writer.Error!void 
         },
         .enum_literal => try w.writeAll(@tagName(value)),
         .error_set => try w.writeAll(@errorName(value)),
-        else => try w.print("{any}", .{value}),
+        else => try w.writeAll(redacted_literal),
     }
 }
 
@@ -396,13 +406,41 @@ fn formatProtected(comptime T: type, value: T, comptime floor: Protection, compt
             }
             try w.writeByte('}');
         },
-        else => {
+        .@"union" => |u| {
+            // An untagged union does not say which field is live.
+            if (comptime u.tag_type == null) {
+                try w.writeAll(redacted_literal);
+                return;
+            }
+            try w.writeByte('{');
+            switch (value) {
+                inline else => |payload, tag| {
+                    const eff = comptime Protection.strictest(floor, fieldProtection(T, @tagName(tag)));
+                    if (comptime eff != .omit) {
+                        try w.writeAll(@tagName(tag));
+                        try w.writeByte(':');
+                        if (@TypeOf(payload) == void) {
+                            try w.writeAll("{}");
+                        } else {
+                            try formatProtected(@TypeOf(payload), payload, eff, depth + 1, w);
+                        }
+                    }
+                },
+            }
+            try w.writeByte('}');
+        },
+        .bool, .int, .comptime_int, .float, .comptime_float, .@"enum", .enum_literal, .error_set => {
             if (comptime floor == .mask) {
                 try writeXs(w, maskedRuneCount(T, value));
             } else {
                 try formatScalar(T, value, w);
             }
         },
+        // An error union, a vector or any other type the walk does not
+        // look inside. Printing it with `{any}` would show a value whose
+        // field tags were never applied, so it fails closed, as the JSON
+        // and logger walks do.
+        else => try w.writeAll(redacted_literal),
     }
 }
 
@@ -471,6 +509,30 @@ fn stringifyProtected(comptime T: type, value: T, comptime floor: Protection, co
                     try jw.objectField(fname);
                     try stringifyProtected(ftype, @field(value, fname), eff, depth + 1, jw);
                 }
+            }
+            try jw.endObject();
+        },
+        .@"union" => |u| {
+            if (comptime u.tag_type == null) {
+                try jw.write(redacted_literal);
+                return;
+            }
+            // The shape std.json gives a tagged union: an object whose one
+            // field is the live variant.
+            try jw.beginObject();
+            switch (value) {
+                inline else => |payload, tag| {
+                    const eff = comptime Protection.strictest(floor, fieldProtection(T, @tagName(tag)));
+                    if (comptime eff != .omit) {
+                        try jw.objectField(@tagName(tag));
+                        if (@TypeOf(payload) == void) {
+                            try jw.beginObject();
+                            try jw.endObject();
+                        } else {
+                            try stringifyProtected(@TypeOf(payload), payload, eff, depth + 1, jw);
+                        }
+                    }
+                },
             }
             try jw.endObject();
         },
@@ -574,6 +636,25 @@ fn toLogValueProtected(comptime T: type, value: T, comptime floor: Protection, c
                 }
             }
             return .{ .map = pairs };
+        },
+        .@"union" => |u| {
+            if (comptime u.tag_type == null) return .{ .string = redacted_literal };
+            comptime validateStructType(T, depth);
+            switch (value) {
+                inline else => |payload, tag| {
+                    const eff = comptime Protection.strictest(floor, fieldProtection(T, @tagName(tag)));
+                    if (comptime eff == .omit) return .{ .map = &.{} };
+                    const pairs = try arena.alloc(log_record.KeyValue, 1);
+                    pairs[0] = .{
+                        .key = @tagName(tag),
+                        .value = if (@TypeOf(payload) == void)
+                            .{ .map = &.{} }
+                        else
+                            try toLogValueProtected(@TypeOf(payload), payload, eff, depth + 1, arena),
+                    };
+                    return .{ .map = pairs };
+                },
+            }
         },
         .bool => {
             if (comptime floor == .mask) return .{ .string = try allocXs(arena, maskedRuneCount(T, value)) };
@@ -835,4 +916,139 @@ test "Struct applies mask, confidential, redact, secret, and omit across fmt, js
     const nested = log_record.find(lv.map, "nested").?.map;
     try testing.expectEqualStrings("REDACTED", log_record.find(nested, "code").?.string);
     try testing.expectEqualStrings("XX", log_record.find(nested, "note").?.string);
+}
+
+test "Struct applies field tags inside a tagged union across fmt, json, and log walk" {
+    const Card = struct {
+        number: u64,
+        holder: []const u8,
+
+        pub const o11y_tags = .{
+            .number = .secret,
+        };
+    };
+    const Method = union(enum) {
+        card: Card,
+        cash: void,
+    };
+    const Payment = struct {
+        merchant: []const u8,
+        method: Method,
+    };
+
+    const wrapped = wrapStruct(Payment{
+        .merchant = "acme",
+        .method = .{ .card = .{ .number = 4111111111111111, .holder = "Ada" } },
+    });
+
+    try testing.expectFmt("{merchant:acme method:{card:{number:REDACTED holder:Ada}}}", "{f}", .{wrapped});
+
+    var json_out: Io.Writer.Allocating = .init(testing.allocator);
+    defer json_out.deinit();
+    try std.json.Stringify.value(wrapped, .{}, &json_out.writer);
+    try testing.expectEqualStrings(
+        "{\"merchant\":\"acme\",\"method\":{\"card\":{\"number\":\"REDACTED\",\"holder\":\"Ada\"}}}",
+        json_out.written(),
+    );
+
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const lv = try toLogValue(arena.allocator(), wrapped);
+    const method = log_record.find(lv.map, "method").?.map;
+    try testing.expectEqual(@as(usize, 1), method.len);
+    const card = log_record.find(method, "card").?.map;
+    try testing.expectEqualStrings("REDACTED", log_record.find(card, "number").?.string);
+    try testing.expectEqualStrings("Ada", log_record.find(card, "holder").?.string);
+
+    // A variant with no payload renders as an empty value under its name.
+    const cash = wrapStruct(Payment{ .merchant = "acme", .method = .cash });
+    try testing.expectFmt("{merchant:acme method:{cash:{}}}", "{f}", .{cash});
+    json_out.clearRetainingCapacity();
+    try std.json.Stringify.value(cash, .{}, &json_out.writer);
+    try testing.expectEqualStrings("{\"merchant\":\"acme\",\"method\":{\"cash\":{}}}", json_out.written());
+    const cash_lv = try toLogValue(arena.allocator(), cash);
+    const cash_method = log_record.find(cash_lv.map, "method").?.map;
+    try testing.expectEqual(@as(usize, 0), log_record.find(cash_method, "cash").?.map.len);
+}
+
+test "Struct carries a field's protection into a tagged union and honors the union's own tags" {
+    const Token = union(enum) {
+        bearer: []const u8,
+        api_key: []const u8,
+        legacy: []const u8,
+
+        pub const o11y_tags = .{
+            .api_key = .redact,
+            .legacy = .omit,
+        };
+    };
+    const Session = struct {
+        token: Token,
+        plain: Token,
+
+        pub const o11y_tags = .{
+            .token = .mask,
+        };
+    };
+
+    // The field's mask reaches the payload, and the stricter tag on the
+    // union's own variant wins over it.
+    try testing.expectFmt(
+        "{token:{bearer:XXXXXXX} plain:{bearer:hunter2}}",
+        "{f}",
+        .{wrapStruct(Session{ .token = .{ .bearer = "hunter2" }, .plain = .{ .bearer = "hunter2" } })},
+    );
+    try testing.expectFmt(
+        "{token:{api_key:REDACTED} plain:{api_key:REDACTED}}",
+        "{f}",
+        .{wrapStruct(Session{ .token = .{ .api_key = "k-1" }, .plain = .{ .api_key = "k-1" } })},
+    );
+
+    const omitted = wrapStruct(Session{ .token = .{ .legacy = "old" }, .plain = .{ .legacy = "old" } });
+    try testing.expectFmt("{token:{} plain:{}}", "{f}", .{omitted});
+
+    var json_out: Io.Writer.Allocating = .init(testing.allocator);
+    defer json_out.deinit();
+    try std.json.Stringify.value(omitted, .{}, &json_out.writer);
+    try testing.expectEqualStrings("{\"token\":{},\"plain\":{}}", json_out.written());
+
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const lv = try toLogValue(arena.allocator(), omitted);
+    try testing.expectEqual(@as(usize, 0), log_record.find(lv.map, "token").?.map.len);
+}
+
+test "Struct fails closed on a type it cannot look inside" {
+    const Raw = extern union {
+        word: u32,
+        bytes: [4]u8,
+    };
+    const Holder = struct {
+        raw: Raw,
+        masked_raw: Raw,
+        fallible: anyerror!u32,
+
+        pub const o11y_tags = .{
+            .masked_raw = .mask,
+        };
+    };
+
+    // An untagged union does not say which field is live, and an error
+    // union is not walked, so each renders as REDACTED on every surface.
+    const wrapped = wrapStruct(Holder{ .raw = .{ .word = 0x31323334 }, .masked_raw = .{ .word = 7 }, .fallible = 42 });
+    try testing.expectFmt("{raw:REDACTED masked_raw:REDACTED fallible:REDACTED}", "{f}", .{wrapped});
+
+    var json_out: Io.Writer.Allocating = .init(testing.allocator);
+    defer json_out.deinit();
+    try std.json.Stringify.value(wrapped, .{}, &json_out.writer);
+    try testing.expectEqualStrings(
+        "{\"raw\":\"REDACTED\",\"masked_raw\":\"REDACTED\",\"fallible\":\"REDACTED\"}",
+        json_out.written(),
+    );
+
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const lv = try toLogValue(arena.allocator(), wrapped);
+    try testing.expectEqualStrings("REDACTED", log_record.find(lv.map, "raw").?.string);
+    try testing.expectEqualStrings("REDACTED", log_record.find(lv.map, "fallible").?.string);
 }

@@ -30,6 +30,15 @@ Requires Zig 0.17.1.
   attribute keys and the enums `RumSpanShape`, `RumResourceType`,
   `RumVitalAttributionInteractionType`, and `RumVitalAttributionLoadState`.
 
+### Fixed
+
+- `o11y.redact.Struct` no longer prints a union field in the clear. `{f}`
+  formatting passed a union to `{any}`, which printed the payload without
+  applying its field tags. A tagged union now renders as its live variant
+  with the tags applied, on `std.fmt`, `std.json` and the logger alike, and
+  its own `o11y_tags` can name variants. An untagged union, an error union
+  and any other type the walk cannot look inside render as `REDACTED`.
+
 ## [0.1.0] - 2026-11-26
 
 ### Added
