@@ -70,3 +70,29 @@ test("srcset descriptors that are not w, x or h values are dropped", () => {
   assert.equal(stripSrcset("/a.png jane@x.test 2x", allow), "/a.png 2x");
   assert.equal(stripSrcset("/a.png 1.5x, /b.png?token=1 (secret) 2x", allow), "/a.png 1.5x, /b.png 2x");
 });
+
+test("an authority whose port is not a number fails closed, so userinfo with / ? or # cannot leak", () => {
+  assert.equal(stripUrl("https://jane:hun/ter2@host.example/x", allow), "");
+  assert.equal(stripUrl("//jane:hun/ter2@cdn.example/a.png", allow), "");
+  assert.equal(stripUrl("https://jane:hun#ter2@host.example/x", allow), "");
+  assert.equal(stripUrl("https://host.example:8443/x?page=1", allow), "https://host.example:8443/x?page=1");
+  assert.equal(stripUrl("http://[::1]:8080/x", allow), "http://[::1]:8080/x");
+  assert.equal(stripUrl("https:///x", allow), "https://x");
+  assert.equal(stripUrl("https://", allow), "");
+  assert.equal(stripUrl("https://jane@", allow), "");
+});
+
+test("path parameters and ;-separated query parameters are stripped", () => {
+  assert.equal(
+    stripUrl("https://shop.example/cart;jsessionid=A1B2C3?page=1", allow),
+    "https://shop.example/cart?page=1",
+  );
+  assert.equal(stripUrl("/a?page=1;token=SECRET", allow), "/a?page=1");
+  assert.equal(stripUrl("/a?token=SECRET;page=2", allow), "/a?page=2");
+});
+
+test("a fragment shaped like a token is not an in-document reference", () => {
+  assert.equal(stripUrl("#eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJqYW5lIn0.sig", allow), "");
+  assert.equal(stripUrl(`#${"a".repeat(200)}`, allow), "");
+  assert.equal(stripUrl("#:r1:", allow), "#:r1:");
+});

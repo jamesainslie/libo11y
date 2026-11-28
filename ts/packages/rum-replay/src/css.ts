@@ -5,8 +5,9 @@
  * - Comments are removed, since a URL in a comment is still data.
  * - A url() token, whatever its case and escapes (`URL(`, `\75 rl(`), has its argument decoded,
  *   stripped by stripUrl and written back as url("...").
- * - A quoted string is decoded. When it reads as a URL (a scheme of URL_SCHEMES, or no whitespace
- *   and a "/" at the start or a "?" or "#" in it), as in @import or image-set(), it is stripped by
+ * - A quoted string is decoded. It is taken as a URL when it follows @import, starts (once tab,
+ *   LF and CR are removed) with a scheme of URL_SCHEMES, holds a "?" or "#" anywhere, or starts
+ *   with "/" and holds no whitespace, as in @import or image-set(). A URL string is stripped by
  *   stripUrl and written back in double quotes. Any other string is kept exactly as written.
  * - Everything else is copied unchanged.
  */
@@ -119,9 +120,9 @@ function quote(s: string): string {
 }
 
 function readsAsUrl(value: string): boolean {
-  const t = value.trim();
-  if (URL_SCHEMES.test(t)) return true;
-  return !/\s/.test(t) && (t.startsWith("/") || t.includes("?") || t.includes("#"));
+  const t = value.replace(/[\t\n\r]/g, "").trim();
+  if (URL_SCHEMES.test(t) || t.includes("?") || t.includes("#")) return true;
+  return !/\s/.test(t) && t.startsWith("/");
 }
 
 /** css with every URL stripped by stripUrl and comments removed. See the file comment. */
@@ -137,7 +138,10 @@ export function stripCssUrls(css: string, allow: ReadonlySet<string>): string {
     }
     if (c === '"' || c === "'") {
       const s = readString(css, i);
-      out += readsAsUrl(s.value) ? quote(stripUrl(s.value, allow)) : css.slice(i, s.next);
+      out +=
+        /@import\s*$/i.test(out) || readsAsUrl(s.value)
+          ? quote(stripUrl(s.value, allow))
+          : css.slice(i, s.next);
       i = s.next;
       continue;
     }

@@ -54,7 +54,7 @@ test("remote can switch replay and onRetain off, never on", () => {
 test("the sample rate moves only within code limits", () => {
   assert.equal(clampReplay(code, fixed, parseReplayRemote({ sampleRate: 1 }, any)).sampleRate, 0.5);
   assert.equal(clampReplay(code, fixed, parseReplayRemote({ sampleRate: 0 }, any)).sampleRate, 0.5);
-  assert.equal(clampReplay(code, [0.1, 0.8], parseReplayRemote({ sampleRate: 1 }, any)).sampleRate, 0.8);
+  assert.equal(clampReplay(code, [0.1, 0.8], parseReplayRemote({ sampleRate: 0.7 }, any)).sampleRate, 0.5);
   assert.equal(clampReplay(code, [0.1, 0.8], parseReplayRemote({ sampleRate: 0 }, any)).sampleRate, 0.1);
   assert.equal(clampReplay(code, [0, 0.5], parseReplayRemote({ sampleRate: 0 }, any)).sampleRate, 0);
 });
@@ -104,4 +104,14 @@ test("code limits default to no change and must satisfy 0 <= min <= max <= 1", (
   ] as const) {
     assert.throws(() => resolveReplayLimits(0.3, { sampleRate: bad }), /INVALID_OPTION|limits/);
   }
+});
+
+test("remote can only lower the sample rate: never above the code rate, whatever the limits", () => {
+  assert.equal(clampReplay(code, [0.1, 0.8], parseReplayRemote({ sampleRate: 1 }, any)).sampleRate, 0.5);
+  assert.equal(clampReplay(code, [0.1, 0.8], parseReplayRemote({ sampleRate: 0.3 }, any)).sampleRate, 0.3);
+});
+
+test("a code rate outside its own limits is refused", () => {
+  assert.throws(() => resolveReplayLimits(0.1, { sampleRate: [0.5, 1] }), /INVALID_OPTION|limits/);
+  assert.throws(() => resolveReplayLimits(0.9, { sampleRate: [0, 0.5] }), /INVALID_OPTION|limits/);
 });

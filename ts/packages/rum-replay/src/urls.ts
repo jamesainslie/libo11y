@@ -6,15 +6,22 @@
  *   spaces trimmed first, as a browser does, so "java\tscript:" is seen as "javascript:".
  * - A URL with a scheme other than http or https (data, blob, javascript, mailto, tel, file,
  *   about and every other) becomes "".
- * - userinfo is removed from the authority.
- * - The query keeps only the parameters whose name, exactly as written, is on the allow list.
+ * - userinfo is removed from the authority. An authority that is not a host with an optional
+ *   numeric port (an empty host, or a port that is not digits, as when the userinfo itself holds
+ *   "/", "?" or "#") fails closed: the URL becomes "".
+ * - The path ends at the first ";", so path parameters such as ;jsessionid= are removed.
+ * - The query is split on "&" and ";", and keeps only the parameters whose name, exactly as
+ *   written, is on the allow list. They are joined with "&".
  * - The fragment is removed, except a whole value that is an in-document reference such as
- *   "#icon-cart" (an SVG use or a same-page link), which carries no query or parameters.
+ *   "#icon-cart" or "#:r1:" (an SVG use or a same-page link): a letter, "_" or ":" followed by
+ *   at most 63 letters, digits, "_", ":" or "-".
  * - Relative URLs stay relative.
  */
 const SCHEME = /^([A-Za-z][A-Za-z0-9+.-]*):/;
 const KEPT_SCHEMES: ReadonlySet<string> = new Set(["http", "https"]);
-const ID_REFERENCE = /^#[A-Za-z_][A-Za-z0-9_.:-]*$/;
+const ID_REFERENCE = /^#[A-Za-z_:][A-Za-z0-9_:-]{0,63}$/;
+/** A host (a bracketed IPv6 literal or a name without ":") with an optional numeric port. */
+const HOST = /^(?:\[[0-9A-Fa-f:.]+\]|[^:[\]]+)(?::[0-9]*)?$/;
 
 /** raw as a browser reads it: tab, LF and CR removed, C0 controls and spaces trimmed. */
 function clean(raw: string): string {
@@ -26,24 +33,27 @@ function clean(raw: string): string {
   return s.slice(start, end);
 }
 
-/** The authority of rest (which starts right after the slashes) without userinfo, and what follows it. */
-function splitAuthority(rest: string): { readonly host: string; readonly tail: string } {
+/** The host of rest (which starts right after the slashes) without userinfo, or undefined when it is not a valid host, and what follows it. */
+function splitAuthority(rest: string): { readonly host: string | undefined; readonly tail: string } {
   const end = rest.search(/[/\\?#]/);
   const authority = end < 0 ? rest : rest.slice(0, end);
   const tail = end < 0 ? "" : rest.slice(end);
   const at = authority.lastIndexOf("@");
-  return { host: at < 0 ? authority : authority.slice(at + 1), tail };
+  const host = at < 0 ? authority : authority.slice(at + 1);
+  return { host: HOST.test(host) ? host : undefined, tail };
 }
 
 /** The path of tail (up to "?" or "#") followed by the allowed part of its query. */
 function pathAndQuery(tail: string, allow: ReadonlySet<string>): string {
   const pathEnd = tail.search(/[?#]/);
-  const path = pathEnd < 0 ? tail : tail.slice(0, pathEnd);
+  const full = pathEnd < 0 ? tail : tail.slice(0, pathEnd);
+  const semicolon = full.indexOf(";");
+  const path = semicolon < 0 ? full : full.slice(0, semicolon);
   if (pathEnd < 0 || tail[pathEnd] !== "?") return path;
   const afterQuery = tail.slice(pathEnd + 1);
   const hash = afterQuery.indexOf("#");
   const query = hash < 0 ? afterQuery : afterQuery.slice(0, hash);
-  const kept = query.split("&").filter((piece) => {
+  const kept = query.split(/[&;]/).filter((piece) => {
     const eq = piece.indexOf("=");
     return allow.has(eq < 0 ? piece : piece.slice(0, eq));
   });
@@ -60,10 +70,12 @@ export function stripUrl(raw: string, allow: ReadonlySet<string>): string {
     if (!KEPT_SCHEMES.has(name)) return "";
     const rest = url.slice(scheme[0].length).replace(/^[/\\]+/, "");
     const { host, tail } = splitAuthority(rest);
+    if (host === undefined) return "";
     return `${name}://${host}${pathAndQuery(tail, allow)}`;
   }
   if (/^[/\\]{2}/.test(url)) {
     const { host, tail } = splitAuthority(url.slice(2));
+    if (host === undefined) return "";
     return `//${host}${pathAndQuery(tail, allow)}`;
   }
   return pathAndQuery(url, allow);

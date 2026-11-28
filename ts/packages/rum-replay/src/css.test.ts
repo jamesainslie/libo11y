@@ -61,3 +61,21 @@ test("unterminated input is handled without leaking", () => {
   assert.equal(stripCssUrls('a{content:"data:x,SECRET', allow), 'a{content:""');
   assert.equal(stripCssUrls("a{color:red/* SECRET", allow), "a{color:red");
 });
+
+test("strings with whitespace or escapes are still stripped when they hold a query or fragment", () => {
+  assert.equal(stripCssUrls('@import "/my theme.css?token=SECRET";', allow), '@import "/my theme.css";');
+  assert.equal(stripCssUrls('@import "/theme.css\\9 ?token=SECRET";', allow), '@import "/theme.css";');
+  assert.equal(
+    stripCssUrls('i{background:image-set("/a b.png?token=SECRET" 1x)}', allow),
+    'i{background:image-set("/a b.png" 1x)}',
+  );
+  assert.equal(
+    stripCssUrls('i{background:image-set("a.png\\a ?token=SECRET" 1x)}', allow),
+    'i{background:image-set("a.png" 1x)}',
+  );
+});
+
+test("an @import string is a URL whatever it looks like", () => {
+  assert.equal(stripCssUrls("@import 'data:text/css,SECRET';", allow), '@import "";');
+  assert.equal(stripCssUrls("@IMPORT 'theme.css';", allow), '@IMPORT "theme.css";');
+});

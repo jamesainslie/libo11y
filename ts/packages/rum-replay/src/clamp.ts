@@ -6,8 +6,8 @@
  * Remote configuration can only make replay stricter:
  * - enabled and onRetain are honoured only as false: they switch replay or the lead-up buffer off,
  *   never on.
- * - sampleRate moves only within the limits code sets (default [rate, rate], no change), as
- *   sessionSampleRate does in @libo11y/rum.
+ * - sampleRate can only lower the rate: down to the minimum of the limits code sets (default
+ *   [rate, rate], no change), never above the code rate.
  * - mask and block selectors are added after the fixed and code ones, which stay.
  * - unmask is intersected with the code list, so it can only remove selectors. It can never add one.
  * - A selector that is not a string, is empty or fails validSelector is dropped, and so is every
@@ -79,7 +79,9 @@ export function parseReplayRemote(
 
 /**
  * The range remote configuration may move the replay sample rate within. The default is
- * [rate, rate]: no change. Throws O11yError INVALID_OPTION unless 0 <= min <= max <= 1.
+ * [rate, rate]: no change. Throws O11yError INVALID_OPTION unless 0 <= min <= rate <= max <= 1.
+ * Remote configuration only ever lowers the rate, so min is the bound that matters: clampReplay
+ * never goes above the code rate, whatever max says.
  */
 export function resolveReplayLimits(
   rate: number,
@@ -88,8 +90,11 @@ export function resolveReplayLimits(
   const range = limits?.sampleRate;
   if (range === undefined) return [rate, rate];
   const [min, max] = range;
-  if (!(min >= 0 && min <= max && max <= 1)) {
-    throw new O11yError("INVALID_OPTION", "replay limits.sampleRate must satisfy 0 <= min <= max <= 1");
+  if (!(min >= 0 && min <= rate && rate <= max && max <= 1)) {
+    throw new O11yError(
+      "INVALID_OPTION",
+      "replay limits.sampleRate must satisfy 0 <= min <= sampleRate <= max <= 1",
+    );
   }
   return [min, max];
 }
@@ -107,7 +112,9 @@ export function clampReplay(
   remote: ReplayRemote | undefined,
 ): ReplaySettings {
   if (remote === undefined) return code;
-  const [lo, hi] = limits;
+  // Remote configuration only lowers the rate: never above the code rate, never below min.
+  const hi = Math.min(limits[1], code.sampleRate);
+  const lo = Math.min(limits[0], hi);
   const unmask = remote.unmask;
   return Object.freeze({
     enabled: code.enabled && remote.enabled !== false,
