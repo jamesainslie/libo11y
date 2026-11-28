@@ -144,6 +144,7 @@ public static class O11y
             ["service.instance.id"] = res.InstanceId,
             ["sdk.disabled"] = sdkDisabled ? "true" : "false",
         };
+        if (res.ServiceVersionFallback) cfg["service_version_fallback"] = "true";
 
         var ownedDisposables = new List<IDisposable>();
 
