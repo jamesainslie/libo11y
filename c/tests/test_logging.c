@@ -214,6 +214,25 @@ static void test_wide_event_record_and_capture_redaction(void) {
     ASSERT_EQ_SIZE(4, runes);
     ASSERT_EQ_STR("XXXX", masked);
 
+    /* A short buffer truncates the mask and still reports the full length. */
+    char small[3];
+    ASSERT_EQ_SIZE(4, o11y_redact_mask("caf\xc3\xa9", 5, small, sizeof(small)));
+    ASSERT_EQ_STR("XX", small);
+    ASSERT_EQ_SIZE(4, o11y_redact_mask("caf\xc3\xa9", 5, NULL, 0));
+
+    /* The masked and secret attributes reach the sinks already redacted. */
+    char card_mask[32];
+    o11y_log_attr_t redacted[] = {
+        o11y_log_kv_masked("card.last4", "4242", card_mask, sizeof(card_mask)),
+        o11y_log_kv_secret("card.cvv"),
+    };
+    o11y_log_error(sdk, NULL, "card charged", redacted, 2); /* the recorder gates below ERROR */
+    const o11y_test_log_t *charged = o11y_test_find_log(rec_test, "card charged");
+    ASSERT_NOT_NULL(charged);
+    ASSERT_EQ_STR("XXXX", o11y_test_log_attr_str(charged, "card.last4"));
+    ASSERT_EQ_STR("REDACTED", o11y_test_log_attr_str(charged, "card.cvv"));
+    ASSERT_TRUE(strstr(o11y_test_console_output(rec_test, NULL), "4242") == NULL);
+
     o11y_ctx_destroy(ctx);
     o11y_record_destroy(wide);
     o11y_test_destroy(rec_test);

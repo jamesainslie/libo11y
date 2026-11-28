@@ -8,7 +8,7 @@ GO_TEST_P ?= 4
 # gate runs on each module separately.
 GO_MODULES := go go/o11ygin go/o11yconnect go/o11ysql go/o11yrum ops
 
-.PHONY: spec-check spec-generate spec-drift ops-generate ops-check ops-integration-up ops-integration-down ops-integration ops-promtool-test ops-release-check ops-release-check-test test lint vet tidy-check vuln release-check zig-release-check python-release-check rust-release-check rust-release-check-test c-release-check dotnet-release-check o11yrum-release-check print-o11yrum-release-version o11yrum-image schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-rn-bundle-test ts-npm-plan-test ts-install ts-check ts-size ts-browser-test ts-rn-check rum-e2e rust-check rust-msrv zig-check zig-integrations-check zig-hygiene-test python-check python-hygiene-test c-check ruby-check ruby-release-check ruby-gem-plan-test dotnet-check java-check ci
+.PHONY: spec-check spec-generate spec-drift ops-generate ops-check ops-integration-up ops-integration-down ops-integration ops-promtool-test ops-release-check ops-release-check-test test lint vet tidy-check vuln release-check zig-release-check python-release-check rust-release-check rust-release-check-test c-release-check dotnet-release-check o11yrum-release-check print-o11yrum-release-version o11yrum-image schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-rn-bundle-test ts-npm-plan-test ts-install ts-check ts-size ts-browser-test ts-rn-check rum-e2e rust-check rust-msrv zig-check zig-integrations-check zig-hygiene-test python-check python-hygiene-test c-check c-sanitize ruby-check ruby-release-check ruby-gem-plan-test dotnet-check java-check ci
 
 # Validate the spec registry against the libo11y policy suite (naming,
 # ownership, sensitivity, cardinality, events, units).
@@ -398,17 +398,27 @@ python-hygiene-test:
 	scripts/python-hygiene_test.sh
 
 # C11 library (c/): formatting and hygiene on the Zig ABI layer, static/shared
-# library & CLI build, full C11 unit/conformance/wire test suites in Debug and
-# ReleaseSafe, CLI verification, and standalone host C compiler static link check.
+# library & CLI build, full C11 unit/conformance/wire test suites and the ABI
+# layout test in Debug and ReleaseSafe, the same suites under ASan and UBSan
+# with the host C compiler, CLI verification, and standalone host C compiler
+# static link check.
+C_SANITIZE_J ?= 4
 c-check:
 	zig fmt --check --exclude c/.zig-cache --exclude c/zig-pkg --exclude c/zig-out c
 	scripts/zig-hygiene.sh c/build.zig c/src
 	cd c && zig build -j$(ZIG_BUILD_J) -Doptimize=Debug && zig build test -j$(ZIG_BUILD_J) -Doptimize=Debug
+	C_SANITIZE_J=$(C_SANITIZE_J) c/tests/run_sanitized.sh c/zig-out conformance
 	cd c && zig build -j$(ZIG_BUILD_J) -Doptimize=ReleaseSafe && zig build test -j$(ZIG_BUILD_J) -Doptimize=ReleaseSafe
 	c/tests/test_cli.sh c/zig-out/bin/libo11y
 	@tmp="$$(mktemp)"; \
 	cc -std=c11 -Wall -Wextra -Werror -Wpedantic -Ic/zig-out/include c/examples/quickstart.c c/zig-out/lib/libo11y.a -lpthread -lm -o "$$tmp" && "$$tmp"; \
 	rc=$$?; rm -f "$$tmp"; exit $$rc
+
+# The C11 suites under AddressSanitizer (with leak detection on Linux) and
+# UndefinedBehaviorSanitizer, against a Debug build of the library.
+c-sanitize:
+	cd c && zig build -j$(ZIG_BUILD_J) -Doptimize=Debug
+	C_SANITIZE_J=$(C_SANITIZE_J) c/tests/run_sanitized.sh c/zig-out conformance
 
 # Ruby gem (ruby/): install locked/bundle deps, RSpec (including shared
 # conformance, integrations, and OTLP wire suites), RuboCop, and hygiene check.

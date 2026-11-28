@@ -282,8 +282,28 @@ pub const LogSink = extern struct {
     ) callconv(.c) Err,
 };
 
-pub const BaggageEgressAllowFn = *const fn (key: [*]const u8, key_len: usize) callconv(.c) bool;
+pub const BaggageEgressAllowFn = *const fn (userdata: ?*anyopaque, key: [*:0]const u8) callconv(.c) bool;
 pub const ErrorHandlerFn = *const fn (userdata: ?*anyopaque, message: [*:0]const u8) callconv(.c) void;
+
+pub const PropagatorKind = enum(c_int) {
+    trace_context = 0,
+    baggage = 1,
+    custom = 2,
+    _,
+};
+
+/// `ctx` and the result of extract are `o11y_ctx_t` handles.
+pub const PropagatorInjectFn = *const fn (userdata: ?*anyopaque, ctx: ?*const anyopaque, carrier: *const Carrier) callconv(.c) void;
+pub const PropagatorExtractFn = *const fn (userdata: ?*anyopaque, parent: ?*const anyopaque, carrier: *const Carrier) callconv(.c) ?*anyopaque;
+
+pub const Propagator = extern struct {
+    kind: PropagatorKind = .trace_context,
+    userdata: ?*anyopaque = null,
+    inject: ?PropagatorInjectFn = null,
+    extract: ?PropagatorExtractFn = null,
+    fields: ?[*]const ?[*:0]const u8 = null,
+    fields_len: usize = 0,
+};
 
 pub const Options = extern struct {
     env_mode: EnvMode = .process,
@@ -330,7 +350,10 @@ pub const Options = extern struct {
     sampler_kind: SamplerKind = .default,
     sampler_ratio: f64 = 1.0,
 
+    propagators: ?[*]const Propagator = null,
+    propagators_len: usize = 0,
     baggage_egress_allow: ?BaggageEgressAllowFn = null,
+    baggage_egress_allow_userdata: ?*anyopaque = null,
 
     histogram_buckets: ?[*]const HistogramBuckets = null,
     histogram_buckets_len: usize = 0,
@@ -450,7 +473,10 @@ pub const TestOptions = extern struct {
     sampler_kind: SamplerKind = .always_on,
     sampler_ratio: f64 = 1.0,
 
+    propagators: ?[*]const Propagator = null,
+    propagators_len: usize = 0,
     baggage_egress_allow: ?BaggageEgressAllowFn = null,
+    baggage_egress_allow_userdata: ?*anyopaque = null,
 
     histogram_buckets: ?[*]const HistogramBuckets = null,
     histogram_buckets_len: usize = 0,

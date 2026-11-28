@@ -1,6 +1,7 @@
 /*
- * libo11y test harness — hermetic recorder, conformance/correlation/triangle
- * assertions, and in-process OTLP/HTTP and OTLP/gRPC receivers for C11.
+ * libo11y test harness for C11: a hermetic recorder, the conformance,
+ * correlation and triangle checks, and in-process OTLP/HTTP and OTLP/gRPC
+ * receivers.
  *
  * Copyright 2026 libo11y contributors.
  * SPDX-License-Identifier: Apache-2.0
@@ -64,7 +65,10 @@ typedef struct o11y_test_options {
     o11y_sampler_kind_t sampler_kind;
     double sampler_ratio;
 
+    const o11y_propagator_t *propagators;
+    size_t propagators_len;
     o11y_baggage_egress_allow_fn baggage_egress_allow;
+    void *baggage_egress_allow_userdata;
 
     const o11y_histogram_buckets_t *histogram_buckets;
     size_t histogram_buckets_len;
