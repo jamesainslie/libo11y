@@ -18,7 +18,13 @@ export default defineConfig({
   retries: 0,
   timeout: 600_000,
   reporter: process.env.CI ? [["list"], ["github"]] : "list",
-  use: { baseURL: `http://127.0.0.1:${port}`, browserName: "chromium" },
+  // A stuck page or click fails in seconds, not at the test timeout.
+  use: {
+    baseURL: `http://127.0.0.1:${port}`,
+    browserName: "chromium",
+    actionTimeout: 15_000,
+    navigationTimeout: 30_000,
+  },
   webServer: {
     command: "bun packages/web/browser/harness/server.ts",
     url: `http://127.0.0.1:${port}/health`,

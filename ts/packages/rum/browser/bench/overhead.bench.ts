@@ -10,6 +10,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { type Page, test } from "@playwright/test";
 import { createSink } from "../../../web/browser/harness/sink.ts";
+import { openBench } from "../harness/bench.ts";
 
 const RUNS = 5;
 const VIEWS = 20;
@@ -37,11 +38,7 @@ async function taskMillis(
 }
 
 async function measure(page: Page, rum: boolean, endpoint: string): Promise<Totals> {
-  const q = new URLSearchParams({ endpoint, ...(rum ? { rum: "1" } : {}) });
-  await page.goto(`/page/rum-bench?${q.toString()}`);
-  await page.waitForFunction(
-    () => (globalThis as unknown as { __benchReady?: boolean }).__benchReady === true,
-  );
+  await openBench(page, rum, endpoint);
   await page.waitForTimeout(500);
   const cdp = await page.context().newCDPSession(page);
   await cdp.send("Performance.enable");

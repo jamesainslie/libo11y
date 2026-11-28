@@ -2,7 +2,8 @@
  * The overhead benchmark fixture: a list of 200 items, a router-like soft navigation (pushState
  * and a swap of the 200 nodes) and a button whose handler updates 50 nodes. With ?rum=1 it starts
  * RUM with every collector; without, it runs the same page bare. The page's query names the sink
- * endpoint. window.__benchReady is set once the page (and RUM) is ready.
+ * endpoint. window.__benchReady is set once the page (and RUM) is ready; when setup fails,
+ * window.__benchError holds the message instead.
  */
 import { actions, errors, setupRum, views } from "@libo11y/rum";
 
@@ -47,7 +48,7 @@ async function start(): Promise<void> {
     w.__rum = await setupRum({
       serviceName: "rum-bench",
       serviceVersion: "1.0.0",
-      environment: "bench",
+      environment: "test",
       endpoint: params.get("endpoint") ?? "",
       consent: { initial: "granted" },
       runtimeMetrics: false,
@@ -57,4 +58,6 @@ async function start(): Promise<void> {
   }
   w.__benchReady = true;
 }
-void start();
+start().catch((e: unknown) => {
+  w.__benchError = e instanceof Error ? e.message : String(e);
+});
