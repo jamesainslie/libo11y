@@ -3,6 +3,7 @@ package ing.o11y.libo11y.test;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -84,7 +85,7 @@ class EventAndRecordTest {
         assertSame(none, none.set("order.id", "o1").add("db.queries", 2).max("app.slowest", 1.5));
         assertDoesNotThrow(none::emit);
         assertDoesNotThrow(none::close);
-        assertNotNull(O11yRecord.fromContext(Context.root()));
+        assertNull(O11yRecord.fromContext(Context.root()), "the explicit lookup still tells no record apart");
     }
 
     @Test

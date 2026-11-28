@@ -6,6 +6,7 @@ import ing.o11y.libo11y.spec.generated.Spec;
 import io.micrometer.common.KeyValue;
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationHandler;
+import io.opentelemetry.context.Context;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -44,7 +45,7 @@ public final class O11yObservationHandler implements ObservationHandler<Observat
         if (err == null) {
             return;
         }
-        O11yRecord record = O11yRecord.current();
+        O11yRecord record = O11yRecord.fromContext(Context.current());
         if (record != null) {
             record.recordError(err);
         }
@@ -70,7 +71,7 @@ public final class O11yObservationHandler implements ObservationHandler<Observat
         }
         attrs.put(Spec.Attributes.DURATION, durationSec);
 
-        O11yRecord record = O11yRecord.current();
+        O11yRecord record = O11yRecord.fromContext(Context.current());
         if (record != null) {
             record.setAll(attrs);
         } else if (emitStandaloneEvent && context.getName() != null && !context.getName().isEmpty()) {

@@ -69,6 +69,33 @@ class LogbackAppenderTest {
     }
 
     @Test
+    void aLogLineFromOneInstallationsSinkIsNotRoutedThroughAnother() {
+        try (O11yRecorder first = O11yRecorder.start(b -> b.addExtraLogSink(
+                        e -> LoggerFactory.getLogger("inside.sink").info("from the sink")));
+                O11yRecorder second = O11yRecorder.start();
+                O11yLogbackAppender a = O11yLogbackAppender.install(first.telemetry());
+                O11yLogbackAppender b = O11yLogbackAppender.install(second.telemetry())) {
+            LoggerFactory.getLogger("demo").info("outer");
+            assertEquals(1, withMessage(first, "outer").size());
+            assertEquals(1, withMessage(second, "outer").size());
+            assertEquals(0, withMessage(second, "from the sink").size());
+        }
+    }
+
+    @Test
+    void consoleAppendersComeBackOnlyWhenTheLastConsoleOwnerCloses() {
+        try (O11yRecorder first = O11yRecorder.start();
+                O11yRecorder second = O11yRecorder.start()) {
+            O11yLogbackAppender a = O11yLogbackAppender.install(first.telemetry());
+            O11yLogbackAppender b = O11yLogbackAppender.install(second.telemetry());
+            a.close();
+            assertNull(root.getAppender(TEST_CONSOLE));
+            b.close();
+            assertSame(console, root.getAppender(TEST_CONSOLE));
+        }
+    }
+
+    @Test
     void anErrorWithAThrowableCarriesErrorTypeAndStacktrace() {
         try (O11yRecorder rec = O11yRecorder.start();
                 O11yLogbackAppender ignored = O11yLogbackAppender.install(rec.telemetry())) {
