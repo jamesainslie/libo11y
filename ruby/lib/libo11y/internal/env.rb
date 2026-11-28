@@ -1,5 +1,8 @@
 # frozen_string_literal: true
 
+require "openssl"
+require "opentelemetry/sdk"
+require "opentelemetry-logs-sdk"
 require_relative "../errors"
 
 module Libo11y
@@ -153,6 +156,64 @@ module Libo11y
         else
           raise ExporterError, "o11y: unsupported exemplar filter #{raw.inspect}"
         end
+      end
+
+      # The span limits, from env_map and the SDK's defaults. The SDK's own
+      # defaults read the process environment when the SDK loads, so they are
+      # never used.
+      def span_limits(env_map)
+        general_count = "OTEL_ATTRIBUTE_COUNT_LIMIT"
+        general_length = "OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT"
+        OpenTelemetry::SDK::Trace::SpanLimits.new(
+          attribute_count_limit: count_limit(env_map, "OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT", general_count),
+          attribute_length_limit: length_limit(env_map, "OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT", general_length),
+          event_count_limit: count_limit(env_map, "OTEL_SPAN_EVENT_COUNT_LIMIT"),
+          link_count_limit: count_limit(env_map, "OTEL_SPAN_LINK_COUNT_LIMIT"),
+          event_attribute_count_limit: count_limit(env_map, "OTEL_EVENT_ATTRIBUTE_COUNT_LIMIT"),
+          event_attribute_length_limit: length_limit(env_map, "OTEL_EVENT_ATTRIBUTE_VALUE_LENGTH_LIMIT", general_length),
+          link_attribute_count_limit: count_limit(env_map, "OTEL_LINK_ATTRIBUTE_COUNT_LIMIT")
+        )
+      end
+
+      def log_record_limits(env_map)
+        OpenTelemetry::SDK::Logs::LogRecordLimits.new(
+          attribute_count_limit: count_limit(env_map, "OTEL_LOGRECORD_ATTRIBUTE_COUNT_LIMIT", "OTEL_ATTRIBUTE_COUNT_LIMIT"),
+          attribute_length_limit: length_limit(env_map, "OTEL_LOGRECORD_ATTRIBUTE_VALUE_LENGTH_LIMIT", "OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT")
+        )
+      end
+
+      # A count limit: the first of the named variables that holds a
+      # positive integer, else the OpenTelemetry default of 128.
+      def count_limit(env_map, *names)
+        count = Integer(value(env_map, *names) || "", 10)
+        count.positive? ? count : 128
+      rescue ArgumentError
+        128
+      end
+
+      # A value length limit, or nil for none. The SDK accepts 32 or more.
+      def length_limit(env_map, *names)
+        length = Integer(value(env_map, *names) || "", 10)
+        length >= 32 ? length : nil
+      rescue ArgumentError
+        nil
+      end
+
+      # Whether an OTLP exporter verifies the collector's certificate. It
+      # does, unless env_map holds OpenTelemetry Ruby's variable that turns
+      # verification off. The exporters' own default reads the process
+      # environment, so libo11y always passes this one.
+      def ssl_verify_mode(env_map)
+        return OpenSSL::SSL::VERIFY_PEER if env_map.key?("OTEL_RUBY_EXPORTER_OTLP_SSL_VERIFY_PEER")
+        return OpenSSL::SSL::VERIFY_NONE if env_map.key?("OTEL_RUBY_EXPORTER_OTLP_SSL_VERIFY_NONE")
+
+        OpenSSL::SSL::VERIFY_PEER
+      end
+
+      # OpenTelemetry Ruby's switch for starting a batch processor's worker
+      # when the processor is built, read from env_map.
+      def start_thread_on_boot?(env_map, name)
+        !env_map[name].to_s.match?(/false/i)
       end
 
       def parse_int(env_map, key, default)

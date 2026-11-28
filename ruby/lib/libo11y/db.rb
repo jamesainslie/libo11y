@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "opentelemetry"
+require_relative "internal/histogram_buckets"
 require_relative "internal/sql_text"
 
 module Libo11y
@@ -10,7 +11,7 @@ module Libo11y
   # removed, and never the driver's error message, which often quotes
   # statement values.
   module DB
-    DB_DURATION_BUCKETS = [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 10.0].freeze
+    DB_DURATION_BUCKETS = Internal::HistogramBuckets::DB
     SCOPE_NAME = "libo11y.db"
 
     # The lexer for a db.system.name value, and whether that lexer is known to

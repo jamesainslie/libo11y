@@ -9,6 +9,7 @@ require_relative "options"
 require_relative "spec"
 require_relative "internal/env"
 require_relative "internal/endpoint"
+require_relative "internal/histogram_buckets"
 require_relative "internal/policy"
 require_relative "internal/resource"
 require_relative "internal/propagators"
@@ -258,7 +259,9 @@ module Libo11y
         tracer_provider = if sdk_disabled
                             Internal::Bridges::NoopTracerProvider.new
                           else
-                            OpenTelemetry::SDK::Trace::TracerProvider.new(sampler: sampler, resource: resource)
+                            OpenTelemetry::SDK::Trace::TracerProvider.new(
+                              sampler: sampler, resource: resource, span_limits: Internal::Env.span_limits(env_map)
+                            )
                           end
         built << tracer_provider
 
@@ -288,7 +291,8 @@ module Libo11y
                 schedule_delay: Internal::Env.parse_int(env_map, "OTEL_BSP_SCHEDULE_DELAY", 5000),
                 max_queue_size: Internal::Env.parse_int(env_map, "OTEL_BSP_MAX_QUEUE_SIZE", 2048),
                 max_export_batch_size: Internal::Env.parse_int(env_map, "OTEL_BSP_MAX_EXPORT_BATCH_SIZE", 512),
-                exporter_timeout: Internal::Env.parse_int(env_map, "OTEL_BSP_EXPORT_TIMEOUT", 30_000)
+                exporter_timeout: Internal::Env.parse_int(env_map, "OTEL_BSP_EXPORT_TIMEOUT", 30_000),
+                start_thread_on_boot: Internal::Env.start_thread_on_boot?(env_map, "OTEL_RUBY_BSP_START_THREAD_ON_BOOT")
               )
             )
           elsif trace_exporter_mode == "console"
@@ -346,16 +350,21 @@ module Libo11y
             raw_meter_provider.add_metric_reader(reader)
           end
 
-          if opts.histogram_buckets.is_a?(Hash)
-            opts.histogram_buckets.each do |inst_name, buckets|
-              raw_meter_provider.add_view(
-                inst_name.to_s,
-                type: :histogram,
-                aggregation: OpenTelemetry::SDK::Metrics::Aggregation::ExplicitBucketHistogram.new(
-                  boundaries: Array(buckets)
-                )
-              )
+          # One view per histogram with boundaries: libo11y's own duration
+          # histograms, then the histogram_buckets option, which wins for a
+          # name both give.
+          buckets = Internal::HistogramBuckets::DEFAULTS.merge((opts.histogram_buckets || {}).to_h.transform_keys(&:to_s))
+          buckets.each do |name, boundaries|
+            aggregation = OpenTelemetry::SDK::Metrics::Aggregation::ExplicitBucketHistogram.new(boundaries: Array(boundaries))
+            raw_meter_provider.add_view(name, type: :histogram, aggregation: aggregation)
+          end
+          Array(opts.views).each do |view|
+            unless view.is_a?(Hash) && view.transform_keys(&:to_sym)[:name]
+              raise ArgumentError, "libo11y: views takes Hashes of MeterProvider#add_view arguments with a :name, got #{view.inspect}"
             end
+
+            arguments = view.transform_keys(&:to_sym)
+            raw_meter_provider.add_view(arguments[:name].to_s, **arguments.except(:name))
           end
         end
 
@@ -374,7 +383,9 @@ module Libo11y
         Internal::RuntimeMetrics.register(meter_provider) if opts.runtime_metrics && !sdk_disabled
 
         # Build LoggerProvider
-        logger_provider = OpenTelemetry::SDK::Logs::LoggerProvider.new(resource: resource)
+        logger_provider = OpenTelemetry::SDK::Logs::LoggerProvider.new(
+          resource: resource, log_record_limits: Internal::Env.log_record_limits(env_map)
+        )
         built << logger_provider
         log_exporter_mode = if sdk_disabled || (opts.log_exporter.nil? && hermetic)
                               "none"
@@ -397,7 +408,8 @@ module Libo11y
               schedule_delay: Internal::Env.parse_int(env_map, "OTEL_BLRP_SCHEDULE_DELAY", 1000),
               max_queue_size: Internal::Env.parse_int(env_map, "OTEL_BLRP_MAX_QUEUE_SIZE", 2048),
               max_export_batch_size: Internal::Env.parse_int(env_map, "OTEL_BLRP_MAX_EXPORT_BATCH_SIZE", 512),
-              exporter_timeout: Internal::Env.parse_int(env_map, "OTEL_BLRP_EXPORT_TIMEOUT", 30_000)
+              exporter_timeout: Internal::Env.parse_int(env_map, "OTEL_BLRP_EXPORT_TIMEOUT", 30_000),
+              start_thread_on_boot: Internal::Env.start_thread_on_boot?(env_map, "OTEL_RUBY_BLRP_START_THREAD_ON_BOOT")
             )
             logger_provider.add_log_record_processor(proc)
           elsif log_exporter_mode == "console"

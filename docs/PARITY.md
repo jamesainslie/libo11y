@@ -213,16 +213,12 @@ matrix, none has a known defect. `ts/v0.2.1` fixed the last ones, which
 Ruby implementation. `ruby/v0.1.0` has them too, and the ones that
 [`ruby/CHANGELOG.md`](../ruby/CHANGELOG.md) lists as fixed in 0.2.0.
 
-- **Resource.** OTLP payloads carry no resource schema URL, because the
-  upstream exporters do not write it.
 - **Environment.** With `env: Libo11y::HERMETIC` or an explicit `env`, the
-  upstream SDK still reads the span limit variables, the
-  `OTEL_RUBY_EXPORTER_OTLP_SSL_VERIFY_*` variables and
-  `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE` from the process
-  environment.
-- **Metrics.** The `views` option is not applied, and the bucket
-  boundaries of the HTTP and DB duration histograms are the SDK defaults,
-  because the SDK ignores advisory boundaries.
+  upstream metrics SDK still reads
+  `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE` and
+  `OTEL_EXPORTER_OTLP_METRICS_DEFAULT_HISTOGRAM_AGGREGATION` from the
+  process environment, and neither has a constructor argument libo11y can
+  pass in its place.
 
 ## Upcoming and planned clients
 
