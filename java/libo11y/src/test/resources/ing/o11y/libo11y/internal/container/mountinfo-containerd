@@ -1,0 +1,5 @@
+2101 2000 0:310 / / rw,relatime master:702 - overlay overlay rw,lowerdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/8811/fs,upperdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/8812/fs,workdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/8812/work
+2102 2101 0:311 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw
+2108 2101 0:35 /kubepods-besteffort-pod7a1e2f3c_4d5b_6a7c_8e9f_0a1b2c3d4e5f.slice:cri-containerd:c0ffee00ba5eba11deadbeef0123456789abcdef0123456789abcdef01234567 /sys/fs/cgroup ro,nosuid,nodev,noexec,relatime - cgroup2 cgroup rw
+2110 2101 259:1 /var/lib/kubelet/pods/7a1e2f3c-4d5b-6a7c-8e9f-0a1b2c3d4e5f/etc-hosts /etc/hosts rw,relatime - ext4 /dev/nvme0n1p1 rw
+2111 2101 259:1 /var/lib/kubelet/pods/7a1e2f3c-4d5b-6a7c-8e9f-0a1b2c3d4e5f/containers/app/5e6f7a8b /dev/termination-log rw,relatime - ext4 /dev/nvme0n1p1 rw

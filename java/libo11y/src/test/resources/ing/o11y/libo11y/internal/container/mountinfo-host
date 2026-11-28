@@ -1,0 +1,5 @@
+22 1 259:2 / / rw,relatime shared:1 - ext4 /dev/nvme0n1p2 rw
+24 22 0:22 / /sys rw,nosuid,nodev,noexec,relatime shared:2 - sysfs sysfs rw
+30 24 0:26 / /sys/fs/cgroup rw,nosuid,nodev,noexec,relatime shared:9 - cgroup2 cgroup2 rw,nsdelegate
+410 22 0:61 / /var/lib/docker/overlay2/1d2c3b4a5f6e7d8c9b0a1f2e3d4c5b6a7f8e9d0c1b2a3f4e5d6c7b8a9f0e1d2c/merged rw,relatime shared:220 - overlay overlay rw,lowerdir=/var/lib/docker/overlay2/l/QX4MZ7AFRWB2KQHN6S5J3YJ2LD,upperdir=/var/lib/docker/overlay2/1d2c3b4a5f6e7d8c9b0a1f2e3d4c5b6a7f8e9d0c1b2a3f4e5d6c7b8a9f0e1d2c/diff,workdir=/var/lib/docker/overlay2/1d2c3b4a5f6e7d8c9b0a1f2e3d4c5b6a7f8e9d0c1b2a3f4e5d6c7b8a9f0e1d2c/work
+430 22 0:63 / /var/lib/docker/containers/9e8d7c6b5a4938271605f4e3d2c1b0a9f8e7d6c5b4a392817061f5e4d3c2b1a0/mounts/shm rw,nosuid,nodev,noexec,relatime shared:230 - tmpfs shm rw,size=65536k
