@@ -1309,14 +1309,17 @@ checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 name = "libo11y"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "flate2",
  "gethostname",
  "hmac",
+ "http",
  "libo11y-macros",
  "libo11y-redact",
  "libo11y-spec",
  "libyaml-safer",
  "opentelemetry",
+ "opentelemetry-http",
  "opentelemetry-otlp",
  "opentelemetry-proto",
  "opentelemetry-stdout",
