@@ -12,6 +12,7 @@ internal sealed record ComposedResource(
     string ServiceName,
     string Environment,
     string ServiceVersion,
+    bool ServiceVersionFallback,
     string InstanceId,
     string SchemaUrl);
 
@@ -46,12 +47,10 @@ internal static class ResourceComposer
     {
         var envRes = O11yEnvParser.ParsePairs(envMap.TryGetValue("OTEL_RESOURCE_ATTRIBUTES", out string? rawRes) ? rawRes : null);
         var optRes = options.ResourceAttributes;
+        string? Explicit(string key) => optRes.GetValueOrDefault(key)?.ToString();
 
-        string? serviceName = options.ServiceName
-            ?? (envMap.TryGetValue("OTEL_SERVICE_NAME", out string? esn) ? esn : null)
-            ?? (envRes.TryGetValue("service.name", out string? ersn) ? ersn : null)
-            ?? (optRes.TryGetValue("service.name", out object? orsn) ? orsn?.ToString() : null);
-        serviceName = (serviceName ?? "").Trim();
+        string serviceName = FirstNonBlank(options.ServiceName, Explicit("service.name"),
+            envMap.GetValueOrDefault("OTEL_SERVICE_NAME"), envRes.GetValueOrDefault("service.name")) ?? "";
 
         if (serviceName.Length == 0 || serviceName == "unknown_service" || serviceName.StartsWith("unknown_service:", StringComparison.Ordinal))
         {
@@ -63,10 +62,8 @@ internal static class ResourceComposer
             if (serviceName.Length == 0) serviceName = "unknown_service";
         }
 
-        string? environment = options.Environment
-            ?? (envRes.TryGetValue("deployment.environment.name", out string? eenv) ? eenv : null)
-            ?? (optRes.TryGetValue("deployment.environment.name", out object? oenv) ? oenv?.ToString() : null);
-        environment = (environment ?? "").Trim();
+        string environment = FirstNonBlank(options.Environment, Explicit("deployment.environment.name"),
+            envRes.GetValueOrDefault("deployment.environment.name")) ?? "";
 
         var allowedEnvs = new HashSet<string>(SpecTables.EnvironmentValues, StringComparer.Ordinal);
         foreach (string extra in options.ExtraEnvironments) allowedEnvs.Add(extra);
@@ -88,36 +85,31 @@ internal static class ResourceComposer
             recorder.Record(Signal.Resource, "identity_environment_invalid");
         }
 
-        string? version = options.Version
-            ?? (optRes.TryGetValue("service.version", out object? ov) ? ov?.ToString() : null)
-            ?? (envRes.TryGetValue("service.version", out string? ev) ? ev : null)
-            ?? (options.BuildInfoEnabled ? options.BuildInfo?.Version : null);
-        version = string.IsNullOrWhiteSpace(version) ? UnknownVersion : version.Trim();
+        string? resolvedVersion = FirstNonBlank(options.Version, Explicit("service.version"),
+            envRes.GetValueOrDefault("service.version"), options.BuildInfoEnabled ? options.BuildInfo?.Version : null);
+        string version = resolvedVersion ?? UnknownVersion;
+        string? serviceNamespace = FirstNonBlank(options.ServiceNamespace, Explicit("service.namespace"),
+            envRes.GetValueOrDefault("service.namespace"));
 
-        string podUid = (optRes.TryGetValue("k8s.pod.uid", out object? opu) ? opu?.ToString() : null)
-                        ?? (envRes.TryGetValue("k8s.pod.uid", out string? epu) ? epu : "") ?? "";
-        string podName = (optRes.TryGetValue("k8s.pod.name", out object? opn) ? opn?.ToString() : null)
-                         ?? (envRes.TryGetValue("k8s.pod.name", out string? epn) ? epn : "") ?? "";
-        string k8sNs = (optRes.TryGetValue("k8s.namespace.name", out object? okns) ? okns?.ToString() : null)
-                       ?? (envRes.TryGetValue("k8s.namespace.name", out string? ekns) ? ekns : "") ?? "";
+        string podUid = FirstNonBlank(Explicit("k8s.pod.uid"), envRes.GetValueOrDefault("k8s.pod.uid")) ?? "";
+        string podName = FirstNonBlank(Explicit("k8s.pod.name"), envRes.GetValueOrDefault("k8s.pod.name")) ?? "";
+        string k8sNs = FirstNonBlank(Explicit("k8s.namespace.name"), envRes.GetValueOrDefault("k8s.namespace.name")) ?? "";
 
-        string instanceId = options.ServiceInstanceId
-            ?? (optRes.TryGetValue("service.instance.id", out object? oid) ? oid?.ToString() : null)
-            ?? (envRes.TryGetValue("service.instance.id", out string? eid) ? eid : null)
+        string instanceId = FirstNonBlank(options.ServiceInstanceId, Explicit("service.instance.id"),
+            envRes.GetValueOrDefault("service.instance.id"))
             ?? InstanceId.Derive(podUid, podName, k8sNs)
             ?? InstanceId.Random();
 
         var attrs = new Dictionary<string, object?>(StringComparer.Ordinal)
         {
-            ["telemetry.sdk.name"] = "opentelemetry",
-            ["telemetry.sdk.language"] = "dotnet",
-            ["telemetry.sdk.version"] = typeof(ResourceBuilder).Assembly.GetName().Version?.ToString() ?? "1.21.0",
             ["telemetry.distro.name"] = "libo11y",
             ["telemetry.distro.version"] = O11y.Version,
             ["process.runtime.name"] = ".NET",
             ["process.runtime.version"] = System.Environment.Version.ToString(),
             ["process.runtime.description"] = RuntimeInformation.FrameworkDescription,
         };
+        var sdkResource = ResourceBuilder.CreateEmpty().AddTelemetrySdk().Build();
+        foreach (var (key, value) in sdkResource.Attributes) attrs[key] = value;
 
         try
         {
@@ -152,7 +144,9 @@ internal static class ResourceComposer
         attrs["service.version"] = version;
         attrs["service.instance.id"] = instanceId;
         if (environment.Length > 0) attrs["deployment.environment.name"] = environment;
-        if (!string.IsNullOrWhiteSpace(options.ServiceNamespace)) attrs["service.namespace"] = options.ServiceNamespace;
+        else attrs.Remove("deployment.environment.name");
+        if (serviceNamespace is not null) attrs["service.namespace"] = serviceNamespace;
+        else attrs.Remove("service.namespace");
 
         var (classified, _) = policy.ClassifyFlat(Signal.Resource, attrs);
 
@@ -163,7 +157,17 @@ internal static class ResourceComposer
         }
 
         // ResourceBuilder.CreateEmpty avoids implicit env resource merging so hermetic mode stays 100% isolated.
-        var rb = ResourceBuilder.CreateEmpty().AddAttributes(kvList);
-        return new ComposedResource(rb, classified, serviceName, environment, version, instanceId, SpecConstants.SchemaUrl);
+        var rb = ResourceBuilder.CreateEmpty().AddAttributes(kvList, SpecConstants.SchemaUrl);
+        return new ComposedResource(rb, classified, serviceName, environment, version, resolvedVersion is null,
+            instanceId, SpecConstants.SchemaUrl);
+    }
+
+    private static string? FirstNonBlank(params string?[] values)
+    {
+        foreach (string? value in values)
+        {
+            if (!string.IsNullOrWhiteSpace(value)) return value.Trim();
+        }
+        return null;
     }
 }
