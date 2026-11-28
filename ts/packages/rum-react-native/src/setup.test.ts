@@ -214,3 +214,23 @@ test("a revoke in a launch that never granted removes what an earlier launch sto
     [],
   );
 });
+
+test("error stacks on Android and iOS point at the platform's fixed bundle URL; other platforms keep theirs", async () => {
+  const hermes = "Error: boom\n    at f (address at /data/user/0/app/files/.expo-internal/a1:1:41)";
+  for (const [os, want] of [
+    ["android", "Error: boom\n    at f (app:///index.android.bundle:1:42)"],
+    ["ios", "Error: boom\n    at f (app:///main.jsbundle:1:42)"],
+    ["web", hermes],
+  ] as const) {
+    const h = await harness({ consent: { initial: "granted" } }, { os });
+    try {
+      const err = new Error("boom");
+      err.stack = hermes;
+      h.telemetry.rum.addError(err);
+      await h.idle();
+      assert.equal(h.events("o11y.rum.error")[0]?.["exception.stacktrace"], want, os);
+    } finally {
+      await h.telemetry.shutdown();
+    }
+  }
+});

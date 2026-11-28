@@ -55,6 +55,10 @@ const attrsOf = (attrs: readonly OtlpAttr[] | undefined): Record<string, unknown
 
 export interface HarnessOptions {
   readonly storage?: FakeStorage;
+  /** Platform.OS. Default "android". */
+  readonly os?: string;
+  /** Replaces parts of the RUM env, such as ErrorUtils and HermesInternal for errors(). */
+  readonly rumEnv?: Partial<RumReactNativeEnv>;
   /** The epoch milliseconds the fake performance clock counts from. Default the real time now. */
   readonly timeOrigin?: number;
   /** The fake performance.now() at setup. Default 100. */
@@ -108,7 +112,7 @@ export async function harness(
   o: HarnessOptions = {},
 ): Promise<Harness> {
   const timeOrigin = o.timeOrigin ?? Math.floor(Date.now());
-  const app = fakeEnv();
+  const app = fakeEnv(o.os === undefined ? {} : { os: o.os });
   const storage = o.storage ?? fakeStorage();
   const transport = createFakeTransport();
   const transportOptions: HttpTransportOptions[] = [];
@@ -131,6 +135,7 @@ export async function harness(
     requestAnimationFrame: (cb) => frames.push(cb),
     setTimeout: (cb, ms) => clock.timers.setTimeout(cb, ms),
     clearTimeout: (h) => clock.timers.clearTimeout(h),
+    ...o.rumEnv,
   };
   const deps: RumReactNativeDeps = {
     platform: {

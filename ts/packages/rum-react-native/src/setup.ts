@@ -4,8 +4,9 @@
  * view a screen; a new screen is activity. Device storage (options.storage, default memoryStorage()) holds the retry queue,
  * the retention buffer of sessions not yet kept, the session, so a relaunch within the idle window
  * continues it, and the remote configuration cache. RUM writes none of it before consent is
- * granted, and a revoke removes it, also what an earlier launch left. The app_load span is recorded once per process (app-start.ts). setupRumReactNative,
- * in index.ts, passes the real dependencies from env.ts.
+ * granted, and a revoke removes it, also what an earlier launch left. The app_load span is recorded once per process (app-start.ts). On iOS and
+ * Android every error's stack is rewritten for symbolication (errors/hermes-stack.ts); Expo web
+ * keeps its stacks. setupRumReactNative, in index.ts, passes the real dependencies from env.ts.
  */
 import {
   type KeyValueStorage,
@@ -25,6 +26,7 @@ import { createAppStart } from "./app-start.ts";
 import { reactNativeBinding, rumLifecycle } from "./binding.ts";
 import { preloadedStorage } from "./config-cache.ts";
 import type { RumReactNativeEnv } from "./contracts/env.ts";
+import { bundleUrlOf, mapHermesStack } from "./errors/hermes-stack.ts";
 import type { ReactNativeRumTelemetry, RumReactNativeSetupOptions } from "./options.ts";
 import { storageSessionStore } from "./session-store.ts";
 
@@ -85,6 +87,7 @@ export async function setupRumReactNativeWith(
   const { initialViewName = "app", ...core } = rumOptions;
   const storage = platformOptions.storage ?? memoryStorage();
   const appStart = createAppStart({ env: deps.env, now: deps.perfNow });
+  const bundleUrl = bundleUrlOf(deps.platform.env.os);
   /** Activity listeners RUM's core registered: a new screen is the user moving through the app. */
   const activity = new Set<() => void>();
   /** Consent was granted in this process, so RUM's core clears what it stored on a revoke. */
@@ -131,6 +134,7 @@ export async function setupRumReactNativeWith(
       // performance.now() counts from the device's boot on React Native, not from the app's start.
       initialViewStart: () => appStart.start,
       onRuntime: (rt) => appStart.attach(rt),
+      ...(bundleUrl === undefined ? {} : { mapStack: (stack: string) => mapHermesStack(stack, bundleUrl) }),
     },
   );
   // The app start hears of every screen and render, consent or not, and a new screen is activity.
