@@ -6,7 +6,8 @@
  * nonzero count, unsent visible time or an unsent vital. Counts and time on view are deltas since
  * the view's previous summary; a zero count is omitted. A vital is accepted once per view and name
  * and is sent in the next summary of that view. A closed view stays tracked, for late vitals, until
- * ten newer views closed after it.
+ * ten newer views closed after it, and while it is pinned (vitals() pins the load view until it has
+ * committed its held vitals).
  */
 import {
   ATTR_RUM_PLATFORM,
@@ -44,6 +45,7 @@ interface Tracked {
   /** performance.now() since which the open, visible view has been accumulating time. */
   resumedAt: number | undefined;
   open: boolean;
+  pinned: boolean;
 }
 
 export function createSummaryAccumulator(opts: SummaryOptions): SummaryAccumulator {
@@ -83,7 +85,7 @@ export function createSummaryAccumulator(opts: SummaryOptions): SummaryAccumulat
     opts.emit(attrs);
   };
   const prune = (): void => {
-    const closed = [...tracked.values()].filter((t) => !t.open);
+    const closed = [...tracked.values()].filter((t) => !t.open && !t.pinned);
     for (const t of closed.slice(0, Math.max(0, closed.length - MAX_CLOSED))) tracked.delete(t.view.id);
   };
 
@@ -98,6 +100,7 @@ export function createSummaryAccumulator(opts: SummaryOptions): SummaryAccumulat
         visibleMillis: 0,
         resumedAt: opts.visible() ? opts.now() : undefined,
         open: true,
+        pinned: false,
       };
       tracked.set(view.id, t);
       current = t;
@@ -123,6 +126,10 @@ export function createSummaryAccumulator(opts: SummaryOptions): SummaryAccumulat
       const t = tracked.get(viewId);
       if (t === undefined || t.sent.has(name) || t.vitals.has(name)) return;
       t.vitals.set(name, value);
+    },
+    pin(viewId, pinned) {
+      const t = tracked.get(viewId);
+      if (t !== undefined) t.pinned = pinned;
     },
     visibility(visible) {
       if (current === undefined) return;

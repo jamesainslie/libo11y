@@ -215,6 +215,14 @@ never goes in the span name, because span names bypass the sensitivity
 policy. On the web, `@libo11y/rum` turns the `documentLoad` span of
 `@libo11y/web` into the `app_load` shape.
 
+Resource spans are not a shape. The web client names them `resource
+<o11y.rum.resource.type>` and gives each one `o11y.rum.resource.type`,
+`url.full`, `server.address`, `session.id` and `o11y.rum.view.id`. Each
+Server-Timing entry other than `traceparent` is a `server_timing` span
+event with `o11y.rum.server_timing.name` and
+`o11y.rum.server_timing.duration`. A `traceparent` entry is a link to the
+server span.
+
 ### Session sampling
 
 A session's detail is sent from its start when the session is
@@ -317,6 +325,15 @@ The RUM events are in
 next to the core events. RUM also emits the semconv event
 `browser.web_vital` as upstream defines it. That event belongs to semconv,
 so the registry does not register it.
+
+Semconv 1.41.0 puts the fields of `browser.web_vital` in the log record's
+body: the vital's `name`, `value`, `delta` and `id`. RUM sends `name` in
+lowercase (`lcp`, `inp`, `cls`, `fcp`, `ttfb`) and `value` and `delta` in
+the spec's units: seconds, and no unit for CLS. Its attributes are
+`session.id`, `o11y.rum.view.id` of the view that loaded the page, the
+`o11y.rum.vital.attribution.*` keys of `registry.o11y.rum.detail`, and
+`o11y.rum.element.selector`. It never carries a rating. Only kept
+sessions send it.
 
 | Event | Records | Required attributes | Optional attributes |
 |---|---|---|---|

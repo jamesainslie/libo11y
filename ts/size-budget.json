@@ -43,6 +43,21 @@
       "code": "import { setupRum, errors } from \"@libo11y/rum\"; (globalThis as Record<string, unknown>).__x = [setupRum, errors()];\n",
       "budget": 1024
     },
+    "@libo11y/rum vitals()": {
+      "base": "@libo11y/rum setupRum",
+      "code": "import { setupRum, vitals } from \"@libo11y/rum\"; (globalThis as Record<string, unknown>).__x = [setupRum, vitals()];\n",
+      "budget": 6144
+    },
+    "@libo11y/rum resources()": {
+      "base": "@libo11y/rum setupRum",
+      "code": "import { setupRum, resources } from \"@libo11y/rum\"; (globalThis as Record<string, unknown>).__x = [setupRum, resources()];\n",
+      "budget": 1536
+    },
+    "@libo11y/rum longAnimationFrames()": {
+      "base": "@libo11y/rum setupRum",
+      "code": "import { setupRum, longAnimationFrames } from \"@libo11y/rum\"; (globalThis as Record<string, unknown>).__x = [setupRum, longAnimationFrames()];\n",
+      "budget": 256
+    },
     "@libo11y/rum remoteConfig()": {
       "base": "@libo11y/rum setupRum",
       "code": "import { remoteConfig, setupRum } from \"@libo11y/rum\"; (globalThis as Record<string, unknown>).__x = [setupRum, remoteConfig()];\n",

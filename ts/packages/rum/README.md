@@ -14,14 +14,14 @@ npm install @libo11y/rum
 
 The package is in development and is not on npm yet. It has the core
 (sessions, consent, sampling, the retention buffer and view summaries),
-the `views()`, `actions()` and `errors()` collectors, remote
-configuration and the two-part loader. The collectors for vitals and
-resources arrive in later changes.
+the `views()`, `actions()`, `errors()`, `vitals()`, `resources()` and
+`longAnimationFrames()` collectors, remote configuration and the
+two-part loader.
 
 ## Quick start
 
 ```ts
-import { actions, errors, setupRum, views } from "@libo11y/rum";
+import { actions, errors, resources, setupRum, views, vitals } from "@libo11y/rum";
 
 const telemetry = await setupRum({
   serviceName: "storefront",
@@ -31,7 +31,7 @@ const telemetry = await setupRum({
   rum: {
     sessionSampleRate: 0.1,
     clientToken: "pub-storefront",
-    collectors: [views(), actions(), errors()],
+    collectors: [views(), actions(), errors(), vitals(), resources()],
   },
 });
 
@@ -165,6 +165,98 @@ an `o11y.rum.error` event, at most 100 events per view. Each event carries
 requests before it, oldest first, one per line, such as `click Sign
 -1530ms`. A request breadcrumb is its method, host and status, such as
 `fetch POST api.example.com 500`, never its path.
+
+### `vitals()`
+
+`vitals()` records Largest Contentful Paint (LCP), Interaction to Next
+Paint (INP), Cumulative Layout Shift (CLS), First Contentful Paint (FCP)
+and Time to First Byte (TTFB). It uses the attribution build of the
+Chrome team's [`web-vitals`](https://github.com/GoogleChrome/web-vitals)
+package, pinned to one version. CrUX and the web.dev thresholds are defined
+against that package. It already handles back/forward cache restores,
+prerendering, page visibility and how INP groups the events of one
+interaction. The package adds about 5 KiB gzipped, and only apps that list
+`vitals()` pay for it.
+
+Vitals belong to the view that loaded the page: the initial or prerender
+view, or the `bfcache_restore` view after a page comes back from the
+back/forward cache. Soft views carry no vitals. INP and CLS therefore
+cover the page until it is first hidden, as the page-level values of CrUX
+do.
+
+Each vital goes into the view summary once, as
+`o11y.rum.summary.<vital>.value`, in the first summary sent after it is
+known. FCP and TTFB are known when the browser reports them. LCP, CLS and
+INP keep changing while the page is visible, so RUM takes their latest
+values when the page is first hidden, just before that hide sends the
+summary. A CLS or INP value after the page returns from hidden stays out
+of the summary, even when it is the first INP of the page. A kept session
+still records it as detail. CrUX reports
+the final value at page unload, so on long-lived pages the p75 of CLS and
+INP can differ from CrUX. LCP, INP, FCP and TTFB are in seconds. CLS has no
+unit.
+
+Kept sessions also send each value as the semconv `browser.web_vital`
+event. Its body holds the vital's `name` (`lcp`, `inp`, `cls`, `fcp` or
+`ttfb`), `value`, `delta` since the last event for it, and `id`, in the
+same units. Its attributes are the view, the session and the attribution:
+the `o11y.rum.vital.attribution.*` phases of INP and LCP, the largest shift
+of CLS, and the element as `o11y.rum.element.selector`. The selector is
+built as for actions, never from text. When one frame paints several LCP
+candidates, the LCP element is the largest of them. Firefox reports each of
+them with the same time, and RUM attributes LCP to the last one.
+
+RUM never sends a rating. The gateway rates each vital against the
+thresholds the spec publishes.
+
+A browser that does not support a vital records nothing for it. Firefox
+and WebKit, for example, report no CLS. A page load whose navigation entry
+reports a response start of zero records no TTFB, because `web-vitals`
+treats that value as unknown. Firefox reports zero at times.
+
+On a navigation away, browsers fire `pagehide` before the page is hidden,
+and RUM takes the values at `pagehide`. An interaction that the browser has
+not yet reported by then, such as the click that started the navigation,
+is not in INP.
+
+### `resources()`
+
+`resources()` records a span for each script, stylesheet, image, font,
+media file and frame the page loads, from the browser's resource timing
+entries. The span is named `resource <type>`, such as `resource script`,
+and carries `o11y.rum.resource.type`, `url.full` without the query
+parameters you did not allow, `server.address`, the status code and the
+encoded body size when the browser exposes them. A cross-origin server
+must send `Timing-Allow-Origin` for those details.
+
+- Requests made with `fetch`, XHR or `sendBeacon` get no resource span,
+  because they have client spans of their own. RUM's own OTLP requests and
+  the URLs in `instrumentations.ignoreUrls` are left out too.
+- A resource that started during the page load is a child of `app_load`.
+  A later resource is a root span linked to the span of its view.
+- The type comes from the initiator. A font or an image that a stylesheet
+  loads is typed by its file extension.
+- When the response has a `Server-Timing` header, a `traceparent` entry
+  links the span to the server span that served it. Every other entry
+  becomes a `server_timing` span event with `o11y.rum.server_timing.name`
+  and `o11y.rum.server_timing.duration` in seconds.
+- At most 150 resource spans per view. Change it with
+  `resources({ maxPerView })`.
+
+A page hidden before `app_load` is known records the resources of its load
+as root spans at once, so leaving a slow page still records them.
+
+Resource spans are detail, so only kept sessions send them. They are not
+requests of the view, so they do not count in `o11y.rum.summary.requests`.
+
+### `longAnimationFrames()`
+
+`longAnimationFrames()` counts the browser's long animation frames into
+the view summary as `o11y.rum.summary.long_animation_frames`. Only
+Chromium-based browsers report long animation frames today. Elsewhere it
+records nothing. It does not fall back to long tasks, which measure
+something else, so the gateway's `o11y.rum.browser.long_animation_frames`
+metric reflects Chromium-based browsers only.
 
 ## The `rum` handle
 

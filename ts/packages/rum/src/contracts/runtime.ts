@@ -1,5 +1,5 @@
 /**
- * Contract, frozen by R3a, extended by R3b. What every collector receives. Collectors are created by factories such
+ * Contract, frozen by R3a, extended by R3b and R3c. What every collector receives. Collectors are created by factories such
  * as views() and run only while consent is granted: start is called on grant, the returned stop
  * on revoke and shutdown.
  */
@@ -51,6 +51,9 @@ export type RumSignal =
   /** An event the bootstrap buffered before RUM loaded, replayed once the collectors started (R3d). */
   | { readonly type: "bootstrap"; readonly entry: BootstrapEntry };
 
+/** A log record body: the semconv browser.web_vital event carries its fields in one (R3c). */
+export type EventBody = Readonly<Record<string, string | number>>;
+
 export interface RumBus {
   publish(signal: RumSignal): void;
   subscribe(listener: (signal: RumSignal) => void): () => void;
@@ -84,9 +87,10 @@ export interface RumRuntime {
   now(): number;
   /**
    * Emits event name with session.id and o11y.rum.view.id of the current session and view added
-   * (attrs win). Dropped while the gate is closed.
+   * (attrs win). Dropped while the gate is closed. With body, the record carries it as its body
+   * (R3c), for upstream events such as semconv's browser.web_vital that define one.
    */
-  emit(name: string, attrs?: LogAttributes, ctx?: Context): void;
+  emit(name: string, attrs?: LogAttributes, ctx?: Context, body?: EventBody): void;
   /** Adds a hook run on every fetch and XHR client span right after it starts. */
   onRequestStart(hook: RequestStartHook): () => void;
   /** The open action's span, while one is open. Requests started meanwhile become its children (R3b). */
@@ -94,6 +98,17 @@ export interface RumRuntime {
   setActiveAction(span: Span | undefined): void;
   /** The last breadcrumbs, oldest first, as "<kind> <label> -<age>ms" (R3b). */
   breadcrumbs(): readonly string[];
+  /**
+   * Whether url is RUM's own traffic or one the app told the instrumentation to ignore: the OTLP
+   * endpoints and instrumentations.ignoreUrls (R3c). Resource spans skip these.
+   */
+  ignored(url: string): boolean;
+  /**
+   * Adds a hook run when the page is hidden (the first of visibilitychange to hidden and pagehide,
+   * once per hide), before the summaries are emitted and exported (R3c). Returns a function that
+   * removes it.
+   */
+  onHide(hook: () => void): () => void;
 }
 
 export interface RumCollector {

@@ -37,6 +37,7 @@ export type {
 } from "../contracts/transport.ts";
 export { installFetchInstrumentation, instrumentFetch } from "../instrumentation/fetch.ts";
 export { isIgnored, shouldPropagate } from "../instrumentation/origins.ts";
+export { remoteParentFromTraceparent } from "../instrumentation/server-timing.ts";
 export { installFlushOnHide, type VisibilitySource } from "../lifecycle.ts";
 export { browserEnv, type WebPlatformOptions, webPlatform } from "../platform.ts";
 export { createMemoryQueue } from "../queue/memory.ts";

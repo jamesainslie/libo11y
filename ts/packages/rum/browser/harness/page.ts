@@ -34,6 +34,7 @@ interface OtlpValue {
   readonly doubleValue?: number;
   readonly boolValue?: boolean;
   readonly arrayValue?: { readonly values?: readonly OtlpValue[] };
+  readonly kvlistValue?: { readonly values?: readonly OtlpAttribute[] };
 }
 interface OtlpAttribute {
   readonly key: string;
@@ -46,6 +47,7 @@ function value(v: OtlpValue): unknown {
   if (v.doubleValue !== undefined) return v.doubleValue;
   if (v.boolValue !== undefined) return v.boolValue;
   if (v.arrayValue !== undefined) return (v.arrayValue.values ?? []).map(value);
+  if (v.kvlistValue !== undefined) return attributes(v.kvlistValue.values);
   return undefined;
 }
 
@@ -57,6 +59,8 @@ function attributes(list: readonly OtlpAttribute[] | undefined): Record<string, 
 export interface SinkLog {
   readonly eventName?: string;
   readonly attributes: Record<string, unknown>;
+  /** The record's body, with a map body as a plain object. */
+  readonly body?: unknown;
 }
 
 /** Every log record the sink received, flattened, with attributes as a plain object. */
@@ -66,7 +70,9 @@ export function logRecords(requests: readonly SinkRequest[]): SinkLog[] {
     if (r.signal !== "logs") continue;
     const body = r.body as {
       resourceLogs?: {
-        scopeLogs?: { logRecords?: { eventName?: string; attributes?: OtlpAttribute[] }[] }[];
+        scopeLogs?: {
+          logRecords?: { eventName?: string; attributes?: OtlpAttribute[]; body?: OtlpValue }[];
+        }[];
       }[];
     };
     for (const rl of body.resourceLogs ?? []) {
@@ -74,7 +80,11 @@ export function logRecords(requests: readonly SinkRequest[]): SinkLog[] {
         for (const lr of sl.logRecords ?? []) {
           const attrs = attributes(lr.attributes);
           const name = lr.eventName ?? attrs["event.name"];
-          out.push({ ...(typeof name === "string" ? { eventName: name } : {}), attributes: attrs });
+          out.push({
+            ...(typeof name === "string" ? { eventName: name } : {}),
+            attributes: attrs,
+            ...(lr.body === undefined ? {} : { body: value(lr.body) }),
+          });
         }
       }
     }
@@ -90,6 +100,7 @@ export interface SinkSpan {
   readonly parentSpanId?: string;
   readonly attributes: Record<string, unknown>;
   readonly links: { traceId: string; spanId: string }[];
+  readonly events: { name: string; attributes: Record<string, unknown>; time: number }[];
   /** Epoch milliseconds. */
   readonly start: number;
   readonly end: number;
@@ -110,6 +121,7 @@ export function spans(requests: readonly SinkRequest[]): SinkSpan[] {
             parentSpanId?: string;
             attributes?: OtlpAttribute[];
             links?: { traceId: string; spanId: string }[];
+            events?: { name: string; attributes?: OtlpAttribute[]; timeUnixNano?: string | number }[];
             startTimeUnixNano?: string | number;
             endTimeUnixNano?: string | number;
           }[];
@@ -128,6 +140,11 @@ export function spans(requests: readonly SinkRequest[]): SinkSpan[] {
               : { parentSpanId: s.parentSpanId }),
             attributes: attributes(s.attributes),
             links: (s.links ?? []).map((l) => ({ traceId: l.traceId, spanId: l.spanId })),
+            events: (s.events ?? []).map((e) => ({
+              name: e.name,
+              attributes: attributes(e.attributes),
+              time: Number(BigInt(e.timeUnixNano ?? 0) / 1_000_000n),
+            })),
             start: Number(BigInt(s.startTimeUnixNano ?? 0) / 1_000_000n),
             end: Number(BigInt(s.endTimeUnixNano ?? 0) / 1_000_000n),
           });

@@ -68,7 +68,13 @@ export interface ErrorsOptions {
     readonly console?: boolean;
 }
 
+// @public
+export type EventBody = Readonly<Record<string, string | number>>;
+
 export { HttpRequestInfo }
+
+// @public
+export function longAnimationFrames(): RumCollector;
 
 // @public
 export interface RemoteConfig {
@@ -140,6 +146,14 @@ export interface RemoteConfigTimers {
 export type RequestStartHook = (span: Span, request: HttpRequestInfo) => void;
 
 // @public
+export function resources(opts?: ResourcesOptions): RumCollector;
+
+// @public
+export interface ResourcesOptions {
+    readonly maxPerView?: number;
+}
+
+// @public
 export interface Rum {
     addAction(name: string): void;
     addError(error: unknown, opts?: AddErrorOptions): void;
@@ -190,10 +204,12 @@ export interface RumRuntime {
     breadcrumbs(): readonly string[];
     // (undocumented)
     readonly bus: RumBus;
-    emit(name: string, attrs?: LogAttributes, ctx?: Context): void;
+    emit(name: string, attrs?: LogAttributes, ctx?: Context, body?: EventBody): void;
     // (undocumented)
     readonly gate: RecordingGate;
+    ignored(url: string): boolean;
     now(): number;
+    onHide(hook: () => void): () => void;
     onRequestStart(hook: RequestStartHook): () => void;
     // (undocumented)
     readonly platform: RUMPlatform;
@@ -337,6 +353,7 @@ export interface SummaryAccumulator {
     count(key: SummaryCountKey, n?: number): void;
     flush(): void;
     open(view: SummaryView): void;
+    pin(viewId: string, pinned: boolean): void;
     // (undocumented)
     rename(viewId: string, name: string): void;
     reset(): void;
@@ -435,6 +452,9 @@ export interface ViewTracker {
 
 // @public (undocumented)
 export type VitalName = "lcp" | "inp" | "cls" | "fcp" | "ttfb";
+
+// @public
+export function vitals(): RumCollector;
 
 // (No @packageDocumentation comment for this package)
 

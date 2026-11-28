@@ -6,7 +6,7 @@ import type { LogAttributes } from "@libo11y/core";
 import type { Context, Span, SpanContext } from "@opentelemetry/api";
 import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
 import { createBus } from "../bus.ts";
-import type { RumRuntime, RumSettings, RumSignal } from "../contracts/runtime.ts";
+import type { EventBody, RumRuntime, RumSettings, RumSignal } from "../contracts/runtime.ts";
 import type { SessionEvent, SessionManager, SessionState } from "../contracts/session.ts";
 import type { SummaryAccumulator, SummaryCountKey } from "../contracts/summary.ts";
 import type { ViewState, ViewTracker } from "../contracts/views.ts";
@@ -216,9 +216,11 @@ function fakeEnv(clock: ManualTimers): FakeEnv {
 
 export interface FakeRuntime extends RumRuntime {
   readonly counts: SummaryCountKey[];
+  /** The n of each count, in step with counts. */
+  readonly countValues: number[];
   readonly retained: string[];
   readonly signals: RumSignal[];
-  readonly events: { name: string; attrs: LogAttributes; ctx?: Context }[];
+  readonly events: { name: string; attrs: LogAttributes; ctx?: Context; body?: EventBody }[];
   readonly crumbs: string[];
   readonly summaries: Record<string, string | number>[];
   readonly exporter: InMemorySpanExporter;
@@ -227,6 +229,10 @@ export interface FakeRuntime extends RumRuntime {
   readonly views: ViewTracker;
   readonly gate: RumRuntime["gate"] & { open: boolean };
   t: number;
+  /** Runs the hide hooks, as the first of visibilitychange and pagehide does. */
+  hide(): void;
+  /** Replaces the current session with one of this ID, as a revoke and grant would. */
+  setSession(id: string): void;
   fakeEnv(): FakeEnv;
   flushSpans(): Promise<void>;
 }
@@ -242,13 +248,15 @@ export function fakeRuntime(opts: { readonly realViews?: boolean } = {}): FakeRu
   const signals: RumSignal[] = [];
   bus.subscribe((s) => signals.push(s));
   const counts: SummaryCountKey[] = [];
+  const countValues: number[] = [];
   const retained: string[] = [];
   const summaries: Record<string, string | number>[] = [];
   const events: FakeRuntime["events"] = [];
   const crumbs: string[] = [];
   let active: Span | undefined;
+  const hideHooks = new Set<() => void>();
   let kept = false;
-  const sessionState: SessionState = { id: "s1", startedAt: 0, lastActivityAt: 0, sampled: false };
+  let sessionState: SessionState = { id: "s1", startedAt: 0, lastActivityAt: 0, sampled: false };
   const sessionListeners = new Set<(e: SessionEvent) => void>();
   const session: SessionManager = {
     start: async () => {},
@@ -279,6 +287,7 @@ export function fakeRuntime(opts: { readonly realViews?: boolean } = {}): FakeRu
     ...inner,
     count(key, n) {
       counts.push(key);
+      countValues.push(n ?? 1);
       inner.count(key, n);
     },
   };
@@ -333,9 +342,14 @@ export function fakeRuntime(opts: { readonly realViews?: boolean } = {}): FakeRu
     bus,
     settings: () => settings,
     now: () => clock.now(),
-    emit(name, attrs = {}, ctx) {
+    emit(name, attrs = {}, ctx, body) {
       if (!gate.open) return;
-      events.push({ name, attrs, ...(ctx === undefined ? {} : { ctx }) });
+      events.push({
+        name,
+        attrs,
+        ...(ctx === undefined ? {} : { ctx }),
+        ...(body === undefined ? {} : { body }),
+      });
     },
     onRequestStart: () => () => {},
     activeAction: () => active,
@@ -343,7 +357,16 @@ export function fakeRuntime(opts: { readonly realViews?: boolean } = {}): FakeRu
       active = s;
     },
     breadcrumbs: () => crumbs,
+    ignored: () => false,
+    onHide(hook) {
+      hideHooks.add(hook);
+      return () => hideHooks.delete(hook);
+    },
+    hide() {
+      for (const h of [...hideHooks]) h();
+    },
     counts,
+    countValues,
     retained,
     signals,
     events,
@@ -356,6 +379,9 @@ export function fakeRuntime(opts: { readonly realViews?: boolean } = {}): FakeRu
     },
     set t(v: number) {
       clock.advance(v - clock.now());
+    },
+    setSession(id) {
+      sessionState = { ...sessionState, id };
     },
     fakeEnv: () => env,
     flushSpans: () => provider.forceFlush(),

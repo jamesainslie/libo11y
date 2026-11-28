@@ -27,10 +27,45 @@ class FakeDocument extends EventTarget {
   }
 }
 
+/**
+ * A window whose fire dispatches like the browser does: listeners run in order, and the microtask
+ * queue drains after each one, so a promise chain a listener starts runs before the next listener.
+ * EventTarget.dispatchEvent from script drains nothing until every listener returned.
+ */
+class FakeWindow extends EventTarget {
+  readonly #listeners: { type: string; listener: EventListenerOrEventListenerObject }[] = [];
+  override addEventListener(
+    type: string,
+    listener: EventListenerOrEventListenerObject | null,
+    options?: AddEventListenerOptions | boolean,
+  ): void {
+    super.addEventListener(type, listener, options);
+    if (listener !== null) this.#listeners.push({ type, listener });
+  }
+  override removeEventListener(
+    type: string,
+    listener: EventListenerOrEventListenerObject | null,
+    options?: EventListenerOptions | boolean,
+  ): void {
+    super.removeEventListener(type, listener, options);
+    const i = this.#listeners.findIndex((l) => l.type === type && l.listener === listener);
+    if (i >= 0) this.#listeners.splice(i, 1);
+  }
+  async fire(type: string): Promise<void> {
+    const event = new Event(type);
+    for (const { listener } of this.#listeners.filter((l) => l.type === type)) {
+      if (typeof listener === "function") listener.call(this, event);
+      else listener.handleEvent(event);
+      await new Promise((r) => setImmediate(r));
+    }
+  }
+}
+
 interface Harness {
   readonly transport: FakeTransport;
   readonly storage: ReturnType<typeof createFakeStorage>;
   readonly document: FakeDocument;
+  readonly window: FakeWindow;
   readonly transportOptions: HttpTransportOptions[];
   readonly deps: RumDeps;
 }
@@ -48,7 +83,7 @@ function harness(shared: Shared = {}): Harness {
   const storage = shared.storage ?? createFakeStorage();
   const hub = shared.hub ?? createChannelHub();
   const document = new FakeDocument();
-  const window = new EventTarget();
+  const window = new FakeWindow();
   const transportOptions: HttpTransportOptions[] = [];
   const base = defaultSetupDeps();
   const web: SetupDeps = {
@@ -68,6 +103,7 @@ function harness(shared: Shared = {}): Harness {
     transport,
     storage,
     document,
+    window,
     transportOptions,
     deps: {
       web,
@@ -664,6 +700,295 @@ test("two tabs that rotate a session at once emit one session.end for it", async
     await tabA.shutdown();
     await tabB.shutdown();
   }
+});
+
+test("two tabs that rotate a session at once send session.start only for the winning session", async () => {
+  let now = 1_000_000;
+  const storage = createFakeStorage();
+  const hub = createChannelHub({ async: true });
+  const a = harness({ storage, hub, now: () => now });
+  const b = harness({ storage, hub, now: () => now });
+  const tabA = await setupRumWith(
+    { ...OPTS, consent: { initial: "granted" } },
+    { ...a.deps, install: false },
+  );
+  const tabB = await setupRumWith(
+    { ...OPTS, consent: { initial: "granted" } },
+    { ...b.deps, install: false },
+  );
+  try {
+    await new Promise((r) => setTimeout(r, 10));
+    const first = tabA.rum.sessionId();
+    now += IDLE;
+    runtimeOf(tabA)?.session.touch();
+    runtimeOf(tabB)?.session.touch();
+    await until(() => tabA.rum.sessionId() === tabB.rum.sessionId(), "the tabs to agree on a session");
+    const winner = tabA.rum.sessionId();
+    await new Promise((r) => setTimeout(r, 700));
+    await Promise.all([tabA.forceFlush(), tabB.forceFlush()]);
+    const starts = [...logRecords(a.transport), ...logRecords(b.transport)]
+      .filter((r) => r["event.name"] === "o11y.rum.session.start" && r["session.id"] !== first)
+      .map((r) => r["session.id"]);
+    assert.deepEqual(starts, [winner]);
+  } finally {
+    await tabA.shutdown();
+    await tabB.shutdown();
+  }
+});
+
+test("a rotated session's start still goes out when the page hides before the election ends", async () => {
+  let now = 1_000_000;
+  const h = harness({ now: () => now });
+  open = await setupRumWith({ ...OPTS, consent: { initial: "granted" } }, h.deps);
+  now += IDLE;
+  runtimeOf(open)?.session.touch();
+  const rotated = open.rum.sessionId();
+  h.deps.window?.dispatchEvent(new Event("pagehide"));
+  await open.forceFlush();
+  const starts = logRecords(h.transport)
+    .filter((r) => r["event.name"] === "o11y.rum.session.start")
+    .map((r) => r["session.id"]);
+  assert.ok(starts.includes(rotated), "the rotated session's start was sent on pagehide");
+});
+
+function logBodies(t: FakeTransport): unknown[] {
+  return t.requests
+    .filter((r) => r.signal === "logs")
+    .flatMap((r) => {
+      const body = JSON.parse(r.body) as {
+        resourceLogs: { scopeLogs: { logRecords: { body?: unknown }[] }[] }[];
+      };
+      return body.resourceLogs.flatMap((rl) =>
+        rl.scopeLogs.flatMap((sl) => sl.logRecords.map((lr) => lr.body)),
+      );
+    });
+}
+
+test("an event with a body goes out with that body, the event name and the session", async () => {
+  const h = harness();
+  open = await setupRumWith({ ...OPTS, consent: { initial: "granted" } }, h.deps);
+  const rt = runtimeOf(open);
+  assert.ok(rt);
+  rt.emit("browser.web_vital", { "o11y.rum.element.selector": "#save" }, undefined, {
+    name: "inp",
+    value: 0.24,
+    delta: 0.24,
+    id: "v5-1",
+  });
+  await open.forceFlush();
+  const i = logRecords(h.transport).findIndex((r) => r["event.name"] === "browser.web_vital");
+  assert.ok(i >= 0, "the event was sent");
+  const record = logRecords(h.transport)[i];
+  assert.equal(record?.["session.id"], open.rum.sessionId());
+  assert.equal(record?.["o11y.rum.view.id"], rt.views.current()?.id);
+  assert.equal(record?.["o11y.rum.element.selector"], "#save");
+  assert.deepEqual(logBodies(h.transport)[i], {
+    kvlistValue: {
+      values: [
+        { key: "name", value: { stringValue: "inp" } },
+        { key: "value", value: { doubleValue: 0.24 } },
+        { key: "delta", value: { doubleValue: 0.24 } },
+        { key: "id", value: { stringValue: "v5-1" } },
+      ],
+    },
+  });
+});
+
+test("an event with a body is buffered for an unkept session and sent once the session is kept", async () => {
+  const retentionQueue = createMemoryQueue({ ...RETENTION_QUEUE_DEFAULTS });
+  const h = harness({ retentionQueue });
+  open = await setupRumWith(
+    { ...OPTS, consent: { initial: "granted" }, rum: { sessionSampleRate: 0 } },
+    h.deps,
+  );
+  const rt = runtimeOf(open);
+  assert.ok(rt);
+  rt.emit("browser.web_vital", {}, undefined, { name: "lcp", value: 1, delta: 1, id: "a" });
+  await open.forceFlush();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(sentEvents(h.transport).includes("browser.web_vital"), false);
+  const held = await retentionQueue.claim(Date.now(), 100, 0);
+  assert.ok(
+    held.some((e) => e.body.includes("browser.web_vital")),
+    "the record waits in the retention buffer",
+  );
+  rt.session.retain("error");
+  await until(() => sentEvents(h.transport).includes("browser.web_vital"), "the retained record");
+});
+
+test("an event with a body is not emitted while consent is not granted", async () => {
+  const h = harness();
+  open = await setupRumWith({ ...OPTS, consent: { initial: "granted" } }, h.deps);
+  const rt = runtimeOf(open);
+  assert.ok(rt);
+  const id = open.rum.sessionId();
+  await open.consent.revoke();
+  let reached = 0;
+  const logger = open.loggerProvider.getLogger("@libo11y/rum");
+  const original = logger.emit.bind(logger);
+  logger.emit = (r) => {
+    reached++;
+    original(r);
+  };
+  rt.emit("browser.web_vital", { "session.id": id ?? "" }, undefined, {
+    name: "lcp",
+    value: 1,
+    delta: 1,
+    id: "b",
+  });
+  assert.equal(reached, 0);
+});
+
+test("an event with a body is not correlated to the span active when it is emitted", async () => {
+  const h = harness();
+  open = await setupRumWith({ ...OPTS, consent: { initial: "granted" } }, h.deps);
+  const rt = runtimeOf(open);
+  assert.ok(rt);
+  open.tracerProvider.getTracer("app").startActiveSpan("unrelated", (span) => {
+    rt.emit("browser.web_vital", {}, undefined, { name: "cls", value: 0, delta: 0, id: "c" });
+    span.end();
+  });
+  await open.forceFlush();
+  const records = h.transport.requests
+    .filter((r) => r.signal === "logs")
+    .flatMap((r) =>
+      (
+        JSON.parse(r.body) as {
+          resourceLogs: { scopeLogs: { logRecords: { traceId?: string; attributes: OtlpAttr[] }[] }[] }[];
+        }
+      ).resourceLogs.flatMap((rl) => rl.scopeLogs.flatMap((sl) => sl.logRecords)),
+    );
+  const vital = records.find((lr) => lr.attributes.some((a) => a.value.stringValue === "browser.web_vital"));
+  assert.ok(vital);
+  assert.equal(vital.traceId ?? "", "");
+});
+
+test("the runtime ignores the OTLP endpoints and the app's ignoreUrls", async () => {
+  const h = harness();
+  open = await setupRumWith(
+    {
+      ...OPTS,
+      consent: { initial: "granted" },
+      instrumentations: { ignoreUrls: ["https://ads.test/", /\/health$/] },
+    },
+    h.deps,
+  );
+  const rt = runtimeOf(open);
+  assert.ok(rt);
+  assert.equal(rt.ignored("https://gateway.test/_o11y/v1/traces"), true);
+  assert.equal(rt.ignored("https://gateway.test/_o11y/v1/logs"), true);
+  assert.equal(rt.ignored("https://ads.test/pixel.gif"), true);
+  assert.equal(rt.ignored("https://app.test/health"), true);
+  assert.equal(rt.ignored("https://app.test/main.js"), false);
+  assert.equal(rt.ignored("not a url"), false);
+});
+
+/** The event names of each logs request, in order. */
+function logRequests(t: FakeTransport): unknown[][] {
+  return t.requests
+    .filter((r) => r.signal === "logs")
+    .map((r) => logRecords({ ...t, requests: [r] } as FakeTransport).map((a) => a["event.name"]));
+}
+
+for (const [how, hide] of [
+  ["pagehide", (h: Harness) => h.deps.window?.dispatchEvent(new Event("pagehide"))],
+  ["visibilitychange", (h: Harness) => h.document.hide()],
+] as const) {
+  test(`on ${how}, the hide hooks run and the summary is emitted before web's flush exports`, async () => {
+    const h = harness();
+    open = await setupRumWith({ ...OPTS, consent: { initial: "granted" } }, h.deps);
+    const rt = runtimeOf(open);
+    assert.ok(rt);
+    await open.forceFlush();
+    const before = h.transport.requests.length;
+    rt.emit("o11y.rum.frustration", { "o11y.rum.frustration.type": "dead" });
+    const view = rt.views.current();
+    assert.ok(view);
+    let hooks = 0;
+    rt.onHide(() => {
+      hooks++;
+      rt.summary.vital(view.id, "cls", 0.1);
+    });
+    hide(h);
+    hide(h);
+    await new Promise((r) => setTimeout(r, 0));
+    await open.forceFlush();
+    assert.equal(hooks, 1, "once per hide");
+    const after = logRequests({
+      ...h.transport,
+      requests: h.transport.requests.slice(before),
+    } as FakeTransport);
+    assert.deepEqual(after[0], ["o11y.rum.frustration", "o11y.rum.view.summary"]);
+    const summary = logRecords(h.transport).find((r) => r["event.name"] === "o11y.rum.view.summary");
+    assert.equal(summary?.["o11y.rum.summary.cls.value"], 0.1);
+  });
+}
+
+test("a pagehide while the document still reports visible sends the summary in unload mode", async () => {
+  // Firefox and WebKit fire pagehide on a navigation while visibilityState is still "visible".
+  // Only an unload-mode send (keepalive fetch or beacon) is issued before the document goes away.
+  const h = harness();
+  open = await setupRumWith({ ...OPTS, consent: { initial: "granted" } }, h.deps);
+  await open.forceFlush();
+  const before = h.transport.requests.length;
+  await h.window.fire("pagehide");
+  await open.forceFlush();
+  const sent = h.transport.requests.slice(before).filter((r) => r.signal === "logs");
+  const withSummary = sent.filter((r) => r.body.includes("o11y.rum.view.summary"));
+  assert.equal(withSummary.length, 1);
+  assert.deepEqual(
+    sent.map((r) => r.mode),
+    sent.map(() => "unload"),
+  );
+});
+
+test("a rotated session's start goes out when the page is hidden before the election ends", async () => {
+  let now = 1_000_000;
+  const h = harness({ now: () => now });
+  open = await setupRumWith({ ...OPTS, consent: { initial: "granted" } }, h.deps);
+  now += IDLE;
+  runtimeOf(open)?.session.touch();
+  const rotated = open.rum.sessionId();
+  h.document.hide();
+  await open.forceFlush();
+  const starts = logRecords(h.transport)
+    .filter((r) => r["event.name"] === "o11y.rum.session.start")
+    .map((r) => r["session.id"]);
+  assert.ok(starts.includes(rotated), "the rotated session's start was sent on visibilitychange");
+});
+
+test("a pageshow that is not a back/forward cache restore does not re-arm the hide hooks", async () => {
+  const h = harness();
+  open = await setupRumWith({ ...OPTS, consent: { initial: "granted" } }, h.deps);
+  const rt = runtimeOf(open);
+  assert.ok(rt);
+  let hooks = 0;
+  rt.onHide(() => hooks++);
+  h.document.hide();
+  h.deps.window?.dispatchEvent(new Event("pageshow"));
+  h.deps.window?.dispatchEvent(new Event("pagehide"));
+  assert.equal(hooks, 1);
+  const restored = new Event("pageshow");
+  Object.defineProperty(restored, "persisted", { value: true });
+  h.deps.window?.dispatchEvent(restored);
+  h.deps.window?.dispatchEvent(new Event("pagehide"));
+  assert.equal(hooks, 2);
+});
+
+test("a page shown again is hidden again: the hooks run once per hide", async () => {
+  const h = harness();
+  open = await setupRumWith({ ...OPTS, consent: { initial: "granted" } }, h.deps);
+  const rt = runtimeOf(open);
+  assert.ok(rt);
+  let hooks = 0;
+  rt.onHide(() => hooks++);
+  h.document.hide();
+  h.deps.window?.dispatchEvent(new Event("pagehide"));
+  assert.equal(hooks, 1);
+  h.document.visibilityState = "visible";
+  h.document.dispatchEvent(new Event("visibilitychange"));
+  h.document.hide();
+  assert.equal(hooks, 2);
 });
 
 test("a request that ends after a revoke leaves no breadcrumb for the next grant", async () => {

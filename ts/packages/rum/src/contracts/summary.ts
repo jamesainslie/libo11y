@@ -1,4 +1,4 @@
-/** Contract, frozen by R3a. The per-view counters behind o11y.rum.view.summary. */
+/** Contract, frozen by R3a, extended by R3c. The per-view counters behind o11y.rum.view.summary. */
 import type { RUMErrorSource, RUMFrustrationType, RUMViewKind } from "@libo11y/spec";
 
 export type SummaryCountKey =
@@ -27,6 +27,8 @@ export interface SummaryAccumulator {
   /** Records a vital of a view once; later values for the same view and vital are ignored. Seconds, CLS unitless. */
   vital(viewId: string, name: VitalName, value: number): void;
   visibility(visible: boolean): void;
+  /** Pins a view (R3c): while pinned, a closed view is not forgotten, so vitals held for it still reach it. */
+  pin(viewId: string, pinned: boolean): void;
   /** Sends a summary for every view with unsent data. */
   flush(): void;
   /** Drops everything unsent (consent revoked). */
