@@ -1,7 +1,9 @@
 /**
  * WP4 (instrumentation). Client spans for XMLHttpRequest.
  */
+import type { Telemetry } from "@libo11y/core";
 import { context, ROOT_CONTEXT, type Span, SpanKind, SpanStatusCode, trace } from "@opentelemetry/api";
+import { reportError } from "../background-flush.ts";
 import type { HttpInstrumentationOptions } from "../options.ts";
 import {
   asException,
@@ -45,12 +47,14 @@ type Outcome =
 
 /**
  * Starts the span of one send, listening for its failure events and loadend, and returns the
- * function that ends it (once, whichever outcome comes first).
+ * function that ends it (once, whichever outcome comes first). Ending never throws: a failure of
+ * the span or the histogram is reported to telemetry's reporter, or the global error handler.
  */
 function startXhrSpan(
   xhr: XMLHttpRequest,
   opened: Opened & { readonly url: URL },
   instruments: HttpInstruments,
+  telemetry: Telemetry | undefined,
 ): { readonly span: Span; readonly finish: (outcome: Outcome) => void } {
   const { tracer, histogram } = instruments;
   const start = performance.now();
@@ -76,6 +80,15 @@ function startXhrSpan(
     ended = true;
     for (const type of FAILURE_EVENTS) xhr.removeEventListener(type, onFailure);
     xhr.removeEventListener("loadend", onLoadEnd);
+    // A throw from a span processor or an instrument never replaces the response or the XHR's own
+    // error, and never escapes a loadend listener.
+    try {
+      end(outcome);
+    } catch (err) {
+      reportError(telemetry, "installXhrInstrumentation: ending the request's telemetry failed", err);
+    }
+  };
+  const end = (outcome: Outcome): void => {
     let status: number | undefined;
     let errorType: string | undefined;
     if (outcome.kind === "threw") {
@@ -129,6 +142,11 @@ const DONE = 4;
  * http: or https:, and a send the XHR refuses, get no span. Returns a function that restores the
  * original methods where they are still the patched ones; either way the patched ones pass every
  * later call straight through. A no-op where XMLHttpRequest does not exist (workers).
+ *
+ * The telemetry never fails the request, as for fetch. A span that cannot start leaves the send
+ * uninstrumented, a propagator that throws leaves it without the injected context, and a span that
+ * cannot end changes nothing the caller sees. Each is reported to the telemetry's reporter, or the
+ * global error handler without one. Only the XHR's own send throws to the caller.
  */
 export function installXhrInstrumentation(opts: HttpInstrumentationOptions = {}): () => void {
   return installXhrInstrumentationWith(opts);
@@ -173,16 +191,39 @@ export function installXhrInstrumentationWith(
     const opened = done || internals?.skip?.() ? undefined : requests.get(this);
     // A send the XHR will refuse (one in flight, or done without a reopen) gets no span of its own.
     const sendable = opened?.finish === undefined && this.readyState === OPENED;
-    const resolved =
-      opened?.url === undefined || !sendable || !isHttpUrl(opened.url) || isIgnored(opened.url, ignoreUrls)
-        ? undefined
-        : instruments();
-    if (opened?.url === undefined || resolved === undefined || !consentAllows(resolved.consent)) {
+    if (
+      opened === undefined ||
+      opened.url === undefined ||
+      !sendable ||
+      !isHttpUrl(opened.url) ||
+      isIgnored(opened.url, ignoreUrls)
+    ) {
       Reflect.apply(originalSend, this, args);
       return;
     }
     const url = opened.url;
-    const { span, finish } = startXhrSpan(this, { ...opened, url }, resolved);
+    // Resolving the instruments, reading consent and starting the span are the telemetry's. Whatever
+    // they throw never stops the request.
+    let started: (ReturnType<typeof startXhrSpan> & { readonly resolved: HttpInstruments }) | undefined;
+    try {
+      const resolved = instruments();
+      started = consentAllows(resolved.consent)
+        ? { resolved, ...startXhrSpan(this, { ...opened, url }, resolved, opts.telemetry) }
+        : undefined;
+    } catch (err) {
+      reportError(
+        opts.telemetry,
+        "installXhrInstrumentation: starting the request's telemetry failed, the request is not instrumented",
+        err,
+      );
+      Reflect.apply(originalSend, this, args);
+      return;
+    }
+    if (started === undefined) {
+      Reflect.apply(originalSend, this, args);
+      return;
+    }
+    const { span, finish, resolved } = started;
     opened.finish = (outcome) => {
       opened.finish = undefined;
       finish(outcome);
@@ -190,12 +231,20 @@ export function installXhrInstrumentationWith(
     const end = opened.finish;
     callOnStart(opts.onStart, span, { kind: "xhr", url, method: opened.method });
     const spanContext = trace.setSpan(context.active(), span);
-    try {
-      // setRequestHeader appends to a header already set, so a caller's traceparent would be sent
-      // twice; the caller's context wins, and the span is still recorded.
-      if (opened.callerTraceparent !== true && shouldPropagate(url, propagateTo)) {
+    // setRequestHeader appends to a header already set, so a caller's traceparent would be sent
+    // twice; the caller's context wins, and the span is still recorded.
+    if (opened.callerTraceparent !== true && shouldPropagate(url, propagateTo)) {
+      try {
         resolved.propagator.inject(spanContext, this, XHR_SETTER);
+      } catch (err) {
+        reportError(
+          opts.telemetry,
+          "installXhrInstrumentation: injecting the trace context failed, the request is sent without it",
+          err,
+        );
       }
+    }
+    try {
       context.with(spanContext, () => Reflect.apply(originalSend, this, args));
     } catch (err) {
       end({ kind: "threw", error: err });
