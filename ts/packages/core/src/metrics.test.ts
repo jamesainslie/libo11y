@@ -8,12 +8,14 @@ import {
   createAllowListAttributesProcessor,
   type DataPoint,
   InMemoryMetricExporter,
+  InstrumentType,
   MeterProvider,
   type MetricData,
   PeriodicExportingMetricReader,
   type ViewOptions,
 } from "@opentelemetry/sdk-metrics";
 import { ExemplarStore, exemplarMetricExporter, exemplarsOf } from "./exemplars.ts";
+import { registerExemplarViews } from "./internal/exemplar-views.ts";
 import { PolicyMeterProvider } from "./metrics.ts";
 import { SensitivityPolicy } from "./policy.ts";
 
@@ -36,6 +38,8 @@ function harness(opts: { views?: ViewOptions[]; pii?: "drop" | "allow" } = {}) {
     exportIntervalMillis: 3_600_000,
   });
   const sdk = new MeterProvider({ readers: [reader], views: opts.views ?? [] });
+  // As telemetry does: the store learns the views the meter provider got.
+  registerExemplarViews(store, opts.views ?? []);
   const policy = SensitivityPolicy.create({ pii: opts.pii ?? "drop", registries: [] });
   const mp = new PolicyMeterProvider(sdk, policy, store);
   const collect = async (): Promise<MetricData[]> => {
@@ -207,6 +211,129 @@ test("review W4: a view's histogram boundaries get one exemplar per bucket", asy
     [0.05, 0.15, 0.25, 0.35, 0.45],
   );
   await sdk.shutdown();
+});
+
+// Council S7: a series key keeps the attribute values' types, as the SDK's own point key does, so
+// the number 3 and the string "3" are two points with one exemplar each.
+test("attribute values that render alike but differ in type keep their own exemplars", async () => {
+  const { mp, sdk, collect } = harness();
+  const c = mp.getMeter("svc").createCounter("c");
+  c.add(1, { slot: 3 }, sampled());
+  c.add(2, { slot: "3" }, sampled());
+  c.add(4, { slot: true }, sampled());
+  c.add(8, { slot: "true" }, sampled());
+  c.add(16, { slot: [3] }, sampled());
+  c.add(32, { slot: ["3"] }, sampled());
+  const points = find(await collect(), "c").dataPoints as DataPoint<unknown>[];
+  assert.equal(points.length, 6);
+  for (const p of points) {
+    const values = exemplarsOf(p).map((e) => e.value);
+    assert.deepEqual(values, [p.value], `point ${JSON.stringify(p.attributes)}`);
+  }
+  await sdk.shutdown();
+});
+
+// Council S8: a view that renames an instrument still gets the instrument's exemplars.
+test("a renamed counter and a renamed histogram carry the span's IDs on the renamed point", async () => {
+  const { mp, sdk, collect } = harness({
+    views: [
+      { instrumentName: "test.counter", name: "renamed.counter" },
+      { instrumentName: "test.histogram", name: "renamed.histogram" },
+    ],
+  });
+  const meter = mp.getMeter("svc");
+  meter.createCounter("test.counter").add(2, { route: "/a" }, sampled());
+  meter.createHistogram("test.histogram").record(5, { route: "/a" }, sampled());
+  const metrics = await collect();
+  assert.deepEqual(metrics.map((m) => m.descriptor.name).sort(), ["renamed.counter", "renamed.histogram"]);
+  for (const [name, value] of [
+    ["renamed.counter", 2],
+    ["renamed.histogram", 5],
+  ] as const) {
+    const [p] = find(metrics, name).dataPoints as DataPoint<unknown>[];
+    const [e] = exemplarsOf(p as DataPoint<unknown>);
+    assert.equal(e?.traceId, TRACE_ID, name);
+    assert.equal(e?.spanId, SPAN_ID, name);
+    assert.equal(e?.value, value, name);
+  }
+  await sdk.shutdown();
+});
+
+test("every stream an instrument feeds gets its exemplars, not only the first", async () => {
+  const { mp, sdk, collect } = harness({
+    views: [
+      // A view without a name keeps the instrument's own stream beside the renamed one.
+      { instrumentName: "c", attributesProcessors: [createAllowListAttributesProcessor(["route"])] },
+      { instrumentName: "c", name: "c.renamed" },
+      { instrumentName: "h", name: "h.one" },
+      { instrumentName: "h", name: "h.two" },
+    ],
+  });
+  const meter = mp.getMeter("svc");
+  meter.createCounter("c").add(3, { route: "/a", method: "GET" }, sampled());
+  meter.createHistogram("h").record(7, {}, sampled());
+  const metrics = await collect();
+  for (const name of ["c", "c.renamed", "h.one", "h.two"]) {
+    const [p] = find(metrics, name).dataPoints as DataPoint<unknown>[];
+    const exemplars = exemplarsOf(p as DataPoint<unknown>);
+    assert.equal(exemplars.length, 1, name);
+    assert.equal(exemplars[0]?.traceId, TRACE_ID, name);
+  }
+  const [cp] = find(metrics, "c").dataPoints as DataPoint<unknown>[];
+  assert.deepEqual(exemplarsOf(cp as DataPoint<unknown>)[0]?.filteredAttributes, { method: "GET" });
+  const [rp] = find(metrics, "c.renamed").dataPoints as DataPoint<unknown>[];
+  assert.deepEqual(exemplarsOf(rp as DataPoint<unknown>)[0]?.filteredAttributes, {});
+  await sdk.shutdown();
+});
+
+test("an instrument that already has a view's new name is not given the renamed instrument's samples", async () => {
+  const { mp, sdk, collect, exporter } = harness({
+    views: [{ instrumentName: "src", meterName: "renaming", name: "shared" }],
+  });
+  mp.getMeter("renaming").createCounter("src").add(1, {}, sampled());
+  const other = mp.getMeter("other");
+  other.createCounter("shared").add(10, {}, sampled());
+  other.createCounter("src").add(100, {}, sampled());
+  await collect();
+  const scopeMetrics = exporter.getMetrics().at(-1)?.scopeMetrics ?? [];
+  const valuesOf = (scope: string, name: string): number[] => {
+    const all = scopeMetrics
+      .filter((sm) => sm.scope.name === scope)
+      .flatMap((sm) => sm.metrics)
+      .filter((m) => m.descriptor.name === name);
+    assert.equal(all.length, 1, `${scope}/${name}`);
+    const metric = all[0];
+    assert.ok(metric !== undefined);
+    return (metric.dataPoints as DataPoint<unknown>[]).flatMap((p) => exemplarsOf(p).map((e) => e.value));
+  };
+  assert.deepEqual(valuesOf("renaming", "shared"), [1]);
+  assert.deepEqual(valuesOf("other", "shared"), [10]);
+  assert.deepEqual(valuesOf("other", "src"), [100]);
+  await sdk.shutdown();
+});
+
+test("a renaming view whose instrument type does not match leaves the stream of that name alone", async () => {
+  const { mp, sdk, collect } = harness({
+    views: [{ instrumentName: "src", instrumentType: InstrumentType.HISTOGRAM, name: "shared" }],
+  });
+  const meter = mp.getMeter("svc");
+  meter.createCounter("src").add(1, {}, sampled());
+  meter.createCounter("shared").add(10, {}, sampled());
+  const metrics = await collect();
+  const [p] = find(metrics, "shared").dataPoints as DataPoint<unknown>[];
+  assert.deepEqual(
+    exemplarsOf(p as DataPoint<unknown>).map((e) => e.value),
+    [10],
+  );
+  await sdk.shutdown();
+});
+
+// The store maps a renamed stream back to one instrument. sdk-metrics guarantees there is one: it
+// refuses a view with a name whose instrument selector is missing or has a wildcard.
+test("sdk-metrics refuses a renaming view that could select several instruments", () => {
+  for (const views of [[{ instrumentName: "c*", name: "x" }], [{ meterName: "svc", name: "x" }]]) {
+    assert.throws(() => new MeterProvider({ views }), /selects at most one instrument per meter/);
+  }
 });
 
 // Third review: an instrument call is application code's call, on its hot path, and must never

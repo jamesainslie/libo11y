@@ -14,6 +14,7 @@ import {
   type Context,
   context,
   metrics,
+  ProxyTracerProvider,
   propagation,
   SpanKind,
   SpanStatusCode,
@@ -343,6 +344,39 @@ test("serverTiming adds a traceparent Server-Timing entry to HTML responses only
     const json = await handler(new Request("http://svc/json"));
     assert.deepEqual(await json.json(), { ok: true });
     assert.equal(json.headers.get("server-timing"), null);
+  });
+});
+
+test("serverTiming adds no entry when the span has no valid span context", async () => {
+  await withRecorder(async (rec) => {
+    // A provider with no delegate hands out non-recording spans with the all-zero span context, as
+    // before setup, after shutdown, or with OTEL_SDK_DISABLED=true.
+    const noop = new ProxyTracerProvider();
+    const telemetry = new Proxy(rec.telemetry, {
+      get: (target, key, receiver) => (key === "tracerProvider" ? noop : Reflect.get(target, key, receiver)),
+    });
+    const handler = instrumentServe(
+      async (req) => {
+        const path = new URL(req.url).pathname;
+        const headers =
+          path === "/own"
+            ? { "content-type": "text/html", "server-timing": "db;dur=1" }
+            : { "content-type": "text/html" };
+        return new Response("<p>hi</p>", { headers });
+      },
+      { telemetry, serverTiming: true },
+    );
+    const page = await handler(new Request("http://svc/page"));
+    assert.equal(await page.text(), "<p>hi</p>");
+    assert.equal(page.headers.get("server-timing"), null);
+    const own = await handler(new Request("http://svc/own"));
+    assert.equal(await own.text(), "<p>hi</p>");
+    assert.equal(
+      own.headers.get("server-timing"),
+      "db;dur=1",
+      "the handler's own entries are left as they are",
+    );
+    assert.equal(serverSpans(rec).length, 0);
   });
 });
 

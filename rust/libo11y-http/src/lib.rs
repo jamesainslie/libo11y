@@ -39,10 +39,10 @@ pub use carrier::{HeaderExtractor, HeaderInjector};
 pub use client::{ClientFuture, ClientLayer, ClientService};
 pub use method::{METHOD_OTHER, default_span_name, normalize_method, route_only, span_method};
 pub use path_match::path_match;
-pub use server::{ServerFuture, ServerLayer, ServerService};
+pub use server::{ServerBody, ServerFuture, ServerLayer, ServerService};
 pub use url::{
-    extract_scheme, extract_server_address_port, redact_query, sanitize_url_full,
-    strip_ipv6_brackets,
+    extract_scheme, extract_server_address_port, percent_decode_or_raw, redact_query,
+    sanitize_url_full, strip_ipv6_brackets,
 };
 
 /// Instrumentation scope name for meters and tracers created by `libo11y-http`.

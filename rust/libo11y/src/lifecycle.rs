@@ -8,7 +8,6 @@
 
 use std::fmt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -19,6 +18,10 @@ use crate::export::failures::SharedError;
 
 /// How long shutdown and flush wait when the caller gives no timeout.
 pub const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long a shutdown whose deadline has passed still waits for its
+/// `o11y.telemetry.dropped` events to reach the log sinks.
+pub(crate) const DROPPED_REPORT_GRACE: Duration = Duration::from_millis(100);
 
 /// Which call a failure belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,7 +55,7 @@ enum FailureKind {
     /// The provider was still running at the deadline.
     TimedOut(Duration),
     /// An earlier call's step for the signal was still running, so this
-    /// call started none: hung providers do not pile up threads.
+    /// flush started none: hung providers do not pile up threads.
     StillRunning,
     /// The provider panicked.
     Panicked,
@@ -288,20 +291,61 @@ impl std::error::Error for FlushError {
     }
 }
 
+/// Whether a step of one signal is running, across calls. A flush that
+/// finds the signal claimed starts no step. A shutdown waits for the claim,
+/// so the provider is stopped once the running step ends.
+#[derive(Debug, Default)]
+pub(crate) struct Busy {
+    claimed: Mutex<bool>,
+    released: Condvar,
+}
+
+impl Busy {
+    /// Claims the signal unless a step of it is running.
+    fn try_claim(&self) -> bool {
+        let mut claimed = self.claimed.lock().unwrap_or_else(PoisonError::into_inner);
+        !std::mem::replace(&mut *claimed, true)
+    }
+
+    /// Claims the signal, waiting for a running step to end.
+    fn claim(&self) {
+        let claimed = self.claimed.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut claimed = self
+            .released
+            .wait_while(claimed, |claimed| *claimed)
+            .unwrap_or_else(PoisonError::into_inner);
+        *claimed = true;
+    }
+
+    fn release(&self) {
+        *self.claimed.lock().unwrap_or_else(PoisonError::into_inner) = false;
+        self.released.notify_all();
+    }
+
+    #[cfg(test)]
+    fn is_claimed(&self) -> bool {
+        *self.claimed.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
 /// One signal's part of a shutdown or flush.
 pub(crate) struct Step {
     pub(crate) signal: Signal,
-    /// Set while a step of this signal runs, across calls.
-    pub(crate) busy: Arc<AtomicBool>,
-    /// Given the timeout, returns the errors to report, none on success.
+    /// Claimed while a step of this signal runs, across calls.
+    pub(crate) busy: Arc<Busy>,
+    /// Given the time left before the deadline, returns the errors to
+    /// report, none on success.
     pub(crate) run: Box<dyn FnOnce(Duration) -> Vec<SharedError> + Send + 'static>,
 }
 
 /// Runs every step on a thread of its own under one deadline, `timeout`
 /// from now, and returns the failures in step order. A step still running
-/// at the deadline is reported as timed out and left to finish on its own;
-/// until it does, a later call starts no step for that signal. A timeout too
-/// large to add to the clock waits without a deadline.
+/// at the deadline is reported as timed out and left to finish on its own.
+/// Until it does, a later flush starts no step for that signal. A shutdown
+/// step waits for it instead, on its own thread, and then stops the
+/// provider, so a flush in progress delays a signal's shutdown and never
+/// cancels it. A timeout too large to add to the clock waits without a
+/// deadline.
 pub(crate) fn run_steps(op: Op, steps: Vec<Step>, timeout: Duration) -> Vec<SignalFailure> {
     let deadline = Instant::now().checked_add(timeout);
     let (tx, rx) = mpsc::channel();
@@ -309,7 +353,10 @@ pub(crate) fn run_steps(op: Op, steps: Vec<Step>, timeout: Duration) -> Vec<Sign
     let signals: Vec<Signal> = steps.iter().map(|step| step.signal).collect();
     let mut pending = 0;
     for (i, step) in steps.into_iter().enumerate() {
-        if step.busy.swap(true, Ordering::AcqRel) {
+        // A flush claims its signal here, so a second flush adds no thread.
+        // A shutdown claims it on its own thread, where it can wait.
+        let claimed = op == Op::Flush;
+        if claimed && !step.busy.try_claim() {
             outcomes.push(Some(FailureKind::StillRunning));
             continue;
         }
@@ -319,12 +366,18 @@ pub(crate) fn run_steps(op: Op, steps: Vec<Step>, timeout: Duration) -> Vec<Sign
         let spawned = std::thread::Builder::new()
             .name(format!("libo11y-{}-{}", op.as_str(), step.signal))
             .spawn(move || {
-                let outcome = match catch_unwind(AssertUnwindSafe(|| run(timeout))) {
+                if !claimed {
+                    busy.claim();
+                }
+                let left = deadline.map_or(timeout, |deadline| {
+                    deadline.saturating_duration_since(Instant::now())
+                });
+                let outcome = match catch_unwind(AssertUnwindSafe(|| run(left))) {
                     Ok(errors) if errors.is_empty() => None,
                     Ok(errors) => Some(FailureKind::Errors(errors)),
                     Err(_) => Some(FailureKind::Panicked),
                 };
-                busy.store(false, Ordering::Release);
+                busy.release();
                 // The caller may have stopped waiting; then nobody listens.
                 let _ = tx.send((i, outcome));
             });
@@ -334,7 +387,9 @@ pub(crate) fn run_steps(op: Op, steps: Vec<Step>, timeout: Duration) -> Vec<Sign
                 pending += 1;
             }
             Err(err) => {
-                step.busy.store(false, Ordering::Release);
+                if claimed {
+                    step.busy.release();
+                }
                 outcomes.push(Some(FailureKind::Errors(vec![Arc::new(err)])));
             }
         }
@@ -579,7 +634,7 @@ mod tests {
 
     #[test]
     fn a_hung_step_blocks_only_its_signal_in_a_later_call() {
-        let busy = Arc::new(AtomicBool::new(false));
+        let busy = Arc::new(Busy::default());
         let (hung, release) = hanging();
         let first = run_steps(
             Op::Flush,
@@ -610,7 +665,7 @@ mod tests {
         );
         drop(release);
         let deadline = Instant::now() + Duration::from_secs(5);
-        while busy.load(Ordering::Acquire) && Instant::now() < deadline {
+        while busy.is_claimed() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(1));
         }
         assert!(
@@ -626,6 +681,85 @@ mod tests {
             .is_empty(),
             "the signal runs again once the hung step ends"
         );
+    }
+
+    #[test]
+    fn a_shutdown_step_waits_for_a_running_flush_and_then_runs() {
+        let busy = Arc::new(Busy::default());
+        let (hung, release) = hanging();
+        let flush = run_steps(
+            Op::Flush,
+            vec![Step {
+                signal: Signal::Metrics,
+                busy: Arc::clone(&busy),
+                run: hung,
+            }],
+            Duration::from_millis(50),
+        );
+        assert!(flush[0].is_timeout());
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            drop(release);
+        });
+        let (ran_tx, ran) = mpsc::channel();
+        let failures = run_steps(
+            Op::Shutdown,
+            vec![Step {
+                signal: Signal::Metrics,
+                busy,
+                run: Box::new(move |left| {
+                    let _ = ran_tx.send(left);
+                    Vec::new()
+                }),
+            }],
+            Duration::from_secs(20),
+        );
+        releaser.join().expect("joined");
+        assert!(failures.is_empty(), "{failures:?}");
+        let left = ran.try_recv().expect("the shutdown step ran");
+        assert!(
+            left < Duration::from_secs(20),
+            "the step got the whole timeout after waiting: {left:?}"
+        );
+    }
+
+    #[test]
+    fn a_shutdown_step_runs_after_a_flush_that_outlives_the_deadline() {
+        let busy = Arc::new(Busy::default());
+        let (hung, release) = hanging();
+        let flush = run_steps(
+            Op::Flush,
+            vec![Step {
+                signal: Signal::Logs,
+                busy: Arc::clone(&busy),
+                run: hung,
+            }],
+            Duration::from_millis(50),
+        );
+        assert!(flush[0].is_timeout());
+        let (ran_tx, ran) = mpsc::channel();
+        let failures = run_steps(
+            Op::Shutdown,
+            vec![Step {
+                signal: Signal::Logs,
+                busy,
+                run: Box::new(move |left| {
+                    let _ = ran_tx.send(left);
+                    Vec::new()
+                }),
+            }],
+            Duration::from_millis(50),
+        );
+        assert_eq!(
+            failures[0].to_string(),
+            "o11y: shutdown logs: deadline exceeded after 50ms"
+        );
+        assert!(ran.try_recv().is_err(), "the step ran beside the flush");
+        drop(release);
+        let left = ran
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the shutdown step ran once the flush ended");
+        assert_eq!(left, Duration::ZERO, "no time was left to the step");
     }
 
     #[test]

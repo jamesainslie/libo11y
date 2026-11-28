@@ -60,12 +60,6 @@ impl Sdk {
                 .map(|kv| (kv.key, value_to_any(kv.value)))
                 .collect(),
         );
-        let mut out = Vec::with_capacity(cleaned.len() + 1);
-        out.push((
-            Key::from_static_str(EVENT_NAME_KEY),
-            AnyValue::from(name.to_owned()),
-        ));
-        out.extend(cleaned);
         self.0.log_pipeline.dispatch(
             cx,
             SystemTime::now(),
@@ -73,7 +67,8 @@ impl Sdk {
             name,
             SCOPE_NAME,
             None,
-            out,
+            cleaned,
+            Some(name),
             true,
         )
     }

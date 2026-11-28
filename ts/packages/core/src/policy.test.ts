@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { test } from "node:test";
-import type { AppRegistry, CompiledAppRegistry } from "@libo11y/spec";
+import { type AppRegistry, type CompiledAppRegistry, compileAppRegistry } from "@libo11y/spec";
 import { O11yError } from "./errors.ts";
 import { compileRegistries, SensitivityPolicy, type ViolationSink } from "./policy.ts";
 
@@ -238,6 +238,47 @@ test("an invalid registry fails with Go's message, naming it by position", () =>
       err.message ===
         "o11y: invalid application registry: registry 2: libo11y_app_attributes_empty: the registry declares no attributes",
   );
+});
+
+test("a compiled registry is validated too, naming it by position", () => {
+  const cases: [unknown, string][] = [
+    [
+      { namespace: "otel", classes: { "otel.x": "public" } },
+      'libo11y_app_namespace_reserved: namespace "otel" belongs to libo11y, OpenTelemetry, or semconv',
+    ],
+    [
+      { namespace: "lor", classes: { "http.request.method": "secret" } },
+      "libo11y_app_attr_outside_namespace: attribute http.request.method: not under the lor namespace",
+    ],
+    [
+      { namespace: "lor", classes: { "lor.a": "hidden" } },
+      'libo11y_sensitivity_unknown: attribute lor.a: sensitivity "hidden"',
+    ],
+    [
+      { namespace: "lor", classes: "pii" },
+      "libo11y_app_attributes_empty: the registry declares no attributes",
+    ],
+  ];
+  for (const [bad, violation] of cases) {
+    assert.throws(
+      () => compileRegistries([lor, bad as CompiledAppRegistry]),
+      (err: unknown) =>
+        err instanceof O11yError &&
+        err.code === "INVALID_APP_REGISTRY" &&
+        err.message === `o11y: invalid application registry: registry 2: ${violation}`,
+      violation,
+    );
+  }
+});
+
+test("a registry compileAppRegistry returned passes compileRegistries as is", () => {
+  const compiled = compileAppRegistry({
+    schema: "libo11y.app-registry/v1",
+    namespace: "shop",
+    attributes: { "shop.order.id": { type: "string", sensitivity: "internal", cardinality: "unbounded" } },
+  });
+  assert.deepEqual(compileRegistries(compiled), [compiled]);
+  assert.equal(compileRegistries(compiled)[0], compiled);
 });
 
 test("a platform hmac replaces the built-in one", () => {

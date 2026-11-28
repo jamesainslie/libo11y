@@ -3,12 +3,22 @@
 //! log lines, panic handling, correlation triangles, and optional `axum`
 //! `MatchedPath` extraction.
 
+use std::collections::{BTreeMap, VecDeque};
 use std::convert::Infallible;
+use std::fmt;
+use std::future::Future as _;
 use std::panic::AssertUnwindSafe;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
+use std::task::{Context as TaskContext, Poll};
+use std::time::Duration;
 
 use http::header::{HOST, USER_AGENT};
 use http::{Method, Request, Response, StatusCode};
+use http_body::{Body as HttpBody, Frame};
+use http_body_util::{BodyExt as _, Empty};
+
+type EmptyBody = Empty<&'static [u8]>;
 use libo11y::record_from_context;
 use libo11y_http::{ClientLayer, ServerLayer};
 use libo11y_spec::{Outcome, attr, event};
@@ -47,7 +57,7 @@ async fn server_span_semconv_route_naming_and_query_redaction() {
         Ok::<_, Infallible>(
             Response::builder()
                 .status(StatusCode::CREATED)
-                .body(())
+                .body(EmptyBody::new())
                 .unwrap(),
         )
     }));
@@ -116,7 +126,12 @@ async fn server_5xx_sets_error_type_and_status_while_4xx_leaves_span_unset() {
         } else {
             StatusCode::SERVICE_UNAVAILABLE
         };
-        Ok::<_, Infallible>(Response::builder().status(status).body(()).unwrap())
+        Ok::<_, Infallible>(
+            Response::builder()
+                .status(status)
+                .body(EmptyBody::new())
+                .unwrap(),
+        )
     }));
 
     let req404 = Request::builder()
@@ -159,7 +174,7 @@ async fn server_normalizes_unknown_and_lowercase_methods() {
         .with_route_extractor(|_| Some("/items/{id}".to_owned()));
 
     let mut svc = layer.layer(service_fn(|_req: Request<()>| async {
-        Ok::<_, Infallible>(Response::new(()))
+        Ok::<_, Infallible>(Response::new(EmptyBody::new()))
     }));
 
     let custom = Request::builder()
@@ -235,7 +250,7 @@ async fn server_public_endpoint_starts_new_root_links_remote_and_preserves_bagga
             let cx = OtelContext::current();
             let val = cx.baggage().get("tenant").map(ToString::to_string);
             *bag_clone.lock().unwrap() = val;
-            Ok::<_, Infallible>(Response::new(()))
+            Ok::<_, Infallible>(Response::new(EmptyBody::new()))
         }
     }));
 
@@ -279,7 +294,7 @@ async fn server_ignore_paths_and_filters_exclude_matching_requests() {
         .with_filter(|parts| parts.method != Method::OPTIONS);
 
     let mut svc = layer.layer(service_fn(|_req: Request<()>| async {
-        Ok::<_, Infallible>(Response::new(()))
+        Ok::<_, Infallible>(Response::new(EmptyBody::new()))
     }));
 
     let requests = [
@@ -309,6 +324,50 @@ async fn server_ignore_paths_and_filters_exclude_matching_requests() {
 }
 
 #[tokio::test]
+async fn server_ignore_paths_match_the_percent_decoded_path() {
+    let rec = Recorder::start("http-server-ignore-decoded");
+    let layer = ServerLayer::new(rec.sdk()).with_ignore_paths(["/healthz", "/debug/*"]);
+    let mut svc = layer.layer(service_fn(|_req: Request<()>| async {
+        Ok::<_, Infallible>(Response::new(String::new()))
+    }));
+
+    for uri in ["/%68ealthz", "/debug/%76ars", "/bad%zz", "/work"] {
+        let req = Request::builder().uri(uri).body(()).unwrap();
+        let _ = svc.ready().await.unwrap().call(req).await.unwrap();
+    }
+
+    let spans = rec.spans();
+    let paths: Vec<_> = spans.iter().map(|s| span_attr(s, "url.path")).collect();
+    assert_eq!(
+        paths,
+        [Some("/bad%zz".to_owned()), Some("/work".to_owned())],
+        "encoded ignored paths must be excluded, an invalid escape falls back to the raw path"
+    );
+}
+
+#[tokio::test]
+async fn client_ignore_paths_match_the_percent_decoded_path() {
+    let rec = Recorder::start("http-client-ignore-decoded");
+    let mut client_svc = ClientLayer::new(rec.sdk())
+        .with_ignore_paths(["/healthz"])
+        .layer(service_fn(|_req: Request<()>| async {
+            Ok::<_, Infallible>(Response::new(EmptyBody::new()))
+        }));
+
+    for uri in ["http://example.com/%68ealthz", "http://example.com/ok"] {
+        let req = Request::builder().uri(uri).body(()).unwrap();
+        let _ = client_svc.ready().await.unwrap().call(req).await.unwrap();
+    }
+
+    let spans = rec.spans();
+    assert_eq!(spans.len(), 1);
+    assert_eq!(
+        span_attr(&spans[0], "url.full").as_deref(),
+        Some("http://example.com/ok")
+    );
+}
+
+#[tokio::test]
 async fn server_canonical_line_enriches_record_and_passes_triangle_and_conformance() {
     let rec = Recorder::start("http-canonical-line");
     let layer = ServerLayer::new(rec.sdk())
@@ -320,7 +379,7 @@ async fn server_canonical_line_enriches_record_and_passes_triangle_and_conforman
         record.set("order.id", "42");
         record.add("order.items", 3);
         tracing::info!(order.id = "42", "handled order");
-        Ok::<_, Infallible>(Response::new(()))
+        Ok::<_, Infallible>(Response::new(EmptyBody::new()))
     }));
 
     let req = Request::builder().uri("/orders/42").body(()).unwrap();
@@ -382,7 +441,7 @@ async fn server_records_panic_during_poll_and_call_and_resumes_unwind() {
         let mut svc = layer.layer(service_fn(|_req: Request<()>| async {
             panic!("handler exploded");
             #[allow(unreachable_code)]
-            Ok::<_, Infallible>(Response::new(()))
+            Ok::<_, Infallible>(Response::new(EmptyBody::new()))
         }));
 
         let fut = svc
@@ -419,7 +478,7 @@ async fn server_records_panic_during_poll_and_call_and_resumes_unwind() {
     let rec = Recorder::start("http-panic-sync");
     let layer = ServerLayer::new(rec.sdk()).with_canonical_line();
     let mut svc = layer.layer(service_fn(
-        |_req: Request<()>| -> std::future::Ready<Result<Response<()>, Infallible>> {
+        |_req: Request<()>| -> std::future::Ready<Result<Response<EmptyBody>, Infallible>> {
             panic!("sync call panic");
         },
     ));
@@ -446,7 +505,7 @@ async fn filtered_panic_leaves_outer_span_untouched() {
     let mut svc = layer.layer(service_fn(|_req: Request<()>| async {
         panic!("probe boom");
         #[allow(unreachable_code)]
-        Ok::<_, Infallible>(Response::new(()))
+        Ok::<_, Infallible>(Response::new(EmptyBody::new()))
     }));
 
     let outer = rec.sdk().tracer("outer").start("outer");
@@ -483,7 +542,12 @@ async fn client_to_server_propagates_trace_and_baggage_and_satisfies_triangles()
             async move {
                 let cx = OtelContext::current();
                 *bag_clone.lock().unwrap() = cx.baggage().get("tenant").map(ToString::to_string);
-                Ok::<_, Infallible>(Response::builder().status(StatusCode::OK).body(()).unwrap())
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .body(EmptyBody::new())
+                        .unwrap(),
+                )
             }
         }));
 
@@ -567,7 +631,7 @@ async fn client_marks_4xx_as_error_and_honors_filters() {
             Ok::<_, Infallible>(
                 Response::builder()
                     .status(StatusCode::BAD_REQUEST)
-                    .body(())
+                    .body(EmptyBody::new())
                     .unwrap(),
             )
         }));
@@ -650,6 +714,7 @@ async fn axum_router_automatically_extracts_matched_path() {
 
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
+    let _ = resp.into_body().collect().await.unwrap();
 
     let spans = rec.spans();
     assert_eq!(spans.len(), 1);
@@ -706,6 +771,7 @@ async fn custom_route_extractor_takes_precedence_over_axum_matched_path() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
+    let _ = resp.into_body().collect().await.unwrap();
 
     // When the custom extractor returns None, axum's MatchedPath is used.
     let resp2 = app
@@ -718,6 +784,7 @@ async fn custom_route_extractor_takes_precedence_over_axum_matched_path() {
         .await
         .unwrap();
     assert_eq!(resp2.status(), StatusCode::OK);
+    let _ = resp2.into_body().collect().await.unwrap();
 
     let spans = rec.spans();
     assert_eq!(spans.len(), 2);
@@ -745,7 +812,7 @@ async fn server_and_client_record_service_errors_and_histogram_boundaries() {
         .with_canonical_line()
         .with_operation_name("orders-op")
         .layer(service_fn(|_req: Request<()>| async {
-            Err::<Response<()>, DownstreamErr>(DownstreamErr)
+            Err::<Response<EmptyBody>, DownstreamErr>(DownstreamErr)
         }));
 
     let err = server_svc
@@ -757,7 +824,7 @@ async fn server_and_client_record_service_errors_and_histogram_boundaries() {
     assert!(err.is_err());
 
     let mut client_svc = ClientLayer::new(rec.sdk()).layer(service_fn(|_req: Request<()>| async {
-        Err::<Response<()>, DownstreamErr>(DownstreamErr)
+        Err::<Response<EmptyBody>, DownstreamErr>(DownstreamErr)
     }));
     let cerr = client_svc
         .ready()
@@ -840,4 +907,550 @@ where
     tokio::spawn(fut)
         .await
         .map_err(|join_err| join_err.into_panic())
+}
+
+/// Test response body: yields `chunks` as data frames, then optionally an
+/// error, a panic, or the end of the stream. With `reports_end` unset it never
+/// claims `is_end_stream`, so only a final `None` poll ends it.
+struct ChunkBody {
+    chunks: VecDeque<&'static [u8]>,
+    tail: Tail,
+    reports_end: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Tail {
+    End,
+    Error,
+    Panic,
+}
+
+#[derive(Debug)]
+struct ChunkError;
+
+impl fmt::Display for ChunkError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("chunk failed")
+    }
+}
+
+impl std::error::Error for ChunkError {}
+
+impl ChunkBody {
+    fn new(chunks: &[&'static [u8]], tail: Tail) -> Self {
+        Self {
+            chunks: chunks.iter().copied().collect(),
+            tail,
+            reports_end: true,
+        }
+    }
+
+    fn without_end_hint(mut self) -> Self {
+        self.reports_end = false;
+        self
+    }
+}
+
+impl HttpBody for ChunkBody {
+    type Data = &'static [u8];
+    type Error = ChunkError;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        _cx: &mut TaskContext<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        if let Some(chunk) = self.chunks.pop_front() {
+            return Poll::Ready(Some(Ok(Frame::data(chunk))));
+        }
+        match std::mem::replace(&mut self.tail, Tail::End) {
+            Tail::End => Poll::Ready(None),
+            Tail::Error => Poll::Ready(Some(Err(ChunkError))),
+            Tail::Panic => panic!("body exploded"),
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.reports_end && self.chunks.is_empty() && self.tail == Tail::End
+    }
+}
+
+/// One exported data point of a histogram: count, sum and attributes.
+#[derive(Debug)]
+struct HistogramPoint {
+    count: u64,
+    sum: f64,
+    attrs: BTreeMap<String, String>,
+}
+
+/// Returns the latest cumulative data points of the histogram `name`.
+fn histogram_points(rec: &Recorder, name: &str) -> Vec<HistogramPoint> {
+    use libo11y::opentelemetry_proto::tonic::common::v1::any_value::Value as ProtoValue;
+    use libo11y::opentelemetry_proto::tonic::metrics::v1::metric::Data;
+
+    let mut latest = Vec::new();
+    for batch in rec.metrics() {
+        for rm in batch.resource_metrics {
+            for sm in rm.scope_metrics {
+                for m in sm.metrics {
+                    if m.name != name {
+                        continue;
+                    }
+                    let Some(Data::Histogram(hist)) = m.data else {
+                        continue;
+                    };
+                    latest = hist
+                        .data_points
+                        .into_iter()
+                        .map(|dp| HistogramPoint {
+                            count: dp.count,
+                            sum: dp.sum.unwrap_or_default(),
+                            attrs: dp
+                                .attributes
+                                .into_iter()
+                                .map(|kv| {
+                                    let value = match kv.value.and_then(|v| v.value) {
+                                        Some(ProtoValue::StringValue(s)) => s,
+                                        Some(ProtoValue::IntValue(i)) => i.to_string(),
+                                        other => format!("{other:?}"),
+                                    };
+                                    (kv.key, value)
+                                })
+                                .collect(),
+                        })
+                        .collect();
+                }
+            }
+        }
+    }
+    latest
+}
+
+fn server_duration_count(rec: &Recorder) -> u64 {
+    histogram_points(rec, "http.server.request.duration")
+        .iter()
+        .map(|p| p.count)
+        .sum()
+}
+
+#[tokio::test]
+async fn server_span_and_duration_finish_when_the_response_body_ends() {
+    let rec = Recorder::start("http-server-body-end");
+    let mut svc = ServerLayer::new(rec.sdk())
+        .with_canonical_line()
+        .layer(service_fn(|_req: Request<()>| async {
+            Ok::<_, Infallible>(Response::new(ChunkBody::new(&[b"a", b"b"], Tail::End)))
+        }));
+
+    let resp = svc
+        .ready()
+        .await
+        .unwrap()
+        .call(Request::builder().uri("/stream").body(()).unwrap())
+        .await
+        .unwrap();
+    assert!(rec.spans().is_empty(), "span must stay open at the head");
+    assert!(rec.logs().is_empty(), "canonical line waits for the body");
+    assert_eq!(server_duration_count(&rec), 0);
+
+    tokio::time::sleep(Duration::from_millis(40)).await;
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(&body[..], b"ab");
+
+    let spans = rec.spans();
+    assert_eq!(spans.len(), 1);
+    assert_eq!(spans[0].status, Status::Unset);
+    assert_eq!(
+        span_attr(&spans[0], "http.response.status_code").as_deref(),
+        Some("200")
+    );
+    let points = histogram_points(&rec, "http.server.request.duration");
+    assert_eq!(points.len(), 1);
+    assert_eq!(points[0].count, 1);
+    assert!(
+        points[0].sum >= 0.04,
+        "duration {} must cover the body",
+        points[0].sum
+    );
+    assert_eq!(
+        points[0]
+            .attrs
+            .get("http.response.status_code")
+            .map(String::as_str),
+        Some("200")
+    );
+    let logs = rec.logs();
+    assert_eq!(logs.len(), 1);
+    assert_eq!(
+        logs[0].attr_str(attr::OUTCOME).as_deref(),
+        Some(Outcome::Success.as_str())
+    );
+    rec.assert_conforms();
+}
+
+#[tokio::test]
+async fn server_span_finishes_on_the_final_none_frame_without_an_end_hint() {
+    let rec = Recorder::start("http-server-body-none");
+    let mut svc = ServerLayer::new(rec.sdk()).layer(service_fn(|_req: Request<()>| async {
+        Ok::<_, Infallible>(Response::new(
+            ChunkBody::new(&[b"a"], Tail::End).without_end_hint(),
+        ))
+    }));
+
+    let resp = svc
+        .ready()
+        .await
+        .unwrap()
+        .call(Request::builder().uri("/stream").body(()).unwrap())
+        .await
+        .unwrap();
+    let mut body = resp.into_body();
+    let first = body.frame().await.unwrap().unwrap();
+    assert!(first.is_data());
+    assert!(rec.spans().is_empty(), "one frame in, the span stays open");
+    assert!(body.frame().await.is_none());
+    assert_eq!(rec.spans().len(), 1);
+    assert_eq!(server_duration_count(&rec), 1);
+    drop(body);
+    assert_eq!(
+        rec.spans().len(),
+        1,
+        "drop after the end finishes nothing twice"
+    );
+    assert_eq!(server_duration_count(&rec), 1);
+}
+
+#[tokio::test]
+async fn server_body_error_marks_the_span_metric_and_canonical_line() {
+    let rec = Recorder::start("http-server-body-error");
+    let mut svc = ServerLayer::new(rec.sdk())
+        .with_canonical_line()
+        .layer(service_fn(|_req: Request<()>| async {
+            Ok::<_, Infallible>(Response::new(ChunkBody::new(&[b"a"], Tail::Error)))
+        }));
+
+    let resp = svc
+        .ready()
+        .await
+        .unwrap()
+        .call(Request::builder().uri("/stream").body(()).unwrap())
+        .await
+        .unwrap();
+    assert!(resp.into_body().collect().await.is_err());
+
+    let spans = rec.spans();
+    assert_eq!(spans.len(), 1);
+    assert!(matches!(spans[0].status, Status::Error { .. }));
+    let error_type = span_attr(&spans[0], "error.type").expect("error.type");
+    assert!(
+        error_type.ends_with("ChunkError"),
+        "error.type {error_type} names the body error type"
+    );
+    assert_eq!(
+        span_attr(&spans[0], "http.response.status_code").as_deref(),
+        Some("200")
+    );
+    let points = histogram_points(&rec, "http.server.request.duration");
+    assert_eq!(points.len(), 1);
+    assert_eq!(
+        points[0].attrs.get("error.type"),
+        Some(&error_type),
+        "the metric carries the same error.type"
+    );
+    assert_eq!(
+        points[0]
+            .attrs
+            .get("http.response.status_code")
+            .map(String::as_str),
+        Some("200")
+    );
+    let logs = rec.logs();
+    assert_eq!(logs.len(), 1);
+    assert_eq!(
+        logs[0].attr_str(attr::OUTCOME).as_deref(),
+        Some(Outcome::Failure.as_str())
+    );
+    assert_eq!(
+        logs[0].attr_str("http.response.status_code").as_deref(),
+        Some("200")
+    );
+}
+
+#[tokio::test]
+async fn server_body_dropped_mid_stream_finishes_once_with_the_head_status() {
+    let rec = Recorder::start("http-server-body-drop");
+    let mut svc = ServerLayer::new(rec.sdk())
+        .with_canonical_line()
+        .layer(service_fn(|_req: Request<()>| async {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(StatusCode::BAD_GATEWAY)
+                    .body(ChunkBody::new(&[b"a", b"b"], Tail::End))
+                    .unwrap(),
+            )
+        }));
+
+    let resp = svc
+        .ready()
+        .await
+        .unwrap()
+        .call(Request::builder().uri("/stream").body(()).unwrap())
+        .await
+        .unwrap();
+    let mut body = resp.into_body();
+    let _ = body.frame().await;
+    assert!(rec.spans().is_empty());
+    drop(body);
+
+    let spans = rec.spans();
+    assert_eq!(spans.len(), 1);
+    assert_eq!(span_attr(&spans[0], "error.type").as_deref(), Some("502"));
+    assert!(matches!(spans[0].status, Status::Error { .. }));
+    assert_eq!(server_duration_count(&rec), 1);
+    assert_eq!(rec.logs().len(), 1);
+}
+
+#[tokio::test]
+async fn server_body_panic_records_panic_and_resumes_unwind() {
+    let rec = Recorder::start("http-server-body-panic");
+    let mut svc = ServerLayer::new(rec.sdk())
+        .with_canonical_line()
+        .layer(service_fn(|_req: Request<()>| async {
+            Ok::<_, Infallible>(Response::new(ChunkBody::new(&[], Tail::Panic)))
+        }));
+
+    let resp = svc
+        .ready()
+        .await
+        .unwrap()
+        .call(Request::builder().uri("/stream").body(()).unwrap())
+        .await
+        .unwrap();
+    let outcome =
+        futures_catch_unwind(async move { resp.into_body().collect().await.is_ok() }).await;
+    assert!(outcome.is_err(), "the panic propagates");
+
+    let spans = rec.spans();
+    assert_eq!(spans.len(), 1);
+    assert_eq!(span_attr(&spans[0], "error.type").as_deref(), Some("panic"));
+    assert!(matches!(spans[0].status, Status::Error { .. }));
+    assert_eq!(server_duration_count(&rec), 1);
+    assert_eq!(rec.logs().len(), 1);
+}
+
+#[tokio::test]
+async fn server_future_dropped_before_the_head_records_a_canceled_request() {
+    let rec = Recorder::start("http-server-canceled");
+    let mut svc = ServerLayer::new(rec.sdk())
+        .with_canonical_line()
+        .layer(service_fn(|_req: Request<()>| {
+            std::future::pending::<Result<Response<String>, Infallible>>()
+        }));
+
+    let fut = svc
+        .ready()
+        .await
+        .unwrap()
+        .call(Request::builder().uri("/slow").body(()).unwrap());
+    {
+        let mut fut = std::pin::pin!(fut);
+        let mut cx = TaskContext::from_waker(std::task::Waker::noop());
+        assert!(fut.as_mut().poll(&mut cx).is_pending());
+    }
+
+    let spans = rec.spans();
+    assert_eq!(spans.len(), 1);
+    assert_eq!(
+        span_attr(&spans[0], "error.type").as_deref(),
+        Some("canceled")
+    );
+    assert!(matches!(spans[0].status, Status::Error { .. }));
+    assert_eq!(span_attr(&spans[0], "http.response.status_code"), None);
+    let points = histogram_points(&rec, "http.server.request.duration");
+    assert_eq!(points.len(), 1);
+    assert_eq!(points[0].count, 1);
+    assert_eq!(
+        points[0].attrs.get("error.type").map(String::as_str),
+        Some("canceled")
+    );
+    assert!(!points[0].attrs.contains_key("http.response.status_code"));
+    let logs = rec.logs();
+    assert_eq!(logs.len(), 1);
+    assert_eq!(
+        logs[0].attr_str("http.response.status_code").as_deref(),
+        Some("499")
+    );
+    assert_eq!(
+        logs[0].attr_str(attr::OUTCOME).as_deref(),
+        Some(Outcome::Failure.as_str())
+    );
+    rec.assert_conforms();
+}
+
+#[tokio::test]
+async fn server_timing_is_off_by_default_and_appends_on_html_when_enabled() {
+    use http::header::{CONTENT_TYPE, HeaderName};
+
+    let rec = Recorder::start("http-server-timing");
+    let timing_header = HeaderName::from_static("server-timing");
+
+    let mut default_svc =
+        ServerLayer::new(rec.sdk()).layer(service_fn(|_req: Request<()>| async {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .header(CONTENT_TYPE, "text/html; charset=utf-8")
+                    .body(EmptyBody::new())
+                    .unwrap(),
+            )
+        }));
+    let resp = default_svc
+        .ready()
+        .await
+        .unwrap()
+        .call(Request::builder().uri("/default").body(()).unwrap())
+        .await
+        .unwrap();
+    assert!(resp.headers().get(&timing_header).is_none());
+
+    let mut svc = ServerLayer::new(rec.sdk())
+        .with_server_timing()
+        .layer(service_fn(|req: Request<()>| async move {
+            let mut builder = Response::builder();
+            if req.uri().path() == "/existing" {
+                builder = builder
+                    .header(CONTENT_TYPE, "Text/HTML")
+                    .header("server-timing", "db;dur=12.3");
+            } else {
+                builder = builder.header(CONTENT_TYPE, "text/html; charset=utf-8");
+            }
+            Ok::<_, Infallible>(builder.body(EmptyBody::new()).unwrap())
+        }));
+
+    let page_resp = svc
+        .ready()
+        .await
+        .unwrap()
+        .call(Request::builder().uri("/page").body(()).unwrap())
+        .await
+        .unwrap();
+    let spans = rec.spans();
+    let page_span = spans.last().expect("page span");
+    let expected = format!(
+        "traceparent;desc=\"00-{}-{}-{:02x}\"",
+        page_span.span_context.trace_id(),
+        page_span.span_context.span_id(),
+        page_span.span_context.trace_flags().to_u8()
+    );
+    let page_headers: Vec<&str> = page_resp
+        .headers()
+        .get_all(&timing_header)
+        .iter()
+        .map(|v| v.to_str().unwrap())
+        .collect();
+    assert_eq!(page_headers, vec![expected.as_str()]);
+
+    let existing_resp = svc
+        .ready()
+        .await
+        .unwrap()
+        .call(Request::builder().uri("/existing").body(()).unwrap())
+        .await
+        .unwrap();
+    let spans = rec.spans();
+    let existing_span = spans.last().expect("existing span");
+    let existing_expected = format!(
+        "traceparent;desc=\"00-{}-{}-{:02x}\"",
+        existing_span.span_context.trace_id(),
+        existing_span.span_context.span_id(),
+        existing_span.span_context.trace_flags().to_u8()
+    );
+    let existing_headers: Vec<&str> = existing_resp
+        .headers()
+        .get_all(&timing_header)
+        .iter()
+        .map(|v| v.to_str().unwrap())
+        .collect();
+    assert_eq!(
+        existing_headers,
+        vec!["db;dur=12.3", existing_expected.as_str()]
+    );
+    rec.assert_conforms();
+}
+
+#[tokio::test]
+async fn server_timing_skips_non_html_missing_content_type_and_ignored_paths() {
+    use http::header::{CONTENT_TYPE, HeaderName};
+
+    let rec = Recorder::start("http-server-timing-skip");
+    let timing_header = HeaderName::from_static("server-timing");
+
+    let mut svc = ServerLayer::new(rec.sdk())
+        .with_server_timing()
+        .with_ignore_paths(["/healthz"])
+        .layer(service_fn(|req: Request<()>| async move {
+            let mut builder = Response::builder();
+            match req.uri().path() {
+                "/api" => builder = builder.header(CONTENT_TYPE, "application/json"),
+                "/healthz" => builder = builder.header(CONTENT_TYPE, "text/html"),
+                _ => {}
+            }
+            Ok::<_, Infallible>(builder.body(EmptyBody::new()).unwrap())
+        }));
+
+    for path in ["/api", "/no-type", "/healthz"] {
+        let resp = svc
+            .ready()
+            .await
+            .unwrap()
+            .call(Request::builder().uri(path).body(()).unwrap())
+            .await
+            .unwrap();
+        assert!(
+            resp.headers().get(&timing_header).is_none(),
+            "unexpected Server-Timing header for {path}"
+        );
+    }
+    rec.assert_conforms();
+}
+
+#[tokio::test]
+async fn server_timing_emits_unsampled_flags_for_unsampled_spans() {
+    use http::header::{CONTENT_TYPE, HeaderName};
+
+    let sdk = libo11y::Sdk::builder()
+        .service_name("http-server-timing-unsampled")
+        .environment("test")
+        .without_otel_env()
+        .trace_sampler(libo11y::opentelemetry_sdk::trace::Sampler::AlwaysOff)
+        .build()
+        .expect("build unsampled sdk");
+
+    let mut svc = ServerLayer::new(&sdk)
+        .with_server_timing()
+        .layer(service_fn(|_req: Request<()>| async {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .header(CONTENT_TYPE, "text/html")
+                    .body(EmptyBody::new())
+                    .unwrap(),
+            )
+        }));
+
+    let resp = svc
+        .ready()
+        .await
+        .unwrap()
+        .call(Request::builder().uri("/unsampled").body(()).unwrap())
+        .await
+        .unwrap();
+    let value = resp
+        .headers()
+        .get(HeaderName::from_static("server-timing"))
+        .expect("Server-Timing present for unsampled span")
+        .to_str()
+        .unwrap();
+    assert!(
+        value.starts_with("traceparent;desc=\"00-") && value.ends_with("-00\""),
+        "expected unsampled traceparent entry, got {value}"
+    );
+    let _ = sdk.shutdown();
 }

@@ -5,7 +5,8 @@ use std::borrow::Cow;
 use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use opentelemetry::metrics::MeterProvider as _;
 use opentelemetry::trace::TracerProvider as _;
@@ -24,8 +25,8 @@ use crate::export::Selection;
 use crate::export::failures::ExportFailures;
 use crate::layer::{Parts, PartsCell, layers};
 use crate::lifecycle::{
-    DEFAULT_SHUTDOWN_TIMEOUT, FlushError, Op, ShutdownCell, ShutdownError, SignalFailure, Step,
-    run_steps,
+    Busy, DEFAULT_SHUTDOWN_TIMEOUT, DROPPED_REPORT_GRACE, FlushError, Op, ShutdownCell,
+    ShutdownError, SignalFailure, Step, run_steps,
 };
 use crate::log_layer::LogPipeline;
 use crate::metrics::Libo11yMeterProvider;
@@ -74,8 +75,9 @@ pub(crate) struct Inner {
     pub(crate) global: AtomicBool,
     pub(crate) shutdown: ShutdownCell,
     /// Per signal (logs, metrics, traces), whether a shutdown or flush step
-    /// is still running, so calls against a hung provider add no threads.
-    pub(crate) busy: [Arc<AtomicBool>; 3],
+    /// is still running, so flushes against a hung provider add no threads
+    /// and a shutdown waits its turn.
+    pub(crate) busy: [Arc<Busy>; 3],
 }
 
 impl Sdk {
@@ -189,7 +191,7 @@ impl Sdk {
     where
         S: Subscriber + for<'span> LookupSpan<'span> + Send + Sync,
     {
-        layers::<S>(&Arc::new(PartsCell::new(Arc::clone(&self.0.parts))))
+        layers::<S>(Arc::new(PartsCell::new(Arc::clone(&self.0.parts))))
     }
 
     /// A subscriber of libo11y's layers alone, for
@@ -219,6 +221,16 @@ impl Sdk {
     /// than its own `timeout`. The error reports each failed signal with
     /// every export that failed while the call ran, including the final
     /// batch that upstream's processors would otherwise report as success.
+    ///
+    /// A signal that [`Sdk::force_flush`] is still flushing shuts down once
+    /// that flush ends. If the deadline comes first, the signal is reported
+    /// as timed out and its provider is stopped when the flush ends.
+    ///
+    /// Each failed signal is also reported as an `o11y.telemetry.dropped`
+    /// event to the log sinks still running. The events are written on a
+    /// thread of their own. The call waits for them until the deadline, or
+    /// for 100 ms when less than that is left, so a log sink that blocks
+    /// cannot hold the call.
     /// Shutting down the global SDK lets [`Builder::setup`] run again; its
     /// providers stay installed until then.
     ///
@@ -235,10 +247,9 @@ impl Sdk {
                 .global
                 .load(Ordering::Acquire)
                 .then_some(crate::setup::ReleaseOnDrop);
+            let deadline = Instant::now().checked_add(timeout);
             let failures = run_steps(Op::Shutdown, self.steps(Op::Shutdown), timeout);
-            for failure in &failures {
-                self.emit_dropped(failure);
-            }
+            self.report_dropped(&failures, deadline);
             ShutdownError::from_failures(failures).map_or(Ok(()), Err)
         })
     }
@@ -310,10 +321,41 @@ impl Sdk {
         steps
     }
 
-    /// Reports a signal that failed to shut down as an
-    /// `o11y.telemetry.dropped` event to the log sinks still running.
-    fn emit_dropped(&self, failure: &SignalFailure) {
-        self.emit_dropped_event(failure);
+    /// Reports each signal that failed to shut down as an
+    /// `o11y.telemetry.dropped` event to the log sinks still running, best
+    /// effort. The events are written on a thread of their own, because a
+    /// log sink is application code that may block. The caller waits for
+    /// them until `deadline`, or for [`DROPPED_REPORT_GRACE`] when less than
+    /// that is left, and without a limit when there is no deadline.
+    fn report_dropped(&self, failures: &[SignalFailure], deadline: Option<Instant>) {
+        if failures.is_empty() {
+            return;
+        }
+        let sdk = self.clone();
+        let failures = failures.to_vec();
+        let (done_tx, done) = mpsc::channel::<()>();
+        let spawned = std::thread::Builder::new()
+            .name("libo11y-dropped".to_owned())
+            .spawn(move || {
+                for failure in &failures {
+                    sdk.emit_dropped_event(failure);
+                }
+                drop(done_tx);
+            });
+        if spawned.is_err() {
+            // The returned error still names every failed signal.
+            return;
+        }
+        // Nothing is ever sent: the wait ends when the thread drops its end,
+        // having written every event or panicked in a sink.
+        let _ = match deadline {
+            Some(deadline) => done.recv_timeout(
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .max(DROPPED_REPORT_GRACE),
+            ),
+            None => done.recv().map_err(Into::into),
+        };
     }
 
     /// Stops an SDK that setup is discarding: nothing in it is worth
@@ -391,10 +433,6 @@ impl fmt::Debug for Sdk {
 mod tests {
     use super::*;
 
-    use std::sync::atomic::AtomicUsize;
-    use std::sync::{Condvar, Mutex};
-    use std::time::Instant;
-
     use opentelemetry::logs::{LogRecord as _, Logger as _, LoggerProvider as _};
     use opentelemetry::trace::{Span as _, Tracer as _};
     use opentelemetry_sdk::error::{OTelSdkError, OTelSdkResult};
@@ -403,6 +441,8 @@ mod tests {
     use opentelemetry_sdk::metrics::data::ResourceMetrics;
     use opentelemetry_sdk::metrics::exporter::PushMetricExporter;
     use opentelemetry_sdk::trace::{InMemorySpanExporter, SpanData, SpanExporter};
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::{Condvar, Mutex};
 
     use crate::Environment;
 
@@ -580,6 +620,128 @@ mod tests {
         }
         .build()
         .expect("SDK")
+    }
+
+    /// A span processor whose flush blocks until its gate opens, and which
+    /// counts its shutdowns.
+    #[derive(Debug, Clone, Default)]
+    struct GatedFlush {
+        flushing: Gate,
+        release: Gate,
+        shutdowns: Arc<AtomicUsize>,
+    }
+
+    impl opentelemetry_sdk::trace::SpanProcessor for GatedFlush {
+        fn on_start(&self, _: &mut opentelemetry_sdk::trace::Span, _: &opentelemetry::Context) {}
+
+        fn on_end(&self, _: SpanData) {}
+
+        fn force_flush(&self) -> OTelSdkResult {
+            self.flushing.open();
+            self.release.wait();
+            Ok(())
+        }
+
+        fn shutdown_with_timeout(&self, _: Duration) -> OTelSdkResult {
+            self.shutdowns.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    // A shutdown that arrives while a flush of the same signal runs must
+    // still stop that signal's provider once the flush ends.
+    #[test]
+    fn a_shutdown_during_a_flush_still_stops_the_provider() {
+        let processor = GatedFlush::default();
+        let _release = OpenOnDrop(processor.release.clone());
+        let sdk = hermetic()
+            .with_span_processor(processor.clone())
+            .build()
+            .expect("SDK");
+        let flusher = {
+            let sdk = sdk.clone();
+            std::thread::spawn(move || sdk.force_flush_with_timeout(Duration::from_secs(20)))
+        };
+        processor.flushing.wait();
+        let err = sdk
+            .shutdown_with_timeout(Duration::from_millis(100))
+            .expect_err("the flush holds the trace signal");
+        assert_eq!(err.failures().len(), 1, "{err}");
+        assert_eq!(err.failures()[0].signal(), Signal::Traces);
+        assert_eq!(
+            err.to_string(),
+            "o11y: shutdown traces: deadline exceeded after 100ms"
+        );
+        assert_eq!(
+            processor.shutdowns.load(Ordering::SeqCst),
+            0,
+            "the shutdown ran beside the flush"
+        );
+        processor.release.open();
+        flusher.join().expect("joined").expect("the flush finished");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while processor.shutdowns.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(
+            processor.shutdowns.load(Ordering::SeqCst),
+            1,
+            "the provider was never shut down"
+        );
+    }
+
+    /// A log sink that takes `delay` to write an `o11y.telemetry.dropped`
+    /// event.
+    #[derive(Debug)]
+    struct SlowDropped {
+        delay: Duration,
+        seen: Arc<AtomicUsize>,
+    }
+
+    impl crate::LogSink for SlowDropped {
+        fn emit(&self, record: &crate::LogRecord) -> Result<(), crate::BoxError> {
+            if record.event_name() == Some(libo11y_spec::event::TELEMETRY_DROPPED) {
+                std::thread::sleep(self.delay);
+                self.seen.fetch_add(1, Ordering::SeqCst);
+            }
+            Ok(())
+        }
+    }
+
+    // Reporting the dropped telemetry is best effort: a slow log sink must
+    // not hold the caller far past the shutdown deadline.
+    #[test]
+    fn a_slow_sink_does_not_hold_shutdown_past_its_deadline() {
+        let seen = Arc::new(AtomicUsize::new(0));
+        let gate = Arc::new(FailGate {
+            always: true,
+            ..FailGate::default()
+        });
+        let sdk = hermetic()
+            .with_span_exporter(FailingSpans(gate))
+            .with_extra_log_sink(SlowDropped {
+                delay: Duration::from_secs(3),
+                seen: Arc::clone(&seen),
+            })
+            .build()
+            .expect("SDK");
+        emit(&sdk, Signal::Traces, 1);
+        let start = Instant::now();
+        let err = sdk
+            .shutdown_with_timeout(Duration::from_millis(50))
+            .expect_err("the export is rejected");
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "shutdown waited {elapsed:?} on the log sink"
+        );
+        assert!(err.to_string().contains("o11y: shutdown traces"), "{err}");
+        // The report still reaches the sink, after the caller has its answer.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while seen.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(seen.load(Ordering::SeqCst), 1, "the report was lost");
     }
 
     const SIGNALS: [Signal; 3] = [Signal::Traces, Signal::Logs, Signal::Metrics];

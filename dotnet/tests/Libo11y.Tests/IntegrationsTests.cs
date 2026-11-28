@@ -3,6 +3,8 @@ using System.Net;
 using Libo11y.AspNetCore;
 using Libo11y.Db;
 using Libo11y.Testing;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 using Xunit;
@@ -11,6 +13,37 @@ namespace Libo11y.Tests;
 
 public sealed class IntegrationsTests
 {
+    [Fact]
+    public async Task AspNetCoreMiddleware_AddsTraceTimingOnlyToHtmlResponses()
+    {
+        using var rec = new O11yRecorder(o => o.ActivitySources = ["libo11y.aspnetcore"]);
+        var builder = WebApplication.CreateSlimBuilder();
+        builder.WebHost.UseUrls("http://127.0.0.1:0");
+        builder.Logging.ClearProviders();
+        await using var app = builder.Build();
+        app.UseO11y(new O11yHttpMiddlewareOptions { Telemetry = rec.Telemetry, ServerTiming = true });
+        app.Run(async context =>
+        {
+            context.Response.ContentType = context.Request.Path == "/document"
+                ? "Text/HTML; charset=utf-8"
+                : "application/json";
+            context.Response.Headers.Append("Server-Timing", "db;dur=1");
+            await context.Response.WriteAsync("body");
+        });
+        await app.StartAsync();
+
+        using var client = new HttpClient { BaseAddress = new Uri(Assert.Single(app.Urls)) };
+        using var html = await client.GetAsync("/document");
+        var span = Assert.Single(rec.Spans());
+        var flags = span.Recorded ? "01" : "00";
+        Assert.Equal(
+            ["db;dur=1", $"traceparent;desc=\"00-{span.TraceId}-{span.SpanId}-{flags}\""],
+            html.Headers.GetValues("Server-Timing"));
+
+        using var json = await client.GetAsync("/data");
+        Assert.Equal(["db;dur=1"], json.Headers.GetValues("Server-Timing"));
+    }
+
     [Fact]
     public async Task AspNetCoreMiddleware_RecordsSemconvSpanMetricsServerTimingAndCanonicalLine()
     {

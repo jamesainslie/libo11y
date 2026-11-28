@@ -14,12 +14,13 @@ type LookupFn = dyn Fn(&str) -> Option<String> + Send + Sync;
 /// [`EnvLookup::empty`], and a test can supply its own variables with
 /// [`EnvLookup::from_pairs`] instead of changing the process environment.
 ///
-/// One exception: an OTLP exporter libo11y builds is upstream's, and
-/// upstream reads `OTEL_EXPORTER_OTLP_[SIGNAL_]HEADERS`, `_COMPRESSION` and
-/// `_INSECURE` from the process environment itself. libo11y resolves the
-/// exporter, the protocol, the endpoint, the timeout and the certificate
-/// files through the lookup and passes them in code. Hermetic mode builds
-/// no OTLP exporter, so it reads none of them.
+/// One exception: upstream's OTLP trace and log exporters still fall back to
+/// `OTEL_EXPORTER_OTLP_[SIGNAL_]COMPRESSION` in the process environment when
+/// the lookup leaves compression unset (the setting carries no credentials).
+/// libo11y resolves the exporter, protocol, endpoint, timeout, certificate
+/// files, insecure flag, and headers through the lookup and makes the
+/// lookup's headers authoritative over any ambient header variables. Hermetic
+/// mode builds no OTLP exporter, so it reads none of them.
 #[derive(Clone)]
 pub struct EnvLookup(Arc<LookupFn>);
 

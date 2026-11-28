@@ -288,6 +288,31 @@ test("url.full drops userinfo, server.port defaults by scheme, and other methods
   }
 });
 
+test("url.full redacts the signature query values semconv names, leaving the rest as sent", async () => {
+  const rec = await createRecorder();
+  try {
+    const fake = (async (_input: string | URL | Request) =>
+      new Response(null, { status: 204 })) as typeof fetch;
+    const traced = instrumentFetch(fake, { telemetry: rec.telemetry });
+    await traced(
+      "https://bucket.s3.amazonaws.com/k?X-Amz-Date=20261125&AWSAccessKeyId=AKIA123&Signature=abc%2Fdef&sig=s1&X-Goog-Signature=g1&q=a%20b&flag",
+    );
+    await traced("https://a.example.com/x?signature=keep&q=1#f");
+    const [presigned, other] = clientSpans(rec);
+    assert.equal(
+      presigned?.attributes["url.full"],
+      "https://bucket.s3.amazonaws.com/k?X-Amz-Date=20261125&AWSAccessKeyId=REDACTED&Signature=REDACTED&sig=REDACTED&X-Goog-Signature=REDACTED&q=a%20b&flag",
+    );
+    assert.equal(
+      other?.attributes["url.full"],
+      "https://a.example.com/x?signature=keep&q=1#f",
+      "the keys match case-sensitively, as semconv lists them",
+    );
+  } finally {
+    await rec.shutdown();
+  }
+});
+
 test("the span ends when the response headers arrive, before the body is read", async () => {
   const rec = await createRecorder();
   try {

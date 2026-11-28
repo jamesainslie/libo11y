@@ -1,9 +1,8 @@
-//! The errors libo11y returns, with the Go implementation's messages.
+//! The errors libo11y returns.
 //!
-//! Every message matches the Go library byte for byte, including the ones
-//! that name a Go option such as `WithServiceName`, so the two libraries
-//! report the same failure the same way (the TypeScript port keeps them
-//! verbatim too). Match on the [`Error`] variant to tell the failures apart.
+//! Init errors name the Rust [`Builder`](crate::Builder) methods and standard
+//! `OTEL_*` variables alongside the `o11y:` prefix. Match on the [`Error`]
+//! variant to tell the failures apart.
 
 use std::io;
 
@@ -26,14 +25,14 @@ pub enum Error {
     /// No service name resolved from the builder, `OTEL_SERVICE_NAME` or
     /// `service.name` in `OTEL_RESOURCE_ATTRIBUTES`, and strict identity is
     /// on. Go's `ErrNoServiceName`.
-    #[error("o11y: service name required: set WithServiceName or OTEL_SERVICE_NAME")]
+    #[error("o11y: service name required: set Builder::service_name or OTEL_SERVICE_NAME")]
     NoServiceName,
 
     /// No deployment environment resolved from the builder or
     /// `deployment.environment.name` in `OTEL_RESOURCE_ATTRIBUTES`, and
     /// strict identity is on. Go's `ErrNoEnvironment`.
     #[error(
-        "o11y: deployment environment required: set WithEnvironment or deployment.environment.name"
+        "o11y: deployment environment required: set Builder::environment or deployment.environment.name"
     )]
     NoEnvironment,
 
@@ -54,7 +53,7 @@ pub enum Error {
 
     /// The PII mode is hash and the key is shorter than 32 bytes. Go's
     /// `ErrPIIHashKey`.
-    #[error("o11y: PIIHash requires WithPIIHashKey with a key of at least 32 bytes")]
+    #[error("o11y: PiiMode::Hash requires Builder::pii_hash_key with a key of at least 32 bytes")]
     PiiHashKey,
 
     /// An application registry file could not be read.
@@ -250,19 +249,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn identity_messages_match_go() {
+    fn identity_messages_name_rust_builder_methods() {
         assert_eq!(Error::AlreadySetup.to_string(), "o11y: already set up");
         assert_eq!(
             Error::NoServiceName.to_string(),
-            "o11y: service name required: set WithServiceName or OTEL_SERVICE_NAME"
+            "o11y: service name required: set Builder::service_name or OTEL_SERVICE_NAME"
         );
         assert_eq!(
             Error::NoEnvironment.to_string(),
-            "o11y: deployment environment required: set WithEnvironment or deployment.environment.name"
+            "o11y: deployment environment required: set Builder::environment or deployment.environment.name"
         );
         assert_eq!(
             Error::PiiHashKey.to_string(),
-            "o11y: PIIHash requires WithPIIHashKey with a key of at least 32 bytes"
+            "o11y: PiiMode::Hash requires Builder::pii_hash_key with a key of at least 32 bytes"
         );
     }
 

@@ -14,6 +14,4 @@ OpenTelemetry HTTP semantic conventions 1.41.0.
 - Supports `with_filter(...)` and `with_ignore_paths(...)` (Go `path.Match`
   glob syntax).
 
-This crate is in progress and has not been published yet.
-
 Licensed under the Apache License, Version 2.0.

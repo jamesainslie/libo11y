@@ -368,6 +368,15 @@ export interface CompiledAppRegistry {
     readonly source?: string;
 }
 
+// @public
+export type CompiledAppRegistryResult = {
+    readonly ok: true;
+    readonly registry: CompiledAppRegistry;
+} | {
+    readonly ok: false;
+    readonly violations: readonly AppRegistryViolation[];
+};
+
 // @public (undocumented)
 export const DATA_CLASSIFICATION_VALUE_CONFIDENTIAL = "confidential";
 
@@ -873,6 +882,9 @@ export const SPEC_VERSION = "1.3.0";
 
 // @public
 export function validateAppRegistry(reg: AppRegistry): AppRegistryResult;
+
+// @public
+export function validateCompiledAppRegistry(reg: CompiledAppRegistry): CompiledAppRegistryResult;
 
 // (No @packageDocumentation comment for this package)
 

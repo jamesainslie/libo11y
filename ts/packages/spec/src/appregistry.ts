@@ -104,13 +104,55 @@ function compareCodePoints(a: string, b: string): number {
   }
 }
 
+type Fail = (rule: string, attr: string | undefined, detail: string) => void;
+
+// The registry-level rules on the namespace.
+function checkNamespace(namespace: string, fail: Fail): void {
+  if (!NAMESPACE_PATTERN.test(namespace)) {
+    fail(
+      "libo11y_app_namespace_invalid",
+      undefined,
+      `namespace ${goQuote(namespace)} is not one snake_case segment`,
+    );
+  } else if (APP_RESERVED_NAMESPACES.has(namespace)) {
+    fail(
+      "libo11y_app_namespace_reserved",
+      undefined,
+      `namespace ${goQuote(namespace)} belongs to libo11y, OpenTelemetry, or semconv`,
+    );
+  }
+}
+
+function failEmpty(fail: Fail): void {
+  fail("libo11y_app_attributes_empty", undefined, "the registry declares no attributes");
+}
+
+// The rules on an attribute's name.
+function checkName(namespace: string, name: string, fail: Fail): void {
+  if (!name.startsWith(`${namespace}.`)) {
+    fail("libo11y_app_attr_outside_namespace", name, `not under the ${namespace} namespace`);
+  }
+  if (!NAME_PATTERN.test(name)) {
+    fail("libo11y_attr_naming", name, "not a dotted snake_case name with at least two segments");
+  }
+}
+
+// The rules on an attribute's sensitivity class.
+function checkSensitivity(name: string, sensitivity: string, fail: Fail): void {
+  if (sensitivity === "") {
+    fail("libo11y_sensitivity_missing", name, "no sensitivity class");
+  } else if (!SENSITIVITIES.has(sensitivity)) {
+    fail("libo11y_sensitivity_unknown", name, `sensitivity ${goQuote(sensitivity)}`);
+  }
+}
+
 /**
  * Applies the policy rules and returns every violation: registry-level rules first, then each attribute
  * in name order, each attribute's rules in a fixed order.
  */
 export function validateAppRegistry(reg: AppRegistry): AppRegistryResult {
   const violations: AppRegistryViolation[] = [];
-  const fail = (rule: string, attr: string | undefined, detail: string): void => {
+  const fail: Fail = (rule, attr, detail) => {
     violations.push(new AppRegistryViolation(rule, attr, detail));
   };
 
@@ -121,41 +163,18 @@ export function validateAppRegistry(reg: AppRegistry): AppRegistryResult {
       `schema ${goQuote(reg.schema)}, want ${goQuote(APP_REGISTRY_SCHEMA)}`,
     );
   }
-  if (!NAMESPACE_PATTERN.test(reg.namespace)) {
-    fail(
-      "libo11y_app_namespace_invalid",
-      undefined,
-      `namespace ${goQuote(reg.namespace)} is not one snake_case segment`,
-    );
-  } else if (APP_RESERVED_NAMESPACES.has(reg.namespace)) {
-    fail(
-      "libo11y_app_namespace_reserved",
-      undefined,
-      `namespace ${goQuote(reg.namespace)} belongs to libo11y, OpenTelemetry, or semconv`,
-    );
-  }
+  checkNamespace(reg.namespace, fail);
   const names = Object.keys(reg.attributes).sort(compareCodePoints);
-  if (names.length === 0) {
-    fail("libo11y_app_attributes_empty", undefined, "the registry declares no attributes");
-  }
+  if (names.length === 0) failEmpty(fail);
 
   for (const name of names) {
     const a = reg.attributes[name] as AppRegistryAttribute;
     const values = a.values ?? [];
-    if (!name.startsWith(`${reg.namespace}.`)) {
-      fail("libo11y_app_attr_outside_namespace", name, `not under the ${reg.namespace} namespace`);
-    }
-    if (!NAME_PATTERN.test(name)) {
-      fail("libo11y_attr_naming", name, "not a dotted snake_case name with at least two segments");
-    }
+    checkName(reg.namespace, name, fail);
     if (!ATTRIBUTE_TYPES.has(a.type)) {
       fail("libo11y_app_type_unknown", name, `type ${goQuote(a.type)}`);
     }
-    if (a.sensitivity === "") {
-      fail("libo11y_sensitivity_missing", name, "no sensitivity class");
-    } else if (!SENSITIVITIES.has(a.sensitivity)) {
-      fail("libo11y_sensitivity_unknown", name, `sensitivity ${goQuote(a.sensitivity)}`);
-    }
+    checkSensitivity(name, a.sensitivity, fail);
     if (a.cardinality === "") {
       fail("libo11y_cardinality_missing", name, "no cardinality budget");
     } else if (!CARDINALITIES.has(a.cardinality)) {
@@ -177,6 +196,43 @@ export function validateAppRegistry(reg: AppRegistry): AppRegistryResult {
       }
       seen.add(trimmed);
     }
+  }
+  return violations.length === 0 ? { ok: true, registry: reg } : { ok: false, violations };
+}
+
+/** The result of validating a compiled registry: the registry itself, or every violation in rule order. */
+export type CompiledAppRegistryResult =
+  | { readonly ok: true; readonly registry: CompiledAppRegistry }
+  | { readonly ok: false; readonly violations: readonly AppRegistryViolation[] };
+
+/**
+ * Applies the rules that still apply to the compiled form, in validateAppRegistry's order and with its
+ * messages: the namespace, then each key in name order for its namespace, its naming and its class. A
+ * compiled registry is a plain structural type, so one built by hand or read from JSON may break them.
+ * A classes member that is not an object, or is empty, declares no attributes. Anything
+ * compileAppRegistry returned passes.
+ */
+export function validateCompiledAppRegistry(reg: CompiledAppRegistry): CompiledAppRegistryResult {
+  const violations: AppRegistryViolation[] = [];
+  const fail: Fail = (rule, attr, detail) => {
+    violations.push(new AppRegistryViolation(rule, attr, detail));
+  };
+  // The input may be deserialized, so nothing about its shape is assumed.
+  const namespace: unknown = reg.namespace;
+  const ns = typeof namespace === "string" ? namespace : "";
+  checkNamespace(ns, fail);
+  const classes: unknown = reg.classes;
+  const isObject = typeof classes === "object" && classes !== null && !Array.isArray(classes);
+  const names = isObject ? Object.keys(classes).sort(compareCodePoints) : [];
+  if (names.length === 0) failEmpty(fail);
+  for (const name of names) {
+    checkName(ns, name, fail);
+    const sensitivity: unknown = (classes as Record<string, unknown>)[name];
+    checkSensitivity(
+      name,
+      sensitivity === undefined || sensitivity === null ? "" : String(sensitivity),
+      fail,
+    );
   }
   return violations.length === 0 ? { ok: true, registry: reg } : { ok: false, violations };
 }

@@ -553,3 +553,98 @@ async fn full_correlation_triangle_with_tracing_span_and_log() {
     rec.assert_correlated();
     rec.assert_triangle("db.client.operation.duration");
 }
+
+#[tokio::test]
+async fn query_cancelled_by_timeout_records_canceled_span_and_duration() {
+    let rec = Recorder::start("sqlx-timeout");
+    let pool = memory_pool(rec.sdk(), None).await;
+    // The helper pool holds one connection. Keep it checked out so the query
+    // below waits in the pool and the timeout cancels it deterministically.
+    let held = pool.acquire().await.expect("acquire");
+    rec.reset();
+
+    let parent = rec.sdk().tracer("test").start("handler");
+    let cx = Context::new().with_span(parent);
+
+    async {
+        let res = tokio::time::timeout(
+            std::time::Duration::from_millis(20),
+            sqlx::query("SELECT id FROM users WHERE id = 1").fetch_optional(&pool),
+        )
+        .await;
+        assert!(res.is_err(), "query must time out while the pool is empty");
+    }
+    .with_context(cx.clone())
+    .await;
+    cx.span().end();
+    drop(held);
+
+    let spans = rec.spans();
+    let selects: Vec<_> = spans.iter().filter(|s| s.name == "SELECT users").collect();
+    assert_eq!(selects.len(), 1, "want one span, got {spans:?}");
+    assert_eq!(selects[0].status, Status::error(""));
+    assert_eq!(
+        span_attr(selects[0], "error.type").as_deref(),
+        Some("canceled")
+    );
+
+    let points = duration_points(&rec);
+    let canceled: u64 = points
+        .iter()
+        .filter(|dp| proto_attr(&dp.attributes, "error.type").as_deref() == Some("canceled"))
+        .map(|dp| dp.count)
+        .sum();
+    assert_eq!(canceled, 1, "unexpected duration points: {points:?}");
+}
+
+#[tokio::test]
+async fn row_stream_dropped_before_its_end_records_success() {
+    let rec = Recorder::start("sqlx-stream-early-drop");
+    let pool = memory_pool(rec.sdk(), None).await;
+    for id in 1..=3 {
+        sqlx::query(AssertSqlSafe(format!(
+            "INSERT INTO users (id, email, age) VALUES ({id}, 'u{id}@example.com', 30)"
+        )))
+        .execute(&pool)
+        .await
+        .expect("insert");
+    }
+    rec.reset();
+
+    let parent = rec.sdk().tracer("test").start("handler");
+    let cx = Context::new().with_span(parent);
+
+    async {
+        let mut rows = sqlx::query("SELECT id FROM users ORDER BY id").fetch(&pool);
+        let first = rows.try_next().await.expect("first row").expect("a row");
+        let id: i64 = first.get("id");
+        assert_eq!(id, 1);
+        // Dropping the stream here is ordinary use, not a failure.
+        drop(rows);
+    }
+    .with_context(cx.clone())
+    .await;
+    cx.span().end();
+
+    let spans = rec.spans();
+    let selects: Vec<_> = spans.iter().filter(|s| s.name == "SELECT users").collect();
+    assert_eq!(selects.len(), 1, "want one span, got {spans:?}");
+    assert_eq!(selects[0].status, Status::Unset);
+    assert!(span_attr(selects[0], "error.type").is_none());
+
+    let points = duration_points(&rec);
+    let selects: Vec<_> = points
+        .iter()
+        .filter(|dp| proto_attr(&dp.attributes, "db.operation.name").as_deref() == Some("SELECT"))
+        .collect();
+    assert_eq!(
+        selects.iter().map(|dp| dp.count).sum::<u64>(),
+        1,
+        "unexpected duration points: {points:?}"
+    );
+    assert!(
+        selects
+            .iter()
+            .all(|dp| proto_attr(&dp.attributes, "error.type").is_none())
+    );
+}
