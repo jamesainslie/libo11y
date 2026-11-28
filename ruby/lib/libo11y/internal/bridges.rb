@@ -111,12 +111,13 @@ module Libo11y
         end
       end
 
-      # Delegates to a finished Span while exposing policy-redacted to_span_data and attributes.
+      # A finished span as an injected processor sees it. Every accessor that
+      # carries attributes (attributes, events, links, to_span_data) returns
+      # the redacted values, and the rest delegate to the span.
       class RedactedSpanView
         def initialize(span, policy)
           @span = span
           @policy = policy
-          @span_data = nil
         end
 
         def to_span_data
@@ -125,6 +126,14 @@ module Libo11y
 
         def attributes
           to_span_data.attributes
+        end
+
+        def events
+          to_span_data.events
+        end
+
+        def links
+          to_span_data.links
         end
 
         def method_missing(name, ...)
@@ -136,31 +145,36 @@ module Libo11y
         end
       end
 
-      # Wraps a LogRecordProcessor so records emitted directly via OTel Logs API are classified.
+      # The first processor on the logger provider. It classifies the
+      # attributes of a record that reached the provider through the
+      # OpenTelemetry Logs API, in place, so every later processor sees the
+      # classified record. A record from the libo11y logger is already
+      # classified and counted, and its context says so.
       class PolicyLogRecordProcessor
-        def initialize(inner, policy)
-          @inner = inner
+        CLASSIFIED_KEY = OpenTelemetry::Context.create_key("libo11y-log-classified")
+
+        # Returns context marked as carrying a record the libo11y logger classified.
+        def self.mark_classified(context)
+          context.set_value(CLASSIFIED_KEY, true)
+        end
+
+        def initialize(policy)
           @policy = policy
         end
 
         def on_emit(log_record, context)
-          if log_record.respond_to?(:attributes) && log_record.attributes && !log_record.attributes.empty?
-            classified = @policy.classify_log_attributes(log_record.attributes)
-            if log_record.respond_to?(:attributes=)
-              log_record.attributes = classified
-            else
-              log_record.instance_variable_set(:@attributes, classified)
-            end
-          end
-          @inner.on_emit(log_record, context)
+          return if context&.value(CLASSIFIED_KEY)
+
+          attrs = log_record.attributes
+          log_record.attributes = @policy.classify_log_attributes(attrs) unless attrs.nil? || attrs.empty?
         end
 
-        def force_flush(timeout: nil)
-          @inner.force_flush(timeout: timeout)
+        def force_flush(timeout: nil) # rubocop:disable Lint/UnusedMethodArgument
+          OpenTelemetry::SDK::Logs::Export::SUCCESS
         end
 
-        def shutdown(timeout: nil)
-          @inner.shutdown(timeout: timeout)
+        def shutdown(timeout: nil) # rubocop:disable Lint/UnusedMethodArgument
+          OpenTelemetry::SDK::Logs::Export::SUCCESS
         end
       end
 
@@ -246,16 +260,21 @@ module Libo11y
           PolicySyncInstrument.new(@inner.create_gauge(name, unit: unit, description: description), @policy)
         end
 
-        def create_observable_counter(name, callback:, unit: nil, description: nil)
-          @inner.create_observable_counter(name, callback: wrap_callback(callback), unit: unit, description: description)
+        # An observable instrument's callbacks take no argument and return a
+        # number, so its attributes come only through add_attributes and
+        # observe, which the wrapper classifies.
+        def create_observable_counter(name, callback: nil, unit: nil, description: nil)
+          PolicyAsyncInstrument.new(@inner.create_observable_counter(name, callback: callback, unit: unit, description: description), @policy)
         end
 
-        def create_observable_up_down_counter(name, callback:, unit: nil, description: nil)
-          @inner.create_observable_up_down_counter(name, callback: wrap_callback(callback), unit: unit, description: description)
+        def create_observable_up_down_counter(name, callback: nil, unit: nil, description: nil)
+          PolicyAsyncInstrument.new(
+            @inner.create_observable_up_down_counter(name, callback: callback, unit: unit, description: description), @policy
+          )
         end
 
-        def create_observable_gauge(name, callback:, unit: nil, description: nil)
-          @inner.create_observable_gauge(name, callback: wrap_callback(callback), unit: unit, description: description)
+        def create_observable_gauge(name, callback: nil, unit: nil, description: nil)
+          PolicyAsyncInstrument.new(@inner.create_observable_gauge(name, callback: callback, unit: unit, description: description), @policy)
         end
 
         def method_missing(name, ...)
@@ -265,36 +284,30 @@ module Libo11y
         def respond_to_missing?(name, include_private = false)
           @inner.respond_to?(name, include_private)
         end
-
-        private
-
-        def wrap_callback(cb)
-          policy = @policy
-          lambda do |*args|
-            # OTel Ruby observable callbacks either take an observer or return a value
-            if cb.arity.zero?
-              cb.call
-            else
-              observer = args.first
-              if observer.respond_to?(:observe)
-                wrapped_observer = PolicyObserver.new(observer, policy)
-                cb.call(wrapped_observer)
-              else
-                cb.call(*args)
-              end
-            end
-          end
-        end
       end
 
-      class PolicyObserver
+      # Wraps an observable instrument so the attributes it is given are
+      # classified before the SDK records them.
+      class PolicyAsyncInstrument
         def initialize(inner, policy)
           @inner = inner
           @policy = policy
         end
 
-        def observe(value, attributes: {})
-          @inner.observe(value, attributes: @policy.classify_metric_attrs(attributes))
+        def add_attributes(attributes)
+          @inner.add_attributes(@policy.classify_metric_attrs(attributes))
+        end
+
+        def observe(timeout: nil, attributes: {})
+          @inner.observe(timeout: timeout, attributes: @policy.classify_metric_attrs(attributes))
+        end
+
+        def method_missing(name, ...)
+          @inner.public_send(name, ...)
+        end
+
+        def respond_to_missing?(name, include_private = false)
+          @inner.respond_to?(name, include_private)
         end
       end
 

@@ -4,6 +4,7 @@ require "json"
 require "logger"
 require "opentelemetry"
 require_relative "../spec"
+require_relative "bridges"
 
 module Libo11y
   FORCE_EMIT_FIBER_KEY = :libo11y_force_emit
@@ -158,11 +159,11 @@ module Libo11y
           attrs&.each { |k, v| full_attrs[k.to_s] = v }
           full_attrs[Spec::EVENT_NAME_KEY] = event_name if event_name && !event_name.empty?
 
-          # Strip caller-supplied reserved trace_id/span_id so trace identity comes strictly from active span
-          full_attrs.delete("trace_id")
-          full_attrs.delete("span_id")
-
           classified = @policy.classify_log_attributes(full_attrs, replacer: @attr_replacer)
+          # trace_id and span_id are reserved: they come from the active span
+          # only. Removed after the replacer, which could bring them back.
+          classified.delete("trace_id")
+          classified.delete("span_id")
 
           # Console leg
           if @console_enabled && @console_writer && (force || severity >= @console_level)
@@ -239,7 +240,7 @@ module Libo11y
           body: body,
           attributes: flat,
           event_name: event_name,
-          context: OpenTelemetry::Context.current
+          context: Bridges::PolicyLogRecordProcessor.mark_classified(OpenTelemetry::Context.current)
         )
       rescue StandardError
         raise if raise_on_sink_error
