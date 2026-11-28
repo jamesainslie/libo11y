@@ -45,9 +45,7 @@ ops-check:
 	cd ops && go test -race -p $(GO_TEST_P) -count=1 ./...
 	scripts/ops-promtool.sh check rules ops/alerts/*.rules.yaml
 	scripts/ops-promtool.sh test rules ops/alerts/tests/*.test.yaml
-	@if [ ! -f ops/kustomization.yaml ]; then echo "kustomize: no kustomization yet, skipped"; \
-	elif command -v kubectl >/dev/null; then kubectl kustomize ops >/dev/null && echo "kustomize: ok"; \
-	else echo "kustomize: kubectl not found, skipped"; fi
+	kubectl kustomize ops >/dev/null
 
 # TypeScript workspace (ts/): install the pinned dependencies, then lint,
 # typecheck, build, check the committed API reports, and run every suite

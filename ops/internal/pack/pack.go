@@ -69,12 +69,28 @@ func build(dashboards []dash.Dashboard, files map[string]rules.File) ([]Artifact
 		}
 		arts = append(arts, Artifact{Path: "dashboards/" + d.UID + ".json", Data: b})
 	}
+	var ordered []rules.File
 	for _, p := range slices.Sorted(maps.Keys(files)) {
+		if !slices.Contains(ruleFileOrder, p) {
+			return nil, fmt.Errorf("pack: rule file %s has no place in the PrometheusRule", p)
+		}
 		b, err := files[p].YAML()
 		if err != nil {
 			return nil, fmt.Errorf("pack: %s: %w", p, err)
 		}
 		arts = append(arts, Artifact{Path: p, Data: b})
+	}
+	for _, p := range ruleFileOrder {
+		if f, ok := files[p]; ok {
+			ordered = append(ordered, f)
+		}
+	}
+	if len(ordered) > 0 {
+		b, err := rules.PrometheusRule("libo11y-rum", ordered...)
+		if err != nil {
+			return nil, fmt.Errorf("pack: %s: %w", prometheusRulePath, err)
+		}
+		arts = append(arts, Artifact{Path: prometheusRulePath, Data: b}, Artifact{Path: "kustomization.yaml", Data: kustomization(dashboards)})
 	}
 	slices.SortFunc(arts, func(a, b Artifact) int { return strings.Compare(a.Path, b.Path) })
 	return arts, nil

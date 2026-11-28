@@ -156,8 +156,10 @@ labels:
 
 ## How the pack is tested
 
-- A catalog test builds `o11yrum-gateway` from this checkout, sends it one fixture RUM session, scrapes its Prometheus endpoint and compares every metric family and label name with `internal/catalog/testdata/exported.txt`. Refresh that file with `go test ./internal/catalog/ -run TestGatewayExports -update`, never by hand.
+- A catalog test builds `o11yrum-gateway` from this checkout, sends it one fixture RUM session, uploads a source map and sends a symbolicated error, scrapes its Prometheus endpoint and compares every metric family and label name with `internal/catalog/testdata/exported.txt`. Refresh that file with `go test ./internal/catalog/ -run TestGatewayExports -update`, never by hand.
 - A lint package parses every PromQL expression with the Prometheus parser and checks each metric and label against that catalog. LogQL and TraceQL queries are checked for structure: `session_id` and `o11y_rum_view_id` are Loki structured metadata, so they appear only after the stream selector and never as stream labels.
 - A drift test fails when the committed artifacts differ from what the generator produces. Run `make ops-generate` from the repository root to regenerate them.
+- promtool 3.15.1 checks the rule files and runs the unit tests in `alerts/tests/`, which are written by hand and work out each expected p75 in a comment. `scripts/ops-promtool.sh` downloads promtool on first use and refuses a tarball whose SHA-256 differs from the pinned one.
+- `kubectl kustomize ops` renders the kustomization.
 
-Run every check with `make ops-check` from the repository root.
+Run every check with `make ops-check` from the repository root. It needs `kubectl` and network access the first time it downloads promtool. `make ops-promtool-test` tests the promtool installer itself.

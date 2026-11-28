@@ -77,8 +77,9 @@ jobs:
       - run: make spec-check spec-drift schema-published-test release-notes-test release-tag-test
 
   # The ops pack: generator drift, the metric catalog from the gateway built
-  # from this checkout, query lint, and (once the pack has them) promtool
-  # checks of the alert rules and kustomize.
+  # from this checkout, query lint, promtool checks and unit tests of the
+  # alert rules, the promtool installer's own tests, and kustomize through
+  # kubectl, which ubuntu-latest ships.
   ops:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -94,7 +95,13 @@ jobs:
             ops/go.sum
             go/go.sum
             go/o11yrum/go.sum
-      - run: make ops-check GO_TEST_P=4
+      # The promtool release binary ops-promtool.sh installs, keyed on the
+      # script, which pins its version and checksums.
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/libo11y
+          key: ops-promtool-${{ runner.os }}-${{ hashFiles('scripts/ops-promtool.sh') }}
+      - run: make ops-check ops-promtool-test GO_TEST_P=4
 
   ts:
     runs-on: ubuntu-latest
