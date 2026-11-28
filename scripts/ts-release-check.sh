@@ -127,7 +127,7 @@ printf '{ "name": "libo11y-consumer", "private": true, "type": "module" }\n' >"$
 	# published versions.
 	"$repo_root/scripts/ts-browser-bundle-check.sh" "$consumer" @libo11y/web=setup @libo11y/webext @libo11y/rum=setupRum \
 		@libo11y/rum-react=RumErrorBoundary @libo11y/rum-tanstack-router=instrumentTanStackRouter \
-		@libo11y/rum-connect=connectRequestNaming @libo11y/rum-replay=VERSION
+		@libo11y/rum-connect=connectRequestNaming @libo11y/rum-replay=replay,VERSION
 	echo "ts-release-check: @libo11y/web, @libo11y/webext, @libo11y/rum, the RUM adapters and @libo11y/rum-replay bundle for the browser"
 
 	# The published declarations must typecheck for a nodenext consumer.

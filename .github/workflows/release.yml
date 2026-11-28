@@ -843,7 +843,7 @@ jobs:
           (cd "$consumer" && npm install --no-audit --no-fund --ignore-scripts "${specs[@]}")
           scripts/ts-browser-bundle-check.sh "$consumer" @libo11y/web=setup @libo11y/webext @libo11y/rum=setupRum \
             @libo11y/rum-react=RumErrorBoundary @libo11y/rum-tanstack-router=instrumentTanStackRouter \
-            @libo11y/rum-connect=connectRequestNaming @libo11y/rum-replay=VERSION
+            @libo11y/rum-connect=connectRequestNaming @libo11y/rum-replay=replay,VERSION
       # A package not on npm yet installs from its tarball, with its other
       # dependencies from the registry, the way a consumer installs it from
       # the GitHub Release. The check fails on an incomplete dependency tree
