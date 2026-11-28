@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -261,5 +263,36 @@ func TestServiceVersionFallback(t *testing.T) {
 	t.Cleanup(func() { _ = sdk.Shutdown(context.Background()) })
 	if got := resourceAttr(t, sdk, "service.version"); got == "" {
 		t.Error("service.version absent; a fallback should be recorded")
+	}
+}
+
+// Outside Kubernetes the derived service.instance.id is one random UUIDv4
+// per process (docs/SPEC.md section 2), so every SDK in the process reports
+// the same instance. An explicit ID still wins.
+func TestInstanceIDFallbackIsOnePerProcess(t *testing.T) {
+	t.Parallel()
+	derive := func(opts ...o11y.Option) string {
+		t.Helper()
+		opts = append([]o11y.Option{
+			o11y.WithServiceName("svc"), o11y.WithEnvironment(spec.EnvironmentTest),
+			o11y.WithoutOTELEnv(), o11y.WithoutLogExport(), o11y.WithoutConsoleLog(), o11y.WithoutRuntimeMetrics(),
+		}, opts...)
+		sdk, err := o11y.New(context.Background(), opts...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = sdk.Shutdown(context.Background()) })
+		return resourceAttr(t, sdk, "service.instance.id")
+	}
+	first, second := derive(), derive()
+	if id, err := uuid.Parse(first); err != nil || id.Version() != 4 {
+		t.Fatalf("service.instance.id = %q, want a UUIDv4", first)
+	}
+	if first != second {
+		t.Errorf("two SDKs in one process derived %q and %q, want one ID per process", first, second)
+	}
+	explicit := derive(o11y.WithResourceAttributes(attribute.String("service.instance.id", "explicit-id")))
+	if explicit != "explicit-id" {
+		t.Errorf("service.instance.id = %q, want the explicit ID", explicit)
 	}
 }

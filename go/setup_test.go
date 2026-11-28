@@ -10,6 +10,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/log"
+	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
@@ -159,5 +160,53 @@ func TestSetupFailureDoesNotHoldGuard(t *testing.T) {
 	}
 	if err := sdk.Shutdown(context.Background()); err != nil {
 		t.Errorf("Shutdown: %v", err)
+	}
+}
+
+// TestSetupReplacesAStaleGlobalLoggerProvider pins that Setup installs its
+// logger provider as the global even when it exports no logs. Otherwise the
+// provider an earlier SDK or another library installed stays in place, and
+// records sent through the global keep reaching that pipeline: after a
+// Setup with log export off, and after one that OTEL_SDK_DISABLED switched
+// off, where nothing may be exported on any signal.
+func TestSetupReplacesAStaleGlobalLoggerProvider(t *testing.T) {
+	cases := map[string]struct {
+		disabled bool
+		opts     []o11y.Option
+	}{
+		"log export off": {false, []o11y.Option{o11y.WithoutLogExport()}},
+		"OTEL_SDK_DISABLED": {true, []o11y.Option{
+			o11y.WithLogExporter(&memLogExporter{}),
+		}},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			restoreGlobals(t)
+			if tc.disabled {
+				t.Setenv("OTEL_SDK_DISABLED", "true")
+			}
+			stale := &memLogExporter{}
+			previous := sdklog.NewLoggerProvider(sdklog.WithProcessor(sdklog.NewSimpleProcessor(stale)))
+			t.Cleanup(func() { _ = previous.Shutdown(context.Background()) })
+			otel.SetLoggerProvider(previous)
+
+			opts := append([]o11y.Option{
+				o11y.WithServiceName("setup-stale-logs"), o11y.WithEnvironment(spec.EnvironmentTest),
+				o11y.WithSpanProcessor(tracetest.NewSpanRecorder()), o11y.WithMetricReader(sdkmetric.NewManualReader()),
+				o11y.WithoutRuntimeMetrics(), o11y.WithoutConsoleLog(), o11y.WithoutStartupSummary(),
+			}, tc.opts...)
+			sdk, err := o11y.Setup(context.Background(), opts...)
+			if err != nil {
+				t.Fatalf("Setup: %v", err)
+			}
+			t.Cleanup(func() { _ = sdk.Shutdown(context.Background()) })
+
+			var r log.Record
+			r.SetBody(attribute.StringValue("via-global"))
+			otel.GetLoggerProvider().Logger("third-party").Emit(context.Background(), r)
+			if recs := stale.snapshot(); len(recs) != 0 {
+				t.Fatalf("the provider installed before Setup still received %d record(s) through the global", len(recs))
+			}
+		})
 	}
 }

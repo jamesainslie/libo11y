@@ -65,10 +65,12 @@ func (e failingMetricExporter) Export(context.Context, *metricdata.ResourceMetri
 func (failingMetricExporter) ForceFlush(context.Context) error { return nil }
 func (failingMetricExporter) Shutdown(context.Context) error   { return nil }
 
-// droppedEvents records the signal of every o11y.telemetry.dropped event.
+// droppedEvents records the signal of every o11y.telemetry.dropped event,
+// and the error.type each one carried.
 type droppedEvents struct {
 	mu      sync.Mutex
 	signals []string
+	types   map[string]string // by signal
 }
 
 func (*droppedEvents) Enabled(context.Context, slog.Level) bool { return true }
@@ -76,15 +78,31 @@ func (d *droppedEvents) Handle(_ context.Context, r slog.Record) error {
 	if r.Message != spec.EventTelemetryDropped {
 		return nil
 	}
+	var signal, errorType string
 	r.Attrs(func(a slog.Attr) bool {
-		if a.Key == string(spec.SignalKey) {
-			d.mu.Lock()
-			d.signals = append(d.signals, a.Value.String())
-			d.mu.Unlock()
+		switch a.Key {
+		case string(spec.SignalKey):
+			signal = a.Value.String()
+		case "error.type":
+			errorType = a.Value.String()
 		}
 		return true
 	})
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.signals = append(d.signals, signal)
+	if d.types == nil {
+		d.types = map[string]string{}
+	}
+	d.types[signal] = errorType
 	return nil
+}
+
+// errorType returns the error.type of the dropped event for signal.
+func (d *droppedEvents) errorType(signal string) string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.types[signal]
 }
 func (d *droppedEvents) WithAttrs([]slog.Attr) slog.Handler { return d }
 func (d *droppedEvents) WithGroup(string) slog.Handler      { return d }
@@ -191,6 +209,11 @@ func TestShutdownReportsRejectedFinalExport(t *testing.T) {
 			assertSignalFailure(t, err, "shutdown", fs.signal)
 			if !dropped.has(fs.signal) {
 				t.Errorf("no o11y.telemetry.dropped event for %s", fs.signal)
+			}
+			// error.type names the error that failed the signal, not the
+			// fmt.Errorf or errors.Join wrapper the SDK put around it.
+			if got := dropped.errorType(fs.signal); strings.HasPrefix(got, "*fmt.") || strings.HasPrefix(got, "*errors.join") || got == "" {
+				t.Errorf("dropped event for %s has error.type %q, want the type of the underlying error", fs.signal, got)
 			}
 		})
 	}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"runtime/debug"
 	"strings"
+	"sync"
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/attribute"
@@ -219,9 +220,14 @@ func instanceIDFor(podUID, podName, namespace string) string {
 	case podName != "":
 		return uuid.NewSHA1(instanceIDNamespace, []byte(namespace+"/"+podName)).String()
 	default:
-		return uuid.NewString()
+		return processInstanceID()
 	}
 }
+
+// processInstanceID is the random service.instance.id of this process. It
+// is drawn once, so every SDK the process builds outside Kubernetes reports
+// the same instance, as the specification asks (one UUIDv4 per process).
+var processInstanceID = sync.OnceValue(uuid.NewString)
 
 // buildInfoDetector records the compiled binary's identity from the Go
 // build info: the main module version (as service.version) and the VCS
