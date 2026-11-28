@@ -182,7 +182,7 @@ RUST_RELEASE_VERSION ?= v0.1.0
 
 # The version c/build.zig.zon carries, which c-release-check.sh validates.
 # Moves only in a release commit.
-C_RELEASE_VERSION ?= v0.1.0
+C_RELEASE_VERSION ?= v0.2.0
 
 # The version dotnet/Directory.Build.props carries, which
 # dotnet-release-check.sh validates. Moves only in a release commit.
@@ -440,13 +440,43 @@ c-check:
 		'    return (serr == O11Y_OK && o11y_shutdown_report_ok(report)) ? 0 : 2;' \
 		'}' >"$$tmp/cpp_smoke.cc"; \
 	c++ -std=c++17 -Wall -Wextra -Werror -Wpedantic -Ic/zig-out/include "$$tmp/cpp_smoke.cc" -Lc/zig-out/lib -Wl,-rpath,"$$(pwd)/c/zig-out/lib" -lo11y -lpthread -lm -o "$$tmp/qs-cpp" && "$$tmp/qs-cpp"; \
+	printf '%s\n' \
+		'#include <string.h>' \
+		'#include "o11y/test.h"' \
+		'int main(void) {' \
+		'    if (!o11y_version()) return 1;' \
+		'    o11y_test_recorder_t *rec = NULL;' \
+		'    if (o11y_test_start(NULL, &rec, NULL) != O11Y_OK) return 2;' \
+		'    o11y_test_destroy(rec);' \
+		'    return 0;' \
+		'}' >"$$tmp/test_link.c"; \
+	cc -std=c11 -Wall -Wextra -Werror -Wpedantic -Ic/zig-out/include "$$tmp/test_link.c" c/zig-out/lib/libo11ytest.a c/zig-out/lib/libo11y.a -lpthread -lm -o "$$tmp/tl-static1" && "$$tmp/tl-static1"; \
+	cc -std=c11 -Wall -Wextra -Werror -Wpedantic -Ic/zig-out/include "$$tmp/test_link.c" c/zig-out/lib/libo11y.a c/zig-out/lib/libo11ytest.a -lpthread -lm -o "$$tmp/tl-static2" && "$$tmp/tl-static2"; \
+	cc -std=c11 -Wall -Wextra -Werror -Wpedantic -Ic/zig-out/include "$$tmp/test_link.c" c/zig-out/lib/libo11ytest.a -Lc/zig-out/lib -Wl,-rpath,"$$(pwd)/c/zig-out/lib" -lo11y -lpthread -lm -o "$$tmp/tl-shared" && "$$tmp/tl-shared"; \
+	plain="$$(sed -nE 's/^[[:space:]]*\.version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' c/build.zig.zon | head -n 1)"; \
+	base_ver="$${plain%%-*}"; \
+	major="$${base_ver%%.*}"; \
+	minor_rest="$${base_ver#*.}"; \
+	minor_num="$${minor_rest%%.*}"; \
+	if [ "$$major" = "0" ]; then abi_ver="0.$$minor_num"; else abi_ver="$$major"; fi; \
 	if [ "$$(uname -s)" = "Linux" ]; then \
-		readelf -dW c/zig-out/lib/libo11y.so | grep -Eq 'SONAME.*libo11y\.so\.[0-9]+\.[0-9]+' || { echo "c-check: bad ELF SONAME"; exit 1; }; \
+		readelf -dW c/zig-out/lib/libo11y.so | grep -Fq "Library soname: [libo11y.so.$$abi_ver]" || { echo "c-check: bad ELF SONAME (expected libo11y.so.$$abi_ver)"; exit 1; }; \
+		readelf -dW c/zig-out/lib/libo11y.so | grep -q 'NODELETE' || { echo "c-check: libo11y.so missing DF_1_NODELETE"; exit 1; }; \
 		! readelf -lW c/zig-out/lib/libo11y.so | grep -q 'GNU_STACK.*RWE' || { echo "c-check: executable GNU_STACK on libo11y.so"; exit 1; }; \
-		bad="$$(nm -D --defined-only c/zig-out/lib/libo11y.so | awk '$$2 ~ /[TWDBR]/ && $$3 !~ /^o11y_/ {print $$3}')"; \
+		bad="$$(nm -D --defined-only c/zig-out/lib/libo11y.so | awk '$$2 ~ /[TWDBRS]/ && $$3 !~ /^o11y_/ {print $$3}')"; \
 		[ -z "$$bad" ] || { echo "c-check: non-o11y exported symbols: $$bad"; exit 1; }; \
+		nm -D --defined-only c/zig-out/lib/libo11y.so | awk '$$2 ~ /[TWDBRS]/ && $$3 == "o11y_version" {found=1} END {exit !found}' || { echo "c-check: libo11y.so missing o11y_version"; exit 1; }; \
+		bad_test="$$(nm -g --defined-only c/zig-out/lib/libo11ytest.a | awk 'NF == 3 && $$2 ~ /[TWDBRS]/ && $$3 ~ /^o11y_/ && $$3 !~ /^o11y_test_/ {print $$3}')"; \
+		[ -z "$$bad_test" ] || { echo "c-check: libo11ytest.a exports core o11y_ symbols: $$bad_test"; exit 1; }; \
+		nm -g --defined-only c/zig-out/lib/libo11ytest.a | awk 'NF == 3 && $$2 ~ /[TWDBRS]/ && $$3 == "o11y_test_start" {found=1} END {exit !found}' || { echo "c-check: libo11ytest.a missing o11y_test_start"; exit 1; }; \
 	elif [ "$$(uname -s)" = "Darwin" ]; then \
-		otool -D c/zig-out/lib/libo11y.dylib | grep -Eq 'libo11y\.[0-9]+\.[0-9]+\.dylib' || { echo "c-check: bad Mach-O install_name"; exit 1; }; \
+		otool -D c/zig-out/lib/libo11y.dylib | tail -n 1 | grep -qx "@rpath/libo11y\.$$abi_ver\.dylib" || { echo "c-check: bad Mach-O install_name (expected @rpath/libo11y.$$abi_ver.dylib)"; exit 1; }; \
+		bad="$$(nm -gU c/zig-out/lib/libo11y.dylib | awk 'NF >= 3 && $$3 !~ /^(_o11y_|__mh_dylib_header$$|___dso_handle$$)/ {print $$3}')"; \
+		[ -z "$$bad" ] || { echo "c-check: non-_o11y_ exported symbols on libo11y.dylib: $$bad"; exit 1; }; \
+		nm -gU c/zig-out/lib/libo11y.dylib | awk 'NF >= 3 && $$3 == "_o11y_version" {found=1} END {exit !found}' || { echo "c-check: libo11y.dylib missing _o11y_version"; exit 1; }; \
+		bad_test="$$(nm -gU c/zig-out/lib/libo11ytest.a | awk 'NF == 3 && $$3 ~ /^_o11y_/ && $$3 !~ /^_o11y_test_/ {print $$3}')"; \
+		[ -z "$$bad_test" ] || { echo "c-check: libo11ytest.a exports core _o11y_ symbols: $$bad_test"; exit 1; }; \
+		nm -gU c/zig-out/lib/libo11ytest.a | awk 'NF == 3 && $$3 == "_o11y_test_start" {found=1} END {exit !found}' || { echo "c-check: libo11ytest.a missing _o11y_test_start"; exit 1; }; \
 	fi
 
 # The C11 suites under AddressSanitizer (with leak detection on Linux) and

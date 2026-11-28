@@ -337,11 +337,40 @@ static void test_receiver_validation_and_error_handler(void) {
     o11y_test_http_receiver_destroy(hrx);
 }
 
+static void test_reverse_order_sdk_and_receiver_teardown(void) {
+    o11y_test_http_receiver_t *rx = NULL;
+    ASSERT_EQ_ERR(O11Y_OK, o11y_test_http_receiver_start(NULL, &rx));
+    ASSERT_NOT_NULL(rx);
+
+    o11y_env_pair_t env_pairs[] = {
+        { "OTEL_TRACES_EXPORTER", "none" },
+        { "OTEL_METRICS_EXPORTER", "none" },
+        { "OTEL_LOGS_EXPORTER", "none" },
+    };
+    o11y_options_t opts = o11y_options_default();
+    opts.env_mode = O11Y_ENV_PAIRS;
+    opts.env_pairs = env_pairs;
+    opts.env_pairs_len = 3;
+    opts.service_name = "c-rev-teardown";
+    opts.environment = O11Y_ENVIRONMENT_TEST;
+    opts.console_enabled = false;
+    opts.runtime_metrics = false;
+
+    o11y_sdk_t *sdk = NULL;
+    ASSERT_EQ_ERR(O11Y_OK, o11y_init(&opts, &sdk, NULL));
+    ASSERT_NOT_NULL(sdk);
+
+    /* Destroy the networked SDK before the receiver; receiver teardown must not hit SIGIO SIG_DFL. */
+    o11y_destroy(sdk);
+    o11y_test_http_receiver_destroy(rx);
+}
+
 int main(void) {
     RUN_TEST(test_otlp_http_protobuf_and_gzip);
     RUN_TEST(test_otlp_http_json_and_retry);
     RUN_TEST(test_otlp_http_mtls);
     RUN_TEST(test_otlp_grpc_h2c_and_mtls);
     RUN_TEST(test_receiver_validation_and_error_handler);
+    RUN_TEST(test_reverse_order_sdk_and_receiver_teardown);
     TEST_SUMMARY("test_wire");
 }

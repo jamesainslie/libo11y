@@ -5,7 +5,7 @@ const std = @import("std");
 const testing = std.testing;
 const o11y = @import("o11y");
 const c = @import("c_types.zig");
-const abi = @import("abi.zig");
+const abi = @import("abi_common.zig");
 
 const SinkState = struct {
     calls: usize = 0,

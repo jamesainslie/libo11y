@@ -8,10 +8,10 @@
 # on PATH it also builds a consumer through each.
 #
 # Usage: c-release-check.sh [VERSION]
-#   VERSION defaults to v0.1.0 (leading v is optional).
+#   VERSION defaults to v0.2.0 (leading v is optional).
 set -euo pipefail
 
-version="${1:-v0.1.0}"
+version="${1:-v0.2.0}"
 plain="${version#v}"
 if [[ -z "$plain" ]]; then
 	echo "c-release-check: version must not be empty" >&2
@@ -59,33 +59,52 @@ for rel in \
 	lib/cmake/libo11y/libo11yConfigVersion.cmake; do
 	[[ -f "$prefix/$rel" ]] || fail "installed prefix missing $rel"
 done
-if [[ "${plain%%.*}" == "0" ]]; then
-	abi_ver="0.${plain#0.}"
-	abi_ver="${abi_ver%.*}"
+base_ver="${plain%%-*}"
+major="${base_ver%%.*}"
+minor_rest="${base_ver#*.}"
+minor_num="${minor_rest%%.*}"
+if [[ "$major" == "0" ]]; then
+	abi_ver="0.$minor_num"
 else
-	abi_ver="${plain%%.*}"
+	abi_ver="$major"
 fi
 
 if [[ ! -f "$prefix/lib/libo11y.so" && ! -f "$prefix/lib/libo11y.dylib" ]]; then
 	fail "installed prefix missing shared library (libo11y.so or libo11y.dylib)"
 fi
 # The shared library is versioned, with ABI version and plain name symlinks.
-if [[ ! -f "$prefix/lib/libo11y.so.$plain" && ! -f "$prefix/lib/libo11y.$plain.dylib" ]]; then
-	fail "installed prefix missing the versioned shared library for $plain"
+if [[ ! -f "$prefix/lib/libo11y.so.$base_ver" && ! -f "$prefix/lib/libo11y.$base_ver.dylib" ]]; then
+	fail "installed prefix missing the versioned shared library for $base_ver"
 fi
 if [[ ! -L "$prefix/lib/libo11y.so.$abi_ver" && ! -L "$prefix/lib/libo11y.$abi_ver.dylib" ]]; then
 	fail "installed prefix missing the ABI-versioned shared library symlink for $abi_ver"
 fi
 if [[ "$(uname -s)" == "Linux" ]]; then
-	readelf -dW "$prefix/lib/libo11y.so" | grep -q "SONAME.*libo11y\.so\.$abi_ver" ||
+	readelf -dW "$prefix/lib/libo11y.so" | grep -Fq "Library soname: [libo11y.so.$abi_ver]" ||
 		fail "libo11y.so missing expected ELF SONAME libo11y.so.$abi_ver"
+	readelf -dW "$prefix/lib/libo11y.so" | grep -q "NODELETE" ||
+		fail "libo11y.so missing DF_1_NODELETE"
 	! readelf -lW "$prefix/lib/libo11y.so" | grep -q "GNU_STACK.*RWE" ||
 		fail "libo11y.so has executable GNU_STACK"
-	bad_syms="$(nm -D --defined-only "$prefix/lib/libo11y.so" | awk '$2 ~ /[TWDBR]/ && $3 !~ /^o11y_/ {print $3}')"
+	bad_syms="$(nm -D --defined-only "$prefix/lib/libo11y.so" | awk '$2 ~ /[TWDBRS]/ && $3 !~ /^o11y_/ {print $3}')"
 	[[ -z "$bad_syms" ]] || fail "libo11y.so exports non-o11y symbols: $bad_syms"
+	nm -D --defined-only "$prefix/lib/libo11y.so" | awk '$2 ~ /[TWDBRS]/ && $3 == "o11y_version" {found=1} END {exit !found}' ||
+		fail "libo11y.so missing o11y_version"
+	bad_test="$(nm -g --defined-only "$prefix/lib/libo11ytest.a" | awk 'NF == 3 && $2 ~ /[TWDBRS]/ && $3 ~ /^o11y_/ && $3 !~ /^o11y_test_/ {print $3}')"
+	[[ -z "$bad_test" ]] || fail "libo11ytest.a exports core o11y_ symbols: $bad_test"
+	nm -g --defined-only "$prefix/lib/libo11ytest.a" | awk 'NF == 3 && $2 ~ /[TWDBRS]/ && $3 == "o11y_test_start" {found=1} END {exit !found}' ||
+		fail "libo11ytest.a missing o11y_test_start"
 elif [[ "$(uname -s)" == "Darwin" ]]; then
-	otool -D "$prefix/lib/libo11y.dylib" | grep -q "libo11y\.$abi_ver\.dylib" ||
-		fail "libo11y.dylib missing expected install_name libo11y.$abi_ver.dylib"
+	otool -D "$prefix/lib/libo11y.dylib" | tail -n 1 | grep -qx "@rpath/libo11y\.$abi_ver\.dylib" ||
+		fail "libo11y.dylib missing expected install_name @rpath/libo11y.$abi_ver.dylib"
+	bad_syms="$(nm -gU "$prefix/lib/libo11y.dylib" | awk 'NF >= 3 && $3 !~ /^(_o11y_|__mh_dylib_header$|___dso_handle$)/ {print $3}')"
+	[[ -z "$bad_syms" ]] || fail "libo11y.dylib exports non-_o11y_ symbols: $bad_syms"
+	nm -gU "$prefix/lib/libo11y.dylib" | awk 'NF >= 3 && $3 == "_o11y_version" {found=1} END {exit !found}' ||
+		fail "libo11y.dylib missing _o11y_version"
+	bad_test="$(nm -gU "$prefix/lib/libo11ytest.a" | awk 'NF == 3 && $3 ~ /^_o11y_/ && $3 !~ /^_o11y_test_/ {print $3}')"
+	[[ -z "$bad_test" ]] || fail "libo11ytest.a exports core _o11y_ symbols: $bad_test"
+	nm -gU "$prefix/lib/libo11ytest.a" | awk 'NF == 3 && $3 == "_o11y_test_start" {found=1} END {exit !found}' ||
+		fail "libo11ytest.a missing _o11y_test_start"
 fi
 for pc in libo11y libo11ytest; do
 	grep -qx "Version: $plain" "$prefix/lib/pkgconfig/$pc.pc" || fail "$pc.pc does not carry Version: $plain"
@@ -238,9 +257,17 @@ int main(void) {
 EOF
 
 cc -std=c11 -Wall -Wextra -Werror -Wpedantic \
-	-I"$prefix/include" "$tmp/consumer.c" "$prefix/lib/libo11ytest.a" -lpthread -lm \
+	-I"$prefix/include" "$tmp/consumer.c" "$prefix/lib/libo11ytest.a" "$prefix/lib/libo11y.a" -lpthread -lm \
 	-o "$tmp/consumer"
 "$tmp/consumer"
+cc -std=c11 -Wall -Wextra -Werror -Wpedantic \
+	-I"$prefix/include" "$tmp/consumer.c" "$prefix/lib/libo11y.a" "$prefix/lib/libo11ytest.a" -lpthread -lm \
+	-o "$tmp/consumer_rev"
+"$tmp/consumer_rev"
+cc -std=c11 -Wall -Wextra -Werror -Wpedantic \
+	-I"$prefix/include" "$tmp/consumer.c" "$prefix/lib/libo11ytest.a" -L"$prefix/lib" -Wl,-rpath,"$prefix/lib" -lo11y -lpthread -lm \
+	-o "$tmp/consumer_shared"
+"$tmp/consumer_shared"
 cc -std=c11 -Wall -Wextra -Werror -Wpedantic \
 	-I"$prefix/include" "$tmp/shared_consumer.c" -L"$prefix/lib" -Wl,-rpath,"$prefix/lib" -lo11y -lpthread -lm \
 	-o "$tmp/shared_consumer"
@@ -261,24 +288,37 @@ if command -v pkg-config >/dev/null; then
 	mkdir -p "$tmp/static-only/lib/pkgconfig"
 	ln -s "$prefix/include" "$tmp/static-only/include"
 	ln -s "$prefix/lib/libo11y.a" "$tmp/static-only/lib/libo11y.a"
+	ln -s "$prefix/lib/libo11ytest.a" "$tmp/static-only/lib/libo11ytest.a"
 	cp "$prefix/lib/pkgconfig/libo11y.pc" "$tmp/static-only/lib/pkgconfig/libo11y.pc"
+	cp "$prefix/lib/pkgconfig/libo11ytest.pc" "$tmp/static-only/lib/pkgconfig/libo11ytest.pc"
 	read -r -a pc_static_flags < <(PKG_CONFIG_PATH="$tmp/static-only/lib/pkgconfig" pkg-config --cflags --libs --static libo11y)
 	cc -std=c11 -Wall -Wextra -Werror -Wpedantic "$tmp/shared_consumer.c" "${pc_static_flags[@]}" -o "$tmp/consumer-pc-static"
 	"$tmp/consumer-pc-static"
 	read -r -a pc_flags < <(PKG_CONFIG_PATH="$prefix/lib/pkgconfig" pkg-config --cflags --libs libo11ytest)
-	cc -std=c11 -Wall -Wextra -Werror -Wpedantic "$tmp/consumer.c" "${pc_flags[@]}" -o "$tmp/consumer-pc"
+	cc -std=c11 -Wall -Wextra -Werror -Wpedantic "$tmp/consumer.c" "${pc_flags[@]}" -Wl,-rpath,"$prefix/lib" -o "$tmp/consumer-pc"
 	"$tmp/consumer-pc"
+	read -r -a pc_test_static_flags < <(PKG_CONFIG_PATH="$tmp/static-only/lib/pkgconfig" pkg-config --cflags --libs --static libo11ytest)
+	cc -std=c11 -Wall -Wextra -Werror -Wpedantic "$tmp/consumer.c" "${pc_test_static_flags[@]}" -o "$tmp/consumer-pc-test-static"
+	"$tmp/consumer-pc-test-static"
 	echo "c-release-check: pkg-config consumer passed"
 else
 	echo "c-release-check: pkg-config not on PATH, skipping its consumer"
 fi
 
-# The same consumer through CMake's find_package, when it is installed. The
-# request names the major and minor version, which the version file accepts,
-# and a second configure asks for the next minor, which it must refuse.
+# The same consumer through CMake's find_package, when it is installed.
 if command -v cmake >/dev/null; then
-	minor="${plain%.*}"
-	next_minor="${minor%.*}.$((${minor##*.} + 1))"
+	want_ver="$abi_ver"
+	if [[ "$major" == "0" ]]; then
+		next_ver="0.$((minor_num + 1))"
+		if [[ "$minor_num" -gt 0 ]]; then
+			prev_ver="0.$((minor_num - 1))"
+		else
+			prev_ver=""
+		fi
+	else
+		next_ver="$((major + 1))"
+		prev_ver="$((major - 1))"
+	fi
 	mkdir "$tmp/cmake-src"
 	cp "$tmp/consumer.c" "$tmp/cmake-src/consumer.c"
 	cp "$tmp/shared_consumer.c" "$tmp/cmake-src/shared_consumer.c"
@@ -290,6 +330,10 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 find_package(libo11y ${LIBO11Y_WANT} REQUIRED CONFIG)
 add_executable(consumer consumer.c)
 target_link_libraries(consumer PRIVATE libo11y::o11ytest)
+add_executable(consumer_explicit consumer.c)
+target_link_libraries(consumer_explicit PRIVATE libo11y::o11y libo11y::o11ytest)
+add_executable(consumer_static consumer.c)
+target_link_libraries(consumer_static PRIVATE libo11y::o11y_static libo11y::o11ytest_static)
 add_executable(shared_default shared_consumer.c)
 target_link_libraries(shared_default PRIVATE libo11y::o11y)
 add_executable(shared_explicit shared_consumer.c)
@@ -297,16 +341,23 @@ target_link_libraries(shared_explicit PRIVATE libo11y::o11y_shared)
 add_executable(static_explicit shared_consumer.c)
 target_link_libraries(static_explicit PRIVATE libo11y::o11y_static)
 EOF
-	cmake -S "$tmp/cmake-src" -B "$tmp/cmake-build" -DCMAKE_PREFIX_PATH="$prefix" -DLIBO11Y_WANT="$minor" >"$tmp/cmake.log" 2>&1 ||
-		{ cat "$tmp/cmake.log" >&2; fail "cmake could not configure a consumer of libo11y $minor"; }
+	cmake -S "$tmp/cmake-src" -B "$tmp/cmake-build" -DCMAKE_PREFIX_PATH="$prefix" -DLIBO11Y_WANT="$want_ver" >"$tmp/cmake.log" 2>&1 ||
+		{ cat "$tmp/cmake.log" >&2; fail "cmake could not configure a consumer of libo11y $want_ver"; }
+	! grep -q '_libo11y' "$tmp/cmake-build/CMakeCache.txt" ||
+		fail "libo11yConfig.cmake wrote _libo11y cache variables into CMakeCache.txt"
 	cmake --build "$tmp/cmake-build" >"$tmp/cmake.log" 2>&1 ||
 		{ cat "$tmp/cmake.log" >&2; fail "cmake could not build the consumer"; }
 	"$tmp/cmake-build/consumer"
+	"$tmp/cmake-build/consumer_explicit"
+	"$tmp/cmake-build/consumer_static"
 	"$tmp/cmake-build/shared_default"
 	"$tmp/cmake-build/shared_explicit"
 	"$tmp/cmake-build/static_explicit"
-	if cmake -S "$tmp/cmake-src" -B "$tmp/cmake-build-next" -DCMAKE_PREFIX_PATH="$prefix" -DLIBO11Y_WANT="$next_minor" >"$tmp/cmake.log" 2>&1; then
-		fail "find_package(libo11y $next_minor) accepted version $plain"
+	if cmake -S "$tmp/cmake-src" -B "$tmp/cmake-build-next" -DCMAKE_PREFIX_PATH="$prefix" -DLIBO11Y_WANT="$next_ver" >"$tmp/cmake.log" 2>&1; then
+		fail "find_package(libo11y $next_ver) accepted version $plain"
+	fi
+	if [[ -n "$prev_ver" ]] && cmake -S "$tmp/cmake-src" -B "$tmp/cmake-build-prev" -DCMAKE_PREFIX_PATH="$prefix" -DLIBO11Y_WANT="$prev_ver" >"$tmp/cmake.log" 2>&1; then
+		fail "find_package(libo11y $prev_ver) accepted version $plain"
 	fi
 	echo "c-release-check: CMake consumer passed"
 else
