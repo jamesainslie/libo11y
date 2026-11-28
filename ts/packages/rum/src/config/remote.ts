@@ -81,7 +81,8 @@ export function createRemoteConfig(o: RemoteConfigClientOptions): RemoteConfigCl
   let state: State | undefined;
   /** Bumped by clear and stop, so a response that outlives them is not used. */
   let generation = 0;
-  let inflight: Promise<boolean> | undefined;
+  /** The request in flight, and the generation it belongs to. */
+  let inflight: { readonly gen: number; readonly done: Promise<boolean> } | undefined;
 
   const load = (): State => {
     if (state !== undefined) return state;
@@ -116,13 +117,29 @@ export function createRemoteConfig(o: RemoteConfigClientOptions): RemoteConfigCl
   const fetchOnce = async (gen: number): Promise<boolean> => {
     const s = load();
     const headers: Record<string, string> = s.etag === undefined ? {} : { "If-None-Match": s.etag };
-    let res: Response;
+    const abort = typeof AbortController === "function" ? new AbortController() : undefined;
     let timer: unknown;
+    // The timeout covers the headers and the body, so a stalled body cannot hold the client.
+    const answer = async (): Promise<{ status: number; etag: string | null; body?: unknown }> => {
+      const res = await o.fetch(o.url, {
+        method: "GET",
+        credentials: "omit",
+        cache: "no-cache",
+        headers,
+        ...(abort === undefined ? {} : { signal: abort.signal }),
+      });
+      if (res.status !== 200) return { status: res.status, etag: null };
+      return { status: 200, etag: res.headers.get("ETag"), body: await res.json() };
+    };
+    let got: { status: number; etag: string | null; body?: unknown };
     try {
-      res = await Promise.race([
-        o.fetch(o.url, { method: "GET", credentials: "omit", cache: "no-cache", headers }),
+      got = await Promise.race([
+        answer(),
         new Promise<never>((_, reject) => {
-          timer = o.timers.setTimeout(() => reject(new Error("timeout")), REQUEST_TIMEOUT_MILLIS);
+          timer = o.timers.setTimeout(() => {
+            abort?.abort();
+            reject(new Error("timeout"));
+          }, REQUEST_TIMEOUT_MILLIS);
         }),
       ]);
     } catch {
@@ -131,21 +148,16 @@ export function createRemoteConfig(o: RemoteConfigClientOptions): RemoteConfigCl
       o.timers.clearTimeout(timer);
     }
     if (gen !== generation) return false;
-    if (res.status === 404) {
+    if (got.status === 404) {
       if (s.doc === undefined) return false;
       state = { etag: undefined, doc: undefined, prior: s.doc };
       save(state);
       return true;
     }
-    if (res.status !== 200) return false;
-    let doc: RemoteConfigDocument | undefined;
-    try {
-      doc = parseRemoteConfig(await res.json());
-    } catch {
-      return false;
-    }
-    if (doc === undefined || gen !== generation) return false;
-    const etag = res.headers.get("ETag") ?? `"${doc.version}"`;
+    if (got.status !== 200) return false;
+    const doc = parseRemoteConfig(got.body);
+    if (doc === undefined) return false;
+    const etag = got.etag ?? `"${doc.version}"`;
     const changed = doc.version !== s.doc?.version;
     state = changed ? { etag, doc, prior: s.doc ?? s.prior } : { ...s, etag };
     save(state);
@@ -153,20 +165,29 @@ export function createRemoteConfig(o: RemoteConfigClientOptions): RemoteConfigCl
   };
 
   const refresh = (): Promise<boolean> => {
-    inflight ??= fetchOnce(generation).finally(() => {
-      inflight = undefined;
-    });
-    return inflight;
+    // A request from before a clear or stop is not reused: its answer is dropped.
+    if (inflight?.gen === generation) return inflight.done;
+    const mine = {
+      gen: generation,
+      done: fetchOnce(generation).finally(() => {
+        if (inflight === mine) inflight = undefined;
+      }),
+    };
+    inflight = mine;
+    return mine.done;
   };
 
   return {
     current: () => load().doc,
     find(version) {
       if (version === undefined) return undefined;
-      const s = load();
-      if (s.doc?.version === version) return s.doc;
-      if (s.prior?.version === version) return s.prior;
-      return s.doc;
+      const known = (s: State): RemoteConfigDocument | undefined =>
+        s.doc?.version === version ? s.doc : s.prior?.version === version ? s.prior : undefined;
+      const here = known(load());
+      if (here !== undefined) return here;
+      // Another tab may have cached the document a session it started runs under.
+      state = undefined;
+      return known(load()) ?? load().doc;
     },
     refresh,
     start(onChange) {

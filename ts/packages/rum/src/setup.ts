@@ -341,6 +341,11 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
       return "";
     }
   };
+  /** What the adapter reported on this path, or a fresh record when it moved to another path. */
+  const samePath = (): NonNullable<typeof routed> => {
+    const path = pathNow();
+    return routed?.path === path ? routed : { path };
+  };
   const routedNow = (): typeof routed =>
     routed !== undefined && routed.path === pathNow() ? routed : undefined;
   const processor = rumSpanProcessor({
@@ -548,6 +553,11 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
     } else if (!off && killed) {
       killed = false;
       activate(generation).catch((err: unknown) => diag.warn("o11y: rum: start failed", err));
+    } else if (!off && collecting) {
+      // The document the current session started under may only now be known, as when another
+      // tab started the session under a document this tab had not fetched yet.
+      settings = forSession(session.current()?.configVersion);
+      reconcile();
     }
   };
   const openRemote = (): RemoteConfigConnection | undefined => {
@@ -620,9 +630,10 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
       settings = forSession(e.session.configVersion);
       queueMicrotask(reconcile);
     }
+    // While remote configuration has switched RUM off, a rotation sends no session events.
     if (e.type === "kept") {
-      flushRetention().catch((err: unknown) => diag.warn("o11y: rum: retention flush failed", err));
-    } else if (e.type === "start" && e.local) {
+      if (on()) flushRetention().catch((err: unknown) => diag.warn("o11y: rum: retention flush failed", err));
+    } else if (e.type === "start" && e.local && on()) {
       if (endingSession !== undefined && e.previous?.id === endingSession.id)
         endingSession.successor = e.session.id;
       t.event(EVENT_RUM_SESSION_START, {
@@ -646,7 +657,7 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
       const timer = setTimeout(() => {
         endTimers.delete(timer);
         if (endingSession === candidate) endingSession = undefined;
-        if (!gate.recording() || candidate.successor === undefined) return;
+        if (!on() || candidate.successor === undefined) return;
         if (session.current()?.id !== candidate.successor) return; // another tab's rotation won
         t.event(EVENT_RUM_SESSION_END, {
           [ATTR_SESSION_ID]: candidate.id,
@@ -689,13 +700,15 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
         summary.flush();
         void t.forceFlush();
       });
-    } else session.touch();
+    } else if (!killed) session.touch();
   };
   const onPageHide = (): void => {
     summary.flush();
     void t.forceFlush();
   };
-  const onActivity = (): void => session.touch();
+  const onActivity = (): void => {
+    if (!killed) session.touch();
+  };
   const ACTIVITY = ["pointerdown", "keydown", "scroll", "touchstart"] as const;
   doc?.addEventListener("visibilitychange", onVisibility);
   win?.addEventListener("pagehide", onPageHide);
@@ -721,11 +734,11 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
       });
     },
     setViewName(name) {
-      routed = { ...routed, path: pathNow(), name };
+      routed = { ...samePath(), name };
       if (on()) views.rename(name);
     },
     viewRendered() {
-      routed = { ...routed, path: pathNow(), renderedAt: deps.perfNow() };
+      routed = { ...samePath(), renderedAt: deps.perfNow() };
       if (on()) views.rendered();
     },
     addAction(name) {
@@ -771,7 +784,9 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
   };
 
   // The bootstrap buffer (decision P9) is replayed only into the start setup makes with consent
-  // granted. A page that starts pending discards it, even if consent is granted later.
+  // granted. A page that starts pending discards it, even if consent is granted later. It is taken
+  // before the collectors start, so an event is never both buffered and seen by a collector; one
+  // that happens while the session loads, between the two, is not recorded.
   const early = takeBootstrap();
   if (gate.recording()) {
     await startAll();

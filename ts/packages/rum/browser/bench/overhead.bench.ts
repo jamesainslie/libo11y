@@ -66,6 +66,13 @@ function median(values: readonly number[]): number {
   return s.length % 2 === 1 ? (s[mid] ?? 0) : ((s[mid - 1] ?? 0) + (s[mid] ?? 0)) / 2;
 }
 
+// A benchmark loads the machine it runs on, so it runs in CI, or where LIBO11Y_BENCH=1 says the
+// machine's owner agreed.
+test.skip(
+  process.env.CI === undefined && process.env.LIBO11Y_BENCH !== "1",
+  "a benchmark: CI runs it; set LIBO11Y_BENCH=1 to run it on a machine whose owner agreed",
+);
+
 test("RUM overhead per view and per interaction", async ({ page, request, baseURL }) => {
   const sink = createSink(request, baseURL ?? "");
   const without: Totals[] = [];

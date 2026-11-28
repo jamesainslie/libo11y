@@ -214,3 +214,21 @@ test("a console error still pending when the collector stops is dropped", () => 
   env.advance(0);
   assert.deepEqual(rt.counts, []);
 });
+
+test("a console.error of an error object while an error is being recorded is not recorded", () => {
+  const rt = fakeRuntime();
+  const env = rt.fakeEnv();
+  const console = { error: (..._a: unknown[]) => {} };
+  const stop = errorsWith(
+    { console: true },
+    { window: new EventTarget(), console, setTimeout: env.setTimeout },
+  ).start(rt);
+  rt.bus.subscribe((s) => {
+    if (s.type === "error") console.error("exporter failed", new Error("inside"));
+  });
+  console.error(new Error("outside"));
+  env.advance(0);
+  env.advance(0);
+  stop();
+  assert.deepEqual(rt.counts, ["errors.console"]);
+});

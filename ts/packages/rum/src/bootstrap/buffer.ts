@@ -7,7 +7,8 @@
  * storage, up to maxEntries early errors (ErrorEvents whose target is not an element: an element's
  * error is a resource error, the errors collector's job), unhandled rejections, CSP violations and
  * clicks, for at most BOOTSTRAP_MAX_MILLIS, after which its listeners are removed. setupRum takes
- * the buffer once its collectors started and replays it only while consent is still granted.
+ * the buffer just before its collectors start, and replays it once they started, only when it
+ * starts with consent granted.
  */
 
 export const BOOTSTRAP_KEY: unique symbol = Symbol.for("libo11y.rum.bootstrap") as never;

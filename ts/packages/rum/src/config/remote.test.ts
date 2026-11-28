@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createFakeStorage } from "../test-support/fake-storage.ts";
 import { manualTimers } from "../test-support/manual-timers.ts";
-import { CONFIG_STORAGE_KEY, createRemoteConfig } from "./remote.ts";
+import { CONFIG_STORAGE_KEY, createRemoteConfig, REQUEST_TIMEOUT_MILLIS } from "./remote.ts";
 
 const URL_ = "https://app.test/_o11y/v1/config?service=web";
 
@@ -191,4 +191,47 @@ test("a refresh that never answers does not stack requests", async () => {
   await settle();
   stop();
   assert.equal(calls, 1);
+});
+
+test("a start after clear sends a new request even while the old one is in flight", async () => {
+  const calls: ((r: Response) => void)[] = [];
+  const f = (() => new Promise<Response>((r) => calls.push(r))) as unknown as typeof fetch;
+  const { c } = client(f);
+  const stop = c.start(() => {});
+  stop();
+  c.clear();
+  const seen: (string | undefined)[] = [];
+  const stop2 = c.start((d) => seen.push(d?.version));
+  assert.equal(calls.length, 2);
+  calls[0]?.(new Response(body("old", { enabled: false }), { status: 200 }));
+  calls[1]?.(new Response(body("new"), { status: 200 }));
+  await settle();
+  stop2();
+  assert.deepEqual(seen, ["new"]);
+});
+
+test("a body that never arrives times out, and the next refresh asks again", async () => {
+  let calls = 0;
+  const f = (async () => {
+    calls++;
+    return { status: 200, headers: new Headers(), json: () => new Promise(() => {}) } as unknown as Response;
+  }) as unknown as typeof fetch;
+  const { c, t } = client(f);
+  const pending = c.refresh();
+  await settle();
+  t.advance(REQUEST_TIMEOUT_MILLIS);
+  assert.equal(await pending, false);
+  void c.refresh();
+  await settle();
+  assert.equal(calls, 2);
+});
+
+test("find reads a document another tab cached since this one loaded", async () => {
+  const storage = createFakeStorage();
+  const a = client(scripted(new Response(body("v1"), { status: 200 })).f, storage).c;
+  await a.refresh();
+  const b = client(scripted(new Response(body("v2"), { status: 200 })).f, storage).c;
+  await b.refresh();
+  assert.equal(a.find("v2")?.version, "v2");
+  assert.equal(a.current()?.version, "v2");
 });

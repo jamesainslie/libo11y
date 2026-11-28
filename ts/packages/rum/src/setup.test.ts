@@ -820,6 +820,7 @@ test("nothing is fetched or stored before consent, and revoking removes the cach
   open = await setupRumWith({ ...OPTS, rum: { remoteConfig: remoteConfig() } }, h.deps);
   await new Promise((r) => setTimeout(r, 10));
   assert.equal(c.urls.length, 0);
+  assert.equal(h.storage.items.size, 0);
   open.consent.grant();
   await until(() => h.storage.items.has(CONFIG_STORAGE_KEY), "the cached document");
   await open.consent.revoke();
@@ -1068,4 +1069,42 @@ test("a route the router named before consent is ignored once the URL moved on",
   open.consent.grant();
   await until(() => open?.rum.sessionId() !== undefined, "the session");
   assert.deepEqual(seen, ["start /documents/$id"]);
+});
+
+test("while remote configuration has switched RUM off, a session rotation sends no session events", async () => {
+  let now = 1_000_000;
+  const c = configFetch(new Response(configBody("k1", { enabled: false }), { status: 200 }));
+  const h = harness({ fetch: c.f, now: () => now });
+  open = await setupRumWith(
+    { ...OPTS, consent: { initial: "granted" }, rum: { remoteConfig: remoteConfig() } },
+    h.deps,
+  );
+  const rt = runtimeOf(open);
+  assert.ok(rt);
+  await until(() => rt.views.current() === undefined, "the kill switch");
+  await open.forceFlush();
+  const before = sentEvents(h.transport).length;
+  now += 900_000;
+  rt.session.current();
+  h.document.hide();
+  await new Promise((r) => setTimeout(r, 600));
+  await open.forceFlush();
+  assert.equal(sentEvents(h.transport).length, before);
+});
+
+test("a route named before consent on another path keeps neither its name nor its render", async () => {
+  const h = harness();
+  let href = "https://app.test/a";
+  open = await setupRumWith({ ...OPTS }, { ...h.deps, location: () => href });
+  const rt = runtimeOf(open);
+  assert.ok(rt);
+  const seen: string[] = [];
+  rt.views.subscribe((e) => seen.push(`${e.type} ${e.view.name}`));
+  open.rum.setViewName("/a");
+  open.rum.viewRendered();
+  href = "https://app.test/b";
+  open.rum.setViewName("/b");
+  open.consent.grant();
+  await until(() => open?.rum.sessionId() !== undefined, "the session");
+  assert.deepEqual(seen, ["start /b", "rename /b"]);
 });

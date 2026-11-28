@@ -97,7 +97,8 @@ every suite on Bun 1.3.13 and Node 24.
   summary and uploads the JSON as the `rum-overhead` artifact. The limits
   (8 ms per view, 4 ms per interaction) guard against regressions and are
   not a target. It is a benchmark: never run it on a shared machine
-  without the owner's approval. CI runs it.
+  without the owner's approval. CI runs it; elsewhere it skips itself
+  unless `LIBO11Y_BENCH=1` is set.
 - **Packing.** `ts/scripts/release.ts` sets the lockstep version
   (`version X.Y.Z`) and packs each package (`pack OUTDIR`). The packed
   `package.json` has exact versions in place of `workspace:` ranges, and

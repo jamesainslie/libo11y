@@ -184,6 +184,8 @@ export function errorsWith(opts: ErrorsOptions, env: ErrorsEnv): RumCollector {
           : (...args: unknown[]): void => {
               try {
                 const logged = args.filter((a): a is object => typeof a === "object" && a !== null);
+                // A console.error made while an error is being recorded is not recorded, deferred or not.
+                if (recording) return;
                 if (logged.length === 0) record("console", consoleError(args));
                 else if (!logged.some((a) => wasRecorded(rt, a))) {
                   // React 19 logs an error a boundary caught before componentDidCatch records it with
