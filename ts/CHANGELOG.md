@@ -13,6 +13,11 @@ adhere to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `errors()` for `@libo11y/rum-react-native` records uncaught exceptions,
+  unhandled Hermes rejections, failed requests, and optional `console.error`
+  calls. Fatal exceptions flush RUM before calling React Native's previous
+  handler, with a two-second timeout. Android and iOS Hermes bundle frames
+  use stable URLs for source-map lookup.
 - `@libo11y/rum-react-native`, RUM for React Native apps on Hermes over
   `@libo11y/react-native`. In development: it is not released and not on
   npm, and first ships in the next TypeScript release.
