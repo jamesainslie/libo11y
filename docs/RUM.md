@@ -401,6 +401,115 @@ a rename with the rule `libo11y_rename_needs_transform`. A new span shape
 needs a change to the spec checker too, because `libo11y_rum_span_kind`
 accepts only `view`, `action` and `app_load`.
 
+## Session replay
+
+Session replay records what a kept session's pages showed, so a player
+can draw them again. The browser collector is `replay()` from
+`@libo11y/rum-replay`, and the gateway `go/o11yrum` stores, serves and
+erases the recordings. The collector's
+[README](../ts/packages/rum-replay/README.md) and the gateway's
+[README](../go/o11yrum/README.md#session-replay) hold the details. This
+section is the contract between them.
+
+### What is recorded
+
+The collector records the DOM with rrweb's recorder, pinned at 2.2.2,
+and passes every event through libo11y's own scrubber before it is
+buffered. The scrubber is an allow-list: an event, field or attribute it
+does not know is dropped. The gateway runs the same rules again, and both
+implementations run the shared vectors in
+[`conformance/rum-replay`](../conformance/rum-replay).
+
+| Recorded | Never recorded |
+|---|---|
+| The DOM, its mutations, scroll, viewport and pointer movement | Input values (`value`, `checked`, `selected`) and input events |
+| Text, masked: every character except ASCII whitespace becomes `*` | Text under a form control, editable content or `[data-o11y-mask]`, whatever the unmask list says |
+| Text under a selector the app's code lists in `privacy.unmask` | Anything under `[data-o11y-block]` or a block selector, which becomes an empty placeholder |
+| Attributes on the allow-list, with text attributes masked | Every other attribute, including `on*` handlers and `data-*` |
+| URLs with their path and the query allow-list | Query parameters off the allow-list, fragments, userinfo, and non-web schemes |
+| Stylesheets, with their URLs stripped | Canvas pixels, fonts, console logs, custom and plugin events |
+
+Markup alone never unmasks, and remote configuration can only make replay
+stricter. Nothing is recorded, buffered or uploaded unless consent is
+`granted`, and revoking consent discards every buffered segment.
+
+### Segments and their numbers
+
+A recording is cut into segments. Each starts with a full snapshot, so a
+player can start at any segment and a lost upload loses only its own
+time. A segment closes 30 seconds after it opened, at 1 MiB or 10,000
+events, when the page hides, when the session changes and when the
+recorder stops. An idle page sends nothing.
+
+`o11y.rum.replay.segment` is the segment's index in the session. Tabs
+share a session, so they share one counter in `localStorage`, taken under
+a Web Lock when a segment is about to upload. Each segment also carries a
+`recording` ID, one per tab and session, which tells a player which
+segments continue one DOM.
+
+### Correlation
+
+Each segment's envelope lists the views current during it (ID, name,
+start, and the view span's trace and span IDs when it has one) and up to
+200 request spans started during it, so a player can jump from a moment to its trace.
+While a session uploads, its `o11y.rum.error` and `o11y.rum.frustration`
+events carry `o11y.rum.replay.segment` of the segment being sent or last
+sent, so an error leads to its segment.
+
+### Upload
+
+Segments upload only for kept sessions and only while consent is granted.
+A head-sampled session uploads as it records. With `onRetain`, a session
+that is not head-sampled keeps its last segments in memory and uploads
+them only if an error or frustration keeps the session. The wire format
+is in [the gateway wire contract](#the-gateway-wire-contract): one
+gzipped JSON envelope per `POST /_o11y/v1/replay`, without credentials,
+retried after `Retry-After` on 429 and 503, dropped on any other 4xx.
+
+### Storage, retention and the read API
+
+The gateway scrubs each segment again and, by default, masks all text
+whatever the client sent. An operator who sets an app's
+`replay.unmasked_text: true` keeps the text the app's code unmasked;
+text under form controls, editable content and mask selectors is still
+masked. The gateway corrects clock skew from `sent_at`, then stores two
+objects per segment in the object store:
+`replay/<namespace>/<session.id>/<segment>.json.gz` (the envelope) and
+`<segment>.meta.json` (its metadata). A retried upload overwrites them.
+
+Segments expire after `replay.retention` (default 30 days). The read API
+never serves an expired segment, and a sweeper or a bucket lifecycle rule
+deletes them.
+
+The read API is internal. The gateway serves it only on its own
+listener, `replay.read_listen`, behind bearer tokens from
+`replay.read_token_file`, which `SIGHUP` reloads. It lists a session's
+segments, serves one segment, and erases a session for a subject access
+or erasure request. A player backend calls it server side. No player
+ships yet; the end-to-end journey (`make rum-e2e`) replays what it reads
+back with `@rrweb/replay`.
+
+```mermaid
+sequenceDiagram
+  participant P as page (replay collector)
+  participant G as gateway
+  participant S as object store
+  participant R as player backend
+  P->>P: record, scrub, cut a segment
+  P->>G: POST /_o11y/v1/replay (kept session, consent granted)
+  G->>G: edge checks, scrub again, correct skew
+  G->>S: put the segment and its metadata
+  R->>G: GET sessions/{id} on the read listener, bearer token
+  G->>S: list and get the metadata
+  G-->>R: the segment list
+  R->>G: GET sessions/{id}/segments/{n}
+  G->>S: get the segment
+  G-->>R: the gzipped segment
+  R->>G: DELETE sessions/{id}
+  G->>S: delete every object of the session
+  G-->>R: what was deleted
+```
+
 ## Privacy
 
 `o11y.rum.element.text` is classified `pii`, because UI text can show

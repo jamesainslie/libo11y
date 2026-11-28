@@ -173,3 +173,31 @@ configuration can only make replay stricter:
 
 A selector that does not parse is dropped, and so is any field not in the
 table.
+
+## Reading recordings back
+
+The gateway serves stored segments on an internal read API, behind a
+bearer token, for a player backend to call server side, and erases a
+session on request. See
+[The read API and erasure](../../../go/o11yrum/README.md#the-read-api-and-erasure).
+A stored segment is the uploaded envelope after the gateway's own
+scrubbing, with `service`, `session`, `segment`, `stored_at` and
+`clock_offset_ms` added. Its `events` replay with
+[`@rrweb/replay`](https://www.npmjs.com/package/@rrweb/replay) 2.2.2, and
+each segment replays on its own because it starts with a full snapshot.
+`make rum-e2e` proves the whole path in Chromium: it records a session,
+stores it through a gateway built from the checkout, reads it back with a
+token, replays it, and erases it.
+
+## Budgets
+
+- **Size.** `replay()` adds at most 11,264 bytes, gzipped, to the page's
+  initial bundle over `setupRum`. The lazily loaded recorder chunk is at
+  most 26,368 bytes gzipped. `make ts-size` checks both against
+  `ts/size-budget.json`.
+- **Main-thread time.** The `ts-bench` workflow measures what replay adds
+  over RUM alone, with default options, in Chromium: at most 12 ms of
+  main-thread task time per soft navigation and 4 ms per click, on a page
+  that swaps 200 nodes per navigation and updates 50 per click. See the
+  overhead benchmark in
+  [CONVENTIONS.md](../../../docs/CONVENTIONS.md).
