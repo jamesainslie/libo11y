@@ -13,13 +13,14 @@ import {
 import { AppState, Dimensions, Platform } from "react-native";
 import type { ReactNativeEnv } from "./contracts/env.ts";
 import { installNetworkInstrumentation } from "./instrumentation/network.ts";
+import { jsGlobals } from "./js-globals.ts";
 import { appStateLifecycle } from "./lifecycle.ts";
 import type { ReactNativeDeps } from "./setup.ts";
 import { openStorageQueue } from "./storage/queue.ts";
 
 declare const __DEV__: boolean | undefined;
 
-/** React Native's AppState, Platform and Dimensions, read when called. */
+/** React Native's AppState, Platform and Dimensions, and the ErrorUtils and HermesInternal globals, read when called. */
 export function defaultReactNativeEnv(): ReactNativeEnv {
   const p = Platform as { OS: string; isPad?: boolean; isTV?: boolean };
   return {
@@ -32,6 +33,7 @@ export function defaultReactNativeEnv(): ReactNativeEnv {
       return { width: s.width, height: s.height };
     },
     dev: typeof __DEV__ === "boolean" ? __DEV__ : false,
+    ...jsGlobals(globalThis),
   };
 }
 

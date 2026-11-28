@@ -21,6 +21,9 @@ export { AddErrorOptions }
 
 export { CollectorName }
 
+// @public
+export function errors(opts?: RnErrorsOptions): RumCollector;
+
 export { KeyValueStorage }
 
 // @public
@@ -40,6 +43,13 @@ export function remoteConfig(opts?: RemoteConfigOptions): RemoteConfig;
 export { RemoteConfigOptions }
 
 export { RequestStartHook }
+
+// @public
+export interface RnErrorsOptions {
+    readonly console?: boolean;
+    readonly fatalFlushMillis?: number;
+    readonly unhandledRejections?: "release" | "always" | "never";
+}
 
 export { Rum }
 

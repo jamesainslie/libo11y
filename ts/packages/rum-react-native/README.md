@@ -22,7 +22,7 @@ which keeps everything RUM stores in the app's documents and fills in the
 app version and the over-the-air update ID, as `setupExpo` does:
 
 ```ts
-import { remoteConfig, screens } from "@libo11y/rum-react-native";
+import { errors, remoteConfig, screens } from "@libo11y/rum-react-native";
 import { setupRumExpo } from "@libo11y/rum-react-native/expo";
 
 export const telemetryReady = setupRumExpo({
@@ -33,7 +33,7 @@ export const telemetryReady = setupRumExpo({
   instrumentations: { propagateTo: ["https://api.example.com"] },
   rum: {
     clientToken: "pub-my-app",
-    collectors: [screens()],
+    collectors: [screens(), errors()],
     remoteConfig: remoteConfig(),
   },
 });
@@ -89,6 +89,12 @@ effect of the root component. It ends the first screen's span and the
   toward the screen's summary and leave breadcrumbs.
   `rum.onRequestStart` hooks run on each of them, which is how
   `connectRequestNaming` names Connect calls.
+- **Errors.** Add `errors()` to collect uncaught exceptions, unhandled Hermes
+  rejections in release builds, and failed requests. Set `console: true`
+  to collect `console.error` calls. Fatal exceptions give RUM up to two
+  seconds to flush before calling the previous React Native handler.
+  Hermes bundle frames on Android and iOS use stable bundle URLs for
+  source-map lookup.
 
 Revoking consent removes the session, the retention buffer and the
 remote configuration cache from the app's storage, also when only an
@@ -106,5 +112,5 @@ not that tap's child.
 ## Status
 
 In development. The package is not released and not on npm. It first
-ships in the next TypeScript release, after `ts/v0.4.0`. Errors, taps
-and the Expo Router adapter come in later steps.
+ships in the next TypeScript release, after `ts/v0.4.0`. Tap collection
+comes in a later step.

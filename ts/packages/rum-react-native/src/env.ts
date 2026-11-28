@@ -4,7 +4,7 @@
  * react-native, so node tests never load it (boundary.test.ts enforces that).
  */
 import { defaultReactNativeDeps, defaultReactNativeEnv } from "@libo11y/react-native/env";
-import { type AppLifecycle, appStateLifecycle } from "@libo11y/react-native/internal";
+import { type AppLifecycle, appStateLifecycle, type ReactNativeEnv } from "@libo11y/react-native/internal";
 import type { RumReactNativeEnv, StartupTimingLike } from "./contracts/env.ts";
 import type { RumReactNativeDeps } from "./setup.ts";
 
@@ -14,13 +14,21 @@ const perf = (globalThis as { performance?: Performance & { rnStartupTiming?: St
 /** performance.now() when this module was first evaluated: the app start without rnStartupTiming. */
 const LOADED_AT = perf?.now() ?? 0;
 
-/** React Native's frames, timers and startup timing, with the app's lifecycle for visible. */
+/**
+ * React Native's frames, timers, startup timing, console, __DEV__, ErrorUtils and HermesInternal,
+ * with the app's lifecycle for visible.
+ */
 export function defaultRumEnv(
-  lifecycle: AppLifecycle = appStateLifecycle(defaultReactNativeEnv().appState),
+  rn: ReactNativeEnv = defaultReactNativeEnv(),
+  lifecycle: AppLifecycle = appStateLifecycle(rn.appState),
 ): RumReactNativeEnv {
   const startup = perf?.rnStartupTiming;
   return {
     ...(startup === undefined ? {} : { startupTiming: startup }),
+    ...(rn.errorUtils === undefined ? {} : { errorUtils: rn.errorUtils }),
+    ...(rn.hermes === undefined ? {} : { hermes: rn.hermes }),
+    dev: rn.dev,
+    console: globalThis.console,
     loadedAt: LOADED_AT,
     visible: () => lifecycle.visible(),
     requestAnimationFrame: (cb) => requestAnimationFrame(cb),
@@ -35,7 +43,7 @@ export function defaultRumReactNativeDeps(): RumReactNativeDeps {
   const now = (): number => perf?.now() ?? Date.now();
   return {
     platform,
-    env: defaultRumEnv(platform.lifecycle),
+    env: defaultRumEnv(platform.env, platform.lifecycle),
     now: Date.now,
     perfNow: now,
     // React Native has performance.timeOrigin; a runtime without it counts from now.

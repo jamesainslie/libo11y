@@ -110,6 +110,11 @@
       "base": "@libo11y/rum-react-native setupRumReactNative",
       "code": "import { screens, setupRumReactNative } from \"@libo11y/rum-react-native\"; (globalThis as Record<string, unknown>).__x = [setupRumReactNative, screens()];\n",
       "budget": 1536
+    },
+    "@libo11y/rum-react-native errors()": {
+      "base": "@libo11y/rum-react-native setupRumReactNative",
+      "code": "import { errors, setupRumReactNative } from \"@libo11y/rum-react-native\"; (globalThis as Record<string, unknown>).__x = [setupRumReactNative, errors()];\n",
+      "budget": 1280
     }
   }
 }

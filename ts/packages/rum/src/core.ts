@@ -68,8 +68,12 @@ export {
   setupRumCore,
 } from "./core-setup.ts";
 export { createBreadcrumbs } from "./errors/breadcrumbs.ts";
+export { type ConsoleLike, watchConsoleErrors } from "./errors/console.ts";
+export { DescribedError } from "./errors/described.ts";
+export { watchNetworkErrors } from "./errors/network.ts";
 export { normalizeError } from "./errors/normalize.ts";
 export { recordError, wasRecorded } from "./errors/record.ts";
+export { createErrorRecorder, type ErrorRecorder } from "./errors/recorder.ts";
 export { createFrustrationDetector } from "./frustration/detect.ts";
 export { randomUuid } from "./ids.ts";
 export type { AddErrorOptions, Rum, RumOptions } from "./options.ts";

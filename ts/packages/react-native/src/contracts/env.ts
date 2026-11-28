@@ -9,6 +9,28 @@ export interface AppStateLike {
   addEventListener(type: "change", listener: (state: string) => void): { remove(): void };
 }
 
+/** React Native's global error handler: every uncaught JavaScript error, fatal or not. */
+export type GlobalErrorHandler = (error: unknown, isFatal?: boolean) => void;
+
+/** The part of React Native's global ErrorUtils (`@react-native/js-polyfills`) RUM chains into. */
+export interface ErrorUtilsLike {
+  getGlobalHandler(): GlobalErrorHandler;
+  setGlobalHandler(handler: GlobalErrorHandler): void;
+}
+
+/** The options of Hermes's promise rejection tracker, as the promise package's rejection tracking takes them. */
+export interface PromiseRejectionTrackerOptions {
+  readonly allRejections?: boolean;
+  readonly onUnhandled?: (id: number, rejection: unknown) => void;
+  readonly onHandled?: (id: number, rejection?: unknown) => void;
+}
+
+/** The part of Hermes's global HermesInternal RUM uses. Only one rejection tracker is active: the last enabled. */
+export interface HermesInternalLike {
+  enablePromiseRejectionTracker?(options: PromiseRejectionTrackerOptions): void;
+  hasPromise?(): boolean;
+}
+
 /** What React Native telemetry reads from React Native. */
 export interface ReactNativeEnv {
   readonly appState: AppStateLike;
@@ -22,6 +44,10 @@ export interface ReactNativeEnv {
   readonly screen: () => { readonly width: number; readonly height: number } | undefined;
   /** __DEV__. */
   readonly dev: boolean;
+  /** The global ErrorUtils, absent where the runtime has none (Expo web). */
+  readonly errorUtils?: ErrorUtilsLike;
+  /** The global HermesInternal, absent where the engine is not Hermes (Expo web, JSC). */
+  readonly hermes?: HermesInternalLike;
 }
 
 /** When the app is in the foreground. */

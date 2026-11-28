@@ -3,7 +3,8 @@
  * in the current view's summary for every consented session, published on the bus for frustration
  * detection, retains the session (decision P12), and is emitted as o11y.rum.error (detail, so it is
  * buffered for an unkept session) with the breadcrumbs, at most 100 events per view. An error while
- * an action is open is emitted in the action's context.
+ * an action is open is emitted in the action's context. The runtime's mapStack, where the platform
+ * has one, rewrites the stack and component stack first.
  */
 import {
   ATTR_RUM_ERROR_BREADCRUMBS,
@@ -54,7 +55,8 @@ export function recordError(
   if (n >= MAX_ERROR_EVENTS_PER_VIEW) return;
   emitted.set(rt, { viewId, n: n + 1 });
   const e = normalizeError(error);
-  const stack = extra.componentStack === undefined ? e.stack : `${e.stack ?? ""}\n${extra.componentStack}`;
+  const raw = extra.componentStack === undefined ? e.stack : `${e.stack ?? ""}\n${extra.componentStack}`;
+  const stack = raw === undefined || rt.mapStack === undefined ? raw : rt.mapStack(raw);
   const crumbs = rt.breadcrumbs();
   const action = rt.activeAction();
   rt.emit(
