@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import sys
 import threading
-from collections.abc import Generator, Mapping
+import time
+import traceback
+from collections.abc import Callable, Generator, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from datetime import UTC, datetime
-from typing import Any, Final, TextIO
+from types import TracebackType
+from typing import Any, Final, TextIO, cast
 
 from opentelemetry import trace
 from opentelemetry.sdk._logs import LoggerProvider
@@ -52,9 +56,51 @@ _STANDARD_LOG_ATTRS: Final[frozenset[str]] = frozenset(
 )
 
 
+# Correlation keys only the pipeline writes, at the top level of every record
+# emitted inside a valid span (go/internal/fanout/fanout.go).
+TRACE_ID_KEY: Final[str] = "trace_id"
+SPAN_ID_KEY: Final[str] = "span_id"
+_RESERVED_ATTR_KEYS: Final[frozenset[str]] = frozenset({TRACE_ID_KEY, SPAN_ID_KEY})
+
+# Top-level console keys the formatter writes itself; user attributes never duplicate them.
+_CONSOLE_KEYS: Final[frozenset[str]] = frozenset(
+    {"time", "level", "msg", TRACE_ID_KEY, SPAN_ID_KEY}
+)
+
+_EXCEPTION_TYPE: Final[str] = "exception.type"
+_EXCEPTION_MESSAGE: Final[str] = "exception.message"
+_EXCEPTION_STACKTRACE: Final[str] = "exception.stacktrace"
+_ERROR_TYPE: Final[str] = "error.type"
+
+# Records from this logger tree are the OpenTelemetry SDK's own diagnostics.
+_SDK_LOGGER: Final[str] = "opentelemetry"
+
+# The SDK error rate limit, as go/errhandler.go shapes it: a burst of
+# _ERROR_BURST reports, refilling one report per _ERROR_REFILL_SECONDS.
+_ERROR_BURST: Final[int] = 5
+_ERROR_REFILL_SECONDS: Final[float] = 30.0
+
+type _ExcInfo = (
+    tuple[type[BaseException], BaseException, TracebackType | None] | tuple[None, None, None]
+)
+
+
 @contextmanager
 def force_emit() -> Generator[None]:
-    """Context manager whose log records bypass configured level gates."""
+    """Context manager whose log records bypass the libo11y handler's level gates.
+
+    Inside the block the libo11y logging handler accepts a record at any
+    level and delivers it to every leg (console, OTLP and each extra log
+    handler) whatever that leg's own level. Filters, attribute replacement,
+    sensitivity classification and correlation still apply.
+
+    The gate it bypasses is the handler's, not the standard library's. A
+    record the originating logger's own level rejects (for example a DEBUG
+    call on a logger that inherits the root INFO level) is dropped by
+    logging before any handler runs, so force_emit cannot deliver it. Lower
+    that logger's level, or use Telemetry.event, which builds the record
+    itself and is the structural always-emit path.
+    """
     token = _FORCE_EMIT.set(True)
     try:
         yield
@@ -86,7 +132,20 @@ def _json_default(obj: Any) -> Any:
     return str(obj)
 
 
+def _finite_json(value: Any) -> Any:
+    """Render non-finite floats as their text form, which JSON has no literal for."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return str(value)
+    if isinstance(value, Mapping):
+        return {k: _finite_json(v) for k, v in cast(Mapping[str, Any], value).items()}
+    if isinstance(value, (list, tuple)):
+        return [_finite_json(v) for v in cast(Sequence[Any], value)]
+    return value
+
+
 def _format_logfmt_value(val: Any) -> str:
+    if isinstance(val, (bytes, bytearray)):
+        val = val.decode("utf-8", errors="replace")
     if isinstance(val, bool):
         return "true" if val else "false"
     if isinstance(val, (int, float)):
@@ -114,7 +173,8 @@ def _format_console_line(
         if span_id:
             parts.append(f"span_id={span_id}")
         for k, v in attrs.items():
-            parts.append(f"{k}={_format_logfmt_value(v)}")
+            if k not in _CONSOLE_KEYS:
+                parts.append(f"{k}={_format_logfmt_value(v)}")
         return " ".join(parts) + "\n"
 
     payload: dict[str, Any] = {
@@ -127,9 +187,9 @@ def _format_console_line(
     if span_id:
         payload["span_id"] = span_id
     for k, v in attrs.items():
-        if k not in ("time", "level", "msg", "trace_id", "span_id"):
-            payload[k] = v
-    return json.dumps(payload, separators=(",", ":"), default=_json_default) + "\n"
+        if k not in _CONSOLE_KEYS:
+            payload[k] = _finite_json(v)
+    return json.dumps(payload, separators=(",", ":"), default=_json_default, allow_nan=False) + "\n"
 
 
 def _extract_extra(record: logging.LogRecord) -> dict[str, Any]:
@@ -139,6 +199,91 @@ def _extract_extra(record: logging.LogRecord) -> dict[str, Any]:
             continue
         out[k] = v
     return out
+
+
+def _without_reserved(attrs: Mapping[str, Any]) -> dict[str, Any]:
+    """Drop top-level trace_id and span_id, which only the pipeline writes (SPEC section 4)."""
+    return {k: v for k, v in attrs.items() if k not in _RESERVED_ATTR_KEYS}
+
+
+def _exception_type_name(exc_type: type[BaseException]) -> str:
+    """Qualified class name, rendered as the OpenTelemetry Python SDK renders it."""
+    module = exc_type.__module__
+    qualname = exc_type.__qualname__
+    return f"{module}.{qualname}" if module and module != "builtins" else qualname
+
+
+def _add_exception_attributes(
+    attrs: dict[str, Any], exc_info: _ExcInfo | None, levelno: int
+) -> None:
+    """Map a record's exc_info to the semconv exception attributes the caller did not set.
+
+    A record at ERROR or above also carries error.type (SPEC section 3).
+    """
+    if not exc_info:
+        return
+    exc_type, exc, tb = exc_info
+    if exc_type is None or exc is None:
+        return
+    type_name = _exception_type_name(exc_type)
+    attrs.setdefault(_EXCEPTION_TYPE, type_name)
+    if levelno >= logging.ERROR:
+        attrs.setdefault(_ERROR_TYPE, type_name)
+    attrs.setdefault(_EXCEPTION_MESSAGE, str(exc))
+    attrs.setdefault(_EXCEPTION_STACKTRACE, "".join(traceback.format_exception(exc_type, exc, tb)))
+
+
+def _sink_record(
+    record: logging.LogRecord,
+    attrs: Mapping[str, Any],
+    trace_id: str | None,
+    span_id: str | None,
+) -> logging.LogRecord:
+    """Build the record an extra log handler receives.
+
+    It keeps the standard fields of the application's record and carries only
+    the classified attributes, prefixed with the correlation ids inside a
+    valid span as Go's fanout.Correlate does. The application's record is
+    never mutated.
+    """
+    fields: dict[str, Any] = {k: v for k, v in record.__dict__.items() if k in _STANDARD_LOG_ATTRS}
+    if trace_id is not None and span_id is not None:
+        fields[TRACE_ID_KEY] = trace_id
+        fields[SPAN_ID_KEY] = span_id
+    for k, v in attrs.items():
+        if k not in _STANDARD_LOG_ATTRS:
+            fields.setdefault(k, v)
+    return logging.makeLogRecord(fields)
+
+
+def _is_sdk_record(record: logging.LogRecord) -> bool:
+    return record.name == _SDK_LOGGER or record.name.startswith(f"{_SDK_LOGGER}.")
+
+
+class _RateLimiter:
+    """A token bucket, as go/errhandler.go uses for telemetry errors."""
+
+    def __init__(self, clock: Callable[[], float]) -> None:
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._tokens = float(_ERROR_BURST)
+        self._last = clock()
+        self._suppressed = 0
+
+    def take(self) -> int | None:
+        """Return None when the call is suppressed, else how many were suppressed before it."""
+        with self._lock:
+            now = self._clock()
+            self._tokens = min(
+                float(_ERROR_BURST), self._tokens + (now - self._last) / _ERROR_REFILL_SECONDS
+            )
+            self._last = now
+            if self._tokens < 1:
+                self._suppressed += 1
+                return None
+            self._tokens -= 1
+            count, self._suppressed = self._suppressed, 0
+            return count
 
 
 class O11yLoggingHandler(logging.Handler):
@@ -157,6 +302,7 @@ class O11yLoggingHandler(logging.Handler):
         attr_replacer: AttrReplacer | None,
         extra_handlers: tuple[logging.Handler, ...],
         error_handler: ErrorHandler | None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         super().__init__(level=logging.NOTSET)
         self._min_level = level
@@ -170,6 +316,7 @@ class O11yLoggingHandler(logging.Handler):
         self._extra_handlers = extra_handlers
         self._error_handler = error_handler if error_handler is not None else default_error_handler
         self._write_lock = threading.Lock()
+        self._sdk_errors = _RateLimiter(clock)
 
     @property
     def min_level(self) -> int:
@@ -179,6 +326,9 @@ class O11yLoggingHandler(logging.Handler):
         self._min_level = level
 
     def emit(self, record: logging.LogRecord) -> None:
+        if _is_sdk_record(record):
+            self._report_sdk_record(record)
+            return
         self._emit_internal(record, raise_on_error=False)
 
     def emit_checked(
@@ -219,12 +369,16 @@ class O11yLoggingHandler(logging.Handler):
         if not forced and record.levelno < self._min_level:
             return
 
+        observed_ns = time.time_ns()
         token = _IN_HANDLER.set(True)
         try:
-            raw_attrs = (
-                dict(explicit_attrs) if explicit_attrs is not None else _extract_extra(record)
+            source = explicit_attrs if explicit_attrs is not None else _extract_extra(record)
+            raw_attrs = _without_reserved(source)
+            _add_exception_attributes(raw_attrs, record.exc_info, record.levelno)
+            # Filter again so a replacer cannot rename a key into a reserved one.
+            classified = _without_reserved(
+                self._policy.classify_log_attributes(raw_attrs, self._attr_replacer)
             )
-            classified = self._policy.classify_log_attributes(raw_attrs, self._attr_replacer)
 
             span = trace.get_current_span()
             sc = span.get_span_context()
@@ -261,6 +415,7 @@ class O11yLoggingHandler(logging.Handler):
                     emit_otel_log(
                         self._logger_provider,
                         timestamp_ns=ts_ns,
+                        observed_timestamp_ns=observed_ns,
                         levelno=record.levelno,
                         body=message,
                         attributes=classified,
@@ -273,9 +428,11 @@ class O11yLoggingHandler(logging.Handler):
                     self._report_error(exc)
 
             for extra_handler in self._extra_handlers:
+                if not forced and record.levelno < extra_handler.level:
+                    continue
                 try:
-                    if forced or record.levelno >= extra_handler.level:
-                        extra_handler.emit(record)
+                    # handle() applies the handler's filters and lock before emit().
+                    extra_handler.handle(_sink_record(record, classified, trace_id, span_id))
                 except Exception as exc:
                     if raise_on_error:
                         raise
@@ -286,6 +443,31 @@ class O11yLoggingHandler(logging.Handler):
             self._report_error(exc)
         finally:
             _IN_HANDLER.reset(token)
+
+    def _report_sdk_record(self, record: logging.LogRecord) -> None:
+        """Send an OpenTelemetry SDK warning or error to the error handler, rate limited.
+
+        The SDK logs from exporter worker threads, outside the re-entrancy
+        guard, so its records never reach the console, OTLP or extra legs: a
+        failing exporter would otherwise be fed its own failures. Records
+        below WARNING are SDK debugging output, not errors, and are dropped.
+        """
+        if record.levelno < logging.WARNING:
+            return
+        suppressed = self._sdk_errors.take()
+        if suppressed is None:
+            return
+        try:
+            message = record.getMessage()
+        except Exception:
+            message = str(record.msg)
+        text = f"o11y: telemetry error: {record.name}: {message}"
+        if suppressed:
+            text = f"{text} (suppressed {suppressed})"
+        err = RuntimeError(text)
+        if record.exc_info and record.exc_info[1] is not None:
+            err.__cause__ = record.exc_info[1]
+        self._report_error(err)
 
     def _report_error(self, exc: Exception) -> None:
         with suppress(Exception):
