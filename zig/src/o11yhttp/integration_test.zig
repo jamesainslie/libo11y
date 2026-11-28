@@ -993,10 +993,21 @@ test "o11yhttp client: a 304 and a redirect answer to HEAD are final responses, 
     });
     try testing.expectEqual(std.http.Status.not_modified, cached.status);
 
-    const plain_head = try std_client.fetch(.{ .location = .{ .url = moved_url }, .method = .HEAD });
-    try testing.expectEqual(std.http.Status.moved_permanently, plain_head.status);
+    // std.http.Client.Request.receiveHead returns any response to HEAD as
+    // final. Its fetch is not called here for comparison: in Zig 0.17.1 it
+    // discards the body through the shared read-only empty reader, which
+    // crashes a release build. The wrapper skips the body of a HEAD.
     const head = try client.fetch(.background, .{ .location = .{ .url = moved_url }, .method = .HEAD });
     try testing.expectEqual(std.http.Status.moved_permanently, head.status);
+    var unused: Io.Writer.Allocating = .init(testing.allocator);
+    defer unused.deinit();
+    const head_to_writer = try client.fetch(.background, .{
+        .location = .{ .url = moved_url },
+        .method = .HEAD,
+        .response_writer = &unused.writer,
+    });
+    try testing.expectEqual(std.http.Status.moved_permanently, head_to_writer.status);
+    try testing.expectEqual(@as(usize, 0), unused.written().len);
 
     // A GET still follows the redirect.
     const followed = try client.fetch(.background, .{ .location = .{ .url = moved_url } });

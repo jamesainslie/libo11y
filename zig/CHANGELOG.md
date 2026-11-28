@@ -122,6 +122,11 @@ Requires Zig 0.17.1.
   cannot build the header list for a hop. It fell back to the caller's
   original headers, which on a cross-origin redirect still held the trace
   context and privileged headers it was meant to strip.
+- `o11yhttp.Client.fetch` no longer crashes on a `HEAD` request in a
+  release build. It drained the response body through the standard
+  library's shared empty reader, which is read-only memory there, as
+  `std.http.Client.fetch` does in Zig 0.17.1. It now skips the body of a
+  `HEAD` response.
 - `o11yhttp.Client.fetch` ends its span after it has read the response
   body. A body that failed to arrive left a span with status 200 and no
   error, and the request duration left out the body.

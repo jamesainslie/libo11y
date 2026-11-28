@@ -136,6 +136,10 @@ pub const Client = struct {
         options: std.http.Client.FetchOptions,
         response: *std.http.Client.Response,
     ) std.http.Client.FetchError!void {
+        // A response to HEAD has no body. For it `Response.reader` returns
+        // `Io.Reader.ending`, a shared constant, and draining that writes
+        // to read-only memory in a release build (Zig 0.17.1).
+        if (response.request.method == .HEAD) return;
         const response_writer = options.response_writer orelse {
             const reader = response.reader(&.{});
             _ = reader.discardRemaining() catch |err| switch (err) {
