@@ -81,7 +81,13 @@ test "structs match the headers" {
     try expectSameStruct(c.InstrumentOptions, h.o11y_instrument_options_t);
     try expectSameStruct(c.HistogramOptions, h.o11y_histogram_options_t);
     try expectSameStruct(c.InstHandle, h.o11y_counter_i64_t);
+    try expectSameStruct(c.InstHandle, h.o11y_counter_f64_t);
+    try expectSameStruct(c.InstHandle, h.o11y_updown_i64_t);
+    try expectSameStruct(c.InstHandle, h.o11y_updown_f64_t);
+    try expectSameStruct(c.InstHandle, h.o11y_histogram_i64_t);
     try expectSameStruct(c.InstHandle, h.o11y_histogram_f64_t);
+    try expectSameStruct(c.InstHandle, h.o11y_gauge_i64_t);
+    try expectSameStruct(c.InstHandle, h.o11y_gauge_f64_t);
     try expectSameStruct(c.TestOptions, h.o11y_test_options_t);
     try expectSameStruct(c.TestExemplar, h.o11y_test_exemplar_t);
     try expectSameStruct(c.TestTlsOptions, h.o11y_test_tls_options_t);
@@ -126,5 +132,6 @@ test "the header version is the manifest version" {
         h.O11Y_VERSION_MINOR,
         h.O11Y_VERSION_PATCH,
     });
-    try testing.expectEqualStrings(version, from_parts);
+    const plain = std.mem.sliceTo(version, '-');
+    try testing.expectEqualStrings(plain, from_parts);
 }

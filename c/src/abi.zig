@@ -8,6 +8,13 @@ const o11y = @import("o11y");
 const c = @import("c_types.zig");
 const rt = @import("runtime.zig");
 
+/// Do not allocate a 256 KiB per-thread TLS signal stack or call `sigaltstack`
+/// on library worker threads. A C/C++ library must leave host and sanitizer
+/// alternate signal stacks untouched.
+pub const std_options: std.Options = .{
+    .signal_stack_size = null,
+};
+
 const gpa = rt.gpa;
 
 // =========================================================================
@@ -70,6 +77,14 @@ pub fn mapSetupError(err: o11y.SetupError) c.Err {
         error.UnsupportedProtocol => .unsupported_protocol,
         error.Exporter => .exporter,
         error.OutOfMemory => .out_of_memory,
+    };
+}
+
+pub fn mapBuildError(err: anytype) c.Err {
+    return switch (err) {
+        error.InvalidArgument => .invalid_argument,
+        error.UnsupportedPropagator => .unsupported_propagator,
+        else => |e| mapSetupError(e),
     };
 }
 
@@ -274,8 +289,32 @@ pub fn convertAttrs(arena: Allocator, raw: ?[*]const c.Attr, len: usize) Allocat
     return out.items;
 }
 
-pub fn convertLogValue(arena: Allocator, v: c.LogValue, depth: usize) Allocator.Error!o11y.LogValue {
-    if (depth > 32) return .empty;
+const max_composite_depth: usize = 16;
+const composite_walk_budget: usize = 2048;
+
+const WalkState = struct {
+    remaining: usize,
+    ancestors: [@max(max_composite_depth, o11y.pii.max_depth) + 2]usize = undefined,
+    ancestor_len: usize = 0,
+
+    fn enter(self: *WalkState, addr: usize) bool {
+        for (self.ancestors[0..self.ancestor_len]) |seen| {
+            if (seen == addr) return false;
+        }
+        if (self.ancestor_len >= self.ancestors.len) return false;
+        self.ancestors[self.ancestor_len] = addr;
+        self.ancestor_len += 1;
+        return true;
+    }
+
+    fn leave(self: *WalkState) void {
+        self.ancestor_len -= 1;
+    }
+};
+
+fn convertLogValueBounded(arena: Allocator, v: c.LogValue, depth: usize, walk: *WalkState) Allocator.Error!o11y.LogValue {
+    if (walk.remaining == 0) return .empty;
+    walk.remaining -= 1;
     return switch (v.kind) {
         .empty => .empty,
         .string => blk: {
@@ -295,32 +334,47 @@ pub fn convertLogValue(arena: Allocator, v: c.LogValue, depth: usize) Allocator.
             break :blk .{ .bytes = try arena.dupe(u8, bv.data.?[0..bv.len]) };
         },
         .array => blk: {
+            if (depth >= max_composite_depth) break :blk .empty;
             const av = v.value.array_val;
             if (av.len == 0 or av.items == null) break :blk .{ .array = &.{} };
-            const out = try arena.alloc(o11y.LogValue, av.len);
-            for (av.items.?[0..av.len], out) |item, *dst| {
-                dst.* = try convertLogValue(arena, item, depth + 1);
+            if (!walk.enter(@intFromPtr(av.items.?))) break :blk .empty;
+            defer walk.leave();
+            const cap = @min(av.len, walk.remaining);
+            const out = try arena.alloc(o11y.LogValue, cap);
+            for (av.items.?[0..cap], out) |item, *dst| {
+                dst.* = try convertLogValueBounded(arena, item, depth + 1, walk);
             }
             break :blk .{ .array = out };
         },
         .map => blk: {
+            if (depth >= max_composite_depth) break :blk .empty;
             const mv = v.value.map_val;
             if (mv.len == 0 or mv.items == null) break :blk .{ .map = &.{} };
-            const out = try convertLogAttrs(arena, mv.items, mv.len, depth + 1);
+            if (!walk.enter(@intFromPtr(mv.items.?))) break :blk .empty;
+            defer walk.leave();
+            const cap = @min(mv.len, walk.remaining);
+            const out = try arena.alloc(o11y.LogAttribute, cap);
+            for (mv.items.?[0..cap], out) |src, *dst| {
+                dst.* = .{
+                    .key = try arena.dupe(u8, rt.cStrOrEmpty(src.key)),
+                    .value = try convertLogValueBounded(arena, src.value, depth + 1, walk),
+                };
+            }
             break :blk .{ .map = out };
         },
         _ => .empty,
     };
 }
 
-pub fn convertLogAttrs(arena: Allocator, raw: ?[*]const c.LogAttr, len: usize, depth: usize) Allocator.Error![]o11y.LogAttribute {
+pub fn convertLogAttrs(arena: Allocator, raw: ?[*]const c.LogAttr, len: usize) Allocator.Error![]o11y.LogAttribute {
     if (len == 0) return &.{};
     const ptr = raw orelse return &.{};
+    var walk: WalkState = .{ .remaining = composite_walk_budget * 16 };
     const out = try arena.alloc(o11y.LogAttribute, len);
     for (ptr[0..len], out) |src, *dst| {
         dst.* = .{
             .key = try arena.dupe(u8, rt.cStrOrEmpty(src.key)),
-            .value = try convertLogValue(arena, src.value, depth),
+            .value = try convertLogValueBounded(arena, src.value, 0, &walk),
         };
     }
     return out;
@@ -387,21 +441,22 @@ pub const AttrReplacerTrampoline = struct {
     userdata: ?*anyopaque,
 
     pub fn replace(ptr: ?*anyopaque, groups: []const []const u8, attr: o11y.LogAttribute, arena: Allocator) ?o11y.LogAttribute {
-        const self: *AttrReplacerTrampoline = @ptrCast(@alignCast(ptr orelse return attr));
-        const key_z = rt.dupeZ(arena, attr.key) catch return attr;
-        const c_val = zigLogValueToC(arena, attr.value, 0) catch return attr;
+        const self: *AttrReplacerTrampoline = @ptrCast(@alignCast(ptr orelse return null));
+        const key_z = rt.dupeZ(arena, attr.key) catch return null;
+        const c_val = zigLogValueToC(arena, attr.value, 0) catch return null;
 
         var c_groups_ptr: ?[*]const ?[*:0]const u8 = null;
         if (groups.len > 0) {
-            const grp_arr = arena.alloc(?[*:0]const u8, groups.len) catch return attr;
+            const grp_arr = arena.alloc(?[*:0]const u8, groups.len) catch return null;
             for (groups, grp_arr) |g, *dst| {
-                dst.* = (rt.dupeZ(arena, g) catch return attr).ptr;
+                dst.* = (rt.dupeZ(arena, g) catch return null).ptr;
             }
             c_groups_ptr = grp_arr.ptr;
         }
 
         var out_key_buf: [256]u8 = @splat(0);
         var out_val_buf: [1024]u8 = @splat(0);
+        var out_val: c.LogValue = .{ .kind = .empty, .value = .{ .int_val = 0 } };
         var replace_val: bool = false;
 
         const keep = self.func(
@@ -414,6 +469,7 @@ pub const AttrReplacerTrampoline = struct {
             out_key_buf.len,
             &out_val_buf,
             out_val_buf.len,
+            &out_val,
             &replace_val,
         );
         if (!keep) return null;
@@ -421,11 +477,16 @@ pub const AttrReplacerTrampoline = struct {
         var res = attr;
         if (out_key_buf[0] != 0) {
             const new_k = std.mem.sliceTo(&out_key_buf, 0);
-            res.key = arena.dupe(u8, new_k) catch return attr;
+            res.key = arena.dupe(u8, new_k) catch return null;
         }
         if (replace_val) {
-            const new_v = std.mem.sliceTo(&out_val_buf, 0);
-            res.value = .{ .string = arena.dupe(u8, new_v) catch return attr };
+            if (out_val.kind != .empty) {
+                var walk: WalkState = .{ .remaining = composite_walk_budget * 16 };
+                res.value = convertLogValueBounded(arena, out_val, 0, &walk) catch return null;
+            } else {
+                const new_v = std.mem.sliceTo(&out_val_buf, 0);
+                res.value = .{ .string = arena.dupe(u8, new_v) catch return null };
+            }
         }
         return res;
     }
@@ -490,13 +551,30 @@ pub const ErrorHandlerTrampoline = struct {
 // =========================================================================
 
 /// The error a C option can cause before the engine sees it.
-pub const OptionError = error{ OutOfMemory, InvalidArgument };
+pub const OptionError = error{ OutOfMemory, InvalidArgument, UnsupportedPropagator };
 
 /// Writes "o11y: <msg>" to the diagnostic and returns `error.InvalidArgument`.
 pub fn invalidOption(diag_out: ?*c.Diagnostic, comptime msg: []const u8) error{InvalidArgument} {
     writeDiagnosticText(diag_out, "o11y: " ++ msg);
     return error.InvalidArgument;
 }
+
+const NoopPropagator = struct {
+    const stateless: u8 = 0;
+    const none_fields = [_][]const u8{"none"};
+    const propagator: o11y.Propagator = .{ .ptr = &stateless, .vtable = &vtable };
+    const vtable: o11y.Propagator.VTable = .{ .inject = inject, .extract = extract, .fields = fields };
+
+    fn inject(_: *const anyopaque, _: o11y.Context, _: Allocator, _: o11y.Carrier) void {}
+
+    fn extract(_: *const anyopaque, ctx: o11y.Context, _: Allocator, _: o11y.Carrier) o11y.Context {
+        return ctx;
+    }
+
+    fn fields(_: *const anyopaque) []const []const u8 {
+        return &none_fields;
+    }
+};
 
 /// A C carrier whose callbacks read and write an engine carrier. A custom
 /// propagator receives one of these.
@@ -633,37 +711,83 @@ const EgressFilter = struct {
     }
 };
 
-/// Builds the value of the engine's `propagators` option from the C options.
+/// Builds the value of the engine's `propagators` option from the C options
+/// and `env` (`OTEL_PROPAGATORS`, ignored when `propagators_len > 0` or hermetic).
 /// With no predicate it is the configured list, which the engine composes and
 /// which is empty for the W3C default. With a predicate it is one
 /// `EgressFilter` around the configured list or around the W3C default.
 /// Everything is allocated in `arena`, which must live as long as the SDK.
 pub fn buildPropagators(
     arena: Allocator,
+    env: o11y.Env,
     raw: ?[*]const c.Propagator,
     len: usize,
     allow: ?c.BaggageEgressAllowFn,
     allow_userdata: ?*anyopaque,
     diag_out: ?*c.Diagnostic,
 ) OptionError![]const o11y.Propagator {
-    const defs: []const c.Propagator = if (raw) |ptr| ptr[0..len] else &.{};
-    const list = try arena.alloc(o11y.Propagator, defs.len);
-    for (defs, list) |def, *dst| {
-        dst.* = switch (def.kind) {
-            .trace_context => o11y.TraceContextPropagator.propagator,
-            .baggage => o11y.BaggagePropagator.propagator,
-            .custom => blk: {
-                if (def.inject == null and def.extract == null) {
-                    return invalidOption(diag_out, "a custom propagator needs an inject or an extract callback");
+    if (len > 0 and raw == null) {
+        return invalidOption(diag_out, "propagators pointer must not be null when propagators_len > 0");
+    }
+    var list: []o11y.Propagator = &.{};
+    if (len > 0) {
+        const defs = raw.?[0..len];
+        list = try arena.alloc(o11y.Propagator, defs.len);
+        for (defs, list) |def, *dst| {
+            dst.* = switch (def.kind) {
+                .trace_context => o11y.TraceContextPropagator.propagator,
+                .baggage => o11y.BaggagePropagator.propagator,
+                .custom => blk: {
+                    if (def.inject == null and def.extract == null) {
+                        return invalidOption(diag_out, "a custom propagator needs an inject or an extract callback");
+                    }
+                    if (def.fields_len > 0 and def.fields == null) {
+                        return invalidOption(diag_out, "custom propagator fields pointer must not be null when fields_len > 0");
+                    }
+                    const names = try arena.alloc([]const u8, def.fields_len);
+                    for (names, 0..) |*name, i| name.* = try arena.dupe(u8, rt.cStrOrEmpty(def.fields.?[i]));
+                    const custom = try arena.create(CustomPropagator);
+                    custom.* = .{ .def = def, .field_names = names };
+                    break :blk custom.propagator();
+                },
+                _ => return invalidOption(diag_out, "unknown propagator kind"),
+            };
+        }
+    } else if (!env.isHermetic()) {
+        if (env.get("OTEL_PROPAGATORS")) |raw_env| {
+            var parsed: std.ArrayList(o11y.Propagator) = .empty;
+            var has_tc = false;
+            var has_baggage = false;
+            var has_none = false;
+            var it = std.mem.splitScalar(u8, raw_env, ',');
+            while (it.next()) |token_raw| {
+                const name = std.mem.trim(u8, token_raw, " \t\r\n\x0b\x0c");
+                if (name.len == 0) continue;
+                if (std.mem.eql(u8, name, "tracecontext")) {
+                    if (!has_tc) {
+                        has_tc = true;
+                        try parsed.append(arena, o11y.TraceContextPropagator.propagator);
+                    }
+                } else if (std.mem.eql(u8, name, "baggage")) {
+                    if (!has_baggage) {
+                        has_baggage = true;
+                        try parsed.append(arena, o11y.BaggagePropagator.propagator);
+                    }
+                } else if (std.mem.eql(u8, name, "none")) {
+                    has_none = true;
+                } else {
+                    var msg_buf: [256]u8 = undefined;
+                    const msg = std.fmt.bufPrint(&msg_buf, "o11y: building propagator: unsupported OTEL_PROPAGATORS entry \"{s}\"", .{name}) catch "o11y: building propagator: unsupported OTEL_PROPAGATORS entry";
+                    writeDiagnosticText(diag_out, msg);
+                    return error.UnsupportedPropagator;
                 }
-                const names = try arena.alloc([]const u8, if (def.fields == null) 0 else def.fields_len);
-                for (names, 0..) |*name, i| name.* = try arena.dupe(u8, rt.cStrOrEmpty(def.fields.?[i]));
-                const custom = try arena.create(CustomPropagator);
-                custom.* = .{ .def = def, .field_names = names };
-                break :blk custom.propagator();
-            },
-            _ => return invalidOption(diag_out, "unknown propagator kind"),
-        };
+            }
+            if (has_none) {
+                list = try arena.dupe(o11y.Propagator, &.{NoopPropagator.propagator});
+            } else if (parsed.items.len > 0) {
+                list = parsed.items;
+            }
+        }
     }
 
     const allow_fn = allow orelse return list;
@@ -687,11 +811,14 @@ pub fn buildPropagators(
     return wrapped;
 }
 
-pub fn buildAppRegistries(arena: Allocator, raw: ?[*]const c.AppRegistrySource, len: usize) Allocator.Error![]o11y.AppRegistrySource {
+pub fn buildAppRegistries(arena: Allocator, raw: ?[*]const c.AppRegistrySource, len: usize, diag_out: ?*c.Diagnostic) OptionError![]o11y.AppRegistrySource {
     if (len == 0) return &.{};
-    const ptr = raw orelse return &.{};
+    const ptr = raw orelse return invalidOption(diag_out, "app_registries pointer must not be null when app_registries_len > 0");
     const out = try arena.alloc(o11y.AppRegistrySource, len);
     for (ptr[0..len], out) |src, *dst| {
+        if (src.content_len > 0 and src.content == null) {
+            return invalidOption(diag_out, "app registry content pointer must not be null when content_len > 0");
+        }
         const path = try arena.dupe(u8, rt.cStrOrEmpty(src.file_path));
         if (src.content) |content_ptr| {
             const content = try arena.dupe(u8, content_ptr[0..src.content_len]);
@@ -703,12 +830,15 @@ pub fn buildAppRegistries(arena: Allocator, raw: ?[*]const c.AppRegistrySource, 
     return out;
 }
 
-pub fn buildHistogramBuckets(arena: Allocator, raw: ?[*]const c.HistogramBuckets, len: usize) Allocator.Error![]o11y.HistogramBuckets {
+pub fn buildHistogramBuckets(arena: Allocator, raw: ?[*]const c.HistogramBuckets, len: usize, diag_out: ?*c.Diagnostic) OptionError![]o11y.HistogramBuckets {
     if (len == 0) return &.{};
-    const ptr = raw orelse return &.{};
+    const ptr = raw orelse return invalidOption(diag_out, "histogram_buckets pointer must not be null when histogram_buckets_len > 0");
     const out = try arena.alloc(o11y.HistogramBuckets, len);
     for (ptr[0..len], out) |src, *dst| {
-        const bounds = if (src.boundaries_len > 0 and src.boundaries != null)
+        if (src.boundaries_len > 0 and src.boundaries == null) {
+            return invalidOption(diag_out, "histogram boundaries pointer must not be null when boundaries_len > 0");
+        }
+        const bounds = if (src.boundaries_len > 0)
             try arena.dupe(f64, src.boundaries.?[0..src.boundaries_len])
         else
             &.{};
@@ -720,9 +850,9 @@ pub fn buildHistogramBuckets(arena: Allocator, raw: ?[*]const c.HistogramBuckets
     return out;
 }
 
-pub fn buildExtraEnvs(arena: Allocator, raw: ?[*]const ?[*:0]const u8, len: usize) Allocator.Error![][]const u8 {
+pub fn buildExtraEnvs(arena: Allocator, raw: ?[*]const ?[*:0]const u8, len: usize, diag_out: ?*c.Diagnostic) OptionError![][]const u8 {
     if (len == 0) return &.{};
-    const ptr = raw orelse return &.{};
+    const ptr = raw orelse return invalidOption(diag_out, "extra_environments pointer must not be null when extra_environments_len > 0");
     const out = try arena.alloc([]const u8, len);
     for (ptr[0..len], out) |s, *dst| {
         dst.* = try arena.dupe(u8, rt.cStrOrEmpty(s));
@@ -730,9 +860,9 @@ pub fn buildExtraEnvs(arena: Allocator, raw: ?[*]const ?[*:0]const u8, len: usiz
     return out;
 }
 
-pub fn buildExtraSinks(arena: Allocator, raw: ?[*]const c.LogSink, len: usize) Allocator.Error![]o11y.LogSink {
+pub fn buildExtraSinks(arena: Allocator, raw: ?[*]const c.LogSink, len: usize, diag_out: ?*c.Diagnostic) OptionError![]o11y.LogSink {
     if (len == 0) return &.{};
-    const ptr = raw orelse return &.{};
+    const ptr = raw orelse return invalidOption(diag_out, "extra_log_sinks pointer must not be null when extra_log_sinks_len > 0");
     const out = try arena.alloc(o11y.LogSink, len);
     for (ptr[0..len], out) |src, *dst| {
         const tr = try arena.create(LogSinkTrampoline);
@@ -777,12 +907,8 @@ export fn o11y_err_name(err: c.Err) [*:0]const u8 {
         .invalid_carrier => "O11Y_ERR_INVALID_CARRIER",
         .timeout => "O11Y_ERR_TIMEOUT",
         .shutdown => "O11Y_ERR_SHUTDOWN",
-        .not_found => "O11Y_ERR_NOT_FOUND",
-        .conformance_failed => "O11Y_ERR_CONFORMANCE_FAILED",
-        .correlation_failed => "O11Y_ERR_CORRELATION_FAILED",
-        .triangle_failed => "O11Y_ERR_TRIANGLE_FAILED",
-        .violations => "O11Y_ERR_VIOLATIONS",
         .io => "O11Y_ERR_IO",
+        .unsupported_propagator => "O11Y_ERR_UNSUPPORTED_PROPAGATOR",
         _ => "O11Y_ERR_UNKNOWN",
     };
 }
@@ -813,18 +939,20 @@ export fn o11y_span_context_is_sampled(sc: c.SpanContext) bool {
     return toZigSpanContext(sc).isSampled();
 }
 
-export fn o11y_trace_id_hex(id: c.TraceId, out: *[33]u8) void {
+export fn o11y_trace_id_hex(id: c.TraceId, out: ?*[33]u8) void {
+    const dst = out orelse return;
     const t: o11y.TraceId = .{ .bytes = id.bytes };
     const hex = t.hex();
-    @memcpy(out[0..32], &hex);
-    out[32] = 0;
+    @memcpy(dst[0..32], &hex);
+    dst[32] = 0;
 }
 
-export fn o11y_span_id_hex(id: c.SpanId, out: *[17]u8) void {
+export fn o11y_span_id_hex(id: c.SpanId, out: ?*[17]u8) void {
+    const dst = out orelse return;
     const s: o11y.SpanId = .{ .bytes = id.bytes };
     const hex = s.hex();
-    @memcpy(out[0..16], &hex);
-    out[16] = 0;
+    @memcpy(dst[0..16], &hex);
+    dst[16] = 0;
 }
 
 export fn o11y_trace_id_parse_hex(hex: ?[*:0]const u8, out: ?*c.TraceId) bool {
@@ -895,40 +1023,51 @@ fn createSdk(is_setup: bool, opts_ptr: ?*const c.Options, out_sdk: ?*?*SdkHandle
     };
     out.* = null;
 
-    const opts = if (opts_ptr) |p| p.* else c.Options{};
-    out.* = buildSdk(is_setup, opts, diag_out) catch |err| return switch (err) {
-        error.InvalidArgument => .invalid_argument,
-        else => |e| mapSetupError(e),
-    };
+    const opts = if (opts_ptr) |p| blk: {
+        if (p.struct_size != @sizeOf(c.Options)) {
+            writeDiagnosticText(diag_out, "o11y: invalid options struct_size; initialize with o11y_options_default()");
+            return .invalid_argument;
+        }
+        break :blk p.*;
+    } else c.Options{};
+
+    out.* = buildSdk(is_setup, opts, diag_out) catch |err| return mapBuildError(err);
     return .ok;
 }
 
 /// Converts the C options and builds the SDK. Every failure path releases
-/// what it allocated, including the engine SDK and its setup guard.
-fn buildSdk(is_setup: bool, opts: c.Options, diag_out: ?*c.Diagnostic) (o11y.SetupError || error{InvalidArgument})!*SdkHandle {
+/// what it allocated, including the engine SDK, setup guard, and I/O reference.
+fn buildSdk(is_setup: bool, opts: c.Options, diag_out: ?*c.Diagnostic) (o11y.SetupError || OptionError)!*SdkHandle {
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
     errdefer arena_state.deinit();
     const arena = arena_state.allocator();
 
+    // Scratch arena holds env strings only for setup/init, never past it.
+    var env_arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer env_arena_state.deinit();
+    const env_arena = env_arena_state.allocator();
+
     const env: o11y.Env = switch (opts.env_mode) {
         .hermetic => .hermetic,
-        .process => .{ .pairs = try rt.readProcessEnvPairs(arena) },
+        .process => .{ .pairs = try rt.readProcessEnvPairs(env_arena) },
         .pairs => blk: {
-            if (opts.env_pairs_len == 0 or opts.env_pairs == null) break :blk .{ .pairs = &.{} };
-            const ps = try arena.alloc([2][]const u8, opts.env_pairs_len);
-            for (opts.env_pairs.?[0..opts.env_pairs_len], ps) |src, *dst| {
+            if (opts.env_pairs_len == 0) break :blk .{ .pairs = &.{} };
+            const raw_pairs = opts.env_pairs orelse return invalidOption(diag_out, "env_pairs pointer must not be null when env_pairs_len > 0");
+            const ps = try env_arena.alloc([2][]const u8, opts.env_pairs_len);
+            for (raw_pairs[0..opts.env_pairs_len], ps) |src, *dst| {
                 dst.* = .{
-                    try arena.dupe(u8, rt.cStrOrEmpty(src.key)),
-                    try arena.dupe(u8, rt.cStrOrEmpty(src.value)),
+                    try env_arena.dupe(u8, rt.cStrOrEmpty(src.key)),
+                    try env_arena.dupe(u8, rt.cStrOrEmpty(src.value)),
                 };
             }
             break :blk .{ .pairs = ps };
         },
         .entries => blk: {
-            if (opts.env_entries_len == 0 or opts.env_entries == null) break :blk .{ .entries = &.{} };
-            const es = try arena.alloc([]const u8, opts.env_entries_len);
-            for (opts.env_entries.?[0..opts.env_entries_len], es) |src, *dst| {
-                dst.* = try arena.dupe(u8, rt.cStrOrEmpty(src));
+            if (opts.env_entries_len == 0) break :blk .{ .entries = &.{} };
+            const raw_entries = opts.env_entries orelse return invalidOption(diag_out, "env_entries pointer must not be null when env_entries_len > 0");
+            const es = try env_arena.alloc([]const u8, opts.env_entries_len);
+            for (raw_entries[0..opts.env_entries_len], es) |src, *dst| {
+                dst.* = try env_arena.dupe(u8, rt.cStrOrEmpty(src));
             }
             break :blk .{ .entries = es };
         },
@@ -974,21 +1113,29 @@ fn buildSdk(is_setup: bool, opts: c.Options, diag_out: ?*c.Diagnostic) (o11y.Set
         break :blk .{ .ptr = tr, .report = ErrorHandlerTrampoline.handle };
     } else null;
 
+    if (opts.resource_attributes_len > 0 and opts.resource_attributes == null) {
+        return invalidOption(diag_out, "resource_attributes pointer must not be null when resource_attributes_len > 0");
+    }
+    if (opts.pii_hash_key_len > 0 and opts.pii_hash_key == null) {
+        return invalidOption(diag_out, "pii_hash_key pointer must not be null when pii_hash_key_len > 0");
+    }
+
     const propagators = try buildPropagators(
         arena,
+        env,
         opts.propagators,
         opts.propagators_len,
         opts.baggage_egress_allow,
         opts.baggage_egress_allow_userdata,
         diag_out,
     );
-    const extra_envs = try buildExtraEnvs(arena, opts.extra_environments, opts.extra_environments_len);
+    const extra_envs = try buildExtraEnvs(arena, opts.extra_environments, opts.extra_environments_len, diag_out);
     const res_attrs = try convertAttrs(arena, opts.resource_attributes, opts.resource_attributes_len);
-    const extra_sinks = try buildExtraSinks(arena, opts.extra_log_sinks, opts.extra_log_sinks_len);
-    const app_regs = try buildAppRegistries(arena, opts.app_registries, opts.app_registries_len);
-    const hist_buckets = try buildHistogramBuckets(arena, opts.histogram_buckets, opts.histogram_buckets_len);
+    const extra_sinks = try buildExtraSinks(arena, opts.extra_log_sinks, opts.extra_log_sinks_len, diag_out);
+    const app_regs = try buildAppRegistries(arena, opts.app_registries, opts.app_registries_len, diag_out);
+    const hist_buckets = try buildHistogramBuckets(arena, opts.histogram_buckets, opts.histogram_buckets_len, diag_out);
     const build_info = try buildBuildInfo(arena, opts.build_info);
-    const pii_key: []const u8 = if (opts.pii_hash_key_len > 0 and opts.pii_hash_key != null)
+    const pii_key: []const u8 = if (opts.pii_hash_key_len > 0)
         try arena.dupe(u8, opts.pii_hash_key.?[0..opts.pii_hash_key_len])
     else
         "";
@@ -1030,7 +1177,8 @@ fn buildSdk(is_setup: bool, opts: c.Options, diag_out: ?*c.Diagnostic) (o11y.Set
         .emit_process_runtime = false,
     };
 
-    const io = rt.globalIo();
+    const io = rt.acquireIo();
+    errdefer rt.releaseIo();
     const telemetry = (if (is_setup) o11y.setup(gpa, io, zig_opts) else o11y.init(gpa, io, zig_opts)) catch |err| {
         writeDiagnostic(diag_out, &zig_diag);
         return err;
@@ -1070,14 +1218,16 @@ fn fillReport(report: o11y.ShutdownReport, out_report: ?*c.ShutdownReport) c.Err
 }
 
 export fn o11y_shutdown(sdk: ?*SdkHandle, timeout_ms: u64, out_report: ?*c.ShutdownReport) c.Err {
-    const h = sdk orelse return .invalid_argument;
+    if (out_report) |dst| dst.* = .{};
+    const h = sdk orelse return .ok;
     const timeout: ?Io.Duration = if (timeout_ms == 0) null else .fromMilliseconds(@intCast(@min(timeout_ms, std.math.maxInt(i64))));
     const report = h.telemetry.shutdown(timeout);
     return fillReport(report, out_report);
 }
 
 export fn o11y_force_flush(sdk: ?*SdkHandle, timeout_ms: u64, out_report: ?*c.ShutdownReport) c.Err {
-    const h = sdk orelse return .invalid_argument;
+    if (out_report) |dst| dst.* = .{};
+    const h = sdk orelse return .ok;
     const timeout: ?Io.Duration = if (timeout_ms == 0) null else .fromMilliseconds(@intCast(@min(timeout_ms, std.math.maxInt(i64))));
     const report = h.telemetry.forceFlush(timeout);
     return fillReport(report, out_report);
@@ -1093,6 +1243,7 @@ export fn o11y_destroy(sdk: ?*SdkHandle) void {
     freeObservableCallbacks(callbacks);
     h.arena.deinit();
     gpa.destroy(h);
+    rt.releaseIo();
 }
 
 export fn o11y_effective_config(sdk: ?*const SdkHandle) [*:0]const u8 {
@@ -1116,6 +1267,7 @@ const BeforeShutdownTrampoline = struct {
 };
 
 export fn o11y_shutdown_on_signals(sdk: ?*SdkHandle, opts_ptr: ?*const c.SignalOptions, out_report: ?*c.ShutdownReport) c.Err {
+    if (out_report) |dst| dst.* = .{};
     const h = sdk orelse return .invalid_argument;
     const opts = if (opts_ptr) |p| p.* else c.SignalOptions{};
 
@@ -1131,14 +1283,22 @@ export fn o11y_shutdown_on_signals(sdk: ?*SdkHandle, opts_ptr: ?*const c.SignalO
     if (builtin.os.tag != .windows and opts.signals_len > 0) {
         const raw = opts.signals orelse return .invalid_argument;
         if (opts.signals_len > sig_buf.len) return .invalid_argument;
+        const kill_num: c_int = @intCast(@backingInt(std.posix.SIG.KILL));
+        const stop_num: c_int = @intCast(@backingInt(std.posix.SIG.STOP));
         for (raw[0..opts.signals_len], sig_buf[0..opts.signals_len]) |number, *dst| {
             if (number < 1 or number > max_signal_number) return .invalid_argument;
-            dst.* = @fromBackingInt(@intCast(number));
+            if (number == kill_num or number == stop_num) return .invalid_argument;
+            const sig: std.posix.SIG = @fromBackingInt(@intCast(number));
+            var old_act: std.c.Sigaction = undefined;
+            if (std.c.sigaction(sig, null, &old_act) != 0) return .invalid_argument;
+            dst.* = sig;
         }
         sigs = sig_buf[0..opts.signals_len];
     }
 
-    const report = o11y.shutdownOnSignals(rt.globalIo(), h.telemetry, .{
+    const io = rt.acquireIo();
+    defer rt.releaseIo();
+    const report = o11y.shutdownOnSignals(io, h.telemetry, .{
         .timeout = if (opts.timeout_ms == 0) .fromSeconds(5) else .fromMilliseconds(@intCast(@min(opts.timeout_ms, std.math.maxInt(i64)))),
         .before_shutdown = before,
         .signals = sigs,
@@ -1238,15 +1398,30 @@ export fn o11y_ctx_with_record(parent: ?*const CtxHandle, record: ?*RecordHandle
     return newCtxHandle(unwrapCtx(parent).withRecord(if (record) |r| &r.rec else null));
 }
 
+fn isValidBaggageKey(k: []const u8) bool {
+    if (k.len == 0) return false;
+    for (k) |ch| {
+        const ok = switch (ch) {
+            '!', '#'...'\'', '*', '+', '-', '.', '0'...'9', 'A'...'Z', '^'...'z', '|', '~' => true,
+            else => false,
+        };
+        if (!ok) return false;
+    }
+    return true;
+}
+
 export fn o11y_ctx_with_baggage_item(parent: ?*const CtxHandle, key: ?[*:0]const u8, value: ?[*:0]const u8) ?*CtxHandle {
     const base = unwrapCtx(parent);
     const k = rt.cStrOrEmpty(key);
-    if (k.len == 0) return newCtxHandle(base);
     const v = rt.cStrOrEmpty(value);
+    if (!isValidBaggageKey(k) or !std.unicode.utf8ValidateSlice(v)) return newCtxHandle(base);
 
     const existing: []const o11y.Baggage.Member = if (base.baggage) |b| b.members else &.{};
-    const members = gpa.alloc(o11y.Baggage.Member, existing.len + 1) catch return null;
-    defer gpa.free(members);
+    var scratch_state: std.heap.ArenaAllocator = .init(gpa);
+    defer scratch_state.deinit();
+    const scratch = scratch_state.allocator();
+
+    const members = scratch.alloc(o11y.Baggage.Member, existing.len + 1) catch return null;
     var n: usize = 0;
     var replaced = false;
     for (existing) |m| {
@@ -1262,7 +1437,7 @@ export fn o11y_ctx_with_baggage_item(parent: ?*const CtxHandle, key: ?[*:0]const
         members[n] = .{ .key = k, .value = v };
         n += 1;
     }
-    const bag: o11y.Baggage = .{ .members = members[0..n] };
+    const bag = o11y.Baggage.fromMembers(scratch, members[0..n]) catch return newCtxHandle(base);
     return newCtxHandle(base.withBaggage(&bag));
 }
 
@@ -1342,7 +1517,7 @@ export fn o11y_tracer_start(
     const tr = tracer orelse &o11y.Tracer.noop;
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
     defer arena_state.deinit();
-    const start_opts = convertSpanStartOptions(arena_state.allocator(), options) catch o11y.StartOptions{};
+    const start_opts = convertSpanStartOptions(arena_state.allocator(), options) catch return null;
 
     const h = gpa.create(SpanHandle) catch return null;
     h.* = .{
@@ -1628,7 +1803,7 @@ pub const ObsTrampoline = struct {
     userdata: ?*anyopaque,
 };
 
-var obs_lock: Io.Mutex = .init;
+var obs_lock: rt.Mutex = .{};
 var obs_head: ?*ObsTrampoline = null;
 
 /// Unlinks every trampoline of `provider` and returns them as a list. Call it
@@ -1636,9 +1811,8 @@ var obs_head: ?*ObsTrampoline = null;
 pub fn detachObservableCallbacks(provider: ?*const anyopaque) ?*ObsTrampoline {
     const key = provider orelse return null;
     var detached: ?*ObsTrampoline = null;
-    const io = rt.globalIo();
-    obs_lock.lockUncancelable(io);
-    defer obs_lock.unlock(io);
+    obs_lock.lock();
+    defer obs_lock.unlock();
     var link: *?*ObsTrampoline = &obs_head;
     while (link.*) |node| {
         if (node.provider == key) {
@@ -1705,31 +1879,44 @@ fn registerObservable(
 
     const tr = gpa.create(ObsTrampoline) catch return .out_of_memory;
     tr.* = .{ .provider = provider, .func = cb, .userdata = userdata };
-    const io = rt.globalIo();
-    obs_lock.lockUncancelable(io);
+    obs_lock.lock();
     tr.next = obs_head;
     obs_head = tr;
-    obs_lock.unlock(io);
+    obs_lock.unlock();
 
     const inst_name = rt.cStrOrEmpty(name);
     const description = rt.cStrOrEmpty(o.description);
     const unit = rt.cStrOrEmpty(o.unit);
-    switch (kind) {
-        .counter => _ = m.observableCounter(N, inst_name, .{
+    const registered = switch (kind) {
+        .counter => m.observableCounter(N, inst_name, .{
             .description = description,
             .unit = unit,
             .callbacks = &.{.{ .ptr = tr, .func = ObsCall(N).call }},
-        }),
-        .up_down_counter => _ = m.observableUpDownCounter(N, inst_name, .{
+        }).inst != null,
+        .up_down_counter => m.observableUpDownCounter(N, inst_name, .{
             .description = description,
             .unit = unit,
             .callbacks = &.{.{ .ptr = tr, .func = ObsCall(N).call }},
-        }),
-        .gauge => _ = m.observableGauge(N, inst_name, .{
+        }).inst != null,
+        .gauge => m.observableGauge(N, inst_name, .{
             .description = description,
             .unit = unit,
             .callbacks = &.{.{ .ptr = tr, .func = ObsCall(N).call }},
-        }),
+        }).inst != null,
+    };
+    if (!registered) {
+        obs_lock.lock();
+        var link: *?*ObsTrampoline = &obs_head;
+        while (link.*) |node| {
+            if (node == tr) {
+                link.* = node.next;
+                break;
+            }
+            link = &node.next;
+        }
+        obs_lock.unlock();
+        gpa.destroy(tr);
+        return if (provider.is_shutdown.load(.acquire)) .shutdown else .out_of_memory;
     }
     return .ok;
 }
@@ -1773,7 +1960,7 @@ export fn o11y_log(
     const h = sdk orelse return;
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
     defer arena_state.deinit();
-    const converted = convertLogAttrs(arena_state.allocator(), attrs, attrs_len, 0) catch return;
+    const converted = convertLogAttrs(arena_state.allocator(), attrs, attrs_len) catch return;
     h.telemetry.log_pipeline.emit(toZigLevel(level), unwrapCtx(ctx), rt.cStrOrEmpty(message), converted);
 }
 
@@ -1787,13 +1974,17 @@ export fn o11y_event(
     const h = sdk orelse return;
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
     defer arena_state.deinit();
-    const converted = convertLogAttrs(arena_state.allocator(), attrs, attrs_len, 0) catch return;
+    const converted = convertLogAttrs(arena_state.allocator(), attrs, attrs_len) catch return;
     h.telemetry.event(unwrapCtx(ctx), rt.cStrOrEmpty(event_name), @as([]const o11y.LogAttribute, converted));
 }
 
 export fn o11y_record_create() ?*RecordHandle {
-    const h = gpa.create(RecordHandle) catch return null;
-    h.* = .{ .rec = o11y.Record.init(gpa, rt.globalIo()) };
+    const io = rt.acquireIo();
+    const h = gpa.create(RecordHandle) catch {
+        rt.releaseIo();
+        return null;
+    };
+    h.* = .{ .rec = o11y.Record.init(gpa, io) };
     return h;
 }
 
@@ -1801,13 +1992,14 @@ export fn o11y_record_destroy(rec: ?*RecordHandle) void {
     const h = rec orelse return;
     h.rec.deinit();
     gpa.destroy(h);
+    rt.releaseIo();
 }
 
 export fn o11y_record_set_attrs(rec: ?*RecordHandle, attrs: ?[*]const c.LogAttr, attrs_len: usize) void {
     const h = rec orelse return;
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
     defer arena_state.deinit();
-    const converted = convertLogAttrs(arena_state.allocator(), attrs, attrs_len, 0) catch return;
+    const converted = convertLogAttrs(arena_state.allocator(), attrs, attrs_len) catch return;
     h.rec.setAttrs(@as([]const o11y.LogAttribute, converted));
 }
 
@@ -1827,8 +2019,11 @@ export fn o11y_record_max(rec: ?*RecordHandle, key: ?[*:0]const u8, value: f64) 
 
 export fn o11y_record_set_error(rec: ?*RecordHandle, error_type: ?[*:0]const u8) void {
     const h = rec orelse return;
-    h.rec.set("error.type", rt.cStrOpt(error_type) orelse "error");
-    h.rec.set(o11y.spec.Outcome.key, o11y.spec.Outcome.failure.asStr());
+    const pairs = [_]o11y.LogAttribute{
+        .{ .key = "error.type", .value = .{ .string = rt.cStrOpt(error_type) orelse "error" } },
+        .{ .key = o11y.spec.Outcome.key, .value = .{ .string = o11y.spec.Outcome.failure.asStr() } },
+    };
+    h.rec.setAttrs(@as([]const o11y.LogAttribute, &pairs));
 }
 
 export fn o11y_record_emit_event(
@@ -1842,7 +2037,7 @@ export fn o11y_record_emit_event(
     const sh = sdk orelse return;
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
     defer arena_state.deinit();
-    const extra = convertLogAttrs(arena_state.allocator(), extra_attrs, extra_attrs_len, 0) catch return;
+    const extra = convertLogAttrs(arena_state.allocator(), extra_attrs, extra_attrs_len) catch return;
     const zctx = unwrapCtx(ctx);
     const name = rt.cStrOrEmpty(event_name);
     if (rec) |h| {
@@ -1870,7 +2065,7 @@ const CCarrierAdapter = struct {
         const getter = self.carrier.get orelse return null;
         const k_z = rt.dupeZ(self.arena, key) catch return null;
         const v_z = getter(self.carrier.userdata, k_z.ptr) orelse return null;
-        return std.mem.span(v_z);
+        return self.arena.dupe(u8, std.mem.span(v_z)) catch null;
     }
 
     fn setFn(ptr: *anyopaque, key: []const u8, value: []const u8) void {
@@ -1990,7 +2185,7 @@ export fn o11y_detached_start_linked(
     const sh = sdk orelse return null;
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
     defer arena_state.deinit();
-    const start_opts = convertSpanStartOptions(arena_state.allocator(), options) catch o11y.StartOptions{};
+    const start_opts = convertSpanStartOptions(arena_state.allocator(), options) catch return null;
     const zcarrier = if (carrier) |ch| ch.carrier else o11y.detached.Carrier.zero;
 
     const h = gpa.create(LinkedSpanHandle) catch return null;
@@ -2133,8 +2328,9 @@ export fn o11y_sanitize_endpoint(raw: ?[*]const u8, raw_len: usize, out: ?*?[*:0
     return .ok;
 }
 
-fn logValueToPiiValue(arena: Allocator, v: c.LogValue, depth: usize) Allocator.Error!o11y.pii.Value {
-    if (depth > 32) return .{ .string = "" };
+fn logValueToPiiValue(arena: Allocator, v: c.LogValue, depth: usize, walk: *WalkState) Allocator.Error!o11y.pii.Value {
+    if (depth > o11y.pii.max_depth or walk.remaining == 0) return .{ .string = o11y.pii.truncated };
+    walk.remaining -= 1;
     return switch (v.kind) {
         .empty => .{ .string = "" },
         .string => blk: {
@@ -2155,20 +2351,26 @@ fn logValueToPiiValue(arena: Allocator, v: c.LogValue, depth: usize) Allocator.E
         .array => blk: {
             const av = v.value.array_val;
             if (av.len == 0 or av.items == null) break :blk .{ .array = &.{} };
-            const out = try arena.alloc(o11y.pii.Value, av.len);
-            for (av.items.?[0..av.len], out) |item, *dst| {
-                dst.* = try logValueToPiiValue(arena, item, depth + 1);
+            if (!walk.enter(@intFromPtr(av.items.?))) break :blk .{ .string = o11y.pii.truncated };
+            defer walk.leave();
+            const cap = @min(av.len, walk.remaining + 1);
+            const out = try arena.alloc(o11y.pii.Value, cap);
+            for (av.items.?[0..cap], out) |item, *dst| {
+                dst.* = try logValueToPiiValue(arena, item, depth + 1, walk);
             }
             break :blk .{ .array = out };
         },
         .map => blk: {
             const mv = v.value.map_val;
             if (mv.len == 0 or mv.items == null) break :blk .{ .map = &.{} };
-            const out = try arena.alloc(o11y.pii.Member, mv.len);
-            for (mv.items.?[0..mv.len], out) |item, *dst| {
+            if (!walk.enter(@intFromPtr(mv.items.?))) break :blk .{ .string = o11y.pii.truncated };
+            defer walk.leave();
+            const cap = @min(mv.len, walk.remaining + 1);
+            const out = try arena.alloc(o11y.pii.Member, cap);
+            for (mv.items.?[0..cap], out) |item, *dst| {
                 dst.* = .{
                     .key = rt.cStrOrEmpty(item.key),
-                    .value = try logValueToPiiValue(arena, item.value, depth + 1),
+                    .value = try logValueToPiiValue(arena, item.value, depth + 1, walk),
                 };
             }
             break :blk .{ .map = out };
@@ -2184,13 +2386,15 @@ export fn o11y_pii_hash_value(
     out_canonical: ?*?[*:0]u8,
     out_token: ?*[45]u8,
 ) c.Err {
+    if (out_canonical) |oc| oc.* = null;
+    if (out_token) |ot| ot[0] = 0;
     const vp = value_ptr orelse return .invalid_argument;
     if (key == null or key_len < o11y.pii.min_key_len) return .pii_hash_key;
-    if (out_canonical) |oc| oc.* = null;
 
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
     defer arena_state.deinit();
-    const pv = logValueToPiiValue(arena_state.allocator(), vp.*, 0) catch return .out_of_memory;
+    var walk: WalkState = .{ .remaining = o11y.pii.walk_budget * 16 };
+    const pv = logValueToPiiValue(arena_state.allocator(), vp.*, 0, &walk) catch return .out_of_memory;
     const canon = o11y.pii.canonical(gpa, pv) catch return .out_of_memory;
     defer gpa.free(canon);
 
@@ -2213,6 +2417,8 @@ export fn o11y_app_registry_check_bytes(
     out_status: ?*c_int,
 ) c.Err {
     if (out_want) |ow| ow.* = null;
+    if (out_status) |st| st.* = 0;
+    if (content_len > 0 and content == null) return .invalid_argument;
     const raw: []const u8 = if (content) |p| p[0..content_len] else "";
     var result = o11y.appregistry.check(gpa, raw, .{}) catch return .out_of_memory;
     defer result.deinit();

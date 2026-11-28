@@ -32,6 +32,9 @@ typedef struct o11y_test_grpc_receiver o11y_test_grpc_receiver_t;
  * ========================================================================= */
 
 typedef struct o11y_test_options {
+    /** Must be sizeof(o11y_test_options_t), initialized by o11y_test_options_default(). */
+    size_t struct_size;
+
     const char *service_name;
     const char *service_version;
     const char *service_namespace;
@@ -90,10 +93,18 @@ void o11y_test_destroy(o11y_test_recorder_t *rec);
 /** Returns the underlying hermetic SDK handle (owned by rec). */
 o11y_sdk_t *o11y_test_sdk(o11y_test_recorder_t *rec);
 
-/** Clears captured spans, logs, OTLP logs, and console buffer. */
+/**
+ * Clears captured spans, logs, OTLP logs, and console buffer.
+ * Invalidates every previously returned o11y_test_span_t *, o11y_test_log_t *,
+ * and borrowed string from rec; must not run concurrently with active reads
+ * of those views or strings.
+ */
 void o11y_test_reset(o11y_test_recorder_t *rec);
 
-/* --- Spans --- */
+/* --- Spans ---
+ * Returned views and borrowed strings belong to rec and remain valid until
+ * o11y_test_reset or o11y_test_destroy (not concurrent with o11y_test_reset).
+ */
 
 size_t o11y_test_span_count(o11y_test_recorder_t *rec);
 const o11y_test_span_t *o11y_test_span_at(o11y_test_recorder_t *rec, size_t index);
@@ -151,7 +162,10 @@ typedef struct o11y_test_exemplar {
 } o11y_test_exemplar_t;
 
 bool o11y_test_has_metric(o11y_test_recorder_t *rec, const char *name);
-/** Sums all int64 data points for a Sum or Gauge metric; returns false if absent. */
+/**
+ * Sums all int64 data points for a Sum or Gauge metric. Returns false if absent
+ * or if any double data point is non-finite or outside the int64_t range.
+ */
 bool o11y_test_metric_sum_i64(o11y_test_recorder_t *rec, const char *name, int64_t *out);
 /** Sums all float64 data points for a Sum or Gauge metric; returns false if absent. */
 bool o11y_test_metric_sum_f64(o11y_test_recorder_t *rec, const char *name, double *out);
@@ -169,7 +183,11 @@ bool o11y_test_exemplar_at(
 
 /* --- Violations & Conformance Reports --- */
 
-/** Sums o11y.schema.violations matching optional signal ("traces"/"metrics"/"logs"/"resource" or NULL) and rule (or NULL). */
+/**
+ * Sums o11y.schema.violations matching optional signal
+ * ("traces"/"metrics"/"logs"/"resource" or NULL) and rule (or NULL).
+ * Non-NULL unknown signal names return 0.
+ */
 int64_t o11y_test_violations(o11y_test_recorder_t *rec, const char *signal, const char *rule);
 
 o11y_test_report_t *o11y_test_check_conforms(o11y_test_recorder_t *rec);
@@ -187,7 +205,7 @@ void o11y_test_report_destroy(o11y_test_report_t *report);
 
 typedef struct o11y_test_tls_options {
     bool enabled;
-    /** PEM cert/key; NULL defaults to built-in loopback test certs. */
+    /** PEM cert/key pair; both NULL defaults to built-in loopback test certs. Setting only one fails with O11Y_ERR_INVALID_ARGUMENT. */
     const char *cert_pem;
     const char *key_pem;
     /** Optional client CA PEM to require mutual TLS. */
