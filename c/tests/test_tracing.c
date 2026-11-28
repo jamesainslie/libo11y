@@ -97,6 +97,25 @@ static void test_span_hierarchy_and_attributes(void) {
     o11y_span_context_t linked_sc = o11y_test_span_link_context(sp_root2, 0);
     ASSERT_TRUE(memcmp(psc.span_id.bytes, linked_sc.span_id.bytes, 8) == 0);
 
+    /* Child inherits parent's trace_id, parent_span_id, and trace_state when remote */
+    o11y_span_context_t remote_parent = {0};
+    ASSERT_TRUE(o11y_trace_id_parse_hex("4bf92f3577b34da6a3ce929d0e0e4736", &remote_parent.trace_id));
+    ASSERT_TRUE(o11y_span_id_parse_hex("00f067aa0ba902b7", &remote_parent.span_id));
+    remote_parent.trace_flags = 1;
+    remote_parent.remote = true;
+    remote_parent.trace_state = "vendor=from-parent";
+    o11y_ctx_t *rctx = o11y_ctx_with_span_context(NULL, remote_parent);
+    o11y_span_t *from_remote = o11y_tracer_start(tr, rctx, "child.remote", NULL);
+    o11y_span_end(from_remote);
+    o11y_ctx_destroy(rctx);
+
+    const o11y_test_span_t *sp_remote_child = o11y_test_find_span(rec, "child.remote");
+    ASSERT_NOT_NULL(sp_remote_child);
+    o11y_span_context_t rparent = o11y_test_span_parent_context(sp_remote_child);
+    ASSERT_TRUE(memcmp(remote_parent.span_id.bytes, rparent.span_id.bytes, 8) == 0);
+    o11y_span_context_t rsc = o11y_test_span_context(sp_remote_child);
+    ASSERT_EQ_STR("vendor=from-parent", rsc.trace_state);
+
     o11y_test_destroy(rec);
 }
 

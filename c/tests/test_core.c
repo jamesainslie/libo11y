@@ -1,4 +1,5 @@
-#define _POSIX_C_SOURCE 200809L
+#define _DARWIN_C_SOURCE
+#define _XOPEN_SOURCE 700
 
 #include <pthread.h>
 #include <signal.h>
@@ -14,7 +15,10 @@ static void test_version_and_error_names(void) {
     ASSERT_EQ_STR(O11Y_VERSION, o11y_version());
     char from_parts[32];
     snprintf(from_parts, sizeof(from_parts), "%d.%d.%d", O11Y_VERSION_MAJOR, O11Y_VERSION_MINOR, O11Y_VERSION_PATCH);
-    ASSERT_EQ_STR(O11Y_VERSION, from_parts);
+    const char *dash = strchr(O11Y_VERSION, '-');
+    size_t base_len = dash != NULL ? (size_t)(dash - O11Y_VERSION) : strlen(O11Y_VERSION);
+    ASSERT_EQ_SIZE(base_len, strlen(from_parts));
+    ASSERT_TRUE(strncmp(O11Y_VERSION, from_parts, base_len) == 0);
     ASSERT_EQ_STR("O11Y_OK", o11y_err_name(O11Y_OK));
     ASSERT_EQ_STR("O11Y_ERR_ALREADY_SETUP", o11y_err_name(O11Y_ERR_ALREADY_SETUP));
     ASSERT_EQ_STR("O11Y_ERR_NO_SERVICE_NAME", o11y_err_name(O11Y_ERR_NO_SERVICE_NAME));
@@ -165,6 +169,39 @@ static void test_setup_typed_errors_and_diagnostics(void) {
     opts.pii_hash_key_len = 32;
     ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_init(&opts, &sdk, &diag));
     ASSERT_NULL(sdk);
+
+    /* Zero and mismatched struct_size rejected cleanly across setup/init/test_start. */
+    o11y_options_t bad_zero_opts = {0};
+    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_init(&bad_zero_opts, &sdk, &diag));
+    ASSERT_NULL(sdk);
+    ASSERT_STR_CONTAINS(diag.message, "struct_size");
+    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_setup(&bad_zero_opts, &sdk, &diag));
+    ASSERT_NULL(sdk);
+
+    o11y_options_t bad_size = o11y_options_default();
+    bad_size.struct_size = sizeof(bad_size) - 1;
+    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_init(&bad_size, &sdk, &diag));
+    ASSERT_NULL(sdk);
+    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_setup(&bad_size, &sdk, &diag));
+    ASSERT_NULL(sdk);
+
+    o11y_test_recorder_t *trec = NULL;
+    o11y_test_options_t bad_zero_topts = {0};
+    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_test_start(&bad_zero_topts, &trec, &diag));
+    ASSERT_NULL(trec);
+    ASSERT_STR_CONTAINS(diag.message, "struct_size");
+    o11y_test_options_t bad_topts = o11y_test_options_default();
+    bad_topts.struct_size = 4;
+    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_test_start(&bad_topts, &trec, &diag));
+    ASSERT_NULL(trec);
+
+    /* Fallible slice APIs reject (NULL, len > 0). */
+    o11y_detached_carrier_t *dc = NULL;
+    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_detached_unmarshal(NULL, 5, &dc));
+    ASSERT_NULL(dc);
+    char *ep = (char *)(uintptr_t)0x1;
+    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_sanitize_endpoint(NULL, 8, &ep));
+    ASSERT_NULL(ep);
 }
 
 /* An enum value the header does not define fails setup instead of becoming a default. */
@@ -466,17 +503,34 @@ static void test_shutdown_on_signals(void) {
     o11y_destroy(sdk);
 }
 
-static void dummy_sigpipe_handler(int sig) {
+static void dummy_sig_handler(int sig) {
+    (void)sig;
+}
+
+static void host_override_handler(int sig) {
     (void)sig;
 }
 
 static void test_runtime_signal_restore_process_env_entries_disabled_and_build_info(void) {
-    /* Destroying all handles restores prior SIGPIPE disposition. */
+    /* 1. Hermetic handles (record, test_start, hermetic init) never alter SIGPIPE/SIGIO or sigaltstack. */
     struct sigaction custom = {0};
     struct sigaction prev_sigpipe = {0};
-    custom.sa_handler = dummy_sigpipe_handler;
+    custom.sa_handler = dummy_sig_handler;
     sigemptyset(&custom.sa_mask);
     ASSERT_EQ_INT(0, sigaction(SIGPIPE, &custom, &prev_sigpipe));
+#ifdef SIGIO
+    struct sigaction prev_sigio = {0};
+    ASSERT_EQ_INT(0, sigaction(SIGIO, &custom, &prev_sigio));
+#endif
+    stack_t alt_before = {0};
+    ASSERT_EQ_INT(0, sigaltstack(NULL, &alt_before));
+
+    o11y_record_t *rec_wide = o11y_record_create();
+    ASSERT_NOT_NULL(rec_wide);
+    o11y_record_destroy(rec_wide);
+
+    o11y_test_recorder_t *hrec = NULL;
+    ASSERT_EQ_ERR(O11Y_OK, o11y_test_start(NULL, &hrec, NULL));
 
     o11y_options_t opts = o11y_options_default();
     opts.env_mode = O11Y_ENV_HERMETIC;
@@ -494,20 +548,88 @@ static void test_runtime_signal_restore_process_env_entries_disabled_and_build_i
     o11y_sdk_t *sdk = NULL;
     ASSERT_EQ_ERR(O11Y_OK, o11y_init(&opts, &sdk, NULL));
     ASSERT_STR_CONTAINS(o11y_effective_config(sdk), "service.version=2.1.0");
+
+    /* Still untouched WHILE live. */
+    struct sigaction live_act = {0};
+    ASSERT_EQ_INT(0, sigaction(SIGPIPE, NULL, &live_act));
+    ASSERT_TRUE(live_act.sa_handler == dummy_sig_handler);
+#ifdef SIGIO
+    ASSERT_EQ_INT(0, sigaction(SIGIO, NULL, &live_act));
+    ASSERT_TRUE(live_act.sa_handler == dummy_sig_handler);
+#endif
+
     o11y_shutdown_report_t fl_rep = {0};
     ASSERT_EQ_ERR(O11Y_OK, o11y_force_flush(sdk, 1000, &fl_rep));
     ASSERT_TRUE(o11y_shutdown_report_ok(fl_rep));
     o11y_destroy(sdk);
+    o11y_test_destroy(hrec);
 
     struct sigaction after = {0};
     ASSERT_EQ_INT(0, sigaction(SIGPIPE, NULL, &after));
-    ASSERT_TRUE(after.sa_handler == dummy_sigpipe_handler);
-    ASSERT_EQ_INT(0, sigaction(SIGPIPE, &prev_sigpipe, NULL));
+    ASSERT_TRUE(after.sa_handler == dummy_sig_handler);
+#ifdef SIGIO
+    ASSERT_EQ_INT(0, sigaction(SIGIO, NULL, &after));
+    ASSERT_TRUE(after.sa_handler == dummy_sig_handler);
+#endif
+    stack_t alt_after = {0};
+    ASSERT_EQ_INT(0, sigaltstack(NULL, &alt_after));
+    ASSERT_TRUE(alt_before.ss_sp == alt_after.ss_sp);
+    ASSERT_EQ_SIZE(alt_before.ss_size, alt_after.ss_size);
+    ASSERT_EQ_INT(alt_before.ss_flags, alt_after.ss_flags);
 
-    /* Recreate after last destroy to verify clean re-init. */
-    o11y_test_recorder_t *rec = NULL;
-    ASSERT_EQ_ERR(O11Y_OK, o11y_test_start(NULL, &rec, NULL));
-    o11y_test_destroy(rec);
+    /* Even with SIG_DFL active, hermetic o11y_record_create and o11y_test_start do not install handlers. */
+    struct sigaction dfl = {0};
+    dfl.sa_handler = SIG_DFL;
+    sigemptyset(&dfl.sa_mask);
+    ASSERT_EQ_INT(0, sigaction(SIGPIPE, &dfl, NULL));
+#ifdef SIGIO
+    ASSERT_EQ_INT(0, sigaction(SIGIO, &dfl, NULL));
+#endif
+    rec_wide = o11y_record_create();
+    ASSERT_NOT_NULL(rec_wide);
+    ASSERT_EQ_ERR(O11Y_OK, o11y_test_start(NULL, &hrec, NULL));
+    ASSERT_EQ_INT(0, sigaction(SIGPIPE, NULL, &live_act));
+    ASSERT_TRUE(live_act.sa_handler == SIG_DFL);
+#ifdef SIGIO
+    ASSERT_EQ_INT(0, sigaction(SIGIO, NULL, &live_act));
+    ASSERT_TRUE(live_act.sa_handler == SIG_DFL);
+#endif
+    o11y_test_destroy(hrec);
+    o11y_record_destroy(rec_wide);
+
+    /* 2. Networked handles preserve custom host dispositions changed while live. */
+    o11y_env_pair_t net_env[] = {
+        { "OTEL_SERVICE_NAME", "net-sig-test" },
+        { "OTEL_RESOURCE_ATTRIBUTES", "deployment.environment.name=test" },
+        { "OTEL_TRACES_EXPORTER", "none" },
+        { "OTEL_METRICS_EXPORTER", "none" },
+        { "OTEL_LOGS_EXPORTER", "none" },
+    };
+    o11y_options_t net_opts = o11y_options_default();
+    net_opts.env_mode = O11Y_ENV_PAIRS;
+    net_opts.env_pairs = net_env;
+    net_opts.env_pairs_len = 5;
+    net_opts.console_enabled = false;
+    net_opts.runtime_metrics = false;
+
+    o11y_sdk_t *net_sdk = NULL;
+    ASSERT_EQ_ERR(O11Y_OK, o11y_init(&net_opts, &net_sdk, NULL));
+    struct sigaction override_act = {0};
+    override_act.sa_handler = host_override_handler;
+    sigemptyset(&override_act.sa_mask);
+    ASSERT_EQ_INT(0, sigaction(SIGPIPE, &override_act, NULL));
+#ifdef SIGIO
+    ASSERT_EQ_INT(0, sigaction(SIGIO, &override_act, NULL));
+#endif
+    o11y_destroy(net_sdk);
+    ASSERT_EQ_INT(0, sigaction(SIGPIPE, NULL, &after));
+    ASSERT_TRUE(after.sa_handler == host_override_handler);
+#ifdef SIGIO
+    ASSERT_EQ_INT(0, sigaction(SIGIO, NULL, &after));
+    ASSERT_TRUE(after.sa_handler == host_override_handler);
+    ASSERT_EQ_INT(0, sigaction(SIGIO, &prev_sigio, NULL));
+#endif
+    ASSERT_EQ_INT(0, sigaction(SIGPIPE, &prev_sigpipe, NULL));
 
     /* O11Y_ENV_ENTRIES + OTEL_SDK_DISABLED=true */
     const char *entries[] = {
