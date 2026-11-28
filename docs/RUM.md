@@ -46,8 +46,11 @@ the adapters for React (`@libo11y/rum-react`), TanStack Router
 (`@libo11y/rum-tanstack-router`) and Connect (`@libo11y/rum-connect`) and
 the source map uploader `@libo11y/sourcemaps`. These five packages are not
 on npm yet. Until their first npm publish, they install from the tarballs
-attached to the `ts/v0.3.0` GitHub Release. Every other named cell is
-planned.
+attached to the `ts/v0.3.0` GitHub Release. Session replay
+(`@libo11y/rum-replay`), whose privacy core masks all text by default and
+never records input values, is in development in `ts/packages/rum-replay`
+and has not shipped. It first ships in the next TypeScript release. Every
+other named cell is planned.
 
 ## Data model
 

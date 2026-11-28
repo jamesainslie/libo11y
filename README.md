@@ -224,10 +224,11 @@ npm install @libo11y/rum             # RUM for browsers and extensions
 npm install @libo11y/rum-react       # RUM adapters: React, TanStack Router and Connect
 npm install @libo11y/rum-tanstack-router
 npm install @libo11y/rum-connect
+npm install @libo11y/rum-replay      # session replay for RUM
 npm install --save-dev @libo11y/sourcemaps # uploads source maps to the RUM gateway
 ```
 
-The eleven packages release together at one version, and they are built on
+The twelve packages release together at one version, and they are built on
 OpenTelemetry JS 3.x. `@libo11y/server` and `@libo11y/test` run on Bun
 1.3.13 and Node 24, and so does `@libo11y/sourcemaps`, a build tool.
 `@libo11y/web`, `@libo11y/webext` and `@libo11y/rum` run in browsers, and
@@ -238,7 +239,8 @@ by default they record nothing until the application grants consent.
 Until their first npm publish, they install from the tarballs attached to
 the
 [`ts/v0.3.0` GitHub Release](https://github.com/jamesainslie/libo11y/releases/tag/ts/v0.3.0),
-whose notes list the exact URLs.
+whose notes list the exact URLs. `@libo11y/rum-replay` is in development
+and has not shipped yet. It first ships in the next TypeScript release.
 
 ## Quick start (TypeScript)
 

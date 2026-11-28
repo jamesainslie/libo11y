@@ -187,6 +187,15 @@ byte by byte.
 
 RUM clients can use the `summaries` arrays as golden view summaries.
 
+## `rum-replay/`
+
+Hand-written session replay scrubbing cases: text masking, URL, srcset and
+CSS stripping, and rrweb event lists with the scrubbed output they must
+produce. `rum-replay/README.md` describes the format and the two modes the
+gateway runs them in. The TypeScript suite is
+`ts/packages/rum-replay/src/conformance.test.ts`, and the gateway's Go suite runs
+the same files.
+
 ## `rum-summary/`
 
 Hand-written view summary timelines and the `o11y.rum.view.summary`

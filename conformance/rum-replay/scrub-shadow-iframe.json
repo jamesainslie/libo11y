@@ -1,0 +1,114 @@
+{
+  "description": "Shadow DOM and same-origin iframe documents are scrubbed like the page. A masked shadow host masks its shadow content even where the context allows it, and an iframe document attached by a mutation is scrubbed too.",
+  "query_allow_list": [],
+  "text_allowed_ids": [3, 4],
+  "editable_ids": [],
+  "blocked_ids": [],
+  "parent_tags": {},
+  "secrets": ["Jane", "secret", "SECRET"],
+  "allowed_texts": [],
+  "events": [
+    {
+      "type": 2,
+      "timestamp": 1,
+      "data": {
+        "node": { "type": 2, "id": 1, "tagName": "div", "attributes": {}, "childNodes": [
+          { "type": 2, "id": 2, "tagName": "x-card", "attributes": { "data-o11y-mask": "" }, "isShadowHost": true, "isCustom": true, "childNodes": [
+            { "type": 2, "id": 3, "tagName": "span", "attributes": { "class": "public" }, "isShadow": true, "childNodes": [
+              { "type": 3, "id": 4, "textContent": "Jane Doe" }
+            ] }
+          ] },
+          { "type": 2, "id": 5, "tagName": "x-open", "attributes": {}, "isShadowHost": true, "childNodes": [
+            { "type": 2, "id": 6, "tagName": "p", "attributes": {}, "isShadow": true, "childNodes": [
+              { "type": 3, "id": 7, "textContent": "Shadow secret" }
+            ] }
+          ] },
+          { "type": 2, "id": 8, "tagName": "iframe", "attributes": { "src": "/frame.html?token=SECRET", "srcdoc": "<p>Jane</p>" }, "childNodes": [
+            { "type": 0, "id": 9, "compatMode": "BackCompat", "childNodes": [
+              { "type": 2, "id": 10, "tagName": "html", "attributes": {}, "rootId": 9, "childNodes": [
+                { "type": 2, "id": 11, "tagName": "body", "attributes": {}, "rootId": 9, "childNodes": [
+                  { "type": 3, "id": 12, "textContent": "Frame secret", "rootId": 9 }
+                ] }
+              ] }
+            ] }
+          ] }
+        ] },
+        "initialOffset": { "top": 0, "left": 0 }
+      }
+    },
+    {
+      "type": 3,
+      "timestamp": 2,
+      "data": {
+        "source": 0,
+        "texts": [],
+        "attributes": [],
+        "removes": [],
+        "adds": [
+          { "parentId": 8, "nextId": null, "node": { "type": 0, "id": 20, "childNodes": [
+            { "type": 2, "id": 21, "tagName": "html", "attributes": {}, "rootId": 20, "childNodes": [
+              { "type": 2, "id": 22, "tagName": "body", "attributes": { "data-o11y-mask": "" }, "rootId": 20, "childNodes": [
+                { "type": 2, "id": 23, "tagName": "p", "attributes": {}, "rootId": 20, "childNodes": [
+                  { "type": 3, "id": 24, "textContent": "Attached Jane", "rootId": 20 }
+                ] }
+              ] }
+            ] }
+          ] } }
+        ],
+        "isAttachIframe": true
+      }
+    }
+  ],
+  "expected": [
+    {
+      "type": 2,
+      "timestamp": 1,
+      "data": {
+        "node": { "type": 2, "id": 1, "tagName": "div", "attributes": {}, "childNodes": [
+          { "type": 2, "id": 2, "tagName": "x-card", "attributes": { "data-o11y-mask": "" }, "isShadowHost": true, "isCustom": true, "childNodes": [
+            { "type": 2, "id": 3, "tagName": "span", "attributes": { "class": "public" }, "isShadow": true, "childNodes": [
+              { "type": 3, "id": 4, "textContent": "**** ***" }
+            ] }
+          ] },
+          { "type": 2, "id": 5, "tagName": "x-open", "attributes": {}, "isShadowHost": true, "childNodes": [
+            { "type": 2, "id": 6, "tagName": "p", "attributes": {}, "isShadow": true, "childNodes": [
+              { "type": 3, "id": 7, "textContent": "****** ******" }
+            ] }
+          ] },
+          { "type": 2, "id": 8, "tagName": "iframe", "attributes": { "src": "/frame.html" }, "childNodes": [
+            { "type": 0, "id": 9, "compatMode": "BackCompat", "childNodes": [
+              { "type": 2, "id": 10, "tagName": "html", "attributes": {}, "rootId": 9, "childNodes": [
+                { "type": 2, "id": 11, "tagName": "body", "attributes": {}, "rootId": 9, "childNodes": [
+                  { "type": 3, "id": 12, "textContent": "***** ******", "rootId": 9 }
+                ] }
+              ] }
+            ] }
+          ] }
+        ] },
+        "initialOffset": { "top": 0, "left": 0 }
+      }
+    },
+    {
+      "type": 3,
+      "timestamp": 2,
+      "data": {
+        "source": 0,
+        "texts": [],
+        "attributes": [],
+        "removes": [],
+        "adds": [
+          { "parentId": 8, "nextId": null, "node": { "type": 0, "id": 20, "childNodes": [
+            { "type": 2, "id": 21, "tagName": "html", "attributes": {}, "rootId": 20, "childNodes": [
+              { "type": 2, "id": 22, "tagName": "body", "attributes": { "data-o11y-mask": "" }, "rootId": 20, "childNodes": [
+                { "type": 2, "id": 23, "tagName": "p", "attributes": {}, "rootId": 20, "childNodes": [
+                  { "type": 3, "id": 24, "textContent": "******** ****", "rootId": 20 }
+                ] }
+              ] }
+            ] }
+          ] } }
+        ],
+        "isAttachIframe": true
+      }
+    }
+  ]
+}
