@@ -3,6 +3,7 @@ package redact_test
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"math"
 	"strings"
 	"testing"
@@ -249,6 +250,27 @@ func TestStructJSONOfLeafKinds(t *testing.T) {
 		t.Fatalf("json.Marshal: %v", err)
 	}
 	want := `{"Wait":"1s","Ratio":"NaN","Count":3,"Ptr":null,"Hook":"\u003cnil\u003e","Updated":"2026-11-25T12:00:00Z"}`
+	if string(b) != want {
+		t.Errorf("json = %s, want %s", b, want)
+	}
+}
+
+type durationValuer time.Duration
+
+func (d durationValuer) LogValue() slog.Value { return slog.DurationValue(time.Duration(d)) }
+
+// TestStructJSONOfLogValuerDuration pins that a slog.LogValuer returning
+// slog.DurationValue renders in JSON as its String form, matching direct
+// time.Duration fields and the text surface.
+func TestStructJSONOfLogValuerDuration(t *testing.T) {
+	type holder struct {
+		Wait durationValuer
+	}
+	b, err := json.Marshal(redact.Struct(holder{Wait: durationValuer(time.Second)}))
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	want := `{"Wait":"1s"}`
 	if string(b) != want {
 		t.Errorf("json = %s, want %s", b, want)
 	}

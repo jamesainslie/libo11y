@@ -3,6 +3,7 @@ package o11y_test
 import (
 	"context"
 	"log/slog"
+	"math"
 	"slices"
 	"testing"
 
@@ -85,5 +86,38 @@ func TestEventAttributesAreDeduplicated(t *testing.T) {
 	tier, st := slices.Index(order, "user.tier"), slices.Index(order, "http.response.status_code")
 	if tier < 0 || st < tier {
 		t.Errorf("attribute order = %v, want http.response.status_code after user.tier", order)
+	}
+}
+
+func TestRecordMaxIgnoresNaN(t *testing.T) {
+	t.Parallel()
+	extra, captured := newSlogCapture()
+	sdk, _, _, _ := newHermetic(t, o11y.WithExtraLogHandler(extra))
+
+	ctx, rec := o11y.StartRecord(context.Background())
+	rec.Max("kept", 12)
+	rec.Max("kept", math.NaN())
+	rec.Max("unset", math.NaN())
+	rec.Max("nan_first", math.NaN())
+	rec.Max("nan_first", 5)
+	rec.EmitEvent(ctx, sdk, spec.EventRequestSummary)
+
+	recs := captured()
+	if len(recs) != 1 {
+		t.Fatalf("got %d records, want 1", len(recs))
+	}
+	attrs := map[string]slog.Value{}
+	recs[0].Attrs(func(a slog.Attr) bool {
+		attrs[a.Key] = a.Value
+		return true
+	})
+	if got, ok := attrs["kept"]; !ok || got.Float64() != 12 {
+		t.Errorf("kept = %v (ok=%v), want 12", got, ok)
+	}
+	if got, ok := attrs["unset"]; ok {
+		t.Errorf("unset = %v, want absent when only NaN was passed", got)
+	}
+	if got, ok := attrs["nan_first"]; !ok || got.Float64() != 5 {
+		t.Errorf("nan_first = %v (ok=%v), want 5", got, ok)
 	}
 }

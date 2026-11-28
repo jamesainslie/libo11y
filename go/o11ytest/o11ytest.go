@@ -334,11 +334,16 @@ func (r *Recorder) AssertCorrelated(tb testing.TB) {
 		traceID, ok := record.Attr("trace_id")
 		if !ok {
 			tb.Errorf("o11ytest: correlated record %q has no trace_id attribute", record.Record.Message)
-			continue
-		}
-		if traceID != record.SpanContext.TraceID().String() {
+		} else if traceID != record.SpanContext.TraceID().String() {
 			tb.Errorf("o11ytest: record %q trace_id %q does not match its span %q",
 				record.Record.Message, traceID, record.SpanContext.TraceID())
+		}
+		spanID, ok := record.Attr("span_id")
+		if !ok {
+			tb.Errorf("o11ytest: correlated record %q has no span_id attribute", record.Record.Message)
+		} else if spanID != record.SpanContext.SpanID().String() {
+			tb.Errorf("o11ytest: record %q span_id %q does not match its span %q",
+				record.Record.Message, spanID, record.SpanContext.SpanID())
 		}
 	}
 }

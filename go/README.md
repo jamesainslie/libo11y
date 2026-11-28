@@ -205,7 +205,7 @@ Downward API attributes, otherwise a random UUIDv4 per process.
 | `WithConsoleWriter`, `WithConsoleFormat`, `WithoutConsoleLog` | console sink destination (default stdout), `ConsoleJSON` or `ConsoleText`, or off |
 | `WithExtraLogHandler` | another `slog.Handler` sink; receives flattened, correlated, classified records synchronously |
 | `WithoutLogExport` | disable the OTLP log pipeline; `SDK.LoggerProvider` then returns a no-op provider |
-| `WithLogExporter` | inject a log exporter instead of building one from the environment; records are still batched. It re-enables log export after `WithoutLogExport`; `WithLogExporter(nil)` disables log export. If a later `WithoutLogExport` disables export, the injected exporter is never used and the SDK never shuts it down |
+| `WithLogExporter` | inject a log exporter instead of building one from the environment; records are still batched. It re-enables log export after `WithoutLogExport`; `WithLogExporter(nil)` disables log export. If a later `WithoutLogExport` disables export, the injected exporter is never used, and `Shutdown` (or a failed `New` / `Setup`) still shuts it down once |
 | `WithAttrReplacer` | user replacer applied to every attribute on every slog sink (console, OTLP slog leg, extra handlers), before classification; not applied to other bridges on `SDK.LoggerProvider` |
 | `WithoutSlogDefault` | `Setup` leaves the slog default alone |
 | `WithPIIMode` | `PIIDrop` (default), `PIIHash`, or `PIIAllow` |
@@ -219,7 +219,7 @@ Downward API attributes, otherwise a random UUIDv4 per process.
 | `WithExemplarFilter` | exemplar filter (default trace-based) |
 | `WithoutRuntimeMetrics` | disable `go.*` runtime metrics |
 | `WithoutStartupSummary` | `Setup` emits no startup event |
-| `WithErrorHandler` | asynchronous error handler (installed by `Setup` only; it is process-global) |
+| `WithErrorHandler` | asynchronous error handler (installed as the process-global OpenTelemetry error handler by `Setup` only; under `New` it still receives the SDK's own configuration warnings) |
 | `WithoutOTELEnv` | no `OTEL_*` variable affects behavior (see below) |
 | `WithAppRegistry` | load an application attribute registry from an `fs.FS`; its keys are classified like spec keys; an invalid registry fails `New` and `Setup` with `ErrInvalidAppRegistry` |
 
@@ -559,8 +559,8 @@ SDK's propagator and its baggage egress filter.
 Every attribute the specification defines carries a sensitivity class
 (`public`, `internal`, `pii`, or `secret`; see
 [`docs/taxonomy`](../docs/taxonomy)). Today the `pii` keys are `host.ip`,
-`host.mac`, `process.command_line`, `process.command_args`, and
-`device.id`, and the `secret` keys are the credential headers
+`host.mac`, `process.command_line`, `process.command_args`, `device.id`,
+and `o11y.rum.element.text`, and the `secret` keys are the credential headers
 `http.request.header.authorization`,
 `http.request.header.proxy-authorization`, `http.request.header.cookie`,
 and `http.response.header.set-cookie`. One policy per SDK applies the
