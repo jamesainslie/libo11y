@@ -290,3 +290,19 @@ test("an error long after a click, while a key press is open, is not an error cl
     [],
   );
 });
+
+test("a scope that refuses an event records no action and no frustration for it", async () => {
+  const rt = fakeRuntime({ realViews: true });
+  const env = rt.fakeEnv();
+  rt.views.begin();
+  const inside = new Set<unknown>();
+  rt.scope = { action: (e) => inside.has(e.target) };
+  const stop = actionsWith({}, env).start(rt);
+  for (let i = 0; i < 3; i++) env.click({ tagName: "BUTTON", attrs: { "data-o11y": "Host" } });
+  env.key("Enter", { tagName: "BUTTON" });
+  assert.equal(rt.activeAction(), undefined);
+  env.advance(2000);
+  assert.deepEqual(rt.counts, [], "no frustration either");
+  stop();
+  assert.deepEqual(await actionSpans(rt), []);
+});

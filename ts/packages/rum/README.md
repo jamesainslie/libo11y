@@ -15,8 +15,8 @@ npm install @libo11y/rum
 The package is in development and is not on npm yet. It has the core
 (sessions, consent, sampling, the retention buffer and view summaries),
 the `views()`, `actions()`, `errors()`, `vitals()`, `resources()` and
-`longAnimationFrames()` collectors, remote configuration and the
-two-part loader.
+`longAnimationFrames()` collectors, remote configuration, the two-part
+loader and `@libo11y/rum/webext` for extensions.
 
 ## Quick start
 
@@ -357,3 +357,96 @@ starts with consent granted, the collectors you installed record these with
 their original times: `errors()` the errors, `actions()` the clicks. A
 page whose `setupRum` starts with consent pending discards them, even if
 consent is granted later.
+
+## Extensions
+
+`@libo11y/rum/webext` records RUM in Manifest V3 extensions, on top of
+[`@libo11y/webext`](https://github.com/jamesainslie/libo11y/tree/main/ts/packages/webext).
+Extension pages and content scripts record. The service worker sends
+their records to the gateway, so they need no endpoint.
+
+In the service worker, call `setupRumWorker` on every wake, as you would
+`setupWorker`:
+
+```ts
+import { setupRumWorker } from "@libo11y/rum/webext";
+
+setupRumWorker({
+  serviceName: "capture",
+  environment: "production",
+  endpoint: "https://app.example/_o11y",
+  consent: { initial: "pending" },
+  rum: { clientToken: "pub-capture" },
+}).then((t) => t.onMessage(handle));
+```
+
+It posts with the gateway's `sent_at` and `client_token` parameters and
+exports app metrics with delta temporality. It also opens
+`chrome.storage.session` to content scripts, so they share the
+extension's session. A worker set up with `setupWorker` directly calls
+`allowRumSessionInContentScripts(chrome)` for that instead. Opening the
+area lets content scripts read everything in `chrome.storage.session`, so
+keep nothing there that the pages a content script runs on must not
+reach. The extension needs the `storage` permission.
+
+In a popup, an options page or a side panel, call `setupRumExtension`
+with `context: "page"`:
+
+```ts
+import { actions, errors, views } from "@libo11y/rum";
+import { setupRumExtension } from "@libo11y/rum/webext";
+
+const telemetry = await setupRumExtension({
+  context: "page",
+  serviceName: "capture",
+  environment: "production",
+  rum: { collectors: [views(), actions(), errors()] },
+});
+```
+
+A page behaves as `setupRum` does. Its views are named from its own URL,
+such as `/sidepanel.html`, and its retention buffer is in IndexedDB at the
+extension's origin.
+
+In a content script, pass `context: "content"` and the root of the UI the
+extension adds to the page:
+
+```ts
+const telemetry = await setupRumExtension({
+  context: "content",
+  serviceName: "capture",
+  environment: "production",
+  rum: { collectors: [views(), actions(), errors()] },
+  content: { uiRoot: shadowHost, viewName: "capture-overlay" },
+});
+```
+
+A content script shares the host page's document, so RUM records only
+what is the extension's own:
+
+- One view, named `content.viewName` or `content-script`, never named
+  from the URL. It starts when RUM starts and its span ends at the next
+  paint. The span carries the host page's `url.domain` and no other URL.
+- Actions only on events whose composed path holds `content.uiRoot`.
+  Without `uiRoot`, no actions. For a closed shadow root, pass its host
+  element.
+- Errors only from the extension's own scripts: an error event's
+  filename, or the first frame of its stack, starts with
+  `chrome.runtime.getURL("")`.
+- No `vitals()`, `resources()`, `longAnimationFrames()` or `documentLoad`.
+  Each would measure the host page, so `setupRumExtension` refuses it
+  with `O11yError` `INVALID_OPTION`.
+- A retention buffer in memory, because the content script's IndexedDB
+  is the host page's.
+
+Every context records with platform `webext` and shares consent with the
+whole extension, as `@libo11y/webext` does. Remote configuration works in
+every context. Pass `remoteConfig({ url })` with an absolute URL, because
+an extension context has no gateway origin of its own. Its cache is in
+`chrome.storage.local`, never a page's `localStorage`, so every context
+reads the document any of them fetched. An extension page fetches it under
+the extension's host permissions, so list the gateway's host in
+`host_permissions`. A content script's request carries the host page's
+origin, without a referrer, so the gateway answers it only when that
+origin is in its CORS list. Otherwise the content script keeps the cached
+document the extension's pages fetched.

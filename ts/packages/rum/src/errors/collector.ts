@@ -11,7 +11,8 @@
  * <host> failed", unless the app aborted it (error.type AbortError from fetch, abort from XHR). With console on, console.error is console: the arguments rendered (errors by
  * their message, the first error giving the type and stack, else type ConsoleError), and the
  * original console.error always runs. Every error goes through recordError. An error raised while
- * one is being recorded is not recorded again. Stop removes the listeners and restores
+ * one is being recorded is not recorded again. A runtime scope's error filter (a content script's
+ * own scripts) drops every other error, rejection and CSP event. Stop removes the listeners and restores
  * console.error when it is still RUM's wrapper.
  */
 import type { RUMErrorSource } from "@libo11y/spec";
@@ -118,7 +119,10 @@ export function errorsWith(opts: ErrorsOptions, env: ErrorsEnv): RumCollector {
       const stamp = (e: Event): number | undefined =>
         Number.isFinite(e.timeStamp) && e.timeStamp > 0 && e.timeStamp <= rt.now() ? e.timeStamp : undefined;
 
+      // A scope (a content script) limits errors to the events it accepts, such as its own scripts'.
+      const refused = (e: Event): boolean => rt.scope?.error?.(e) === false;
       const onError = (e: Event): void => {
+        if (refused(e)) return;
         if (isElement(e.target)) {
           const tag = e.target.tagName.toLowerCase();
           record(
@@ -132,9 +136,11 @@ export function errorsWith(opts: ErrorsOptions, env: ErrorsEnv): RumCollector {
         record("uncaught", ev.error ?? new Described("Error", String(ev.message ?? "")), stamp(e));
       };
       const onRejection = (e: Event): void => {
+        if (refused(e)) return;
         record("unhandled_rejection", (e as PromiseRejectionEvent).reason, stamp(e));
       };
       const onCsp = (e: Event): void => {
+        if (refused(e)) return;
         const v = e as SecurityPolicyViolationEvent;
         record(
           "csp",

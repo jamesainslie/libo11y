@@ -7,7 +7,8 @@
  * is not a request of the view. It publishes client request starts and ends on the bus for
  * actions, summaries and errors, and a breadcrumb for each finished request: "fetch <METHOD> <host>
  * <status or failed>", or "rpc <method>" for a span with rpc.method, never a path (decision P18). It runs before the exporting processors, so they see the
- * attributes.
+ * attributes. A span that starts while the session loads after a grant gets the same treatment,
+ * and waits in pending for its session.id and view (R3f).
  */
 import {
   ATTR_RUM_PLATFORM,
@@ -23,6 +24,7 @@ import { ATTR_SESSION_ID, ATTR_USER_ID } from "./attrs.ts";
 import type { RumBus } from "./contracts/runtime.ts";
 import type { SessionManager } from "./contracts/session.ts";
 import type { ViewTracker } from "./contracts/views.ts";
+import type { PendingSpans } from "./pending-spans.ts";
 import { stripQuery } from "./query.ts";
 
 /** The name of the app_load span shape. */
@@ -46,6 +48,8 @@ export interface RumSpanProcessorOptions {
    * reports now() alone.
    */
   readonly timeOrigin?: number;
+  /** Where spans that start while the session loads wait for it. */
+  readonly pending?: Pick<PendingSpans, "isOpen" | "hold">;
 }
 
 function fromWeb(span: ReadableSpan, name: string): boolean {
@@ -77,13 +81,19 @@ export function rumSpanProcessor(opts: RumSpanProcessorOptions): SpanProcessor {
   return {
     onStart(span: Span, _parent: Context) {
       const session = opts.session.current();
-      if (session === undefined) return;
-      // RUM's own view and action spans name their view and session, which may be older ones.
-      if (span.attributes[ATTR_SESSION_ID] === undefined) span.setAttribute(ATTR_SESSION_ID, session.id);
+      if (session === undefined && opts.pending?.isOpen() !== true) return;
       const appLoad = fromWeb(span, DOCUMENT_LOAD);
-      const view = appLoad || fromWeb(span, DOCUMENT_FETCH) ? opts.views.loadView() : opts.views.current();
-      if (view !== undefined && span.attributes[ATTR_RUM_VIEW_ID] === undefined) {
-        span.setAttribute(ATTR_RUM_VIEW_ID, view.id);
+      const ofLoad = appLoad || fromWeb(span, DOCUMENT_FETCH);
+      if (session === undefined) {
+        // Consent is granted and the session still loading: the span waits for it.
+        opts.pending?.hold(span, ofLoad);
+      } else {
+        // RUM's own view and action spans name their view and session, which may be older ones.
+        if (span.attributes[ATTR_SESSION_ID] === undefined) span.setAttribute(ATTR_SESSION_ID, session.id);
+        const view = ofLoad ? opts.views.loadView() : opts.views.current();
+        if (view !== undefined && span.attributes[ATTR_RUM_VIEW_ID] === undefined) {
+          span.setAttribute(ATTR_RUM_VIEW_ID, view.id);
+        }
       }
       const user = opts.userId();
       if (user !== undefined) span.setAttribute(ATTR_USER_ID, user);

@@ -9,6 +9,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./bootstrap": "./src/bootstrap.ts",
+    "./webext": "./src/webext.ts",
     "./internal": "./src/internal.ts"
   },
   "repository": {
@@ -18,13 +19,14 @@
   },
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
-    "api": "api-extractor run --local && api-extractor run --local -c api-extractor.bootstrap.json",
-    "api:check": "api-extractor run && api-extractor run -c api-extractor.bootstrap.json"
+    "api": "api-extractor run --local && api-extractor run --local -c api-extractor.bootstrap.json && api-extractor run --local -c api-extractor.webext.json",
+    "api:check": "api-extractor run && api-extractor run -c api-extractor.bootstrap.json && api-extractor run -c api-extractor.webext.json"
   },
   "dependencies": {
     "@libo11y/core": "workspace:*",
     "@libo11y/spec": "workspace:*",
     "@libo11y/web": "workspace:*",
+    "@libo11y/webext": "workspace:*",
     "@opentelemetry/api": "1.10.0",
     "@opentelemetry/core": "3.1.1",
     "@opentelemetry/sdk-logs": "3.1.1",

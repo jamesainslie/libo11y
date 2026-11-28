@@ -29,6 +29,7 @@ import {
   EVENT_RUM_SESSION_START,
   EVENT_RUM_VIEW_SUMMARY,
   RUM_CONNECTION_EFFECTIVE_VALUES,
+  type RUMPlatform,
   type RUMSessionRetained,
 } from "@libo11y/spec";
 import { createContextManager, type WebTelemetry } from "@libo11y/web";
@@ -47,13 +48,13 @@ import {
   type QueueOptions,
   type SetupDeps,
   type SignalEndpoints,
-  setupWithDeps,
 } from "@libo11y/web/internal";
 import { type Attributes, diag, ROOT_CONTEXT, SeverityNumber, type Span } from "@opentelemetry/api";
 import { type ExportResult, ExportResultCode } from "@opentelemetry/core";
 import { ConsoleSpanExporter, type SpanExporter, type SpanProcessor } from "@opentelemetry/sdk-trace";
 import { recordInstantAction } from "./actions/record.ts";
 import { ATTR_SESSION_ID, ATTR_USER_ID } from "./attrs.ts";
+import { type RumBind, type RumWrappers, webBinding } from "./bind.ts";
 import { takeBootstrap } from "./bootstrap/buffer.ts";
 import { replayBootstrap } from "./bootstrap/replay.ts";
 import { createBus } from "./bus.ts";
@@ -61,11 +62,18 @@ import type { RemoteConfigDocument } from "./config/clamp.ts";
 import type { RemoteConfigConnection } from "./config/remote.ts";
 import { rumContextManager } from "./context-manager.ts";
 import type { RetentionRouting } from "./contracts/retention.ts";
-import type { CollectorName, RequestStartHook, RumRuntime, RumSettings } from "./contracts/runtime.ts";
+import type {
+  CollectorName,
+  RequestStartHook,
+  RumRuntime,
+  RumScope,
+  RumSettings,
+} from "./contracts/runtime.ts";
 import type { SessionState, SessionStore } from "./contracts/session.ts";
 import { createBreadcrumbs } from "./errors/breadcrumbs.ts";
 import { recordError } from "./errors/record.ts";
 import type { Rum, RumSetupOptions, RumTelemetry } from "./options.ts";
+import { createPendingSpans, type PendingSpans } from "./pending-spans.ts";
 import { createRetentionBuffer, RETENTION_QUEUE_DEFAULTS } from "./retention/buffer.ts";
 import { retainingSpanExporter, withRetention } from "./retention/exporters.ts";
 import { sessionsIn } from "./retention/sessions.ts";
@@ -99,9 +107,21 @@ export interface RumDeps {
   readonly install?: boolean;
   /** The fetch remote configuration uses. Default web's pristineFetch, which is never instrumented. */
   readonly fetch?: typeof fetch;
-  /** Where remote configuration is cached. Default localStorage. Called only once consent is granted. */
-  readonly storage?: () => Pick<Storage, "getItem" | "setItem" | "removeItem"> | undefined;
+  /**
+   * Where remote configuration is cached. Default localStorage. Called only once consent is granted.
+   * It may resolve later, as a cache in chrome.storage.local does once it has read the stored value.
+   */
+  readonly storage?: () => CacheStorage | undefined | Promise<CacheStorage | undefined>;
+  /** The platform summaries, session starts and app_load record. Default "web". */
+  readonly platform?: RUMPlatform;
+  /** Runs the platform's setup with RUM's wrappers. Default webBinding(web, install). */
+  readonly bind?: RumBind;
+  /** The context's limits on the collectors, for a content script. With fixedView, the one view starts when RUM does and is on screen at once. */
+  readonly scope?: RumScope;
 }
+
+/** The synchronous storage remote configuration caches in. */
+type CacheStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
 /** The real dependencies of a page. */
 export function defaultRumDeps(): RumDeps {
@@ -174,13 +194,28 @@ interface EndingSession {
 /** How long a tab that ended a session waits to hear whether another tab's rotation won. */
 export const SESSION_END_ELECTION_MILLIS = 500;
 
-/** A span exporter that hands every batch to the target set later, and succeeds while there is none. */
-function forwardingSpanExporter(target: () => SpanExporter | undefined): SpanExporter {
+/**
+ * A span exporter that hands every batch to the target set later, and succeeds while there is none.
+ * A batch with a span that waits for the session goes on once the session is known.
+ */
+function forwardingSpanExporter(target: () => SpanExporter | undefined, pending: PendingSpans): SpanExporter {
   return {
     export(spans, done) {
-      const t = target();
-      if (t === undefined) done(SUCCESS);
-      else t.export(spans, done);
+      const go = (batch: typeof spans): void => {
+        const t = target();
+        if (t === undefined) done(SUCCESS);
+        else t.export(batch, done);
+      };
+      const send = (batch: typeof spans): void => {
+        try {
+          go(batch);
+        } catch (err) {
+          done({ code: ExportResultCode.FAILED, error: err instanceof Error ? err : new Error(String(err)) });
+        }
+      };
+      const ready = pending.prepare(spans);
+      if (Array.isArray(ready)) send(ready);
+      else ready.then(send, () => done(SUCCESS));
     },
     forceFlush: async () => {
       await target()?.forceFlush?.();
@@ -239,6 +274,7 @@ function configUrl(
 export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Promise<RumTelemetry> {
   const { rum: rumOptions, ...webOptions } = options;
   const resolved = resolveSettings(rumOptions);
+  const platform: RUMPlatform = deps.platform ?? "web";
   // Remote configuration (decisions P15, P16). The connection opens on the first grant. settings
   // are those of the current session: the document it started under, within the code's limits. A
   // new session takes the newest document. killed is the kill switch of the newest document.
@@ -290,7 +326,7 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
 
   const hidden = (): boolean => deps.document?.visibilityState === "hidden";
   const summary = createSummaryAccumulator({
-    platform: "web",
+    platform,
     emit: (attrs) => telemetry?.event(EVENT_RUM_VIEW_SUMMARY, attrs),
     now: deps.perfNow,
     visible: () => !hidden(),
@@ -318,6 +354,7 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
     now: deps.perfNow,
     prerendered: deps.prerendered,
     ...(deps.window === undefined ? {} : { window: deps.window }),
+    ...(deps.scope?.fixedView === true ? { initialStart: deps.perfNow } : {}),
   });
   views.subscribe((e) => {
     if (e.type === "start") {
@@ -351,8 +388,10 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
   };
   const routedNow = (): typeof routed =>
     routed !== undefined && routed.path === pathNow() ? routed : undefined;
+  const pending = createPendingSpans();
   const processor = rumSpanProcessor({
-    platform: "web",
+    platform,
+    pending,
     session,
     views,
     queryAllowList: () => settings.queryAllowList,
@@ -398,15 +437,13 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
   const ignoreUrls = webOptions.instrumentations?.ignoreUrls ?? [];
   let spanTarget: SpanExporter | undefined =
     appExporter === undefined ? undefined : retainingSpanExporter(appExporter, routing);
-  const webDeps: SetupDeps = {
-    ...deps.web,
-    createConsentController: (o) => {
-      controller = deps.web.createConsentController(o);
-      return controller;
+  const wrappers: RumWrappers = {
+    consentController: (c) => {
+      controller = c;
+      return c;
     },
-    createHttpTransport: (o) =>
-      deps.web.createHttpTransport(gatewayTransportOptions(o, resolved.clientToken, deps.now)),
-    onPlatform: (platform, po) => {
+    transportOptions: (o) => gatewayTransportOptions(o, resolved.clientToken, deps.now),
+    platform: (po) => {
       delivery = po.delivery;
       endpoints = po.endpoints;
       ownUrls = OTLP_SIGNALS.flatMap((s) => (po.endpoints[s] === undefined ? [] : [po.endpoints[s]]));
@@ -420,18 +457,11 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
               : undefined;
         spanTarget = inner === undefined ? undefined : retainingSpanExporter(inner, routing);
       }
-      deps.web.onPlatform?.(platform, po);
     },
-    // Traces are injected, so web builds no span exporter here; logs are routed by session. The
-    // gateway accepts only delta sums and histograms, so app metrics export with delta temporality.
-    createExporterSet: (req, d, endpoints, eo) =>
-      withRetention(
-        deps.web.createExporterSet(req, d, endpoints, { ...eo, metricTemporality: "delta" }),
-        routing,
-      ),
-    installFetchInstrumentation: (o) => deps.web.installFetchInstrumentation({ ...o, onStart }),
-    installXhrInstrumentation: (o) => deps.web.installXhrInstrumentation({ ...o, onStart }),
+    exporterSet: (set) => withRetention(set, routing),
+    onRequestStart: onStart,
   };
+  const bind = deps.bind ?? webBinding(deps.web, deps.install !== false);
 
   // Hide handling. On a navigation, every engine fires pagehide before visibilitychange, and web's
   // flush on hide runs once per hide and exports whatever is pending at that moment; a flush
@@ -493,16 +523,15 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
 
   let t: WebTelemetry;
   try {
-    t = await setupWithDeps(
+    t = await bind(
       {
         ...webOptions,
         spanProcessor: composeProcessors(processor, webOptions.spanProcessor),
         contextManager: () =>
           rumContextManager((webOptions.contextManager ?? createContextManager)(), () => active),
-        ...(forward ? { spanExporter: forwardingSpanExporter(() => spanTarget) } : {}),
+        ...(forward ? { spanExporter: forwardingSpanExporter(() => spanTarget, pending) } : {}),
       },
-      webDeps,
-      deps.install !== false,
+      wrappers,
     );
   } catch (err) {
     removeHideListeners();
@@ -524,7 +553,8 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
   // processor classifies their attributes, and the retention exporters route them by session.id.
   const bodyLogger = t.loggerProvider.getLogger("@libo11y/rum", VERSION);
   const runtime: RumRuntime = {
-    platform: "web",
+    platform,
+    ...(deps.scope === undefined ? {} : { scope: deps.scope }),
     telemetry: t,
     tracer: t.tracerProvider.getTracer("@libo11y/rum", VERSION),
     gate,
@@ -615,12 +645,27 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
   };
   /** Starts the session, the view and the collectors. */
   const activate = async (gen: number): Promise<void> => {
-    if (killed) return;
+    if (killed) {
+      pending.discard();
+      return;
+    }
     await session.start();
     // Revoked while the session loaded, and maybe granted again: that later start runs instead.
-    if (gen !== generation || !gate.recording() || killed) return;
+    if (gen !== generation || !gate.recording() || killed) {
+      if (gen === generation) pending.discard();
+      return;
+    }
     settings = forSession(session.current()?.configVersion);
     views.begin();
+    // Spans that started while the session loaded, such as app_load right after a late grant.
+    const s = session.current();
+    pending.resolve((load) => {
+      const v = load ? views.loadView() : views.current();
+      return {
+        ...(s === undefined ? {} : { [ATTR_SESSION_ID]: s.id }),
+        ...(v === undefined ? {} : { [ATTR_RUM_VIEW_ID]: v.id }),
+      };
+    });
     const r = routedNow();
     if (r?.name !== undefined) views.rename(r.name);
     // A kept session may find batches an earlier page of it left in the buffer.
@@ -630,6 +675,8 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
     collecting = true;
     reconcile();
     if (r?.renderedAt !== undefined) views.rendered(r.renderedAt);
+    // A fixed view (a content script) is on screen as soon as it starts.
+    else if (deps.scope?.fixedView === true) views.rendered();
   };
   /** The kill switch acts at once; every other change waits for the next session. */
   const onRemote = (doc: RemoteConfigDocument | undefined): void => {
@@ -651,7 +698,7 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
       reconcile();
     }
   };
-  const openRemote = (): RemoteConfigConnection | undefined => {
+  const openRemote = (): RemoteConfigConnection | undefined | Promise<RemoteConfigConnection | undefined> => {
     if (rc === undefined) return undefined;
     const url = configUrl(
       rc.url,
@@ -665,37 +712,62 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
       diag.warn("o11y: rum: remote configuration has no URL or no fetch; it is off");
       return undefined;
     }
-    let storage: Pick<Storage, "getItem" | "setItem" | "removeItem"> | undefined;
+    const connect = (storage: CacheStorage | undefined): RemoteConfigConnection =>
+      rc.open({
+        url,
+        fetch: f,
+        ...(storage === undefined ? {} : { storage }),
+        timers: {
+          setTimeout: (cb, ms) => setTimeout(cb, ms),
+          clearTimeout: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
+        },
+        visible: () => !hidden(),
+      });
+    let storage: ReturnType<NonNullable<RumDeps["storage"]>>;
     try {
       storage = (deps.storage ?? (() => globalThis.localStorage))();
     } catch {
       storage = undefined;
     }
-    return rc.open({
-      url,
-      fetch: f,
-      ...(storage === undefined ? {} : { storage }),
-      timers: {
-        setTimeout: (cb, ms) => setTimeout(cb, ms),
-        clearTimeout: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
-      },
-      visible: () => !hidden(),
-    });
+    return storage instanceof Promise ? storage.then(connect, () => connect(undefined)) : connect(storage);
   };
+  /** The connection being opened, while its cache storage loads. */
+  let opening: Promise<RemoteConfigConnection | undefined> | undefined;
   const startAll = (): Promise<void> => {
     everStarted = true;
     const gen = generation;
+    pending.open();
     starting ??= (async () => {
-      remote ??= openRemote();
-      killed = remote?.current()?.enabled === false;
-      await activate(gen);
-      if (gen !== generation || !gate.recording()) return;
-      stopRemote = remote?.start(onRemote);
+      try {
+        if (remote === undefined) {
+          const opened = opening ?? openRemote();
+          if (opened instanceof Promise) {
+            opening = opened;
+            const connection = await opened;
+            remote ??= connection;
+            if (opening === opened) opening = undefined;
+            // Revoked while the cache loaded: the revoke found no connection to clear.
+            if (gen !== generation) {
+              if (!gate.recording()) remote?.clear();
+              return;
+            }
+          } else remote = opened;
+        }
+        killed = remote?.current()?.enabled === false;
+        await activate(gen);
+        if (gen !== generation || !gate.recording()) return;
+        stopRemote = remote?.start(onRemote);
+      } catch (err) {
+        // A start that failed releases the spans waiting for its session, so no export stalls.
+        if (gen === generation) pending.discard();
+        throw err;
+      }
     })();
     return starting;
   };
   const stopAll = (): void => {
     generation++;
+    pending.discard();
     collecting = false;
     reconcile();
     stopRemote?.();
@@ -714,22 +786,25 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
   // for the others' broadcasts and emits only if its successor is still the current session. An
   // unkept session that ends removes only its own records from the shared retention buffer.
   //
-  // The start of a session that replaces another waits for the same election, so only the winning
-  // session's o11y.rum.session.start is sent: a tab whose new session lost to another tab's
-  // abandons it. A page that hides first sends its pending start if that session is still current.
-  // The first session of a page sends its start at once.
+  // Session start (R3f): the o11y.rum.session.start of a kept session waits for the same election,
+  // so only the session every context ends up sharing sends its start. That covers two tabs rotating at once and two
+  // contexts that both find nothing stored and create the first session, as an extension's side
+  // panel and content script do, each before it hears of the other's. A context whose session lost
+  // abandons its start. A page that hides first sends its pending start if that session is still
+  // current, because a hidden page may never run again.
   const endTimers = new Set<ReturnType<typeof setTimeout>>();
   let endingSession: EndingSession | undefined;
   const pendingStarts = new Map<ReturnType<typeof setTimeout>, () => void>();
   const sendStart = (s: SessionState): void => {
     t.event(EVENT_RUM_SESSION_START, {
       [ATTR_SESSION_ID]: s.id,
-      [ATTR_RUM_PLATFORM]: "web",
+      [ATTR_RUM_PLATFORM]: platform,
       ...(s.configVersion === undefined ? {} : { [ATTR_RUM_CONFIG_VERSION]: s.configVersion }),
     });
   };
+  /** Decides every start still waiting for its election now. */
   const settleStarts = (): void => {
-    for (const [timer, decide] of pendingStarts) {
+    for (const [timer, decide] of [...pendingStarts]) {
       clearTimeout(timer);
       decide();
     }
@@ -746,11 +821,14 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
     } else if (e.type === "start" && e.local && on()) {
       if (endingSession !== undefined && e.previous?.id === endingSession.id)
         endingSession.successor = e.session.id;
-      if (e.previous === undefined) {
-        sendStart(e.session);
+      const started = e.session;
+      // An unkept session's start waits in the retention buffer and is sent only if the session is
+      // kept. A session that lost its election is abandoned and never kept, so its start is never
+      // sent, and buffering it at once means a reload before the election cannot lose it.
+      if (started.retained === undefined) {
+        sendStart(started);
         return;
       }
-      const started = e.session;
       const decide = (): void => {
         pendingStarts.delete(timer);
         if (on() && session.current()?.id === started.id) sendStart(started);
@@ -784,6 +862,9 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
 
   const stopRecording = (): void => {
     stopAll();
+    // A revoked session sends no start.
+    for (const timer of pendingStarts.keys()) clearTimeout(timer);
+    pendingStarts.clear();
     active = undefined;
     crumbs.clear();
     summary.reset();
@@ -892,7 +973,9 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
   const early = takeBootstrap();
   if (gate.recording()) {
     await startAll();
-    if (!killed) replayBootstrap(runtime, early);
+    // A scoped context (a content script) shares its world with no page bootstrap of its own: what
+    // a bootstrap there buffered may be the host page's, so it is dropped.
+    if (!killed && deps.scope === undefined) replayBootstrap(runtime, early);
   }
   return handle;
 }

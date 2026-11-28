@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 import { O11yError } from "@libo11y/core";
+import type { WebSetupOptions, WebTelemetry } from "@libo11y/web";
 import {
   createMemoryQueue,
   defaultSetupDeps,
@@ -9,6 +10,7 @@ import {
   type SetupDeps,
 } from "@libo11y/web/internal";
 import { createFakeTransport, type FakeTransport } from "../../web/src/test-support/index.ts";
+import { type RumWrappers, webBinding } from "./bind.ts";
 import { installRumBootstrapOn, takeBootstrap } from "./bootstrap/buffer.ts";
 import { CONFIG_STORAGE_KEY, remoteConfig } from "./config/remote.ts";
 import type { CollectorName, RumRuntime } from "./contracts/runtime.ts";
@@ -16,8 +18,9 @@ import type { RumSetupOptions, RumTelemetry } from "./options.ts";
 import { RETENTION_QUEUE_DEFAULTS } from "./retention/buffer.ts";
 import { sessionsIn } from "./retention/sessions.ts";
 import { localStorageSessionStore, SESSION_STORAGE_KEY } from "./session/local-store.ts";
-import { type RumDeps, runtimeOf, setupRumWith } from "./setup.ts";
+import { type RumDeps, runtimeOf, SESSION_END_ELECTION_MILLIS, setupRumWith } from "./setup.ts";
 import { createChannelHub, createFakeStorage } from "./test-support/fake-storage.ts";
+import { views } from "./views/collector.ts";
 
 class FakeDocument extends EventTarget {
   visibilityState: "visible" | "hidden" = "visible";
@@ -234,13 +237,16 @@ test("retaining the session sends the buffered detail", async () => {
   );
 });
 
-test("a head-sampled session sends session.start and its spans at once", async () => {
+test("a head-sampled session sends its spans at once, and session.start once its election is decided", async () => {
   const h = harness();
   open = await setupRumWith({ ...OPTS, consent: { initial: "granted" } }, h.deps);
   open.tracerProvider.getTracer("app").startSpan("work").end();
   await open.forceFlush();
-  assert.deepEqual(sentEvents(h.transport), ["o11y.rum.session.start"]);
   assert.deepEqual(spanNames(h.transport), ["work"]);
+  assert.deepEqual(sentEvents(h.transport), [], "the start waits for other contexts' sessions");
+  await new Promise((r) => setTimeout(r, SESSION_END_ELECTION_MILLIS + 50));
+  await open.forceFlush();
+  assert.deepEqual(sentEvents(h.transport), ["o11y.rum.session.start"]);
 });
 
 test("granting consent later starts the session", async () => {
@@ -918,7 +924,8 @@ for (const [how, hide] of [
       ...h.transport,
       requests: h.transport.requests.slice(before),
     } as FakeTransport);
-    assert.deepEqual(after[0], ["o11y.rum.frustration", "o11y.rum.view.summary"]);
+    // The first session's start, still waiting for its election, goes out at the hide.
+    assert.deepEqual(after[0], ["o11y.rum.frustration", "o11y.rum.session.start", "o11y.rum.view.summary"]);
     const summary = logRecords(h.transport).find((r) => r["event.name"] === "o11y.rum.view.summary");
     assert.equal(summary?.["o11y.rum.summary.cls.value"], 0.1);
   });
@@ -1432,4 +1439,234 @@ test("a route named before consent on another path keeps neither its name nor it
   open.consent.grant();
   await until(() => open?.rum.sessionId() !== undefined, "the session");
   assert.deepEqual(seen, ["start /b", "rename /b"]);
+});
+
+// Platform bindings and asynchronous session stores (R3f).
+
+type OtlpSpan = { name: string; attributes: OtlpAttr[] };
+
+function sentSpans(t: FakeTransport): { name: string; attributes: Record<string, unknown> }[] {
+  return t.requests
+    .filter((r) => r.signal === "traces")
+    .flatMap((r) => {
+      const body = JSON.parse(r.body) as { resourceSpans: { scopeSpans: { spans: OtlpSpan[] }[] }[] };
+      return body.resourceSpans.flatMap((rs) =>
+        rs.scopeSpans.flatMap((ss) =>
+          ss.spans.map((s) => ({
+            name: s.name,
+            attributes: Object.fromEntries(
+              s.attributes.map((a) => [
+                a.key,
+                a.value.stringValue ?? a.value.doubleValue ?? a.value.intValue,
+              ]),
+            ),
+          })),
+        ),
+      );
+    });
+}
+
+/** A session store whose load waits for release, as chrome.storage.session answers in a later task. */
+function slowStore(deps: RumDeps): { deps: RumDeps; release: () => void } {
+  let release = (): void => {};
+  const gate = new Promise<void>((r) => {
+    release = r;
+  });
+  const base = deps.sessionStore;
+  return {
+    release: () => release(),
+    deps: {
+      ...deps,
+      sessionStore: () => {
+        const s = base();
+        return {
+          ...s,
+          load: async () => {
+            await gate;
+            return s.load();
+          },
+        };
+      },
+    },
+  };
+}
+
+test("a platform binding receives RUM's wrappers, and its platform reaches summaries and session starts", async () => {
+  const h = harness();
+  let seen: { options: WebSetupOptions; wrappers: RumWrappers } | undefined;
+  open = await setupRumWith(
+    { ...OPTS, consent: { initial: "granted" } },
+    {
+      ...h.deps,
+      platform: "webext",
+      bind: (options, wrappers) => {
+        seen = { options, wrappers };
+        return webBinding(h.deps.web, true)(options, wrappers);
+      },
+    },
+  );
+  assert.ok(seen?.options.spanProcessor, "the options carry RUM's span processor");
+  assert.equal(typeof seen?.options.contextManager, "function");
+  assert.ok(seen?.options.spanExporter, "and its forwarding span exporter");
+  for (const k of [
+    "consentController",
+    "platform",
+    "exporterSet",
+    "onRequestStart",
+    "transportOptions",
+  ] as const) {
+    assert.equal(typeof seen?.wrappers[k], "function", k);
+  }
+  await until(() => sentEvents(h.transport).includes("o11y.rum.session.start"), "session.start");
+  h.document.hide();
+  await new Promise((r) => setTimeout(r, 0));
+  await open.forceFlush();
+  const start = logRecords(h.transport).find((r) => r["event.name"] === "o11y.rum.session.start");
+  const summary = logRecords(h.transport).find((r) => r["event.name"] === "o11y.rum.view.summary");
+  assert.equal(start?.["o11y.rum.platform"], "webext");
+  assert.equal(summary?.["o11y.rum.platform"], "webext");
+});
+
+test("a grant whose session loads late still gives app_load and the view the session", async () => {
+  const h = harness();
+  const slow = slowStore(h.deps);
+  const deps: RumDeps = {
+    ...slow.deps,
+    web: {
+      ...h.deps.web,
+      // As web's recordDocumentLoad: it waits for the grant, then records documentLoad at once.
+      recordDocumentLoad: async (o) => {
+        const t = o.telemetry as WebTelemetry;
+        const consent = t.consent;
+        await new Promise<void>((resolve) => {
+          if (consent.state() === "granted") resolve();
+          const off = consent.subscribe((s: string) => {
+            if (s === "granted") {
+              off();
+              resolve();
+            }
+          });
+        });
+        const tracer = t.tracerProvider.getTracer("@libo11y/web");
+        const load = tracer.startSpan("documentLoad", { startTime: performance.timeOrigin });
+        load.end();
+      },
+    },
+  };
+  open = await setupRumWith({ ...OPTS, rum: { collectors: [views({ history: false })] } }, deps);
+  open.consent.grant();
+  await new Promise((r) => setTimeout(r, 10));
+  // A flush while the session is still loading holds the spans that wait for it.
+  const flushed = open.forceFlush();
+  await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(spanNames(h.transport), [], "nothing leaves before the session is known");
+  slow.release();
+  await flushed;
+  const id = open.rum.sessionId();
+  assert.ok(id);
+  open.rum.viewRendered();
+  // The view span ends at the paint after the render, a task later here.
+  await new Promise((r) => setTimeout(r, 20));
+  await open.forceFlush();
+  const spans = sentSpans(h.transport);
+  const appLoad = spans.find((s) => s.name === "app_load");
+  const view = spans.find((s) => s.name.startsWith("view "));
+  assert.ok(appLoad, "documentLoad became app_load");
+  assert.equal(appLoad.attributes["session.id"], id);
+  assert.equal(appLoad.attributes["o11y.rum.span.shape"], "app_load");
+  assert.equal(appLoad.attributes["o11y.rum.view.id"], runtimeOf(open)?.views.loadView()?.id);
+  assert.equal(view?.attributes["session.id"], id);
+});
+
+test("a revoke while the session loads drops the spans that waited for it", async () => {
+  const h = harness();
+  const slow = slowStore(h.deps);
+  open = await setupRumWith(OPTS, slow.deps);
+  open.consent.grant();
+  await new Promise((r) => setTimeout(r, 0));
+  open.tracerProvider.getTracer("app").startSpan("early").end();
+  const flushed = open.forceFlush();
+  await open.consent.revoke();
+  slow.release();
+  await flushed;
+  await open.forceFlush();
+  assert.deepEqual(spanNames(h.transport), []);
+});
+
+test("two contexts that create the first session at once send one session.start", async () => {
+  const storage = createFakeStorage();
+  const hub = createChannelHub({ async: true });
+  const a = harness({ storage, hub });
+  const b = harness({ storage, hub });
+  const slowA = slowStore(a.deps);
+  const slowB = slowStore(b.deps);
+  const tabA = await setupRumWith({ ...OPTS }, { ...slowA.deps, install: false });
+  const tabB = await setupRumWith({ ...OPTS }, { ...slowB.deps, install: false });
+  try {
+    tabA.consent.grant();
+    tabB.consent.grant();
+    await new Promise((r) => setTimeout(r, 0));
+    // Both find nothing stored, so each creates a session before hearing of the other's.
+    slowA.release();
+    slowB.release();
+    await until(
+      () => tabA.rum.sessionId() !== undefined && tabA.rum.sessionId() === tabB.rum.sessionId(),
+      "the contexts to agree on a session",
+    );
+    await new Promise((r) => setTimeout(r, 700));
+    await Promise.all([tabA.forceFlush(), tabB.forceFlush()]);
+    const starts = [...logRecords(a.transport), ...logRecords(b.transport)].filter(
+      (r) => r["event.name"] === "o11y.rum.session.start",
+    );
+    assert.equal(starts.length, 1);
+    assert.equal(starts[0]?.["session.id"], tabA.rum.sessionId());
+  } finally {
+    await tabA.shutdown();
+    await tabB.shutdown();
+  }
+});
+
+test("a page that hides before the session.start election sends its start at once", async () => {
+  const h = harness();
+  open = await setupRumWith({ ...OPTS, consent: { initial: "granted" } }, h.deps);
+  h.document.hide();
+  await new Promise((r) => setTimeout(r, 0));
+  await open.forceFlush();
+  assert.ok(sentEvents(h.transport).includes("o11y.rum.session.start"));
+});
+
+test("a start that fails releases the spans waiting for its session, so a flush never stalls", async () => {
+  const h = harness();
+  const base = h.deps.sessionStore;
+  const deps: RumDeps = {
+    ...h.deps,
+    sessionStore: () => ({
+      ...base(),
+      onChange: () => {
+        throw new Error("the extension context is gone");
+      },
+    }),
+  };
+  open = await setupRumWith(OPTS, deps);
+  open.consent.grant();
+  open.tracerProvider.getTracer("app").startSpan("orphan").end();
+  const flushed = await Promise.race([
+    open.forceFlush().then(() => "flushed"),
+    new Promise((r) => setTimeout(() => r("stalled"), 2000)),
+  ]);
+  assert.equal(flushed, "flushed");
+});
+
+test("an unkept session's start is buffered at once, so a reload before the election keeps it", async () => {
+  const retentionQueue = createMemoryQueue({ ...RETENTION_QUEUE_DEFAULTS });
+  const h = harness({ retentionQueue });
+  open = await setupRumWith(
+    { ...OPTS, consent: { initial: "granted" }, rum: { sessionSampleRate: 0 } },
+    h.deps,
+  );
+  await open.forceFlush();
+  await new Promise((r) => setTimeout(r, 0));
+  const bodies = (await retentionQueue.claim(Date.now(), 100, 0)).map((e) => e.body).join("\n");
+  assert.ok(bodies.includes("o11y.rum.session.start"), "the start waits in the retention buffer");
+  assert.deepEqual(sentEvents(h.transport), []);
 });

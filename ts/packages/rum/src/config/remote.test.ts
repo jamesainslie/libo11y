@@ -49,6 +49,8 @@ test("a 200 is parsed and cached with its ETag; the next request sends If-None-M
   assert.equal(new Headers(seen[0]?.init.headers).get("If-None-Match"), null);
   assert.equal(seen[0]?.url, URL_);
   assert.equal(seen[0]?.init.credentials, "omit");
+  // No Referer: from a content script, it could be the host page's URL.
+  assert.equal(seen[0]?.init.referrerPolicy, "no-referrer");
   assert.equal(seen[0]?.init.cache, "no-cache");
   assert.equal(seen[0]?.init.method ?? "GET", "GET");
 });

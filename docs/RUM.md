@@ -31,7 +31,7 @@ a set of new platforms under both products, not a third product.
 | Product | Go | Bun and Node | Browser | MV3 extension | React Native | iOS (Swift) | Android (Kotlin) |
 |---|---|---|---|---|---|---|---|
 | Core (setup) | `go` | `@libo11y/server` | `@libo11y/web` | `@libo11y/webext` | `@libo11y/react-native` | `Libo11y` Swift package | `libo11y-android` |
-| RUM (experience) | gateway `go/o11yrum` | none | `@libo11y/rum` | `@libo11y/rum` | `@libo11y/rum-react-native` | `Libo11yRUM` | `libo11y-rum-android` |
+| RUM (experience) | gateway `go/o11yrum` | none | `@libo11y/rum` | `@libo11y/rum/webext` | `@libo11y/rum-react-native` | `Libo11yRUM` | `libo11y-rum-android` |
 
 Five cells exist today: the Go core (`go`), the Bun and Node core
 (`@libo11y/server`), the browser core (`@libo11y/web`), the MV3
@@ -39,8 +39,9 @@ extension core (`@libo11y/webext`) and the RUM gateway (`go/o11yrum`).
 The two browser cores first ship in `ts/v0.2.1`. The gateway first ships
 in `go/o11yrum/v0.1.0`, with the `ghcr.io/jamesainslie/o11yrum-gateway`
 image, and [its README](../go/o11yrum/README.md) covers configuration and
-deployment. The browser RUM cell, `@libo11y/rum`, is in development in
-`ts/packages/rum` and has not shipped. Its adapters for React
+deployment. The browser RUM cell, `@libo11y/rum`, and the MV3 extension
+RUM cell, its `@libo11y/rum/webext` entry point, are in development in
+`ts/packages/rum` and have not shipped. Its adapters for React
 (`@libo11y/rum-react`), TanStack Router (`@libo11y/rum-tanstack-router`)
 and Connect (`@libo11y/rum-connect`) are in development beside it. Every
 other named cell is planned.
@@ -261,6 +262,28 @@ ends it and starts a session of its own, and then all of them adopt the
 newest one. Only the tab whose new session won sends
 `o11y.rum.session.end`. A session that ends without being kept removes
 only its own records from the shared retention buffer.
+
+The same race happens when two contexts find no session stored and both
+create the first one, as an extension's side panel and content script
+can. So a client sends the `o11y.rum.session.start` of a kept session
+only after the same 500 ms election, and only if its new session is still
+the one every context shares. A page that hides before then sends a
+pending start whose session is still current. The start of a session that
+is not kept goes to the retention buffer at once: a session that lost the
+election is never kept, so its start is never sent.
+
+### Extensions
+
+In an MV3 extension, extension pages and content scripts record RUM and
+the service worker sends their records. Every context of the extension
+shares one session through `chrome.storage.session`, and the remote
+configuration cache lives in `chrome.storage.local`. The platform is
+`webext`. A content script shares the host page's document, so it records
+only what is the extension's own: one view named `content-script` whose
+span carries the host page's `url.domain` and no other URL, actions only
+inside the extension's UI root, and errors only from the extension's own
+scripts. It records no vitals, resources, long animation frames or
+`app_load`, because those would measure the host page.
 
 ### Remote configuration
 

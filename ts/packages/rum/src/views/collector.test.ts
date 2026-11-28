@@ -269,3 +269,21 @@ test("a view that started after the render it is told of ends at the next paint"
   assert.equal(millis(view?.endTime ?? [0, 0]), env.timeOrigin + 3016);
   stop();
 });
+
+test("a fixed view scope follows no URL change and puts its attributes on every view span", async () => {
+  const { rt, env, collector } = setup();
+  rt.scope = { fixedView: true, viewAttributes: { "url.domain": "host.test" } };
+  const stop = collector.start(rt);
+  const first = rt.views.current()?.id;
+  env.history.history.pushState(null, "", "/elsewhere");
+  env.dispatch("popstate", {});
+  assert.equal(rt.views.current()?.id, first, "the view stays");
+  rt.views.rendered();
+  env.frame();
+  env.task();
+  env.advance(1000);
+  stop();
+  const spans = await finished(rt);
+  assert.equal(spans.length, 1);
+  assert.equal(spans[0]?.attributes["url.domain"], "host.test");
+});

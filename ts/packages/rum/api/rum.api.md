@@ -4,6 +4,7 @@
 
 ```ts
 
+import type { Attributes } from '@opentelemetry/api';
 import type { Context } from '@opentelemetry/api';
 import type { HttpRequestInfo } from '@libo11y/web';
 import type { LogAttributes } from '@libo11y/core';
@@ -213,6 +214,7 @@ export interface RumRuntime {
     onRequestStart(hook: RequestStartHook): () => void;
     // (undocumented)
     readonly platform: RUMPlatform;
+    readonly scope?: RumScope;
     // (undocumented)
     readonly session: SessionManager;
     // (undocumented)
@@ -227,6 +229,14 @@ export interface RumRuntime {
     readonly tracer: Tracer;
     // (undocumented)
     readonly views: ViewTracker;
+}
+
+// @public
+export interface RumScope {
+    readonly action?: (event: Event) => boolean;
+    readonly error?: (event: Event) => boolean;
+    readonly fixedView?: boolean;
+    readonly viewAttributes?: Attributes;
 }
 
 // @public

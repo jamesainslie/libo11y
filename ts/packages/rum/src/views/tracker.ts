@@ -23,6 +23,8 @@ export interface ViewTrackerOptions {
   readonly prerendered: () => boolean;
   /** Where pageshow fires, for back/forward-cache restores. */
   readonly window?: EventTarget;
+  /** When the initial view starts, performance.now(). Default 0, navigation start; a content script's view starts when RUM begins. */
+  readonly initialStart?: () => number;
   readonly randomId?: () => string;
 }
 
@@ -111,8 +113,9 @@ export function createViewTracker(opts: ViewTrackerOptions): ViewTracker & { clo
       // The initial view starts at time origin: a view covers getting into it from navigation start.
       // A later begin (consent granted again) is a new session on a page already loaded, so its
       // view is soft and starts now (decision P14).
-      if (load === undefined) start({ kind: opts.prerendered() ? "prerender" : "initial", startTime: 0 });
-      else start({ kind: "soft", name: load.name });
+      if (load === undefined) {
+        start({ kind: opts.prerendered() ? "prerender" : "initial", startTime: opts.initialStart?.() ?? 0 });
+      } else start({ kind: "soft", name: load.name });
     },
     end() {
       endCurrent();

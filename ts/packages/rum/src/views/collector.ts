@@ -16,7 +16,9 @@
  * Every view span ends VIEW_SPAN_CAP_MILLIS after it started at the latest, and at once when its
  * view ends first. In history mode, every path change through pushState, replaceState or popstate
  * starts a soft view named by settings().viewName, caused by the open action. With history off,
- * nothing renders by itself and router adapters call rum.startView and rum.viewRendered. Stop
+ * nothing renders by itself and router adapters call rum.startView and rum.viewRendered. A runtime
+ * scope with fixedView (a content script) follows no URL change, and its viewAttributes go on every
+ * view span. Stop
  * ends every open view span and removes every listener, observer and timer.
  */
 import {
@@ -96,10 +98,12 @@ interface OpenView {
 }
 
 export function viewsWith(opts: ViewsOptions, env: ViewsEnv): RumCollector {
-  const history = opts.history !== false;
+  const followHistory = opts.history !== false;
   return {
     name: "views",
     start(rt: RumRuntime) {
+      // A fixed view scope (a content script) keeps its one view whatever the host page's URL does.
+      const history = followHistory && rt.scope?.fixedView !== true;
       let stopped = false;
       const open = new Map<string, OpenView>();
 
@@ -119,8 +123,9 @@ export function viewsWith(opts: ViewsOptions, env: ViewsEnv): RumCollector {
         o.offLoad?.();
         o.offLoad = undefined;
       };
+      // A fixed view (a content script) has no app_load: the host page's load is not its own.
       const waitsForAppLoad = (o: OpenView): boolean =>
-        LOAD_SPAN_KINDS.has(o.view.kind) && rt.views.appLoad() === undefined;
+        LOAD_SPAN_KINDS.has(o.view.kind) && rt.views.appLoad() === undefined && rt.scope?.fixedView !== true;
 
       const create = (o: OpenView): Span => {
         if (o.span !== undefined) return o.span;
@@ -131,6 +136,7 @@ export function viewsWith(opts: ViewsOptions, env: ViewsEnv): RumCollector {
           {
             startTime: env.timeOrigin + v.startTime,
             attributes: {
+              ...rt.scope?.viewAttributes,
               [ATTR_RUM_SPAN_SHAPE]: RUM_SPAN_SHAPE_VALUE_VIEW,
               [ATTR_RUM_PLATFORM]: rt.platform,
               [ATTR_RUM_VIEW_NAME]: v.name,

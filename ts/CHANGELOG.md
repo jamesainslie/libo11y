@@ -94,11 +94,37 @@ adhere to [Semantic Versioning](https://semver.org/).
   span events. `longAnimationFrames()` counts long animation frames per
   view on engines that report them.
 - `@libo11y/web/internal` exports `remoteParentFromTraceparent`.
+- `@libo11y/rum/webext`, RUM in Manifest V3 extensions.
+  `setupRumExtension({ context })` runs in extension pages
+  (`context: "page"`) and content scripts (`context: "content"`) and sends
+  their records to the worker through `@libo11y/webext`. Every context
+  shares one session through `chrome.storage.session`, and the platform is
+  `webext`. A content script keeps one view named `content-script` (or
+  `content.viewName`) whose span carries only the host page's
+  `url.domain`, records actions only inside `content.uiRoot` and errors
+  only from the extension's own scripts, buffers in memory, and refuses
+  `vitals()`, `resources()`, `longAnimationFrames()` and `documentLoad`.
+  `setupRumWorker` sets up the worker with the gateway's wire parameters
+  and opens `chrome.storage.session` to content scripts, as
+  `allowRumSessionInContentScripts` does on its own. Remote configuration
+  works in every context, needs an absolute URL there and caches in
+  `chrome.storage.local`.
+- `@libo11y/webext/internal`, the content script and worker seams
+  `@libo11y/rum/webext` builds on.
 - `@libo11y/rum`: app metrics export with delta temporality, as the RUM
   gateway requires. `@libo11y/web` on its own still exports cumulative
   metrics.
 - `@libo11y/web/internal` exports `setupWithDeps`, `defaultSetupDeps` and
   `SetupDeps`, the seam `@libo11y/rum` builds on.
+- `@libo11y/rum`: the `o11y.rum.session.start` of a kept session waits
+  for the 500 ms session election, so two tabs or extension contexts that
+  create the first session at once send one start. A hide sends a pending
+  start at once. An unkept session's start goes to the retention buffer at
+  once, as before.
+- `@libo11y/rum`: spans that start between a grant and the session
+  loading, such as `app_load` right after a late grant, wait for the
+  session and carry its `session.id` and view. This matters where the
+  session store answers later, as `chrome.storage.session` does.
 - Size budgets for the browser bundles in `ts/size-budget.json`, checked by
   `bun scripts/size.ts --check` (`make ts-size`) in CI.
 - `conformance/rum-summary/`, the view summary vectors the TypeScript

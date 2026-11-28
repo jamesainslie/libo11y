@@ -6,7 +6,7 @@
 import type { LogAttributes, RecordingGate, Telemetry } from "@libo11y/core";
 import type { RUMErrorSource, RUMFrustrationType, RUMPlatform } from "@libo11y/spec";
 import type { HttpRequestInfo } from "@libo11y/web";
-import type { Context, Span, Tracer } from "@opentelemetry/api";
+import type { Attributes, Context, Span, Tracer } from "@opentelemetry/api";
 import type { BootstrapEntry } from "../bootstrap/buffer.ts";
 import type { SessionManager } from "./session.ts";
 import type { SummaryAccumulator } from "./summary.ts";
@@ -73,8 +73,25 @@ export interface RumSettings {
   readonly viewName: (url: URL) => string;
 }
 
+/**
+ * What a context limits the collectors to (R3f). Unset fields limit nothing. setupRumExtension sets
+ * them in a content script, whose document is the host page's.
+ */
+export interface RumScope {
+  /** actions() records only the click, keydown and submit events this accepts. */
+  readonly action?: (event: Event) => boolean;
+  /** errors() records only the error, unhandledrejection and securitypolicyviolation events this accepts. */
+  readonly error?: (event: Event) => boolean;
+  /** views() follows no URL change, so the context keeps one view. */
+  readonly fixedView?: boolean;
+  /** Attributes every view span carries, such as url.domain in a content script. */
+  readonly viewAttributes?: Attributes;
+}
+
 export interface RumRuntime {
   readonly platform: RUMPlatform;
+  /** The context's limits on what collectors record. Absent on the web. */
+  readonly scope?: RumScope;
   readonly telemetry: Telemetry;
   readonly tracer: Tracer;
   readonly gate: RecordingGate;
