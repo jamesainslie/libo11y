@@ -67,7 +67,7 @@ RSpec.describe "Libo11y core" do
       records = io.string.lines.map { |l| JSON.parse(l) }
       canary = records.find { |r| r["event.name"] == Libo11y::Spec::EVENT_TELEMETRY_CONFIGURED }
       expect(canary).not_to be_nil
-      expect(canary["o11y.config.service.name"]).to eq("checkout")
+      expect(canary["service.name"]).to eq("checkout")
 
       expect(tel.shutdown.ok?).to be(true)
     end
@@ -97,7 +97,7 @@ RSpec.describe "Libo11y core" do
       begin
         hostile.each { |k, v| ENV[k] = v }
         rec = Libo11y::Testing::Recorder.new
-        expect(rec.telemetry.effective_config["sdk.disabled"]).to eq("false")
+        expect(rec.telemetry.effective_config).to include("o11y.config.traces=injected", "o11y.config.logs=injected")
         rec.telemetry.tracer("t").in_span("s") { rec.telemetry.logger.info("hi") }
         expect(rec.spans.length).to eq(1)
         expect(rec.logs.length).to eq(1)

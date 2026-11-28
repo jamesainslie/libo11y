@@ -15,6 +15,21 @@ require_relative "policy"
 module Libo11y
   module Internal
     module Bridges
+      # The tracer provider under OTEL_SDK_DISABLED=true. Its spans record
+      # nothing and mint no trace identity, and an inbound trace context still
+      # passes through them.
+      class NoopTracerProvider < OpenTelemetry::Trace::TracerProvider
+        def add_span_processor(_processor); end
+
+        def force_flush(timeout: nil) # rubocop:disable Lint/UnusedMethodArgument
+          OpenTelemetry::SDK::Trace::Export::SUCCESS
+        end
+
+        def shutdown(timeout: nil) # rubocop:disable Lint/UnusedMethodArgument
+          OpenTelemetry::SDK::Trace::Export::SUCCESS
+        end
+      end
+
       # Collects one signal's export failures while a shutdown, a flush or the
       # startup canary runs. An export that fails at any other time is not
       # kept.

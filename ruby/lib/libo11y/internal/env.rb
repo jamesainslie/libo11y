@@ -17,6 +17,17 @@ module Libo11y
         env_opt.transform_keys(&:to_s).transform_values(&:to_s)
       end
 
+      # The first of the named variables that is set to more than blanks,
+      # with its surrounding blanks removed. An empty per-signal variable
+      # therefore falls back to the general one.
+      def value(env_map, *names)
+        names.each do |name|
+          raw = env_map[name].to_s.strip
+          return raw unless raw.empty?
+        end
+        nil
+      end
+
       def hermetic?(env_opt)
         env_opt.equal?(Libo11y::HERMETIC)
       end
@@ -41,10 +52,10 @@ module Libo11y
         out
       end
 
+      # Decodes %XX escapes as the bytes of UTF-8 text. A % that starts no
+      # escape stays, and bytes that are not UTF-8 are replaced.
       def decode_percent(str)
-        str.gsub(/%([0-9A-Fa-f]{2})/) { Regexp.last_match(1).to_i(16).chr(Encoding::UTF_8) }
-      rescue StandardError
-        str
+        str.b.gsub(/%([0-9A-Fa-f]{2})/) { Regexp.last_match(1).hex.chr }.force_encoding(Encoding::UTF_8).scrub
       end
 
       def parse_headers(raw)
@@ -74,10 +85,10 @@ module Libo11y
       end
 
       def parse_protocol(env_map, signal_var)
-        raw = env_map[signal_var] || env_map["OTEL_EXPORTER_OTLP_PROTOCOL"]
-        return "http/protobuf" if raw.nil? || raw.strip.empty?
+        raw = value(env_map, signal_var, "OTEL_EXPORTER_OTLP_PROTOCOL")
+        return "http/protobuf" if raw.nil?
 
-        proto = raw.strip.downcase
+        proto = raw.downcase
         unless SUPPORTED_PROTOCOLS.include?(proto)
           raise UnsupportedProtocol, "o11y: unsupported OTLP protocol #{proto.inspect} (supported: http/protobuf)"
         end
@@ -101,20 +112,20 @@ module Libo11y
       end
 
       def signal_timeout(env_map, signal_var, default: 10.0)
-        raw = env_map[signal_var] || env_map["OTEL_EXPORTER_OTLP_TIMEOUT"]
-        return default if raw.nil? || raw.strip.empty?
+        raw = value(env_map, signal_var, "OTEL_EXPORTER_OTLP_TIMEOUT")
+        return default if raw.nil?
 
-        ms = Float(raw.strip)
+        ms = Float(raw)
         ms.positive? ? ms / 1000.0 : default
       rescue ArgumentError
         default
       end
 
       def signal_compression(env_map, signal_var)
-        raw = env_map[signal_var] || env_map["OTEL_EXPORTER_OTLP_COMPRESSION"]
-        return "gzip" if raw.nil? || raw.strip.empty?
+        raw = value(env_map, signal_var, "OTEL_EXPORTER_OTLP_COMPRESSION")
+        return "gzip" if raw.nil?
 
-        val = raw.strip.downcase
+        val = raw.downcase
         return "gzip" if val == "gzip"
         return "none" if val == "none"
 
@@ -123,9 +134,9 @@ module Libo11y
 
       def signal_tls(env_map, prefix)
         {
-          certificate_file: env_map["#{prefix}_CERTIFICATE"] || env_map["OTEL_EXPORTER_OTLP_CERTIFICATE"],
-          client_certificate_file: env_map["#{prefix}_CLIENT_CERTIFICATE"] || env_map["OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE"],
-          client_key_file: env_map["#{prefix}_CLIENT_KEY"] || env_map["OTEL_EXPORTER_OTLP_CLIENT_KEY"]
+          certificate_file: value(env_map, "#{prefix}_CERTIFICATE", "OTEL_EXPORTER_OTLP_CERTIFICATE"),
+          client_certificate_file: value(env_map, "#{prefix}_CLIENT_CERTIFICATE", "OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE"),
+          client_key_file: value(env_map, "#{prefix}_CLIENT_KEY", "OTEL_EXPORTER_OTLP_CLIENT_KEY")
         }.compact
       end
 
