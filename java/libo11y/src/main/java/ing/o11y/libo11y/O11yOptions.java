@@ -2,6 +2,8 @@ package ing.o11y.libo11y;
 
 import io.opentelemetry.api.logs.Severity;
 import io.opentelemetry.context.propagation.TextMapPropagator;
+import io.opentelemetry.sdk.metrics.InstrumentSelector;
+import io.opentelemetry.sdk.metrics.View;
 import io.opentelemetry.sdk.logs.LogRecordProcessor;
 import io.opentelemetry.sdk.logs.export.LogRecordExporter;
 import io.opentelemetry.sdk.metrics.export.MetricReader;
@@ -32,6 +34,21 @@ public final class O11yOptions {
 
     public record AppRegistryYaml(String yaml, String source) implements AppRegistrySource {}
 
+    /**
+     * A metric view registered with {@link Builder#addView(InstrumentSelector, View)}: the view applies
+     * to every instrument the selector matches.
+     *
+     * @param selector the instruments the view applies to
+     * @param view the stream configuration for those instruments
+     */
+    public record ViewRegistration(InstrumentSelector selector, View view) {
+        /** Rejects a missing selector or view. */
+        public ViewRegistration {
+            java.util.Objects.requireNonNull(selector, "selector");
+            java.util.Objects.requireNonNull(view, "view");
+        }
+    }
+
     private final String serviceName;
     private final String serviceVersion;
     private final String serviceNamespace;
@@ -46,6 +63,7 @@ public final class O11yOptions {
     private final Sampler sampler;
     private final ExemplarFilterMode exemplarFilter;
     private final Map<String, List<Double>> histogramBuckets;
+    private final List<ViewRegistration> views;
     private final List<TextMapPropagator> propagators;
     private final Predicate<String> baggageEgressAllow;
     private final boolean runtimeMetrics;
@@ -80,6 +98,7 @@ public final class O11yOptions {
         Map<String, List<Double>> bucketsCopy = new LinkedHashMap<>();
         b.histogramBuckets.forEach((k, v) -> bucketsCopy.put(k, List.copyOf(v)));
         this.histogramBuckets = Collections.unmodifiableMap(bucketsCopy);
+        this.views = List.copyOf(b.views);
         this.propagators = b.propagators == null ? null : List.copyOf(b.propagators);
         this.baggageEgressAllow = b.baggageEgressAllow;
         this.runtimeMetrics = b.runtimeMetrics;
@@ -156,6 +175,11 @@ public final class O11yOptions {
 
     public Map<String, List<Double>> histogramBuckets() {
         return histogramBuckets;
+    }
+
+    /** Returns the metric views added with {@link Builder#addView(InstrumentSelector, View)}, in order. */
+    public List<ViewRegistration> views() {
+        return views;
     }
 
     public List<TextMapPropagator> propagators() {
@@ -237,6 +261,7 @@ public final class O11yOptions {
         private Sampler sampler;
         private ExemplarFilterMode exemplarFilter;
         private final Map<String, List<Double>> histogramBuckets = new LinkedHashMap<>();
+        private final List<ViewRegistration> views = new ArrayList<>();
         private List<TextMapPropagator> propagators;
         private Predicate<String> baggageEgressAllow;
         private boolean runtimeMetrics = true;
@@ -348,6 +373,24 @@ public final class O11yOptions {
 
         public Builder histogramBuckets(String instrumentName, List<Double> boundaries) {
             this.histogramBuckets.put(instrumentName, List.copyOf(boundaries));
+            return this;
+        }
+
+        /**
+         * Adds an OpenTelemetry metric view, registered on the SDK meter provider in the order added
+         * (after the views {@link #histogramBuckets(String, List)} creates). The view controls the
+         * streams of the instruments the selector matches: name, description, aggregation (for
+         * example histogram buckets), attribute filter and cardinality limit. The sensitivity policy
+         * still applies to every resulting stream: measurement attributes are classified before the
+         * SDK sees them, so neither data points nor exemplars carry a dropped attribute. As in the
+         * SDK, an instrument two views match produces a stream for each.
+         *
+         * @param selector the instruments the view applies to
+         * @param view the stream configuration for those instruments
+         * @return this builder
+         */
+        public Builder addView(InstrumentSelector selector, View view) {
+            this.views.add(new ViewRegistration(selector, view));
             return this;
         }
 

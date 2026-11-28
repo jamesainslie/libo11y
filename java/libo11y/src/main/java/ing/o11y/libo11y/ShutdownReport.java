@@ -3,7 +3,11 @@ package ing.o11y.libo11y;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Per-signal result returned by {@link Telemetry#shutdown(java.time.Duration)}. */
+/**
+ * Per-signal result returned by {@link Telemetry#shutdown(java.time.Duration)} and
+ * {@link Telemetry#forceFlush(java.time.Duration)}: each error is {@code null} when the signal
+ * finished cleanly, and otherwise names what failed, timed out, or which exports were rejected.
+ */
 public record ShutdownReport(
         Throwable traceError,
         Throwable metricError,
