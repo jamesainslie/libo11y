@@ -180,7 +180,22 @@ public final class StructuredLogger {
             String eventName,
             Map<String, Object> attrs,
             boolean bypassLevelGate) {
-        emitRecord(context, severity, message, eventName, attrs, bypassLevelGate, false);
+        emitRecord(context, severity, message, eventName, attrs, bypassLevelGate, false, true);
+    }
+
+    /**
+     * Emits a record, classified as every record is, on the console leg and the extra sinks only,
+     * never on the OTLP log leg. Log bridges use it for the OpenTelemetry SDK's own diagnostics:
+     * exporting an exporter's failure through the pipeline that failed would queue a new record
+     * for every failed export, for as long as the collector is down.
+     *
+     * @param context the context whose span the record is correlated with, or null for the current one
+     * @param severity the record's severity, gated by the minimum level
+     * @param message the record's message
+     * @param attrs the record's attributes, or null
+     */
+    public void emitLocal(Context context, Severity severity, String message, Map<String, Object> attrs) {
+        emitRecord(context, severity, message, null, attrs, false, false, false);
     }
 
     /**
@@ -188,7 +203,7 @@ public final class StructuredLogger {
      * {@link O11y#setup} can fail with {@code CANARY_REJECTED}.
      */
     void emitStartupCanary(Context context, String eventName, Map<String, Object> attrs) {
-        emitRecord(context, Severity.INFO, eventName, eventName, attrs, true, true);
+        emitRecord(context, Severity.INFO, eventName, eventName, attrs, true, true, true);
     }
 
     private void emitRecord(
@@ -198,7 +213,8 @@ public final class StructuredLogger {
             String eventName,
             Map<String, Object> attrs,
             boolean bypassLevelGate,
-            boolean failOnSinkError) {
+            boolean failOnSinkError,
+            boolean toOtlp) {
         Context ctx = context == null ? Context.current() : context;
         boolean forced = bypassLevelGate || ForceEmit.isForced(ctx);
         if (!forced && severity.getSeverityNumber() < minLevel.getSeverityNumber()) {
@@ -275,7 +291,7 @@ public final class StructuredLogger {
         }
 
         // 3. OTLP log leg
-        if (otelLogger != null) {
+        if (otelLogger != null && toOtlp) {
             LogRecordBuilder builder = otelLogger.logRecordBuilder()
                     .setTimestamp(now)
                     .setSeverity(severity)

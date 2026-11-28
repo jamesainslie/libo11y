@@ -36,10 +36,16 @@ import org.slf4j.helpers.MessageFormatter;
  * second time without classification, and restores them when the last such installation is closed.
  *
  * <p>A log line emitted on the same thread while any libo11y appender is appending (by a sink or
- * an exporter, for example) is not routed back through libo11y.
+ * an exporter, for example) is not routed back through libo11y. Events from the OpenTelemetry
+ * SDK's own loggers (the {@code io.opentelemetry} namespace, which Spring Boot bridges from
+ * java.util.logging) reach the console leg and the extra sinks but not the OTLP log leg: an export
+ * failure the SDK logs on its batch worker thread would otherwise be queued for export again,
+ * once per failed export, for as long as the collector is down.
  */
 public final class O11yLogbackAppender extends UnsynchronizedAppenderBase<ILoggingEvent> implements AutoCloseable {
     private static final String NAME_PREFIX = "LIBO11Y-";
+    /** The logger namespace of the OpenTelemetry SDK, its exporters and its instrumentation. */
+    private static final String OTEL_NAMESPACE = "io.opentelemetry";
     private static final AtomicLong SEQUENCE = new AtomicLong();
     private static final ThreadLocal<Boolean> APPENDING = ThreadLocal.withInitial(() -> Boolean.FALSE);
     private static final Set<O11yLogbackAppender> INSTALLED = ConcurrentHashMap.newKeySet();
@@ -173,6 +179,10 @@ public final class O11yLogbackAppender extends UnsynchronizedAppenderBase<ILoggi
                 attrs.put("error.type", tp.getClassName());
             }
         }
+        if (isOpenTelemetryDiagnostic(event.getLoggerName())) {
+            telemetry.logger().emitLocal(Context.current(), severity, formatMessage(event), attrs);
+            return;
+        }
         telemetry.logger().emit(
                 Context.current(),
                 severity,
@@ -180,6 +190,14 @@ public final class O11yLogbackAppender extends UnsynchronizedAppenderBase<ILoggi
                 null,
                 attrs,
                 false);
+    }
+
+    /** Reports whether {@code loggerName} is {@code io.opentelemetry} or a logger below it. */
+    private static boolean isOpenTelemetryDiagnostic(String loggerName) {
+        return loggerName != null
+                && loggerName.startsWith(OTEL_NAMESPACE)
+                && (loggerName.length() == OTEL_NAMESPACE.length()
+                        || loggerName.charAt(OTEL_NAMESPACE.length()) == '.');
     }
 
     /**
