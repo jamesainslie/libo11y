@@ -3,6 +3,7 @@ package o11yrum
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -102,12 +103,19 @@ func loadReadTokens(path string) ([][32]byte, error) {
 	var sums [][32]byte
 	sc := bufio.NewScanner(bytes.NewReader(raw))
 	for line := 1; sc.Scan(); line++ {
-		token := strings.TrimSpace(sc.Text())
+		text := sc.Text()
+		if line == 1 {
+			text = strings.TrimPrefix(text, "\ufeff") // a byte order mark
+		}
+		token := strings.TrimSpace(text)
 		if token == "" || strings.HasPrefix(token, "#") {
 			continue
 		}
 		if len(token) < minReadTokenLength {
 			return nil, fmt.Errorf("replay.read_token_file %s: the token on line %d is shorter than %d characters", path, line, minReadTokenLength)
+		}
+		if !printableASCII(token) {
+			return nil, fmt.Errorf("replay.read_token_file %s: the token on line %d holds a space, a control character or a non-ASCII character; put comments on lines of their own", path, line)
 		}
 		sums = append(sums, sha256.Sum256([]byte(token)))
 	}
@@ -118,6 +126,17 @@ func loadReadTokens(path string) ([][32]byte, error) {
 		return nil, fmt.Errorf("replay.read_token_file %s holds no token", path)
 	}
 	return sums, nil
+}
+
+// printableASCII reports whether s holds only visible ASCII characters,
+// as a bearer token in an Authorization header does.
+func printableASCII(s string) bool {
+	for i := range len(s) {
+		if s[i] <= ' ' || s[i] > '~' {
+			return false
+		}
+	}
+	return true
 }
 
 // authorized reports whether the request carries one of the tokens. Every
@@ -257,7 +276,8 @@ func (rr *replayReader) list(w http.ResponseWriter, r *http.Request) {
 			rr.storeFailed(w, r, readOpList, err)
 			return
 		}
-		if seg, ok := rr.fresh(raw, now); ok {
+		// The metadata must name the segment its key does, as in get.
+		if seg, ok := rr.fresh(raw, now); ok && key == fmt.Sprintf("%s%06d.meta.json", prefix, seg) {
 			segs = append(segs, entry{segment: seg, raw: raw})
 		}
 	}
@@ -265,7 +285,7 @@ func (rr *replayReader) list(w http.ResponseWriter, r *http.Request) {
 		rr.refuse(w, r, readOpList, http.StatusNotFound, "not found")
 		return
 	}
-	slices.SortFunc(segs, func(a, b entry) int { return int(a.segment - b.segment) })
+	slices.SortFunc(segs, func(a, b entry) int { return cmp.Compare(a.segment, b.segment) })
 	out := make([]json.RawMessage, len(segs))
 	for i, s := range segs {
 		out[i] = s.raw

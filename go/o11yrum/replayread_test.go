@@ -377,6 +377,35 @@ func TestReplayReadFailsClosedOnBadMetadata(t *testing.T) {
 	}
 }
 
+func TestReplayReadTokenFileBOM(t *testing.T) {
+	f := newReadFixture(t, nil, "\ufeff"+readToken+"\n")
+	f.seed(t)
+	if w := readRequest(t, f.read, http.MethodGet, sessionPath("shop-web", replaySession), "Bearer "+readToken); w.Code != http.StatusOK {
+		t.Fatalf("a token after a byte order mark: %d", w.Code)
+	}
+}
+
+func TestReplayReadListSkipsMismatchedMetadata(t *testing.T) {
+	f := newReadFixture(t, nil, "")
+	f.seed(t)
+	ctx := context.Background()
+	// Segment 1's metadata object claims to be segment 0.
+	raw, err := f.store.Get(ctx, replayMetaKey("shop-web", replaySession, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.Put(ctx, replayMetaKey("shop-web", replaySession, 1), raw); err != nil {
+		t.Fatal(err)
+	}
+	w := readRequest(t, f.read, http.MethodGet, sessionPath("shop-web", replaySession), "Bearer "+readToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list: %d", w.Code)
+	}
+	if segs := readBody(t, w)["segments"].([]any); len(segs) != 1 {
+		t.Errorf("segments %v, want only segment 0", segs)
+	}
+}
+
 func TestReplayErase(t *testing.T) {
 	f := newReadFixture(t, nil, "")
 	f.seed(t)
@@ -573,6 +602,10 @@ func TestReplayReadTokenFile(t *testing.T) {
 		"empty":         {"", "holds no token"},
 		"comments only": {"# nothing\n\n", "holds no token"},
 		"short":         {readToken + "\nshort-secret\n", "line 2"},
+		"inline note":   {readToken + " # the player\n", "line 1"},
+		"control byte":  {"read-token-0123\x00456789abcdef\n", "line 1"},
+		"non-ascii":     {"read-token-0123456789abcdéf\n", "line 1"},
+		"bom comment":   {"\ufeff# read tokens for the player backend\n", "holds no token"},
 		"missing":       {"", "replay.read_token_file"},
 	} {
 		file := filepath.Join(dir, strings.ReplaceAll(name, " ", "-"))

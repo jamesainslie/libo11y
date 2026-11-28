@@ -183,6 +183,7 @@ func TestReplayReadValidation(t *testing.T) {
 		"default listen":        {"replay: {read_listen: \"0.0.0.0:8080\", read_token_file: t}\n" + replayApp, "listen"},
 		"wildcard ingest":       {"listen: \":9000\"\nreplay: {read_listen: \"127.0.0.1:9000\", read_token_file: t}\n" + replayApp, "replay.read_listen"},
 		"wildcard read":         {"listen: \"10.0.0.5:9000\"\nreplay: {read_listen: \"[::]:9000\", read_token_file: t}\n" + replayApp, "replay.read_listen"},
+		"shared namespace":      {"apps:\n  - service_name: web\n    origins: [https://a.example]\n    replay: {enabled: true}\n  - service_name: admin\n    origins: [https://a.example]\n    replay: {namespace: web}\n", "replay namespace web"},
 		"bad read address":      {"replay: {read_listen: \"no-port\", read_token_file: t}\n" + replayApp, "replay.read_listen"},
 	} {
 		_, err := ParseConfig([]byte(tc.yaml))

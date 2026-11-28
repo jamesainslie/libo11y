@@ -31,7 +31,9 @@ type ReplayConfig struct {
 	// Default 720h (30 days).
 	Retention time.Duration `yaml:"retention"`
 	// SweepInterval is how often the gateway deletes replay objects past
-	// the retention, when any app enables replay. Nil takes the default,
+	// the retention. The sweeper runs for any object store that can list
+	// and delete, whether or not an app records now, so recordings kept
+	// from before replay was switched off still expire. Nil takes the default,
 	// 1h. Zero (sweep_interval: 0s) disables the sweeper, for a store
 	// that expires objects itself, such as an S3 bucket with a lifecycle
 	// rule on the replay/ prefix. The first pass runs one interval after
@@ -48,7 +50,8 @@ type ReplayConfig struct {
 	ReadListen string `yaml:"read_listen"`
 	// ReadTokenFile holds the bearer tokens the read API accepts, one per
 	// line. Blank lines and lines starting with # are ignored, and each
-	// token must be at least 16 characters. Without it, every read API
+	// token must be at least 16 visible ASCII characters, with no space.
+	// Without it, every read API
 	// request answers 401.
 	ReadTokenFile string `yaml:"read_token_file"`
 }

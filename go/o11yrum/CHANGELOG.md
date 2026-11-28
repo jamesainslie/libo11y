@@ -36,13 +36,23 @@ adheres to [Semantic Versioning](https://semver.org/).
   `read_token_file`.
 - Replay retention: `replay.retention` (default 720h). The read API never
   serves a segment stored longer ago, and a sweeper deletes older replay
-  objects every `replay.sweep_interval` (default 1h, `0s` disables).
+  objects every `replay.sweep_interval` (default 1h, `0s` disables). The
+  sweeper runs for any object store that can list and delete, also when
+  no app records, so a gateway with a filesystem or S3 store that holds
+  only source maps now lists `replay/` once an interval. Set
+  `sweep_interval: 0s` there to skip it.
 
 ### Changed
 
 - `FileStore.Delete` removes the directories a deletion leaves empty, up
   to the store's root, so an erased session leaves no directory named
-  after it. `FileStore.Put` recreates them.
+  after it. `FileStore.Put` recreates them. It never removes a symbolic
+  link.
+- `FileStore.List` reports a temporary file older than ten minutes, the
+  remains of a `Put` whose process died, as an object, so erasure and
+  retention delete it.
+- Two apps can no longer share a replay namespace, which would let the
+  read API and erasure of one reach the other's recordings.
 
 ## [0.1.0] - 2026-11-27
 

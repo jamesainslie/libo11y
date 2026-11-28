@@ -397,6 +397,10 @@ func (c *Config) validate() error {
 		return err
 	}
 	seen := make(map[string]bool, len(c.Apps))
+	// The replay read API and erasure reach a recording through its
+	// service's namespace, so two services sharing one would reach each
+	// other's recordings.
+	replayNS := make(map[string]string, len(c.Apps))
 	for i, a := range c.Apps {
 		if a.ServiceName == "" {
 			return fmt.Errorf("app %d: service_name is empty", i)
@@ -424,6 +428,12 @@ func (c *Config) validate() error {
 		}
 		if err := validateAppReplay(a); err != nil {
 			return fmt.Errorf("app %s: %w", a.ServiceName, err)
+		}
+		if ns := a.replayNamespace(); ns != "" {
+			if other, dup := replayNS[ns]; dup {
+				return fmt.Errorf("app %s: replay namespace %s is also app %s's; each app needs its own", a.ServiceName, ns, other)
+			}
+			replayNS[ns] = a.ServiceName
 		}
 	}
 	return validateMetrics(c.Apps)

@@ -223,7 +223,8 @@ func TestSweeperOff(t *testing.T) {
 	if h.sweepStop != nil {
 		t.Error("sweep_interval 0s started a sweeper")
 	}
-	// No app records: no sweeper, whatever the interval.
+	// With no app recording, a store that can list and delete is still
+	// swept, so what was stored before replay was switched off expires.
 	cfg, err := ParseConfig([]byte("apps:\n  - service_name: a\n    origins: [https://a.example]\n"))
 	if err != nil {
 		t.Fatal(err)
@@ -233,8 +234,19 @@ func TestSweeperOff(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = h2.Close() }()
-	if h2.sweepStop != nil {
-		t.Error("a gateway without replay started a sweeper")
+	if h2.sweepStop == nil {
+		t.Error("a store left by replay is not swept once replay is off")
+	}
+	// A store that cannot list and delete, or no store, is not swept.
+	for name, opt := range map[string]Option{"put-get store": WithObjectStore(putGetOnly{}), "no store": WithObjectStore(nil)} {
+		h, err := NewHandler(WithConfig(cfg), opt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if h.sweepStop != nil {
+			t.Errorf("%s: a sweeper started", name)
+		}
+		_ = h.Close()
 	}
 	// The default interval starts one.
 	h3, _ := sweepFixture(t, fs, "{}")

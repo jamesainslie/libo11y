@@ -156,7 +156,10 @@ func NewHandler(opts ...Option) (*Handler, error) {
 		}
 	}
 	// The sweeper starts last, so a failed NewHandler leaves none running.
-	if every := cfg.Replay.sweepEvery(); cfg.replayEnabled() && every > 0 {
+	// It runs for any store that can list and delete, not only while an
+	// app records, so recordings stored before replay was switched off
+	// still expire.
+	if every := cfg.Replay.sweepEvery(); every > 0 && checkReplayStore(h.store) == nil {
 		h.startSweeper(every)
 	}
 	return h, nil

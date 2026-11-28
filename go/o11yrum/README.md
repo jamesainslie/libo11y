@@ -305,12 +305,14 @@ edit of a style or link element whose stylesheet is not allowed), `source`
 `replay.retention` (default `720h`, 30 days) is how long a segment is
 kept. The read API never serves a segment whose `stored_at` is that old
 or older, even while its objects remain, so expiry holds when deletion
-lags. When any app enables replay, the gateway also sweeps the store
-every `replay.sweep_interval` (default `1h`). A pass lists `replay/` and
-deletes every object last written longer ago than the retention. The
-first pass runs one interval after start, so replicas that restart
-together do not sweep in a burst, and several replicas sweeping at once
-is harmless. `o11yrum.replay.swept` counts the objects a pass deleted
+lags. The gateway also sweeps the store every `replay.sweep_interval`
+(default `1h`). A pass lists `replay/` and deletes every object last
+written longer ago than the retention. It runs for any store that can
+list and delete, even when no app records now, so recordings stored
+before replay was switched off still expire. On a store that holds only
+source maps, set `sweep_interval: 0s` to skip the listing. The first
+pass runs one interval after start, so a restart does not sweep at once.
+Several replicas sweeping at the same time is harmless. `o11yrum.replay.swept` counts the objects a pass deleted
 (`o11yrum.outcome=ok`) or failed to delete (`error`). A failed delete
 does not stop the pass.
 
@@ -333,6 +335,14 @@ match its `Days` to the retention:
 S3 expires objects up to a day or so after they are due. The read API's
 own check covers that gap.
 
+Keep the replay bucket unversioned. On a versioned bucket, a delete, and
+a lifecycle `Expiration`, only adds a delete marker. Every earlier
+version stays readable to anyone with `s3:GetObjectVersion`, so neither
+retention nor erasure removes the data. If the bucket must be versioned,
+add `NoncurrentVersionExpiration` with `NoncurrentDays: 1` and
+`ExpiredObjectDeleteMarker: true` to the rule, and know that erased data
+lingers for that day.
+
 ### The read API and erasure
 
 The read API serves stored recordings to a player backend, such as a
@@ -352,7 +362,8 @@ session's recording. It is cluster-internal only:
   admits callers in the same pod only.
 - Every request needs `Authorization: Bearer <token>` with a token from
   `replay.read_token_file`: one per line, blank lines and `#` comments
-  ignored, each at least 16 characters. A library user who serves
+  ignored, each at least 16 visible ASCII characters with no space. A
+  byte order mark at the start of the file is ignored. A library user who serves
   `Handler.ReplayReadHandler` without the file gets 401 for every
   request. Several lines let a token rotate without downtime: add the
   new one, restart, move the caller over, remove the old one, restart.
@@ -392,7 +403,9 @@ with `"deleted": 0`, and a retry after a 503 finishes the job. It serves
 every configured app with a usable replay namespace, including an app
 that no longer has `replay.enabled`, so recordings stored before replay
 was switched off can still be erased. On the filesystem store it also
-removes the session's emptied directory. To erase a session:
+removes the session's emptied directory, and the temporary file of an
+upload whose process died, once that file is ten minutes old. Erasure
+does not reach a versioned S3 bucket's earlier versions; see Retention. To erase a session:
 
 ```sh
 curl -fsS -X DELETE -H "Authorization: Bearer $TOKEN" \

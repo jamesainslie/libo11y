@@ -11,9 +11,10 @@ import (
 const replayRoot = "replay/"
 
 // startSweeper runs a retention pass every replay.sweep_interval until
-// Close. The first pass runs one interval after start, so a fleet that
-// restarts together does not sweep in a burst. Several replicas sweeping
-// at once is harmless: deleting a missing object is not an error.
+// Close. The first pass runs one interval after start, so a restart does
+// not sweep at once. Replicas started together still sweep at about the
+// same moments, which is harmless: deleting a missing object is not an
+// error.
 func (h *Handler) startSweeper(every time.Duration) {
 	ctx, stop := context.WithCancel(context.Background())
 	h.sweepStop = stop

@@ -327,8 +327,7 @@ func serve(ctx context.Context, cfg *o11yrum.Config, sink *o11yrum.OTLPSink, sto
 	go func() { serveErr <- srv.Serve(ln) }()
 	select {
 	case err := <-serveErr:
-		_ = shutdown(ctx, servers)
-		return err
+		return errors.Join(err, shutdown(ctx, servers))
 	case <-ctx.Done():
 	}
 	draining.Store(true)
@@ -338,8 +337,7 @@ func serve(ctx context.Context, cfg *o11yrum.Config, sink *o11yrum.OTLPSink, sto
 		select {
 		case err := <-serveErr:
 			delay.Stop()
-			_ = shutdown(ctx, servers)
-			return err
+			return errors.Join(err, shutdown(ctx, servers))
 		case <-delay.C:
 		}
 	}
