@@ -18,7 +18,7 @@ import type { RUMErrorSource } from "@libo11y/spec";
 import type { BootstrapEntry } from "../bootstrap/buffer.ts";
 import type { RumCollector, RumRuntime } from "../contracts/runtime.ts";
 import { normalizeError } from "./normalize.ts";
-import { recordError } from "./record.ts";
+import { recordError, wasRecorded } from "./record.ts";
 
 export interface ErrorsOptions {
   /** Capture console.error calls as errors with source console. Default false. */
@@ -29,6 +29,8 @@ export interface ErrorsOptions {
 export interface ErrorsEnv {
   readonly window: EventTarget;
   readonly console?: { error(...args: unknown[]): void };
+  /** Defers a console.error that logs an error object. Default the global setTimeout. */
+  readonly setTimeout?: (cb: () => void, ms: number) => unknown;
 }
 
 /** The error.type values of a request the app aborted, which is not a failure. */
@@ -181,7 +183,17 @@ export function errorsWith(opts: ErrorsOptions, env: ErrorsEnv): RumCollector {
           ? undefined
           : (...args: unknown[]): void => {
               try {
-                record("console", consoleError(args));
+                const logged = args.filter((a): a is object => typeof a === "object" && a !== null);
+                if (logged.length === 0) record("console", consoleError(args));
+                else if (!logged.some((a) => wasRecorded(rt, a))) {
+                  // React 19 logs an error a boundary caught before componentDidCatch records it with
+                  // its component stack, so the console record waits a task and yields to that one.
+                  const at = rt.now();
+                  const later = env.setTimeout ?? ((cb: () => void, ms: number) => setTimeout(cb, ms));
+                  later(() => {
+                    if (!logged.some((a) => wasRecorded(rt, a))) record("console", consoleError(args), at);
+                  }, 0);
+                }
               } finally {
                 original.apply(con, args);
               }

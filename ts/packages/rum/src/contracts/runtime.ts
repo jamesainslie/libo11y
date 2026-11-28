@@ -40,7 +40,14 @@ export type RumSignal =
       readonly at: number;
     }
   | { readonly type: "mutation"; readonly at: number }
-  | { readonly type: "breadcrumb"; readonly kind: string; readonly label: string; readonly at: number }
+  | {
+      readonly type: "breadcrumb";
+      readonly kind: string;
+      readonly label: string;
+      readonly at: number;
+      /** Lets a later rename relabel it: a view start carries its view ID. */
+      readonly key?: string;
+    }
   /** An event the bootstrap buffered before RUM loaded, replayed once the collectors started (R3d). */
   | { readonly type: "bootstrap"; readonly entry: BootstrapEntry };
 

@@ -216,3 +216,56 @@ test("stop ends open spans, uninstalls history and disconnects the observer", as
   env.advance(20_000);
   assert.equal((await finished(rt)).length, 2, "no timer fires after stop");
 });
+
+test("with history off, a bfcache restore view still ends at the next paint", async () => {
+  const { rt, env, collector } = setup(false);
+  const stop = collector.start(rt);
+  rt.t = 40;
+  rt.views.start({ kind: "bfcache_restore", name: "/" });
+  env.frame();
+  rt.t = 56;
+  env.task();
+  const view = (await finished(rt)).find((s) => s.attributes["o11y.rum.view.kind"] === "bfcache_restore");
+  assert.equal(millis(view?.endTime ?? [0, 0]), env.timeOrigin + 56);
+  stop();
+});
+
+test("a view whose content is already on screen ends at the next paint, history on or off", async () => {
+  for (const history of [false, true]) {
+    const { rt, env, collector } = setup(history);
+    const stop = collector.start(rt);
+    rt.t = 40;
+    rt.views.start({ kind: "soft", name: "/same", rendered: true });
+    env.frame();
+    rt.t = 52;
+    env.task();
+    const view = (await finished(rt)).find((s) => s.name === "view /same");
+    assert.equal(millis(view?.endTime ?? [0, 0]), env.timeOrigin + 52, `history ${history}`);
+    stop();
+  }
+});
+
+test("a load view the router rendered before RUM started ends when it rendered", async () => {
+  const { rt, env, collector } = setup(false);
+  rt.views.appLoadStarted(rt.tracer.startSpan("app_load").spanContext());
+  rt.t = 5000;
+  const stop = collector.start(rt);
+  rt.views.rendered(1200);
+  const view = (await finished(rt)).find((s) => s.attributes["o11y.rum.view.kind"] === "initial");
+  assert.equal(millis(view?.endTime ?? [0, 0]), env.timeOrigin + 1200);
+  stop();
+});
+
+test("a view that started after the render it is told of ends at the next paint", async () => {
+  const { rt, env, collector } = setup(false);
+  const stop = collector.start(rt);
+  rt.t = 3000;
+  rt.views.start({ kind: "soft", name: "/again" });
+  rt.views.rendered(1200);
+  env.frame();
+  rt.t = 3016;
+  env.task();
+  const view = (await finished(rt)).find((s) => s.name === "view /again");
+  assert.equal(millis(view?.endTime ?? [0, 0]), env.timeOrigin + 3016);
+  stop();
+});

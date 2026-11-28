@@ -274,7 +274,7 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
   const crumbs = createBreadcrumbs();
   // A request that ends after a revoke must not leave a breadcrumb for the next grant.
   bus.subscribe((s) => {
-    if (s.type === "breadcrumb" && controller?.recording() === true) crumbs.add(s.kind, s.label, s.at);
+    if (s.type === "breadcrumb" && controller?.recording() === true) crumbs.add(s.kind, s.label, s.at, s.key);
   });
   /** The open action, so requests started meanwhile become its children (decision P10). */
   let active: Span | undefined;
@@ -317,9 +317,32 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
     ...(deps.window === undefined ? {} : { window: deps.window }),
   });
   views.subscribe((e) => {
-    if (e.type === "start")
-      bus.publish({ type: "breadcrumb", kind: "view", label: e.view.name, at: e.view.startTime });
+    if (e.type === "start") {
+      bus.publish({
+        type: "breadcrumb",
+        kind: "view",
+        label: e.view.name,
+        at: e.view.startTime,
+        key: e.view.id,
+      });
+    } else if (e.type === "rename") crumbs.relabel(e.view.id, e.view.name);
   });
+  /**
+   * What the router adapter last reported, kept while consent is not granted too: the path it was
+   * on, the name it gave the view and when the view rendered. A grant applies it to the view RUM
+   * starts then, so a route that rendered before consent is named and rendered, not left to the
+   * view span cap. It applies only while the URL path is still the one reported.
+   */
+  let routed: { path: string; name?: string; renderedAt?: number } | undefined;
+  const pathNow = (): string => {
+    try {
+      return new URL(deps.location()).pathname;
+    } catch {
+      return "";
+    }
+  };
+  const routedNow = (): typeof routed =>
+    routed !== undefined && routed.path === pathNow() ? routed : undefined;
   const processor = rumSpanProcessor({
     platform: "web",
     session,
@@ -502,12 +525,15 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
     if (gen !== generation || !gate.recording() || killed) return;
     settings = forSession(session.current()?.configVersion);
     views.begin();
+    const r = routedNow();
+    if (r?.name !== undefined) views.rename(r.name);
     // A kept session may find batches an earlier page of it left in the buffer.
     if (session.kept()) {
       flushRetention().catch((err: unknown) => diag.warn("o11y: rum: retention flush failed", err));
     }
     collecting = true;
     reconcile();
+    if (r?.renderedAt !== undefined) views.rendered(r.renderedAt);
   };
   /** The kill switch acts at once; every other change waits for the next session. */
   const onRemote = (doc: RemoteConfigDocument | undefined): void => {
@@ -685,6 +711,7 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
     },
     onRequestStart: (hook) => runtime.onRequestStart(hook),
     startView(o) {
+      routed = { path: pathNow(), ...(o?.name === undefined ? {} : { name: o.name }) };
       if (!on()) return;
       const cause = active?.isRecording() === true ? active.spanContext() : undefined;
       views.start({
@@ -694,9 +721,11 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
       });
     },
     setViewName(name) {
+      routed = { ...routed, path: pathNow(), name };
       if (on()) views.rename(name);
     },
     viewRendered() {
+      routed = { ...routed, path: pathNow(), renderedAt: deps.perfNow() };
       if (on()) views.rendered();
     },
     addAction(name) {

@@ -994,3 +994,78 @@ test("a bootstrap buffer is discarded when consent is no longer granted at start
   assert.deepEqual(seen, []);
   assert.equal(takeBootstrap(), undefined);
 });
+
+// Router adapters and consent (R3e open items).
+
+test("a view start breadcrumb carries the name the router gave it", async () => {
+  const h = harness();
+  open = await setupRumWith({ ...OPTS, consent: { initial: "granted" } }, h.deps);
+  open.rum.startView();
+  open.rum.setViewName("/documents/$docId");
+  const crumbs = runtimeOf(open)?.breadcrumbs() ?? [];
+  assert.ok(
+    crumbs.some((c) => c.startsWith("view /documents/$docId ")),
+    crumbs.join("|"),
+  );
+  assert.equal(
+    crumbs.filter((c) => c.startsWith("view /documents/$id ")).length,
+    1,
+    "only the initial view keeps the default name",
+  );
+});
+
+test("a route the router rendered before consent is named and rendered when consent is granted", async () => {
+  const h = harness();
+  let perf = 100;
+  open = await setupRumWith({ ...OPTS }, { ...h.deps, perfNow: () => perf });
+  const rt = runtimeOf(open);
+  assert.ok(rt);
+  const seen: string[] = [];
+  rt.views.subscribe((e) =>
+    seen.push(`${e.type} ${e.view.name}${e.type === "rendered" ? ` at ${e.at}` : ""}`),
+  );
+  // The adapter installs before consent and the router renders its first route.
+  open.rum.setViewName("/documents/$docId");
+  perf = 250;
+  open.rum.viewRendered();
+  perf = 9000;
+  open.consent.grant();
+  await until(() => open?.rum.sessionId() !== undefined, "the session");
+  assert.deepEqual(seen, [
+    "start /documents/$id",
+    "rename /documents/$docId",
+    "rendered /documents/$docId at 250",
+  ]);
+});
+
+test("after a navigation before consent, only the route that rendered last counts", async () => {
+  const h = harness();
+  open = await setupRumWith({ ...OPTS }, h.deps);
+  const rt = runtimeOf(open);
+  assert.ok(rt);
+  const seen: string[] = [];
+  rt.views.subscribe((e) => seen.push(`${e.type} ${e.view.name}`));
+  open.rum.setViewName("/sign-in");
+  open.rum.viewRendered();
+  open.rum.startView();
+  open.rum.setViewName("/documents/$docId");
+  open.consent.grant();
+  await until(() => open?.rum.sessionId() !== undefined, "the session");
+  assert.deepEqual(seen, ["start /documents/$id", "rename /documents/$docId"]);
+});
+
+test("a route the router named before consent is ignored once the URL moved on", async () => {
+  const h = harness();
+  let href = "https://app.test/sign-in";
+  open = await setupRumWith({ ...OPTS }, { ...h.deps, location: () => href });
+  const rt = runtimeOf(open);
+  assert.ok(rt);
+  const seen: string[] = [];
+  rt.views.subscribe((e) => seen.push(`${e.type} ${e.view.name}`));
+  open.rum.setViewName("/sign-in");
+  open.rum.viewRendered();
+  href = "https://app.test/documents/7";
+  open.consent.grant();
+  await until(() => open?.rum.sessionId() !== undefined, "the session");
+  assert.deepEqual(seen, ["start /documents/$id"]);
+});
