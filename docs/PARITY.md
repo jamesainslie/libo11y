@@ -205,9 +205,36 @@ These rows record where the Rust ecosystem, OpenTelemetry Rust 0.33.1, or
 ## Known defects in the current releases
 
 These are places where a release breaks a rule of the design contract.
-Each one is a defect to fix, not a decision. No current release has a
-known defect. `ts/v0.2.1` fixed the last ones, which
-[`ts/CHANGELOG.md`](../ts/CHANGELOG.md) describes.
+Each one is a defect to fix, not a decision. `ts/v0.2.1` fixed the last
+TypeScript ones, which [`ts/CHANGELOG.md`](../ts/CHANGELOG.md) describes.
+
+`dotnet/v0.1.0` has these known defects. The first council review found
+them on 2026-11-28, and the next .NET release fixes them.
+
+- Span event and span link attributes are not classified, so a secret or
+  PII value on an event or a link is exported.
+- A metric recorded on a `System.Diagnostics.Metrics.Meter` directly,
+  including through `O11yMeter.RawMeter`, is not classified.
+- An `ILogger` call exports the formatted message as the body, so a value
+  under a classified key leaves the process in the body.
+- In PII `hash` mode a value is hashed twice on spans and on OTLP log
+  records, so its token differs from the token on the console and on the
+  resource, and each violation is counted twice.
+- The SQL sanitizer keeps PostgreSQL dollar-quoted and escape strings, and
+  MySQL backslash-escaped and double-quoted strings, in `db.query.text`.
+- The resource carries no schema URL. `OTEL_SERVICE_NAME` and
+  `OTEL_RESOURCE_ATTRIBUTES` override `ResourceAttributes` set in code. An
+  explicit `Env` map still lets ambient `OTEL_EXPORTER_OTLP_*` variables
+  reach the OTLP exporters.
+- Shutdown reports success after a failed final export and never emits
+  `o11y.telemetry.dropped`. `ForceFlush` does not flush OTLP logs. A failed
+  `Init` or `Setup` leaves the providers it built running.
+- `Detached.StartLinked` starts a child of the active span instead of a
+  linked root, and the carrier text is JSON, which no other implementation
+  reads.
+- Two handles in one process receive each other's spans and measurements
+  from libo11y's own instrumentation.
+- The `o11y.config.*` keys differ from the registered ones.
 
 ## Upcoming and planned clients
 
