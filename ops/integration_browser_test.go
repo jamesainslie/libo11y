@@ -29,7 +29,7 @@ type appVariable struct {
 // appVariableState reads the app variable from the dashboard scene, which
 // Grafana exposes as window.__grafanaSceneContext. The option list is what
 // the picker offers, so this checks the label_values() query ran against
-// Loki without opening the picker.
+// Prometheus without opening the picker.
 const appVariableState = `(() => {
   const v = window.__grafanaSceneContext?.state?.$variables?.getByName?.('app');
   if (!v) return { loading: true, error: '', options: [] };
@@ -46,8 +46,10 @@ var viewIDParam = regexp.MustCompile(`[?&]var-view_id=([^&]*)`)
 // checkInBrowser opens the session explorer in headless Chrome and checks
 // the two things only Grafana's frontend does with the committed JSON:
 // it interpolates the "Select this view" data link, percent-encoding the
-// view ID once, and it runs the app variable's label_values(service_name)
-// string against Loki. It needs Chrome or Chromium on PATH.
+// view ID once, and it runs the app variable's
+// label_values(o11y_rum_views_total, service_name) against Prometheus, whose
+// apps then scope every Loki stream selector. It needs Chrome or Chromium on
+// PATH.
 func checkInBrowser(t *testing.T) {
 	opts := append(chromedp.DefaultExecAllocatorOptions[:], chromedp.NoSandbox, chromedp.WindowSize(1600, 1200))
 	actx, cancelAlloc := chromedp.NewExecAllocator(t.Context(), opts...)
@@ -72,7 +74,7 @@ func checkInBrowser(t *testing.T) {
 		t.Fatalf("open %s: %v", explorer, err)
 	}
 
-	t.Run("the loki app variable lists the app", func(t *testing.T) {
+	t.Run("the app variable lists the RUM app", func(t *testing.T) {
 		vctx, cancelV := context.WithTimeout(browser, 45*time.Second)
 		defer cancelV()
 		waitFor(t, "the app variable to list "+fixture.Service, 30*time.Second, func() (bool, string) {

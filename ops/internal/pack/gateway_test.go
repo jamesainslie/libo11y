@@ -47,6 +47,11 @@ func TestGateway(t *testing.T) {
 	if !stepsEqual(rejected.Thresholds, []dash.Step{{Color: "green"}, {Color: "orange", Value: &amber}, {Color: "red", Value: &red}}) || rejected.Unit != "percentunit" {
 		t.Errorf("Rejected share: thresholds %+v unit %s, want green, amber at %v, red at %v, percentunit", rejected.Thresholds, rejected.Unit, amber, red)
 	}
+	// With nothing rejected there is no rejected series; the share is 0, not
+	// "No data".
+	if q := queryOf(rejected.Targets[0]); !strings.Contains(q, "[$__range])) or vector(0)) / sum(increase(") {
+		t.Errorf("Rejected share %q does not count a missing rejected series as 0", q)
+	}
 	sink := panelByTitle(t, d, "Sink p99")
 	if !stepsEqual(sink.Thresholds, []dash.Step{{Color: "green"}, {Color: "red", Value: &th.SinkP99Seconds}}) || sink.Unit != "s" {
 		t.Errorf("Sink p99: thresholds %+v unit %s, want red from %v s", sink.Thresholds, sink.Unit, th.SinkP99Seconds)

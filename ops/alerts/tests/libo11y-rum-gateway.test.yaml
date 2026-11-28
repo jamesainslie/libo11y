@@ -31,7 +31,7 @@ tests:
             exp_annotations:
               summary: 'o11yrum-gateway is rejecting requests'
               description: 'More than 5% of the requests to o11yrum-gateway were rejected over the last 10 minutes, for reasons other than rate limiting and sink failures.'
-              runbook_url: 'https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumgatewayrejections'
+              runbook_url: 'https://github.com/jamesainslie/libo11y/blob/ops/v0.1.1/ops/README.md#o11yrumgatewayrejections'
               dashboard: '/d/libo11y-rum-gateway'
       - eval_time: 30m
         alertname: O11yRUMGatewayRateLimited
@@ -69,7 +69,7 @@ tests:
             exp_annotations:
               summary: 'o11yrum-gateway is rate limiting clients'
               description: 'More than 20% of the requests to o11yrum-gateway were refused by the per-client rate limit over the last 10 minutes.'
-              runbook_url: 'https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumgatewayratelimited'
+              runbook_url: 'https://github.com/jamesainslie/libo11y/blob/ops/v0.1.1/ops/README.md#o11yrumgatewayratelimited'
               dashboard: '/d/libo11y-rum-gateway'
       - eval_time: 30m
         alertname: O11yRUMGatewayRejections
@@ -107,7 +107,7 @@ tests:
             exp_annotations:
               summary: 'o11yrum-gateway cannot export to its sinks'
               description: 'More than 1% of the requests to o11yrum-gateway failed in a sink over the last 5 minutes. The gateway answers them with 503 and Retry-After, so a short outage loses little, but a sink that stays down loses telemetry.'
-              runbook_url: 'https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumgatewaysinkfailing'
+              runbook_url: 'https://github.com/jamesainslie/libo11y/blob/ops/v0.1.1/ops/README.md#o11yrumgatewaysinkfailing'
               dashboard: '/d/libo11y-rum-gateway'
       # Sink failures are not counted as rejections.
       - eval_time: 15m
@@ -146,7 +146,7 @@ tests:
             exp_annotations:
               summary: 'Sink otlp is slow on monitoring/o11yrum-gateway'
               description: 'The p99 of one export to sink otlp has been above 2 s for 10 minutes.'
-              runbook_url: 'https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumgatewaysinkslow'
+              runbook_url: 'https://github.com/jamesainslie/libo11y/blob/ops/v0.1.1/ops/README.md#o11yrumgatewaysinkslow'
               dashboard: '/d/libo11y-rum-gateway'
 
   # A sink with a p99 of 1.5 s stays silent: 98 exports at or under 1 s and
@@ -183,7 +183,7 @@ tests:
             exp_annotations:
               summary: 'Derived metric o11y.rum.views is near its series cap on o11yrum-gateway'
               description: 'Derived metric o11y.rum.views has held more than 1800 attribute sets for 30 minutes. Each app may hold aggregation.max_series_per_metric (default 2000) attribute sets in one metric before new ones go to the overflow series. The gauge sums every app, so with several apps it can fire before any one app reaches the cap.'
-              runbook_url: 'https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumaggregatornearcap'
+              runbook_url: 'https://github.com/jamesainslie/libo11y/blob/ops/v0.1.1/ops/README.md#o11yrumaggregatornearcap'
               dashboard: '/d/libo11y-rum-gateway'
 
   # A gateway Prometheus cannot scrape for 5 minutes. A failing target of
@@ -207,7 +207,7 @@ tests:
             exp_annotations:
               summary: 'Prometheus cannot scrape o11yrum-gateway'
               description: 'The scrape of 10.0.0.7:9464 in job o11yrum-gateway has failed for 5 minutes. The alert sees only gateways Prometheus scrapes: up exists only for scrape targets, so a gateway that pushes its metrics over OTLP needs its own absence check.'
-              runbook_url: 'https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumgatewaydown'
+              runbook_url: 'https://github.com/jamesainslie/libo11y/blob/ops/v0.1.1/ops/README.md#o11yrumgatewaydown'
               dashboard: '/d/libo11y-rum-gateway'
 
   # Sink failures at almost no traffic stay silent: one request a minute,

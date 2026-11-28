@@ -312,6 +312,15 @@
       {
         "current": {},
         "hide": 0,
+        "label": "Prometheus",
+        "name": "prometheus",
+        "query": "prometheus",
+        "refresh": 1,
+        "type": "datasource"
+      },
+      {
+        "current": {},
+        "hide": 0,
         "label": "Loki",
         "name": "loki",
         "query": "loki",
@@ -328,19 +337,22 @@
         "type": "datasource"
       },
       {
-        "allValue": ".+",
+        "allValue": "",
         "current": {},
         "datasource": {
-          "type": "loki",
-          "uid": "${loki}"
+          "type": "prometheus",
+          "uid": "${prometheus}"
         },
-        "definition": "label_values(service_name)",
+        "definition": "label_values(o11y_rum_views_total, service_name)",
         "hide": 0,
         "includeAll": true,
         "label": "App",
         "multi": true,
         "name": "app",
-        "query": "label_values(service_name)",
+        "query": {
+          "query": "label_values(o11y_rum_views_total, service_name)",
+          "refId": "Var"
+        },
         "refresh": 2,
         "sort": 1,
         "type": "query"

@@ -205,7 +205,7 @@ O11YRUM_RELEASE_VERSION ?= v0.2.0
 # The ops pack version (ops/vX.Y.Z), which ops-release-check.sh validates
 # against ops/internal/version/version.go, ops/CHANGELOG.md and the
 # runbook links in the generated rules. Moves only in a release commit.
-OPS_RELEASE_VERSION ?= v0.1.0
+OPS_RELEASE_VERSION ?= v0.1.1
 
 # Validate the Zig package at ZIG_RELEASE_VERSION as an external consumer
 # fetches and runs it against an in-process OTLP receiver.

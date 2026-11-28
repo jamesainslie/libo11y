@@ -42,7 +42,7 @@ func gatewayDashboard(t thresholds.Thresholds) dash.Dashboard {
 		{
 			Type: "stat", Title: "Rejected share", W: 6, H: 4, Datasource: &dash.Prometheus,
 			Description: "The share of requests the gateway refused over the time range, for any reason. Rejections by reason below tells a misconfigured origin from rate limiting or a failing sink. Requests refused before the gateway knows their app count under app unknown, so pick All to see every rejection.",
-			Targets:     []dash.Target{promValue(`sum(increase(`+rejected+`[$__range])) / sum(increase(`+batches+`[$__range]))`, "")},
+			Targets:     []dash.Target{promValue(`(sum(increase(`+rejected+`[$__range])) or vector(0)) / sum(increase(`+batches+`[$__range]))`, "")},
 			Unit:        "percentunit",
 			Thresholds:  []dash.Step{{Color: "green"}, {Color: "orange", Value: &amber}, {Color: "red", Value: &red}},
 			Options:     statOptions("lastNotNull"),

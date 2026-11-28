@@ -15,7 +15,7 @@ groups:
         annotations:
           dashboard: /d/libo11y-rum-gateway
           description: More than 5% of the requests to {{ $labels.job }} were rejected over the last 10 minutes, for reasons other than rate limiting and sink failures.
-          runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumgatewayrejections
+          runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.1/ops/README.md#o11yrumgatewayrejections
           summary: '{{ $labels.job }} is rejecting requests'
       - alert: O11yRUMGatewayRateLimited
         expr: |-
@@ -31,7 +31,7 @@ groups:
         annotations:
           dashboard: /d/libo11y-rum-gateway
           description: More than 20% of the requests to {{ $labels.job }} were refused by the per-client rate limit over the last 10 minutes.
-          runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumgatewayratelimited
+          runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.1/ops/README.md#o11yrumgatewayratelimited
           summary: '{{ $labels.job }} is rate limiting clients'
       - alert: O11yRUMGatewaySinkFailing
         expr: |-
@@ -47,7 +47,7 @@ groups:
         annotations:
           dashboard: /d/libo11y-rum-gateway
           description: More than 1% of the requests to {{ $labels.job }} failed in a sink over the last 5 minutes. The gateway answers them with 503 and Retry-After, so a short outage loses little, but a sink that stays down loses telemetry.
-          runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumgatewaysinkfailing
+          runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.1/ops/README.md#o11yrumgatewaysinkfailing
           summary: '{{ $labels.job }} cannot export to its sinks'
       - alert: O11yRUMGatewaySinkSlow
         expr: histogram_quantile(0.99, sum by (job, o11yrum_sink, le) (rate(o11yrum_sink_duration_seconds_bucket{job=~"(.*/)?o11yrum-gateway"}[10m]))) > 2
@@ -57,7 +57,7 @@ groups:
         annotations:
           dashboard: /d/libo11y-rum-gateway
           description: The p99 of one export to sink {{ $labels.o11yrum_sink }} has been above 2 s for 10 minutes.
-          runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumgatewaysinkslow
+          runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.1/ops/README.md#o11yrumgatewaysinkslow
           summary: Sink {{ $labels.o11yrum_sink }} is slow on {{ $labels.job }}
       - alert: O11yRUMAggregatorNearCap
         expr: max by (job, o11yrum_metric) (o11yrum_aggregator_series{job=~"(.*/)?o11yrum-gateway"}) > 1800
@@ -67,7 +67,7 @@ groups:
         annotations:
           dashboard: /d/libo11y-rum-gateway
           description: Derived metric {{ $labels.o11yrum_metric }} has held more than 1800 attribute sets for 30 minutes. Each app may hold aggregation.max_series_per_metric (default 2000) attribute sets in one metric before new ones go to the overflow series. The gauge sums every app, so with several apps it can fire before any one app reaches the cap.
-          runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumaggregatornearcap
+          runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.1/ops/README.md#o11yrumaggregatornearcap
           summary: Derived metric {{ $labels.o11yrum_metric }} is near its series cap on {{ $labels.job }}
       - alert: O11yRUMGatewayDown
         expr: up{job=~"(.*/)?o11yrum-gateway"} == 0
@@ -77,5 +77,5 @@ groups:
         annotations:
           dashboard: /d/libo11y-rum-gateway
           description: 'The scrape of {{ $labels.instance }} in job {{ $labels.job }} has failed for 5 minutes. The alert sees only gateways Prometheus scrapes: up exists only for scrape targets, so a gateway that pushes its metrics over OTLP needs its own absence check.'
-          runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumgatewaydown
+          runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.1/ops/README.md#o11yrumgatewaydown
           summary: Prometheus cannot scrape {{ $labels.job }}

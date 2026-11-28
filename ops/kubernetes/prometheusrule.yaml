@@ -46,7 +46,7 @@ spec:
           annotations:
             dashboard: /d/libo11y-rum-vitals
             description: The LCP p75 over the last hour has been above 4 s for 30 minutes, with at least 200 samples an hour.
-            runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumvitalpoor
+            runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.1/ops/README.md#o11yrumvitalpoor
             summary: LCP p75 is poor for {{ $labels.service_name }}
         - alert: O11yRUMVitalRegression
           expr: |-
@@ -61,7 +61,7 @@ spec:
           annotations:
             dashboard: /d/libo11y-rum-vitals
             description: The LCP p75 over the last hour is more than 1.25 times the same hour a week ago and above the good bound of 2.5 s.
-            runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumvitalregression
+            runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.1/ops/README.md#o11yrumvitalregression
             summary: LCP p75 regressed for {{ $labels.service_name }}
         - alert: O11yRUMVitalPoor
           expr: |-
@@ -74,7 +74,7 @@ spec:
           annotations:
             dashboard: /d/libo11y-rum-vitals
             description: The INP p75 over the last hour has been above 0.5 s for 30 minutes, with at least 200 samples an hour.
-            runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumvitalpoor
+            runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.1/ops/README.md#o11yrumvitalpoor
             summary: INP p75 is poor for {{ $labels.service_name }}
         - alert: O11yRUMVitalRegression
           expr: |-
@@ -89,7 +89,7 @@ spec:
           annotations:
             dashboard: /d/libo11y-rum-vitals
             description: The INP p75 over the last hour is more than 1.25 times the same hour a week ago and above the good bound of 0.2 s.
-            runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumvitalregression
+            runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.1/ops/README.md#o11yrumvitalregression
             summary: INP p75 regressed for {{ $labels.service_name }}
         - alert: O11yRUMVitalPoor
           expr: |-
@@ -102,7 +102,7 @@ spec:
           annotations:
             dashboard: /d/libo11y-rum-vitals
             description: The CLS p75 over the last hour has been above 0.25 for 30 minutes, with at least 200 samples an hour.
-            runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumvitalpoor
+            runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.1/ops/README.md#o11yrumvitalpoor
             summary: CLS p75 is poor for {{ $labels.service_name }}
         - alert: O11yRUMVitalRegression
           expr: |-
@@ -117,7 +117,7 @@ spec:
           annotations:
             dashboard: /d/libo11y-rum-vitals
             description: The CLS p75 over the last hour is more than 1.25 times the same hour a week ago and above the good bound of 0.1.
-            runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumvitalregression
+            runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.1/ops/README.md#o11yrumvitalregression
             summary: CLS p75 regressed for {{ $labels.service_name }}
         - alert: O11yRUMVitalPoor
           expr: |-
@@ -130,7 +130,7 @@ spec:
           annotations:
             dashboard: /d/libo11y-rum-vitals
             description: The FCP p75 over the last hour has been above 3 s for 30 minutes, with at least 200 samples an hour.
-            runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumvitalpoor
+            runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.1/ops/README.md#o11yrumvitalpoor
             summary: FCP p75 is poor for {{ $labels.service_name }}
         - alert: O11yRUMVitalRegression
           expr: |-
@@ -145,7 +145,7 @@ spec:
           annotations:
             dashboard: /d/libo11y-rum-vitals
             description: The FCP p75 over the last hour is more than 1.25 times the same hour a week ago and above the good bound of 1.8 s.
-            runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumvitalregression
+            runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.1/ops/README.md#o11yrumvitalregression
             summary: FCP p75 regressed for {{ $labels.service_name }}
         - alert: O11yRUMVitalPoor
           expr: |-
@@ -158,7 +158,7 @@ spec:
           annotations:
             dashboard: /d/libo11y-rum-vitals
             description: The TTFB p75 over the last hour has been above 1.8 s for 30 minutes, with at least 200 samples an hour.
-            runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumvitalpoor
+            runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.1/ops/README.md#o11yrumvitalpoor
             summary: TTFB p75 is poor for {{ $labels.service_name }}
         - alert: O11yRUMVitalRegression
           expr: |-
@@ -173,7 +173,7 @@ spec:
           annotations:
             dashboard: /d/libo11y-rum-vitals
             description: The TTFB p75 over the last hour is more than 1.25 times the same hour a week ago and above the good bound of 0.8 s.
-            runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumvitalregression
+            runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.1/ops/README.md#o11yrumvitalregression
             summary: TTFB p75 regressed for {{ $labels.service_name }}
         - alert: O11yRUMErrorRateHigh
           expr: |-
@@ -185,7 +185,7 @@ spec:
           annotations:
             dashboard: /d/libo11y-rum-errors
             description: The app reported more than 0.1 errors per view over the last 15 minutes, with at least 50 views.
-            runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumerrorratehigh
+            runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.1/ops/README.md#o11yrumerrorratehigh
             summary: Error rate is high for {{ $labels.service_name }}
     - name: libo11y-rum-gateway-alerts
       rules:
@@ -203,7 +203,7 @@ spec:
           annotations:
             dashboard: /d/libo11y-rum-gateway
             description: More than 5% of the requests to {{ $labels.job }} were rejected over the last 10 minutes, for reasons other than rate limiting and sink failures.
-            runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumgatewayrejections
+            runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.1/ops/README.md#o11yrumgatewayrejections
             summary: '{{ $labels.job }} is rejecting requests'
         - alert: O11yRUMGatewayRateLimited
           expr: |-
@@ -219,7 +219,7 @@ spec:
           annotations:
             dashboard: /d/libo11y-rum-gateway
             description: More than 20% of the requests to {{ $labels.job }} were refused by the per-client rate limit over the last 10 minutes.
-            runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumgatewayratelimited
+            runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.1/ops/README.md#o11yrumgatewayratelimited
             summary: '{{ $labels.job }} is rate limiting clients'
         - alert: O11yRUMGatewaySinkFailing
           expr: |-
@@ -235,7 +235,7 @@ spec:
           annotations:
             dashboard: /d/libo11y-rum-gateway
             description: More than 1% of the requests to {{ $labels.job }} failed in a sink over the last 5 minutes. The gateway answers them with 503 and Retry-After, so a short outage loses little, but a sink that stays down loses telemetry.
-            runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumgatewaysinkfailing
+            runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.1/ops/README.md#o11yrumgatewaysinkfailing
             summary: '{{ $labels.job }} cannot export to its sinks'
         - alert: O11yRUMGatewaySinkSlow
           expr: histogram_quantile(0.99, sum by (job, o11yrum_sink, le) (rate(o11yrum_sink_duration_seconds_bucket{job=~"(.*/)?o11yrum-gateway"}[10m]))) > 2
@@ -245,7 +245,7 @@ spec:
           annotations:
             dashboard: /d/libo11y-rum-gateway
             description: The p99 of one export to sink {{ $labels.o11yrum_sink }} has been above 2 s for 10 minutes.
-            runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumgatewaysinkslow
+            runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.1/ops/README.md#o11yrumgatewaysinkslow
             summary: Sink {{ $labels.o11yrum_sink }} is slow on {{ $labels.job }}
         - alert: O11yRUMAggregatorNearCap
           expr: max by (job, o11yrum_metric) (o11yrum_aggregator_series{job=~"(.*/)?o11yrum-gateway"}) > 1800
@@ -255,7 +255,7 @@ spec:
           annotations:
             dashboard: /d/libo11y-rum-gateway
             description: Derived metric {{ $labels.o11yrum_metric }} has held more than 1800 attribute sets for 30 minutes. Each app may hold aggregation.max_series_per_metric (default 2000) attribute sets in one metric before new ones go to the overflow series. The gauge sums every app, so with several apps it can fire before any one app reaches the cap.
-            runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumaggregatornearcap
+            runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.1/ops/README.md#o11yrumaggregatornearcap
             summary: Derived metric {{ $labels.o11yrum_metric }} is near its series cap on {{ $labels.job }}
         - alert: O11yRUMGatewayDown
           expr: up{job=~"(.*/)?o11yrum-gateway"} == 0
@@ -265,5 +265,5 @@ spec:
           annotations:
             dashboard: /d/libo11y-rum-gateway
             description: 'The scrape of {{ $labels.instance }} in job {{ $labels.job }} has failed for 5 minutes. The alert sees only gateways Prometheus scrapes: up exists only for scrape targets, so a gateway that pushes its metrics over OTLP needs its own absence check.'
-            runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumgatewaydown
+            runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.1/ops/README.md#o11yrumgatewaydown
             summary: Prometheus cannot scrape {{ $labels.job }}

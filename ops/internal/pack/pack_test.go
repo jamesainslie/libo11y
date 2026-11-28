@@ -200,10 +200,11 @@ type rendered struct {
 	UID        string `json:"uid"`
 	Templating struct {
 		List []struct {
-			Name     string `json:"name"`
-			Type     string `json:"type"`
-			AllValue string `json:"allValue"`
-			Query    any    `json:"query"`
+			Name       string `json:"name"`
+			Type       string `json:"type"`
+			AllValue   string `json:"allValue"`
+			IncludeAll bool   `json:"includeAll"`
+			Query      any    `json:"query"`
 		} `json:"list"`
 	} `json:"templating"`
 	Panels []renderedPanel `json:"panels"`
@@ -236,7 +237,9 @@ func (d rendered) allPanels() []renderedPanel {
 
 // allValues gives each variable the value a query sees when the viewer
 // leaves it at All or empty: a datasource variable its own name, a query
-// or custom variable its All value, and a textbox its default.
+// or custom variable its All value, and a textbox its default. A variable
+// with no All value gets the regex alternation Grafana sends for All, the
+// listed values joined, here two stand-ins.
 func (d rendered) allValues() map[string]string {
 	out := map[string]string{}
 	for _, v := range d.Templating.List {
@@ -248,6 +251,9 @@ func (d rendered) allValues() map[string]string {
 			out[v.Name] = s
 		default:
 			out[v.Name] = v.AllValue
+			if v.IncludeAll && v.AllValue == "" {
+				out[v.Name] = "(listed-a|listed-b)"
+			}
 		}
 	}
 	return out

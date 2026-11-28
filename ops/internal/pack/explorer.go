@@ -20,7 +20,7 @@ func explorer() dash.Dashboard {
 		Description: "One RUM session's views, events, traces and spans, by session.id and o11y.rum.view.id.",
 		Tags:        []string{"rum"},
 		TimeFrom:    "now-24h",
-		Variables:   []dash.Variable{varLoki, varTempo, varLokiApp, varSession, varViewID},
+		Variables:   []dash.Variable{varProm, varLoki, varTempo, varRUMApp, varSession, varViewID},
 		Links: []dash.Link{
 			{Title: "Errors and frustration", URL: "/d/libo11y-rum-errors?${app:queryparam}&${__url_time_range}"},
 		},
