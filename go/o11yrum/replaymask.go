@@ -264,8 +264,9 @@ func isIDReference(s string) bool {
 	}
 	for i := 1; i < len(s); i++ {
 		c := s[i]
-		letter := c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c == '_' || c == ':'
-		if !letter && (i == 1 || !(c >= '0' && c <= '9' || c == '-')) {
+		first := isASCIILetter(c) || c == '_' || c == ':'
+		rest := first || c >= '0' && c <= '9' || c == '-'
+		if i == 1 && !first || !rest {
 			return false
 		}
 	}
@@ -296,39 +297,35 @@ func isASCIILetter(c byte) bool { return c >= 'A' && c <= 'Z' || c >= 'a' && c <
 // validHost reports whether host is a host with an optional numeric
 // port: a bracketed IPv6 literal, or a name without ":", "[" or "]".
 func validHost(host string) bool {
-	name := host
+	var port string
 	if strings.HasPrefix(host, "[") {
 		end := strings.IndexByte(host, ']')
 		if end < 2 {
 			return false
 		}
 		for i := 1; i < end; i++ {
-			c := host[i]
-			if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F' || c == ':' || c == '.') {
+			if c := host[i]; !isHex(c) && c != ':' && c != '.' {
 				return false
 			}
 		}
-		name = ""
-		host = host[end+1:]
+		port = host[end+1:]
 	} else {
-		colon := strings.IndexByte(host, ':')
-		if colon >= 0 {
-			name, host = host[:colon], host[colon:]
-		} else {
-			name, host = host, ""
+		name := host
+		if colon := strings.IndexByte(host, ':'); colon >= 0 {
+			name, port = host[:colon], host[colon:]
 		}
 		if name == "" || strings.ContainsAny(name, "[]") {
 			return false
 		}
 	}
-	if host == "" {
+	if port == "" {
 		return true
 	}
-	if host[0] != ':' {
+	if port[0] != ':' {
 		return false
 	}
-	for i := 1; i < len(host); i++ {
-		if host[i] < '0' || host[i] > '9' {
+	for i := 1; i < len(port); i++ {
+		if port[i] < '0' || port[i] > '9' {
 			return false
 		}
 	}
@@ -610,12 +607,12 @@ func readCSSString(css string, i int) (string, int) {
 	j := i + 1
 	for j < len(css) {
 		c := css[j]
-		switch {
-		case c == quote:
+		switch c {
+		case quote:
 			return value.String(), j + 1
-		case c == '\n':
+		case '\n':
 			return value.String(), j
-		case c == '\\':
+		case '\\':
 			switch next := cssAt(css, j+1); {
 			case j+1 >= len(css):
 				j++
@@ -765,16 +762,18 @@ func stripCSSURLs(css string, allow map[string]bool) string {
 		if isCSSNameChar(c) || isCSSEscape(css, i) {
 			j := i
 			var name strings.Builder
+		scan:
 			for j < len(css) {
-				if isCSSEscape(css, j) {
+				switch {
+				case isCSSEscape(css, j):
 					text, n := readCSSEscape(css, j)
 					name.WriteString(text)
 					j = n
-				} else if isCSSNameChar(css[j]) {
+				case isCSSNameChar(css[j]):
 					name.WriteByte(css[j])
 					j++
-				} else {
-					break
+				default:
+					break scan
 				}
 			}
 			if cssAt(css, j) == '(' && asciiLower(name.String()) == "url" {

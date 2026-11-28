@@ -81,13 +81,13 @@ func TestReplayKeys(t *testing.T) {
 		t.Fatal(got)
 	}
 	for s, want := range map[string]bool{
-		session:                                 true,
-		"0B7E5C1E-6F2A-4C55-9B1E-1F2D3C4B5A69":  false,
-		"0b7e5c1e6f2a4c559b1e1f2d3c4b5a69":      false,
-		"0b7e5c1e-6f2a-4c55-9b1e-1f2d3c4b5a69 ": false,
-		"0b7e5c1e-6f2a-4c55-9b1e-1f2d3c4b5a6g":  false,
-		"../x":                                  false,
-		"":                                      false,
+		session:                                true,
+		"0B7E5C1E-6F2A-4C55-9B1E-1F2D3C4B5A69": false,
+		"0b7e5c1e6f2a4c559b1e1f2d3c4b5a69":     false,
+		session + " ":                          false,
+		"0b7e5c1e-6f2a-4c55-9b1e-1f2d3c4b5a6g": false,
+		"../x":                                 false,
+		"":                                     false,
 	} {
 		if validSessionID(s) != want {
 			t.Errorf("%q: want %v", s, want)
