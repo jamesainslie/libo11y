@@ -75,6 +75,7 @@ import java.util.Map;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
+import java.util.function.UnaryOperator;
 
 /** Entry points for initializing libo11y ({@link #setup(O11yOptions)} and {@link #init(O11yOptions)}). */
 public final class O11y {
@@ -554,6 +555,7 @@ public final class O11y {
         SdkLoggerProviderBuilder loggerBuilder = SdkLoggerProvider.builder()
                 .setResource(composed.resource());
         List<Object> logPartsHanded = new ArrayList<>();
+        UnaryOperator<Context> classifiedMark = UnaryOperator.identity();
         if (!disabled) {
             LogLimits limits = env.logLimits();
             loggerBuilder.setLogLimits(() -> limits);
@@ -571,8 +573,10 @@ public final class O11y {
             }
             logProcessors.addAll(options.logRecordProcessors());
             if (!logProcessors.isEmpty()) {
-                loggerBuilder.addLogRecordProcessor(new PolicyBridges.PolicyLogRecordProcessor(
-                        policy, LogRecordProcessor.composite(logProcessors)));
+                PolicyBridges.PolicyLogRecordProcessor policyProcessor = new PolicyBridges.PolicyLogRecordProcessor(
+                        policy, LogRecordProcessor.composite(logProcessors));
+                classifiedMark = policyProcessor.classifiedMark();
+                loggerBuilder.addLogRecordProcessor(policyProcessor);
             }
             logPartsHanded.addAll(logProcessors);
         }
@@ -589,7 +593,8 @@ public final class O11y {
                 consoleOut,
                 options.attrReplacer(),
                 options.extraLogSinks(),
-                Map.of());
+                Map.of(),
+                classifiedMark);
 
         String samplerName = options.sampler() != null ? options.sampler().getDescription() : env.samplerName();
         Map<String, Object> effectiveConfig = effectiveConfig(

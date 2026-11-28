@@ -57,6 +57,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
+import java.util.function.UnaryOperator;
 import javax.management.NotificationEmitter;
 import javax.management.NotificationListener;
 import javax.management.openmbean.CompositeData;
@@ -247,11 +248,12 @@ public final class PolicyBridges {
      * each record is classified, and each violation counted, exactly once. The SDK's record cannot
      * remove an attribute, so the delegate receives a view whose reads return the classified
      * attributes; a record with nothing classified is passed through untouched. Records from
-     * libo11y's own {@code StructuredLogger} are already classified (see {@link #markClassified})
+     * libo11y's own {@code StructuredLogger} are already classified (see {@link #classifiedMark})
      * and pass through, so their tokens match the console's. The record body is not classified.
      */
     public static final class PolicyLogRecordProcessor implements LogRecordProcessor {
-        private static final ContextKey<Boolean> CLASSIFIED_KEY = ContextKey.named("libo11y.log.classified");
+        /** This instance's mark. Context keys compare by identity, so no other code can recreate it. */
+        private final ContextKey<Boolean> classifiedKey = ContextKey.named("libo11y.log.classified");
 
         private final SensitivityPolicy policy;
         private final LogRecordProcessor delegate;
@@ -262,11 +264,13 @@ public final class PolicyBridges {
         }
 
         /**
-         * Returns {@code context} marked as carrying a record that libo11y's structured logger has
-         * already classified. Internal to libo11y: a record emitted with this mark bypasses the policy.
+         * Returns the operation that marks a context as carrying a record libo11y's structured logger
+         * has already classified, so this processor does not classify it again. The mark belongs to
+         * this instance: only the code its owner hands the operation to can set it, and the mark is
+         * cleared before a delegate sees the context, so a context captured downstream carries none.
          */
-        public static Context markClassified(Context context) {
-            return context.with(CLASSIFIED_KEY, Boolean.TRUE);
+        public UnaryOperator<Context> classifiedMark() {
+            return context -> context.with(classifiedKey, Boolean.TRUE);
         }
 
         @Override
@@ -274,8 +278,8 @@ public final class PolicyBridges {
             if (delegate == null) {
                 return;
             }
-            if (context != null && Boolean.TRUE.equals(context.get(CLASSIFIED_KEY))) {
-                delegate.onEmit(context, logRecord);
+            if (context != null && Boolean.TRUE.equals(context.get(classifiedKey))) {
+                delegate.onEmit(context.with(classifiedKey, Boolean.FALSE), logRecord);
                 return;
             }
             Attributes clean = LogAttributeClassifier.classify(logRecord.getAttributes(), policy);
