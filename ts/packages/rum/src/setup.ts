@@ -40,8 +40,10 @@ import {
   type OtlpBatch,
   openQueue,
   type PersistentQueue,
+  pristineFetch,
   type QueueOptions,
   type SetupDeps,
+  type SignalEndpoints,
   setupWithDeps,
 } from "@libo11y/web/internal";
 import { diag, type Span } from "@opentelemetry/api";
@@ -50,9 +52,11 @@ import { ConsoleSpanExporter, type SpanExporter, type SpanProcessor } from "@ope
 import { recordInstantAction } from "./actions/record.ts";
 import { ATTR_SESSION_ID, ATTR_USER_ID } from "./attrs.ts";
 import { createBus } from "./bus.ts";
+import type { RemoteConfigDocument } from "./config/clamp.ts";
+import type { RemoteConfigConnection } from "./config/remote.ts";
 import { rumContextManager } from "./context-manager.ts";
 import type { RetentionRouting } from "./contracts/retention.ts";
-import type { RequestStartHook, RumRuntime, RumSettings } from "./contracts/runtime.ts";
+import type { CollectorName, RequestStartHook, RumRuntime, RumSettings } from "./contracts/runtime.ts";
 import type { SessionStore } from "./contracts/session.ts";
 import { createBreadcrumbs } from "./errors/breadcrumbs.ts";
 import { recordError } from "./errors/record.ts";
@@ -88,6 +92,10 @@ export interface RumDeps {
   readonly window: EventTarget | undefined;
   /** Install the telemetry globally, as setup does. Default true; tests that run two tabs in one process pass false. */
   readonly install?: boolean;
+  /** The fetch remote configuration uses. Default web's pristineFetch, which is never instrumented. */
+  readonly fetch?: typeof fetch;
+  /** Where remote configuration is cached. Default localStorage. Called only once consent is granted. */
+  readonly storage?: () => Pick<Storage, "getItem" | "setItem" | "removeItem"> | undefined;
 }
 
 /** The real dependencies of a page. */
@@ -193,11 +201,50 @@ function naturalTracesRoute(
   throw new O11yError("EXPORTER", `o11y: building span exporter: unknown exporter ${value}`);
 }
 
+/** The remote configuration URL: base, else the export endpoint next to /v1/<signal>, with the service and client token. */
+function configUrl(
+  base: string | undefined,
+  endpoints: SignalEndpoints | undefined,
+  page: string,
+  service: unknown,
+  clientToken: string | undefined,
+): string | undefined {
+  let raw = base;
+  if (raw === undefined && endpoints !== undefined) {
+    for (const [signal, u] of Object.entries(endpoints)) {
+      const suffix = `/v1/${signal}`;
+      if (u?.endsWith(suffix) === true) {
+        raw = `${u.slice(0, -suffix.length)}/v1/config`;
+        break;
+      }
+    }
+  }
+  if (raw === undefined || typeof service !== "string" || service === "") return undefined;
+  let url: URL;
+  try {
+    url = new URL(raw, page);
+  } catch {
+    return undefined;
+  }
+  url.searchParams.set("service", service);
+  if (clientToken !== undefined) url.searchParams.set("client_token", clientToken);
+  return url.href;
+}
+
 export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Promise<RumTelemetry> {
   const { rum: rumOptions, ...webOptions } = options;
   const resolved = resolveSettings(rumOptions);
-  // R3d replaces it with the clamped remote configuration.
-  const settings: RumSettings = resolved;
+  // Remote configuration (decisions P15, P16). The connection opens on the first grant. settings
+  // are those of the current session: the document it started under, within the code's limits. A
+  // new session takes the newest document. killed is the kill switch of the newest document.
+  const rc = rumOptions?.remoteConfig;
+  let remote: RemoteConfigConnection | undefined;
+  let killed = false;
+  let settings: RumSettings = resolved;
+  const forSession = (version: string | undefined): RumSettings =>
+    remote === undefined ? resolved : remote.apply(resolved, remote.find(version));
+  const newest = (): RumSettings =>
+    remote === undefined ? resolved : remote.apply(resolved, remote.current());
   const retention = createRetentionBuffer({
     open: () =>
       deps.openRetentionQueue({
@@ -214,10 +261,10 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
   });
   const session = createSessionManager({
     store: deps.sessionStore(),
-    sampleRate: () => settings.sessionSampleRate,
-    idleMillis: settings.sessionIdleMillis,
-    maxMillis: settings.sessionMaxMillis,
-    configVersion: () => settings.configVersion,
+    sampleRate: () => newest().sessionSampleRate,
+    idleMillis: resolved.sessionIdleMillis,
+    maxMillis: resolved.sessionMaxMillis,
+    configVersion: () => newest().configVersion,
     now: deps.now,
   });
   const bus = createBus();
@@ -234,6 +281,7 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
   let telemetry: WebTelemetry | undefined;
   let controller: ConsentController | undefined;
   let delivery: Delivery | undefined;
+  let endpoints: SignalEndpoints | undefined;
 
   const hidden = (): boolean => deps.document?.visibilityState === "hidden";
   const summary = createSummaryAccumulator({
@@ -324,6 +372,7 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
       deps.web.createHttpTransport(gatewayTransportOptions(o, resolved.clientToken, deps.now)),
     onPlatform: (platform, po) => {
       delivery = po.delivery;
+      endpoints = po.endpoints;
       if (forward && appExporter === undefined) {
         const route = naturalTracesRoute(webOptions.hermetic === true, browserEnv(webOptions, po.endpoints));
         const inner =
@@ -373,6 +422,8 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
     throw new O11yError("INVALID_OPTION", "rum: web setup built no consent controller");
   }
 
+  /** RUM records: consent is granted and remote configuration has not switched it off. */
+  const on = (): boolean => gate.recording() && !killed;
   const runtime: RumRuntime = {
     platform: "web",
     telemetry: t,
@@ -410,45 +461,116 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
     breadcrumbs: () => crumbs.snapshot(deps.perfNow()),
   };
 
-  // Collectors run only while consent is granted.
-  const running: (() => void)[] = [];
+  // Collectors run only while consent is granted, remote configuration has not switched RUM off,
+  // and the current session's settings enable them.
+  const running = new Map<CollectorName, () => void>();
+  /** The session is up and the view begun, so the enabled collectors are to run. */
+  let collecting = false;
   let starting: Promise<void> | undefined;
+  let stopRemote: (() => void) | undefined;
   /** Consent was granted at some point in this page, so RUM may have stored something. */
   let everStarted = false;
   /** Bumped by stopAll, so a start whose session load outlived a revoke does nothing. */
   let generation = 0;
+  const reconcile = (): void => {
+    const want: ReadonlySet<CollectorName> = collecting && on() ? settings.enabled : new Set();
+    for (const [name, stop] of [...running].reverse()) {
+      if (want.has(name)) continue;
+      running.delete(name);
+      try {
+        stop();
+      } catch (err) {
+        diag.warn(`o11y: rum: collector ${name} failed to stop`, err);
+      }
+    }
+    for (const c of resolved.collectors) {
+      if (!want.has(c.name) || running.has(c.name)) continue;
+      try {
+        running.set(c.name, c.start(runtime));
+      } catch (err) {
+        diag.warn(`o11y: rum: collector ${c.name} failed to start`, err);
+      }
+    }
+  };
+  /** Starts the session, the view and the collectors. */
+  const activate = async (gen: number): Promise<void> => {
+    if (killed) return;
+    await session.start();
+    // Revoked while the session loaded, and maybe granted again: that later start runs instead.
+    if (gen !== generation || !gate.recording() || killed) return;
+    settings = forSession(session.current()?.configVersion);
+    views.begin();
+    // A kept session may find batches an earlier page of it left in the buffer.
+    if (session.kept()) {
+      flushRetention().catch((err: unknown) => diag.warn("o11y: rum: retention flush failed", err));
+    }
+    collecting = true;
+    reconcile();
+  };
+  /** The kill switch acts at once; every other change waits for the next session. */
+  const onRemote = (doc: RemoteConfigDocument | undefined): void => {
+    if (!gate.recording()) return;
+    const off = doc?.enabled === false;
+    if (off && !killed) {
+      killed = true;
+      collecting = false;
+      reconcile();
+      active = undefined;
+      views.end();
+    } else if (!off && killed) {
+      killed = false;
+      activate(generation).catch((err: unknown) => diag.warn("o11y: rum: start failed", err));
+    }
+  };
+  const openRemote = (): RemoteConfigConnection | undefined => {
+    if (rc === undefined) return undefined;
+    const url = configUrl(
+      rc.url,
+      endpoints,
+      deps.location(),
+      t.resource.attributes["service.name"],
+      resolved.clientToken,
+    );
+    const f = deps.fetch ?? pristineFetch;
+    if (url === undefined || f === undefined) {
+      diag.warn("o11y: rum: remote configuration has no URL or no fetch; it is off");
+      return undefined;
+    }
+    let storage: Pick<Storage, "getItem" | "setItem" | "removeItem"> | undefined;
+    try {
+      storage = (deps.storage ?? (() => globalThis.localStorage))();
+    } catch {
+      storage = undefined;
+    }
+    return rc.open({
+      url,
+      fetch: f,
+      ...(storage === undefined ? {} : { storage }),
+      timers: {
+        setTimeout: (cb, ms) => setTimeout(cb, ms),
+        clearTimeout: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
+      },
+      visible: () => !hidden(),
+    });
+  };
   const startAll = (): Promise<void> => {
     everStarted = true;
     const gen = generation;
     starting ??= (async () => {
-      await session.start();
-      // Revoked while the session loaded, and maybe granted again: that later start runs instead.
+      remote ??= openRemote();
+      killed = remote?.current()?.enabled === false;
+      await activate(gen);
       if (gen !== generation || !gate.recording()) return;
-      views.begin();
-      // A kept session may find batches an earlier page of it left in the buffer.
-      if (session.kept()) {
-        flushRetention().catch((err: unknown) => diag.warn("o11y: rum: retention flush failed", err));
-      }
-      for (const c of resolved.collectors) {
-        if (!settings.enabled.has(c.name)) continue;
-        try {
-          running.push(c.start(runtime));
-        } catch (err) {
-          diag.warn(`o11y: rum: collector ${c.name} failed to start`, err);
-        }
-      }
+      stopRemote = remote?.start(onRemote);
     })();
     return starting;
   };
   const stopAll = (): void => {
     generation++;
-    while (running.length > 0) {
-      try {
-        running.pop()?.();
-      } catch (err) {
-        diag.warn("o11y: rum: a collector failed to stop", err);
-      }
-    }
+    collecting = false;
+    reconcile();
+    stopRemote?.();
+    stopRemote = undefined;
     starting = undefined;
   };
 
@@ -465,6 +587,11 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
   const endTimers = new Set<ReturnType<typeof setTimeout>>();
   let endingSession: EndingSession | undefined;
   const offSession = session.subscribe((e) => {
+    if (e.type === "start") {
+      // A new session takes the newest document; an adopted one, the document it started under.
+      settings = forSession(e.session.configVersion);
+      queueMicrotask(reconcile);
+    }
     if (e.type === "kept") {
       flushRetention().catch((err: unknown) => diag.warn("o11y: rum: retention flush failed", err));
     } else if (e.type === "start" && e.local) {
@@ -514,7 +641,10 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
     if (!everStarted) return;
     await settled();
     // A grant may already have followed the revoke; its session's records are not to be removed.
-    if (!gate.recording()) await retention.clear();
+    if (!gate.recording()) {
+      remote?.clear();
+      await retention.clear();
+    }
   });
   const offGate = gate.subscribe((recording) => {
     if (recording) startAll().catch((err: unknown) => diag.warn("o11y: rum: start failed", err));
@@ -553,7 +683,7 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
     },
     onRequestStart: (hook) => runtime.onRequestStart(hook),
     startView(o) {
-      if (!gate.recording()) return;
+      if (!on()) return;
       const cause = active?.isRecording() === true ? active.spanContext() : undefined;
       views.start({
         kind: "soft",
@@ -562,16 +692,16 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
       });
     },
     setViewName(name) {
-      if (gate.recording()) views.rename(name);
+      if (on()) views.rename(name);
     },
     viewRendered() {
-      if (gate.recording()) views.rendered();
+      if (on()) views.rendered();
     },
     addAction(name) {
-      if (gate.recording()) recordInstantAction(runtime, "custom", name);
+      if (on()) recordInstantAction(runtime, "custom", name);
     },
     addError(error, o) {
-      if (!gate.recording()) return;
+      if (!on()) return;
       recordError(
         runtime,
         o?.source ?? "custom",

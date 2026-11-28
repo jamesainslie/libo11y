@@ -49,6 +49,72 @@ export interface ErrorsOptions {
 
 export { HttpRequestInfo }
 
+// @public
+export interface RemoteConfig {
+    open(o: RemoteConfigOpenOptions): RemoteConfigConnection;
+    readonly url?: string;
+}
+
+// @public
+export function remoteConfig(opts?: RemoteConfigOptions): RemoteConfig;
+
+// @public (undocumented)
+export interface RemoteConfigClient {
+    clear(): void;
+    current(): RemoteConfigDocument | undefined;
+    find(version: string | undefined): RemoteConfigDocument | undefined;
+    refresh(): Promise<boolean>;
+    start(onChange: (doc: RemoteConfigDocument | undefined) => void): () => void;
+}
+
+// @public
+export interface RemoteConfigConnection extends RemoteConfigClient {
+    apply<S extends RumSettings>(code: S, doc: RemoteConfigDocument | undefined): S & {
+        readonly enabledByRemote: boolean;
+    };
+}
+
+// @public
+export interface RemoteConfigDocument {
+    readonly collectors?: Readonly<Partial<Record<CollectorName, boolean>>>;
+    readonly enabled?: boolean;
+    readonly sessionSampleRate?: number;
+    readonly version: string;
+}
+
+// @public
+export interface RemoteConfigLimits {
+    readonly sessionSampleRate?: readonly [min: number, max: number];
+}
+
+// @public
+export interface RemoteConfigOpenOptions {
+    // (undocumented)
+    readonly fetch: typeof fetch;
+    // (undocumented)
+    readonly storage?: Pick<Storage, "getItem" | "setItem" | "removeItem">;
+    // (undocumented)
+    readonly timers: RemoteConfigTimers;
+    readonly url: string;
+    // (undocumented)
+    readonly visible: () => boolean;
+}
+
+// @public
+export interface RemoteConfigOptions {
+    readonly limits?: RemoteConfigLimits;
+    readonly refreshMillis?: number;
+    readonly url?: string;
+}
+
+// @public
+export interface RemoteConfigTimers {
+    // (undocumented)
+    clearTimeout(handle: unknown): void;
+    // (undocumented)
+    setTimeout(cb: () => void, ms: number): unknown;
+}
+
 // @public (undocumented)
 export type RequestStartHook = (span: Span, request: HttpRequestInfo) => void;
 
@@ -86,6 +152,7 @@ export interface RumOptions {
     readonly clientToken?: string;
     readonly collectors?: readonly RumCollector[];
     readonly queryAllowList?: readonly string[];
+    readonly remoteConfig?: RemoteConfig;
     readonly retention?: {
         readonly maxBytes?: number;
         readonly maxAgeMillis?: number;
