@@ -25,6 +25,7 @@ import {
   normalizeMethod,
   reportError,
   serverAttributes,
+  urlFull,
 } from "./http-common.ts";
 
 /** Options for {@link instrumentFetch}. */
@@ -93,7 +94,8 @@ function inject(
 /**
  * Wraps fetchImpl (default: globalThis.fetch as it is now) with a CLIENT span per request, named by
  * method, and the http.client.request.duration histogram, recorded in the span's context so its
- * exemplar carries the trace. The span ends when the response headers arrive, or when the request
+ * exemplar carries the trace. Its url.full drops the URL's credentials and redacts the values of
+ * the presigned-URL query keys semconv names. The span ends when the response headers arrive, or when the request
  * fails. 4xx and 5xx responses and failures mark the span failed. The trace context is injected
  * into a copy of the request headers; the caller's Request and init are never changed. A URL that
  * cannot be parsed is passed to fetchImpl uninstrumented, so its own error surfaces.
@@ -121,13 +123,10 @@ export function instrumentFetch(
     const raw = sentMethod(rawMethod);
     const { method } = normalizeMethod(raw);
     const server = serverAttributes(url);
-    const full = new URL(url);
-    full.username = "";
-    full.password = "";
     const attributes: Attributes = {
       ...methodAttributes(raw),
       ...server,
-      "url.full": full.href,
+      "url.full": urlFull(url),
       ...(opts.peerService === undefined ? {} : { "peer.service": opts.peerService }),
     };
     const parent = context.active();
