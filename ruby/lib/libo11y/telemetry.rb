@@ -33,6 +33,7 @@ module Libo11y
       effective_config:,
       shutdown_timeout:,
       is_global:,
+      failures:,
       on_global_shutdown: nil
     )
       @tracer_provider = tracer_provider
@@ -45,6 +46,7 @@ module Libo11y
       @effective_config = effective_config.freeze
       @shutdown_timeout = shutdown_timeout
       @is_global = is_global
+      @failures = failures
       @on_global_shutdown = on_global_shutdown
       @shutdown_mutex = Mutex.new
       @shutdown_done = false
@@ -81,91 +83,112 @@ module Libo11y
       @logger.log_with_attrs(::Logger::INFO, body || name.to_s, attrs, event_name: name.to_s, force: true)
     end
 
-    # Idempotent, bounded, concurrent shutdown across traces, metrics, and logs.
+    # Stops logs, metrics and traces concurrently under one deadline, and
+    # returns a ShutdownReport with one error per signal that failed, missed
+    # the deadline, or had its final export rejected. It runs once: every
+    # later and concurrent caller gets the first call's report. For each
+    # signal in the report an o11y.telemetry.dropped event goes to the
+    # console and the extra sinks.
+    #
+    # @param timeout [Numeric, nil] seconds. nil uses the shutdown_timeout
+    #   option, 5 by default.
+    # @raise [ArgumentError] when timeout is not a number
     def shutdown(timeout: nil)
-      elected = false
+      secs = resolve_timeout(timeout)
       @shutdown_mutex.synchronize do
+        @shutdown_cv.wait(@shutdown_mutex) while @shutdown_in_progress
         return @shutdown_report if @shutdown_done
 
-        if @shutdown_in_progress
-          @shutdown_cv.wait(@shutdown_mutex) until @shutdown_done
-          return @shutdown_report
-        end
-
         @shutdown_in_progress = true
-        elected = true
       end
 
-      return @shutdown_report unless elected
-
-      deadline_secs = timeout.nil? ? @shutdown_timeout : Float(timeout)
-      deadline_secs = 5.0 if deadline_secs <= 0
-      errors = {}
-      err_mutex = Mutex.new
-
-      signals = {
-        logs: @logger_provider,
-        metrics: @meter_provider,
-        traces: @tracer_provider
-      }
-
-      threads = signals.map do |sig_name, provider|
-        Thread.new do
-          next if provider.nil?
-
-          res = provider.shutdown(timeout: deadline_secs)
-          if res.is_a?(Integer) && res != 0
-            err_mutex.synchronize do
-              errors[sig_name] = ExporterError.new("o11y: #{sig_name} shutdown failed with status #{res}")
-            end
-          end
-        rescue StandardError => e
-          err_mutex.synchronize { errors[sig_name] = e }
+      report = nil
+      begin
+        report = run_shutdown(secs)
+      ensure
+        @shutdown_mutex.synchronize do
+          # An unexpected error leaves no report, and the next caller runs it again.
+          @shutdown_report = report
+          @shutdown_done = !report.nil?
+          @shutdown_in_progress = false
+          @shutdown_cv.broadcast
         end
       end
-
-      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + deadline_secs
-      threads.each_with_index do |t, idx|
-        sig_name = signals.keys[idx]
-        remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
-        joined = remaining.positive? ? t.join(remaining) : t.join(0)
-        next if joined
-
-        err_mutex.synchronize do
-          errors[sig_name] ||= ExporterError.new("o11y: #{sig_name} shutdown timed out after #{deadline_secs}s")
-        end
-      end
-
-      report = ShutdownReport.new(
-        traces_error: errors[:traces],
-        metrics_error: errors[:metrics],
-        logs_error: errors[:logs]
-      )
-
-      @on_global_shutdown&.call if @is_global
-
-      @shutdown_mutex.synchronize do
-        @shutdown_report = report
-        @shutdown_done = true
-        @shutdown_in_progress = false
-        @shutdown_cv.broadcast
-      end
-
       report
     end
 
+    # Exports what is buffered on all three signals concurrently, under one
+    # deadline, without stopping them.
+    #
+    # @return [Boolean] false when a signal failed, missed the deadline, or
+    #   had an export rejected while the call ran
+    # @raise [ArgumentError] when timeout is not a number
     def force_flush(timeout: nil)
-      t = timeout.nil? ? @shutdown_timeout : Float(timeout)
-      @logger_provider&.force_flush(timeout: t)
-      @meter_provider&.force_flush(timeout: t)
-      @tracer_provider&.force_flush(timeout: t)
-      true
+      secs = resolve_timeout(timeout)
+      each_signal("flush", secs) { |provider| provider.force_flush(timeout: secs) }.empty?
+    end
+
+    private
+
+    SIGNALS = %i[logs metrics traces].freeze
+    private_constant :SIGNALS
+
+    def resolve_timeout(timeout)
+      secs = timeout.nil? ? @shutdown_timeout : Float(timeout)
+      secs.positive? ? secs : 5.0
+    rescue TypeError
+      raise ArgumentError, "libo11y: timeout must be a number of seconds, got #{timeout.inspect}"
+    end
+
+    def run_shutdown(secs)
+      errors = each_signal("shutdown", secs) { |provider| provider.shutdown(timeout: secs) }
+      # The OTLP log leg is already down, so these reach the console and the
+      # extra sinks only.
+      errors.each { |signal, error| emit_dropped(signal, error) }
+      @on_global_shutdown&.call if @is_global
+      ShutdownReport.new(traces_error: errors[:traces], metrics_error: errors[:metrics], logs_error: errors[:logs])
+    end
+
+    # Runs the block for each signal's provider on its own thread, under one
+    # deadline. Returns the error of each signal that failed.
+    def each_signal(action, secs)
+      providers = { logs: @logger_provider, metrics: @meter_provider, traces: @tracer_provider }
+      errors = {}
+      lock = Mutex.new
+      threads = SIGNALS.to_h do |signal|
+        thread = Thread.new do
+          status, failed = @failures.fetch(signal).during { yield providers.fetch(signal) }
+          cause = failed.first&.message
+          cause ||= "the provider answered #{status}" if status.is_a?(Integer) && !status.zero?
+          lock.synchronize { errors[signal] = ExporterError.new("o11y: #{action} #{signal}: #{cause}") } if cause
+        rescue StandardError => e
+          lock.synchronize { errors[signal] = ExporterError.new("o11y: #{action} #{signal}: #{e.message}") }
+        end
+        [signal, thread]
+      end
+
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + secs
+      threads.each do |signal, thread|
+        remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        next if thread.join([remaining, 0].max)
+
+        lock.synchronize { errors[signal] ||= ExporterError.new("o11y: #{action} #{signal}: timed out after #{secs}s") }
+      end
+      lock.synchronize { errors.dup }
+    end
+
+    def emit_dropped(signal, error)
+      event(Spec::EVENT_TELEMETRY_DROPPED, { Spec::ATTR_SIGNAL => signal.to_s, "error.type" => error.class.name })
+    rescue StandardError
+      nil
     end
   end
 
   module Builder
     @global_mutex = Mutex.new
-    @global_active = false
+    # nil when no global setup exists, :starting while one is being built,
+    # :active once it is installed.
+    @global_state = nil
 
     class << self
       def build(options_or_nil = nil, is_global:, **)
@@ -175,12 +198,39 @@ module Libo11y
                  Options.new(**)
                end
 
-        if is_global
-          @global_mutex.synchronize do
-            raise AlreadySetup if @global_active
+        # Claimed before anything is built, so a second caller fails at once
+        # and builds nothing.
+        claim_global! if is_global
+        built = []
+        begin
+          construct(opts, is_global, built)
+        rescue StandardError
+          # Stop the workers of every provider built so far.
+          built.each do |provider|
+            provider.shutdown(timeout: 1.0)
+          rescue StandardError
+            nil
           end
+          reset_global! if is_global
+          raise
         end
+      end
 
+      def reset_global!
+        @global_mutex.synchronize { @global_state = nil }
+      end
+
+      private
+
+      def claim_global!
+        @global_mutex.synchronize do
+          raise AlreadySetup unless @global_state.nil?
+
+          @global_state = :starting
+        end
+      end
+
+      def construct(opts, is_global, built)
         env_map = Internal::Env.resolve_map(opts.env)
         hermetic = Internal::Env.hermetic?(opts.env)
         sdk_disabled = !hermetic && Internal::Env.sdk_disabled?(env_map)
@@ -197,6 +247,8 @@ module Libo11y
         res_result = Internal::ResourceBuilder.build(opts, env_map, policy, violation_recorder)
         resource = res_result.resource
         propagator = Internal::Propagators.build(opts.propagators, opts.baggage_egress_allow)
+        failures = %i[traces metrics logs].to_h { |signal| [signal, Internal::Bridges::ExportFailures.new] }
+        observe = ->(exporter, signal) { Internal::Bridges::ObservedExporter.new(exporter, failures.fetch(signal), signal) }
 
         # Effective config tracking
         cfg = {
@@ -213,6 +265,7 @@ module Libo11y
           sampler: sampler,
           resource: resource
         )
+        built << tracer_provider
 
         trace_exporter_mode = if sdk_disabled || (opts.span_exporter.nil? && hermetic)
                                 "none"
@@ -225,7 +278,7 @@ module Libo11y
 
         unless sdk_disabled
           if opts.span_exporter
-            wrapped = Internal::Bridges::PolicySpanExporter.new(opts.span_exporter, policy)
+            wrapped = Internal::Bridges::PolicySpanExporter.new(observe.call(opts.span_exporter, :traces), policy)
             tracer_provider.add_span_processor(
               OpenTelemetry::SDK::Trace::Export::SimpleSpanProcessor.new(wrapped)
             )
@@ -233,7 +286,7 @@ module Libo11y
             endpoint = Internal::Env.signal_endpoint(env_map, "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "/v1/traces")
             cfg["traces.endpoint"] = Internal::Endpoint.sanitize(endpoint)
             otlp_exp = Internal::Bridges.build_otlp_trace_exporter(env_map)
-            wrapped = Internal::Bridges::PolicySpanExporter.new(otlp_exp, policy)
+            wrapped = Internal::Bridges::PolicySpanExporter.new(observe.call(otlp_exp, :traces), policy)
             tracer_provider.add_span_processor(
               OpenTelemetry::SDK::Trace::Export::BatchSpanProcessor.new(
                 wrapped,
@@ -245,7 +298,7 @@ module Libo11y
             )
           elsif trace_exporter_mode == "console"
             wrapped = Internal::Bridges::PolicySpanExporter.new(
-              OpenTelemetry::SDK::Trace::Export::ConsoleSpanExporter.new, policy
+              observe.call(OpenTelemetry::SDK::Trace::Export::ConsoleSpanExporter.new, :traces), policy
             )
             tracer_provider.add_span_processor(
               OpenTelemetry::SDK::Trace::Export::SimpleSpanProcessor.new(wrapped)
@@ -264,6 +317,7 @@ module Libo11y
 
         # Build MeterProvider
         raw_meter_provider = OpenTelemetry::SDK::Metrics::MeterProvider.new(resource: resource)
+        built << raw_meter_provider
         exemplar_filter = if sdk_disabled
                             ExemplarFilter::ALWAYS_OFF
                           else
@@ -289,7 +343,7 @@ module Libo11y
             cfg["metrics.endpoint"] = Internal::Endpoint.sanitize(endpoint)
             otlp_mexp = Internal::Bridges.build_otlp_metric_exporter(env_map)
             reader = OpenTelemetry::SDK::Metrics::Export::PeriodicMetricReader.new(
-              exporter: otlp_mexp,
+              exporter: observe.call(otlp_mexp, :metrics),
               export_interval_millis: Internal::Env.parse_int(env_map, "OTEL_METRIC_EXPORT_INTERVAL", 60_000),
               export_timeout_millis: Internal::Env.parse_int(env_map, "OTEL_METRIC_EXPORT_TIMEOUT", 30_000)
             )
@@ -330,6 +384,7 @@ module Libo11y
 
         # Build LoggerProvider
         logger_provider = OpenTelemetry::SDK::Logs::LoggerProvider.new(resource: resource)
+        built << logger_provider
         log_exporter_mode = if sdk_disabled || (opts.log_exporter.nil? && hermetic)
                               "none"
                             elsif opts.log_exporter
@@ -343,14 +398,14 @@ module Libo11y
           # First, so every later processor sees the classified record.
           logger_provider.add_log_record_processor(Internal::Bridges::PolicyLogRecordProcessor.new(policy))
           if opts.log_exporter
-            proc = OpenTelemetry::SDK::Logs::Export::SimpleLogRecordProcessor.new(opts.log_exporter)
+            proc = OpenTelemetry::SDK::Logs::Export::SimpleLogRecordProcessor.new(observe.call(opts.log_exporter, :logs))
             logger_provider.add_log_record_processor(proc)
           elsif log_exporter_mode == "otlp"
             endpoint = Internal::Env.signal_endpoint(env_map, "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "/v1/logs")
             cfg["logs.endpoint"] = Internal::Endpoint.sanitize(endpoint)
             otlp_lexp = Internal::Bridges.build_otlp_log_exporter(env_map)
             proc = OpenTelemetry::SDK::Logs::Export::BatchLogRecordProcessor.new(
-              otlp_lexp,
+              observe.call(otlp_lexp, :logs),
               schedule_delay: Internal::Env.parse_int(env_map, "OTEL_BLRP_SCHEDULE_DELAY", 1000),
               max_queue_size: Internal::Env.parse_int(env_map, "OTEL_BLRP_MAX_QUEUE_SIZE", 2048),
               max_export_batch_size: Internal::Env.parse_int(env_map, "OTEL_BLRP_MAX_EXPORT_BATCH_SIZE", 512),
@@ -359,7 +414,7 @@ module Libo11y
             logger_provider.add_log_record_processor(proc)
           elsif log_exporter_mode == "console"
             proc = OpenTelemetry::SDK::Logs::Export::SimpleLogRecordProcessor.new(
-              OpenTelemetry::SDK::Logs::Export::ConsoleLogRecordExporter.new
+              observe.call(OpenTelemetry::SDK::Logs::Export::ConsoleLogRecordExporter.new, :logs)
             )
             logger_provider.add_log_record_processor(proc)
           end
@@ -380,51 +435,34 @@ module Libo11y
           extra_sinks: opts.extra_log_sinks
         )
 
-        # Startup canary on global setup only (before installing globals)
+        # The startup canary, on global setup only and before any global is
+        # installed. A sink that raises, or a log exporter that answers the
+        # record with a failure, fails setup.
         if is_global
-          canary_attrs = {}
-          cfg.each { |k, v| canary_attrs["o11y.config.#{k}"] = v }
+          canary_attrs = cfg.transform_keys { |k| "o11y.config.#{k}" }
           begin
-            structured_logger.log_with_attrs(
-              ::Logger::INFO,
-              "telemetry configured",
-              canary_attrs,
-              event_name: Spec::EVENT_TELEMETRY_CONFIGURED,
-              force: true,
-              raise_on_sink_error: true
-            )
+            _, rejected = failures.fetch(:logs).during do
+              structured_logger.log_with_attrs(
+                ::Logger::INFO,
+                "telemetry configured",
+                canary_attrs,
+                event_name: Spec::EVENT_TELEMETRY_CONFIGURED,
+                force: true,
+                raise_on_sink_error: true
+              )
+            end
           rescue StandardError => e
-            begin
-              tracer_provider.shutdown(timeout: 1.0)
-            rescue StandardError
-              nil
-            end
-            begin
-              raw_meter_provider.shutdown(timeout: 1.0)
-            rescue StandardError
-              nil
-            end
-            begin
-              logger_provider.shutdown(timeout: 1.0)
-            rescue StandardError
-              nil
-            end
             raise CanaryRejected, "o11y: startup canary rejected by sink: #{e.message}"
           end
+          raise CanaryRejected, "o11y: startup canary rejected by sink: #{rejected.first.message}" unless rejected.empty?
 
           @global_mutex.synchronize do
-            raise AlreadySetup if @global_active
-
-            @global_active = true
+            @global_state = :active
             OpenTelemetry.tracer_provider = tracer_provider
             OpenTelemetry.meter_provider = meter_provider if OpenTelemetry.respond_to?(:meter_provider=)
             OpenTelemetry.logger_provider = logger_provider if OpenTelemetry.respond_to?(:logger_provider=)
             OpenTelemetry.propagation = propagator
           end
-        end
-
-        on_global_shutdown = lambda do
-          @global_mutex.synchronize { @global_active = false }
         end
 
         Telemetry.new(
@@ -438,12 +476,9 @@ module Libo11y
           effective_config: cfg,
           shutdown_timeout: opts.shutdown_timeout,
           is_global: is_global,
-          on_global_shutdown: on_global_shutdown
+          failures: failures,
+          on_global_shutdown: method(:reset_global!)
         )
-      end
-
-      def reset_global!
-        @global_mutex.synchronize { @global_active = false }
       end
     end
   end

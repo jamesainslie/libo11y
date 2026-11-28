@@ -15,6 +15,65 @@ require_relative "policy"
 module Libo11y
   module Internal
     module Bridges
+      # Collects one signal's export failures while a shutdown, a flush or the
+      # startup canary runs. An export that fails at any other time is not
+      # kept.
+      class ExportFailures
+        def initialize
+          @mutex = Mutex.new
+          @windows = []
+        end
+
+        def record(error)
+          @mutex.synchronize { @windows.each { |window| window << error } }
+        end
+
+        # Runs the block. Returns its value and the failures recorded while it
+        # ran, on any thread.
+        def during
+          window = []
+          @mutex.synchronize { @windows << window }
+          begin
+            [yield, window]
+          ensure
+            @mutex.synchronize { @windows.delete_if { |open| open.equal?(window) } }
+          end
+        end
+      end
+
+      # Wraps a span, metric or log record exporter and records every export
+      # that fails, times out or raises.
+      class ObservedExporter
+        SUCCESS = OpenTelemetry::SDK::Trace::Export::SUCCESS
+        TIMEOUT = OpenTelemetry::SDK::Trace::Export::TIMEOUT
+
+        def initialize(inner, failures, signal)
+          @inner = inner
+          @failures = failures
+          @signal = signal
+        end
+
+        def export(data, timeout: nil)
+          result = @inner.export(data, timeout: timeout)
+          unless result == SUCCESS
+            outcome = result == TIMEOUT ? "timed out" : "failed"
+            @failures.record(ExporterError.new("the #{@signal} export #{outcome}"))
+          end
+          result
+        rescue StandardError => e
+          @failures.record(e)
+          raise
+        end
+
+        def method_missing(name, ...)
+          @inner.public_send(name, ...)
+        end
+
+        def respond_to_missing?(name, include_private = false)
+          @inner.respond_to?(name, include_private)
+        end
+      end
+
       # Wraps any span exporter so span, event, and link attributes pass through SensitivityPolicy once.
       class PolicySpanExporter
         def initialize(inner, policy)

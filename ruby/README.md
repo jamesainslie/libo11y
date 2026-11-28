@@ -29,6 +29,8 @@ end
 
 `Libo11y.setup` installs the global tracer, meter, and logger providers, installs the W3C TraceContext + Baggage propagator wrapped in the baggage egress filter, and runs the startup canary (`o11y.telemetry.configured`). Passing a block guarantees bounded concurrent shutdown across all three signals when the block exits.
 
+`tel.shutdown(timeout: 5)` runs once and returns a `ShutdownReport`. `report.ok?` is false, and `report.errors` names the signal, when a signal fails, misses the deadline, or has its final export rejected by the collector. Each such signal also gets an `o11y.telemetry.dropped` event on the console and the extra sinks. `tel.force_flush` returns `false` on the same failures.
+
 Use `Libo11y.init(...)` for non-global handles in tests and dependency injection.
 
 ### Graceful shutdown on signals
