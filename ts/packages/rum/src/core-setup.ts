@@ -142,7 +142,7 @@ export interface RumCoreDeps<O extends RumPlatformOptions, T extends Telemetry> 
    * Native's app_load) see the first grant's session start and load view, even at setup.
    */
   readonly onRuntime?: (runtime: RumRuntime) => void;
-  /** Rewrites every error's stack before it is recorded (RumRuntime.mapStack). Default none. */
+  /** Rewrites every error's stack before it is recorded (RumRuntime.mapStack); must not throw. Default none. */
   readonly mapStack?: (stack: string) => string;
 }
 

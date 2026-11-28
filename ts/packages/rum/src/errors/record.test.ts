@@ -86,14 +86,3 @@ test("the runtime's mapStack rewrites the stack, the component stack included", 
     "Error: m\n    at f (app:///main.jsbundle:1:5)\n\n    at Doc (app:///main.jsbundle:1:9)",
   );
 });
-
-test("a mapStack that throws leaves the stack as it was", () => {
-  const rt = fakeRuntime();
-  rt.mapStack = () => {
-    throw new Error("bad map");
-  };
-  const err = new Error("m");
-  err.stack = "Error: m\n    at f (/tmp/x.js:1:5)";
-  recordError(rt, "uncaught", err);
-  assert.equal(rt.events[0]?.attrs["exception.stacktrace"], "Error: m\n    at f (/tmp/x.js:1:5)");
-});

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { BUNDLE_URLS, bundleUrlOf, mapHermesStack } from "./hermes-stack.ts";
+import { BUNDLE_URLS, bundleUrlOf, mapHermesStack, stackMapperOf } from "./hermes-stack.ts";
 
 const A = BUNDLE_URLS.android ?? "";
 const I = BUNDLE_URLS.ios ?? "";
@@ -88,4 +88,12 @@ test("the header and lines that are not frames are kept, also when they mention 
 test("a component stack's frames are rewritten too", () => {
   const raw = "\n    at Boom (address at /x/.expo-internal/a1:1:50)\n    at View (<anonymous>)";
   assert.equal(mapHermesStack(raw, A), `\n    at Boom (${A}:1:51)\n    at View (<anonymous>)`);
+});
+
+test("stackMapperOf: a guarded rewrite for iOS and Android, none elsewhere", () => {
+  assert.equal(stackMapperOf("web"), undefined);
+  const map = stackMapperOf("android");
+  assert.equal(map?.("E\n    at f (address at /x/a.hbc:1:1)"), `E\n    at f (${A}:1:2)`);
+  const notAString = 42 as unknown as string;
+  assert.equal(map?.(notAString), notAString, "a rewrite that throws leaves the stack as it was");
 });

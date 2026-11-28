@@ -21,6 +21,22 @@ export function bundleUrlOf(os: string): string | undefined {
   return Object.hasOwn(BUNDLE_URLS, os) ? BUNDLE_URLS[os] : undefined;
 }
 
+/**
+ * The mapStack of a platform: stacks rewritten to its bundle URL, or undefined where it has none.
+ * A rewrite that throws leaves the stack as it was, because RUM's core calls it unguarded.
+ */
+export function stackMapperOf(os: string): ((stack: string) => string) | undefined {
+  const url = bundleUrlOf(os);
+  if (url === undefined) return undefined;
+  return (stack) => {
+    try {
+      return mapHermesStack(stack, url);
+    } catch {
+      return stack;
+    }
+  };
+}
+
 /** "at", an optional "fn (", an optional "address at", the file, line, column and ")". */
 const FRAME = /^(\s*at\s+(?:.*?\s+\()?)(address at\s+)?([^()\s][^()]*?):(\d+):(\d+)(\)?)\s*$/;
 

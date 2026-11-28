@@ -21,7 +21,7 @@ export {
   type RnErrorsEnv,
   type RnErrorsOptions,
 } from "./errors/collector.ts";
-export { BUNDLE_URLS, bundleUrlOf, mapHermesStack } from "./errors/hermes-stack.ts";
+export { BUNDLE_URLS, bundleUrlOf, mapHermesStack, stackMapperOf } from "./errors/hermes-stack.ts";
 export { installRejectionTracker } from "./errors/rejections.ts";
 export { screensWith } from "./screens.ts";
 export { storageSessionStore } from "./session-store.ts";

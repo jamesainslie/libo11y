@@ -104,8 +104,8 @@ export interface RumRuntime {
   readonly scope?: RumScope;
   /**
    * Rewrites a stack before an error records it (R5e), such as React Native's Hermes frames into the
-   * fixed bundle URL the gateway finds the source map under. Absent on the web, which sends stacks
-   * as they are.
+   * fixed bundle URL the gateway finds the source map under. It must not throw. Absent on the web,
+   * which sends stacks as they are.
    */
   readonly mapStack?: (stack: string) => string;
   readonly telemetry: Telemetry;
