@@ -19,12 +19,12 @@ module Libo11y
       out
     end
 
-    def child_env(base_env = ENV.to_h, context: OpenTelemetry::Context.current)
-      result = base_env.dup
-      result.delete(TRACEPARENT_ENV)
-      result.delete(TRACESTATE_ENV)
-      result.merge!(env_carrier(context: context))
-      result
+    # The environment for a child process: base_env with TRACEPARENT and
+    # TRACESTATE set from the active span. A variable the span does not set
+    # maps to nil, which makes Process.spawn remove it from the child, so the
+    # child never inherits a stale trace from this process.
+    def child_env(base_env = {}, context: OpenTelemetry::Context.current)
+      base_env.to_h.merge(TRACEPARENT_ENV => nil, TRACESTATE_ENV => nil).merge(env_carrier(context: context))
     end
 
     def extract_env(env_map = ENV, context: OpenTelemetry::Context.current)

@@ -15,6 +15,80 @@ require_relative "policy"
 module Libo11y
   module Internal
     module Bridges
+      # The tracer provider under OTEL_SDK_DISABLED=true. Its spans record
+      # nothing and mint no trace identity, and an inbound trace context still
+      # passes through them.
+      class NoopTracerProvider < OpenTelemetry::Trace::TracerProvider
+        def add_span_processor(_processor); end
+
+        def force_flush(timeout: nil) # rubocop:disable Lint/UnusedMethodArgument
+          OpenTelemetry::SDK::Trace::Export::SUCCESS
+        end
+
+        def shutdown(timeout: nil) # rubocop:disable Lint/UnusedMethodArgument
+          OpenTelemetry::SDK::Trace::Export::SUCCESS
+        end
+      end
+
+      # Collects one signal's export failures while a shutdown, a flush or the
+      # startup canary runs. An export that fails at any other time is not
+      # kept.
+      class ExportFailures
+        def initialize
+          @mutex = Mutex.new
+          @windows = []
+        end
+
+        def record(error)
+          @mutex.synchronize { @windows.each { |window| window << error } }
+        end
+
+        # Runs the block. Returns its value and the failures recorded while it
+        # ran, on any thread.
+        def during
+          window = []
+          @mutex.synchronize { @windows << window }
+          begin
+            [yield, window]
+          ensure
+            @mutex.synchronize { @windows.delete_if { |open| open.equal?(window) } }
+          end
+        end
+      end
+
+      # Wraps a span, metric or log record exporter and records every export
+      # that fails, times out or raises.
+      class ObservedExporter
+        SUCCESS = OpenTelemetry::SDK::Trace::Export::SUCCESS
+        TIMEOUT = OpenTelemetry::SDK::Trace::Export::TIMEOUT
+
+        def initialize(inner, failures, signal)
+          @inner = inner
+          @failures = failures
+          @signal = signal
+        end
+
+        def export(data, timeout: nil)
+          result = @inner.export(data, timeout: timeout)
+          unless result == SUCCESS
+            outcome = result == TIMEOUT ? "timed out" : "failed"
+            @failures.record(ExporterError.new("the #{@signal} export #{outcome}"))
+          end
+          result
+        rescue StandardError => e
+          @failures.record(e)
+          raise
+        end
+
+        def method_missing(name, ...)
+          @inner.public_send(name, ...)
+        end
+
+        def respond_to_missing?(name, include_private = false)
+          @inner.respond_to?(name, include_private)
+        end
+      end
+
       # Wraps any span exporter so span, event, and link attributes pass through SensitivityPolicy once.
       class PolicySpanExporter
         def initialize(inner, policy)
@@ -387,40 +461,70 @@ module Libo11y
         end
       end
 
+      # Makes an OTLP exporter write the specification's schema URL on each
+      # resource it sends. The upstream exporters do not write a schema URL.
+      # Each one builds its request and hands the bytes to its private
+      # send_bytes, so that method is the one place to add it for all three.
+      # An exporter without that method is returned as it is, and the wire
+      # test then fails.
+      def stamp_schema_url(exporter, request_class, field)
+        return exporter unless exporter.respond_to?(:send_bytes, true)
+
+        stamp = Module.new do
+          define_method(:send_bytes) do |bytes, timeout:|
+            unless bytes.nil?
+              request = request_class.decode(bytes)
+              request.public_send(field).each { |entry| entry.schema_url = Spec::SCHEMA_URL if entry.schema_url.empty? }
+              bytes = request_class.encode(request)
+            end
+            super(bytes, timeout: timeout)
+          end
+          private :send_bytes
+        end
+        exporter.singleton_class.prepend(stamp)
+        exporter
+      end
+
       def build_otlp_trace_exporter(env_map)
         Env.parse_protocol(env_map, "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL")
         tls = Env.signal_tls(env_map, "OTEL_EXPORTER_OTLP_TRACES")
-        OpenTelemetry::Exporter::OTLP::Exporter.new(
+        exporter = OpenTelemetry::Exporter::OTLP::Exporter.new(
           endpoint: Env.signal_endpoint(env_map, "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "/v1/traces"),
           headers: Env.signal_headers(env_map, "OTEL_EXPORTER_OTLP_TRACES_HEADERS"),
           compression: Env.signal_compression(env_map, "OTEL_EXPORTER_OTLP_TRACES_COMPRESSION"),
           timeout: Env.signal_timeout(env_map, "OTEL_EXPORTER_OTLP_TRACES_TIMEOUT"),
+          ssl_verify_mode: Env.ssl_verify_mode(env_map),
           **tls
         )
+        stamp_schema_url(exporter, Opentelemetry::Proto::Collector::Trace::V1::ExportTraceServiceRequest, :resource_spans)
       end
 
       def build_otlp_metric_exporter(env_map)
         Env.parse_protocol(env_map, "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL")
         tls = Env.signal_tls(env_map, "OTEL_EXPORTER_OTLP_METRICS")
-        OpenTelemetry::Exporter::OTLP::Metrics::MetricsExporter.new(
+        exporter = OpenTelemetry::Exporter::OTLP::Metrics::MetricsExporter.new(
           endpoint: Env.signal_endpoint(env_map, "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "/v1/metrics"),
           headers: Env.signal_headers(env_map, "OTEL_EXPORTER_OTLP_METRICS_HEADERS"),
           compression: Env.signal_compression(env_map, "OTEL_EXPORTER_OTLP_METRICS_COMPRESSION"),
           timeout: Env.signal_timeout(env_map, "OTEL_EXPORTER_OTLP_METRICS_TIMEOUT"),
+          ssl_verify_mode: Env.ssl_verify_mode(env_map),
           **tls
         )
+        stamp_schema_url(exporter, Opentelemetry::Proto::Collector::Metrics::V1::ExportMetricsServiceRequest, :resource_metrics)
       end
 
       def build_otlp_log_exporter(env_map)
         Env.parse_protocol(env_map, "OTEL_EXPORTER_OTLP_LOGS_PROTOCOL")
         tls = Env.signal_tls(env_map, "OTEL_EXPORTER_OTLP_LOGS")
-        OpenTelemetry::Exporter::OTLP::Logs::LogsExporter.new(
+        exporter = OpenTelemetry::Exporter::OTLP::Logs::LogsExporter.new(
           endpoint: Env.signal_endpoint(env_map, "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "/v1/logs"),
           headers: Env.signal_headers(env_map, "OTEL_EXPORTER_OTLP_LOGS_HEADERS"),
           compression: Env.signal_compression(env_map, "OTEL_EXPORTER_OTLP_LOGS_COMPRESSION"),
           timeout: Env.signal_timeout(env_map, "OTEL_EXPORTER_OTLP_LOGS_TIMEOUT"),
+          ssl_verify_mode: Env.ssl_verify_mode(env_map),
           **tls
         )
+        stamp_schema_url(exporter, Opentelemetry::Proto::Collector::Logs::V1::ExportLogsServiceRequest, :resource_logs)
       end
     end
   end

@@ -67,7 +67,7 @@ RSpec.describe "Libo11y core" do
       records = io.string.lines.map { |l| JSON.parse(l) }
       canary = records.find { |r| r["event.name"] == Libo11y::Spec::EVENT_TELEMETRY_CONFIGURED }
       expect(canary).not_to be_nil
-      expect(canary["o11y.config.service.name"]).to eq("checkout")
+      expect(canary["service.name"]).to eq("checkout")
 
       expect(tel.shutdown.ok?).to be(true)
     end
@@ -97,7 +97,7 @@ RSpec.describe "Libo11y core" do
       begin
         hostile.each { |k, v| ENV[k] = v }
         rec = Libo11y::Testing::Recorder.new
-        expect(rec.telemetry.effective_config["sdk.disabled"]).to eq("false")
+        expect(rec.telemetry.effective_config).to include("o11y.config.traces=injected", "o11y.config.logs=injected")
         rec.telemetry.tracer("t").in_span("s") { rec.telemetry.logger.info("hi") }
         expect(rec.spans.length).to eq(1)
         expect(rec.logs.length).to eq(1)
@@ -209,7 +209,8 @@ RSpec.describe "Libo11y core" do
       expect(dp.attributes).not_to have_key("acme.user.email")
       expect(dp.attributes["acme.tier"]).to eq("gold")
 
-      rec.assert_conforms!
+      # The secret was redacted on every signal, and emitting it is still a conformance failure.
+      expect { rec.assert_conforms! }.to raise_error(Libo11y::Testing::AssertionError, /secrets must never be emitted/)
       rec.shutdown
     end
 
@@ -262,7 +263,7 @@ RSpec.describe "Libo11y core" do
 
   describe "force_emit, events, wide records, and idempotent shutdown" do
     it "bypasses console level gate with force_emit and emits wide records" do
-      rec = Libo11y::Testing::Recorder.new(console_level: Logger::ERROR)
+      rec = Libo11y::Testing::Recorder.new(log_level: Logger::ERROR)
       rec.telemetry.logger.info("dropped_normal")
       expect(rec.console_records).to be_empty
 
@@ -309,8 +310,8 @@ RSpec.describe "Libo11y core" do
 
       wire = carrier.marshal_text
       restored = Libo11y::Detached::Carrier.unmarshal_text(wire)
-      expect(restored.headers["baggage"]).to include("tenant=acme")
-      expect(restored.headers["baggage"]).not_to include("secret_bag")
+      expect(restored.baggage).to include("tenant=acme")
+      expect(restored.baggage).not_to include("secret_bag")
 
       Libo11y::Detached.start_linked(restored, "job.run", telemetry: rec.telemetry) do
         expect(OpenTelemetry::Baggage.value("tenant")).to eq("acme")

@@ -24,6 +24,7 @@ const (
 // rbReservedTypes are module/class names a generated enum may not take.
 var rbReservedTypes = map[string]bool{
 	"Tables": true, "GoPrint": true, "AppRegistry": true,
+	"GoQuote": true, "YamlV3": true,
 	"Sensitivity": true, "Cardinality": true, "Requirement": true,
 	"Instrument": true, "ResourceAttr": true, "EventInfo": true,
 	"MetricInfo": true, "Environment": true,

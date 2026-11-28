@@ -93,48 +93,23 @@ module Libo11y
         out
       end
 
-      # Assert specification conformance across resource, spans, logs, and metrics.
+      # Asserts that the recorded telemetry conforms to the specification,
+      # and raises an AssertionError that lists every problem:
+      #
+      # - a required tier-0 attribute missing from the resource, or a
+      #   resource without the specification's schema URL
+      # - a secret-classified attribute that the code under test emitted. It
+      #   was redacted, and the library counted the redaction, but secrets
+      #   must never be emitted.
+      # - a secret-classified key in the clear on the resource, a span, a
+      #   span event or link, a log record or a metric data point
+      # - a registered event that lacks a required attribute
+      #
+      # Call it before the recorder shuts down, because it collects metrics.
       def assert_conforms!
-        res_attrs = @telemetry.resource.attributes
-        Spec::REQUIRED_TIER0.each do |key|
-          val = res_attrs[key]
-          raise AssertionError, "missing required tier0 resource attribute #{key}" if val.nil? || val.to_s.empty?
-        end
-        if @telemetry.resource.respond_to?(:schema_url) && @telemetry.resource.schema_url != Spec::SCHEMA_URL
-          raise AssertionError, "resource schema_url #{@telemetry.resource.schema_url} != #{Spec::SCHEMA_URL}"
-        end
+        problems = resource_problems + violation_problems + cleartext_problems + event_problems
+        raise AssertionError, problems.join("\n") unless problems.empty?
 
-        policy = @telemetry.policy
-
-        # Check no secret attributes leaked into resource, spans, or logs
-        check_attrs = lambda do |surface, attrs|
-          next if attrs.nil?
-
-          attrs.each_key do |k|
-            cls = policy.lookup(k.to_s)
-            raise AssertionError, "secret attribute #{k} leaked on #{surface}" if cls == Spec::Sensitivity::SECRET
-          end
-        end
-
-        check_attrs.call("resource", res_attrs)
-        spans.each do |s|
-          check_attrs.call("span #{s.name}", s.attributes)
-          s.events&.each { |ev| check_attrs.call("span event #{ev.name}", ev.attributes) }
-          s.links&.each { |lk| check_attrs.call("span link", lk.attributes) }
-        end
-        logs.each do |lr|
-          check_attrs.call("log #{lr.body}", lr.attributes)
-          ev_name = lr.event_name || lr.attributes&.[](Spec::EVENT_NAME_KEY)
-          next unless ev_name && (ev_info = Spec::EVENTS[ev_name])
-
-          ev_info.required.each do |req_key|
-            raise AssertionError, "event #{ev_name} missing required attribute #{req_key}" unless lr.attributes&.key?(req_key)
-          end
-          ev_info.required_templates.each do |prefix|
-            found = lr.attributes&.keys&.any? { |k| k.start_with?("#{prefix}.") }
-            raise AssertionError, "event #{ev_name} missing template attribute #{prefix}.*" unless found
-          end
-        end
         true
       end
 
@@ -143,11 +118,7 @@ module Libo11y
         span_pairs = spans.map { |s| [s.hex_trace_id, s.hex_span_id] }
         raise AssertionError, "no finished spans recorded" if span_pairs.empty?
 
-        matched_log = logs.any? do |lr|
-          tid = lr.trace_id&.unpack1("H*")
-          sid = lr.span_id&.unpack1("H*")
-          span_pairs.include?([tid, sid])
-        end
+        matched_log = logs.any? { |lr| span_pairs.include?([hex(lr.trace_id), hex(lr.span_id)]) }
         raise AssertionError, "no OTLP log record correlated with any recorded span" unless matched_log
 
         matched_console = console_records.any? do |rec|
@@ -158,20 +129,92 @@ module Libo11y
         true
       end
 
-      # Assert full three-way reconciliation: span <-> log <-> metric exemplar on the same trace_id.
-      def assert_triangle!
+      # Asserts that one trace holds all three signals: a finished span, a
+      # log record written inside one of the trace's spans, and a metric
+      # exemplar recorded inside one of them. With a metric name, only that
+      # metric's exemplars count.
+      def assert_triangle!(metric_name = nil)
         assert_correlated!
-        span_trace_ids = spans.map(&:hex_trace_id).uniq
-        ex_list = exemplars
-        matched_exemplar = ex_list.any? do |entry|
-          ex = entry[:exemplar]
-          tid = ex.trace_id&.unpack1("H*")
-          span_trace_ids.include?(tid)
-        end
-        raise AssertionError, "no metric exemplar reconciled with any recorded trace" unless matched_exemplar
+        span_ids = spans.group_by(&:hex_trace_id).transform_values { |list| list.map(&:hex_span_id) }
+        in_trace = ->((trace_id, span_id)) { span_ids.fetch(trace_id, []).include?(span_id) }
 
-        true
+        logged = logs.map { |lr| [hex(lr.trace_id), hex(lr.span_id)] }.select(&in_trace).map(&:first)
+        measured = exemplars(metric_name).map { |e| [hex(e[:exemplar].trace_id), hex(e[:exemplar].span_id)] }.select(&in_trace).map(&:first)
+        return true if logged.intersect?(measured)
+
+        metric = metric_name ? "an exemplar of metric #{metric_name.inspect}" : "a metric exemplar"
+        raise AssertionError, "no trace has a span, a log record and #{metric}"
       end
+
+      private
+
+      def hex(id)
+        id&.unpack1("H*")
+      end
+
+      def resource_problems
+        resource = @telemetry.resource
+        problems = Spec::REQUIRED_TIER0.select { |key| resource.attributes[key].to_s.empty? }
+                                       .map { |key| "resource missing required tier-0 attribute #{key.inspect}" }
+        if resource.respond_to?(:schema_url) && resource.schema_url != Spec::SCHEMA_URL
+          problems << "resource schema_url #{resource.schema_url.inspect} is not #{Spec::SCHEMA_URL.inspect}"
+        end
+        problems
+      end
+
+      # One problem per signal on which the policy counted a redacted secret.
+      def violation_problems
+        @telemetry.force_flush
+        metric = metrics.find { |m| m.name == Spec::METRIC_SCHEMA_VIOLATIONS }
+        return [] if metric.nil?
+
+        counts = Hash.new(0)
+        metric.data_points.each do |dp|
+          counts[dp.attributes[Spec::ATTR_SIGNAL]] += dp.value if dp.attributes[Spec::ATTR_RULE] == "secret_attribute"
+        end
+        counts.sort.map do |signal, count|
+          source = if signal == Spec::Signal::RESOURCE
+                     "the recorder's options put a secret-classified attribute on the resource"
+                   else
+                     "the code under test emitted secret-classified attributes on #{signal}"
+                   end
+          "#{source} (#{count} redaction(s) counted); they were redacted, but secrets must never be emitted"
+        end
+      end
+
+      def cleartext_problems
+        surfaces = [["resource", @telemetry.resource.attributes]]
+        spans.each do |span|
+          surfaces << ["span #{span.name.inspect}", span.attributes]
+          span.events&.each { |event| surfaces << ["span event #{event.name.inspect}", event.attributes] }
+          span.links&.each { |link| surfaces << ["a link of span #{span.name.inspect}", link.attributes] }
+        end
+        logs.each { |record| surfaces << ["log record #{record.body.inspect}", record.attributes] }
+        metrics.each do |metric|
+          Array(metric.data_points).each { |dp| surfaces << ["metric #{metric.name.inspect}", dp.attributes] }
+        end
+
+        surfaces.flat_map do |surface, attributes|
+          (attributes || {}).keys.select { |key| Spec::SENSITIVITY_OF[key.to_s] == Spec::Sensitivity::SECRET }
+                            .map { |key| "#{surface} carries secret-classified attribute #{key.to_s.inspect} in the clear" }
+        end
+      end
+
+      def event_problems
+        logs.flat_map do |record|
+          attributes = record.attributes || {}
+          name = record.event_name || attributes[Spec::EVENT_NAME_KEY]
+          contract = name && Spec::EVENTS[name]
+          next [] unless contract
+
+          missing = contract.required.reject { |key| attributes.key?(key) }
+          missing += contract.required_templates.reject { |prefix| attributes.keys.any? { |key| key.start_with?("#{prefix}.") } }
+                             .map { |prefix| "#{prefix}.*" }
+          missing.map { |key| "event #{name} missing required attribute #{key}" }
+        end
+      end
+
+      public
 
       def shutdown(timeout: 5.0)
         @telemetry.shutdown(timeout: timeout)
@@ -194,7 +237,13 @@ module Libo11y
     # production bundle carries no web server. Add `gem "webrick"` to the
     # Gemfile group that runs the tests.
     class OtlpHttpReceiver
-      attr_reader :port, :endpoint, :trace_requests, :metric_requests, :log_requests, :received_headers
+      attr_reader :port, :endpoint
+
+      # What has arrived so far, as copies taken under the lock the server
+      # thread writes under.
+      %i[trace_requests metric_requests log_requests received_headers].each do |name|
+        define_method(name) { @mutex.synchronize { instance_variable_get(:"@#{name}").dup } }
+      end
 
       def self.load_webrick
         require "webrick"

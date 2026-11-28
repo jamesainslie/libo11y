@@ -19,44 +19,55 @@ Layout/LineLength:
   Exclude:
     - "spec/support/sql_text_cases.rb"
 
-Metrics/BlockNesting:
-  Enabled: false
-
-Naming/PredicateMethod:
-  Enabled: false
-
-Naming/AccessorMethodName:
-  Enabled: false
-
-Lint/HashCompareByIdentity:
-  Enabled: false
-
-Style/HashEachMethods:
-  Enabled: false
-
-Metrics/MethodLength:
-  Enabled: false
-
+# The size limits follow the opentelemetry-ruby gems this one builds on:
+# a method may be long when it is one flat sequence, and branching is
+# capped. AbcSize double-counts what those two already measure.
 Metrics/AbcSize:
   Enabled: false
 
+Metrics/ClassLength:
+  Max: 250
+
+# Keyword arguments name themselves at the call site.
+Metrics/ParameterLists:
+  CountKeywordArgs: false
+
+# The lexers are ports of Go code and keep its one-letter index names.
+Naming/MethodParameterName:
+  AllowedNames: [i, j, k, n, s, c, v, e, a, b, io, id, cb, sd, ev, lk, sp, lp, ex, tp, ts, to, op]
+
+# These names are fixed from outside: Logger#add and the OpenTelemetry
+# force_flush return a status, and the recorder's assertions end in a bang.
+Naming/PredicateMethod:
+  AllowBangMethods: true
+  AllowedMethods: [call, add, force_flush]
+
+# Ports of Go code and of yaml.v3's rules. Each keeps the shape of its
+# source, one function per function, so the two can be read side by side,
+# and the shared conformance vectors test them.
 Metrics/CyclomaticComplexity:
-  Enabled: false
+  Max: 20
+  Exclude: &ports
+    - "lib/libo11y/internal/sql_text.rb"
+    - "lib/libo11y/internal/endpoint.rb"
+    - "lib/libo11y/internal/pii.rb"
+    - "lib/libo11y/spec/yaml_v3.rb"
+    - "lib/libo11y/spec/app_registry.rb"
 
 Metrics/PerceivedComplexity:
-  Enabled: false
+  Max: 30
+  Exclude: *ports
 
-Metrics/ClassLength:
-  Enabled: false
+Metrics/MethodLength:
+  Max: 50
+  Exclude: *ports
 
 Metrics/ModuleLength:
-  Enabled: false
-
-Metrics/ParameterLists:
-  Enabled: false
+  Max: 250
+  Exclude: *ports
 
 Metrics/BlockLength:
-  Enabled: false
-
-Naming/MethodParameterName:
-  Enabled: false
+  Exclude:
+    - "spec/**/*"
+    - "*.gemspec"
+    - "lib/libo11y/spec/app_registry.rb"

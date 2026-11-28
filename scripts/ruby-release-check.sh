@@ -5,7 +5,7 @@
 # Usage: ruby-release-check.sh [VERSION] [--out DIR] [--from-rubygems]
 #
 # Defaults:
-#   VERSION  v0.1.0 (leading v is optional; `make ruby-release-check` passes
+#   VERSION  v0.2.0 (leading v is optional; `make ruby-release-check` passes
 #            $(RUBY_RELEASE_VERSION)). A semver prerelease such as
 #            0.2.0-rc.1 is the gem version 0.2.0.pre.rc.1.
 #
@@ -26,13 +26,14 @@
 #
 # The consumer smoke test runs outside the repository. With only the gem's
 # declared dependencies installed it records a span, a metric and a
-# correlated log through Libo11y::Testing::Recorder. Then it installs
+# correlated log through Libo11y::Testing::Recorder, and asserts that they
+# conform and share one trace. Then it installs
 # webrick, which only the in-process OTLP receiver needs, and exports all
 # three signals over OTLP/HTTP to Libo11y::Testing::OtlpHttpReceiver. Last
 # it runs the installed `libo11y registry check`. Needs ruby and gem.
 set -euo pipefail
 
-version="v0.1.0"
+version="v0.2.0"
 version_set=false
 from_rubygems=false
 out=""
@@ -74,6 +75,15 @@ while (($# > 0)); do
 		;;
 	esac
 done
+
+# sha256sum is GNU coreutils. macOS has shasum.
+sha256() {
+	if command -v sha256sum >/dev/null; then
+		sha256sum "$@"
+	else
+		shasum -a 256 "$@"
+	fi
+}
 
 fail() {
 	echo "ruby-release-check: $*" >&2
@@ -149,7 +159,7 @@ RUBY
 	if [[ -n "$out" ]]; then
 		mkdir -p "$out"
 		cp "$gem_file" "$out/"
-		(cd "$out" && sha256sum "libo11y-$gem_version.gem" >SHA256SUMS)
+		(cd "$out" && sha256 "libo11y-$gem_version.gem" >SHA256SUMS)
 		echo "ruby-release-check: wrote $out/libo11y-$gem_version.gem and SHA256SUMS"
 	fi
 fi
@@ -180,6 +190,7 @@ Libo11y::Testing.start_recorder(service_name: "ruby-release-smoke") do |rec|
   end
   rec.assert_conforms!
   rec.assert_correlated!
+  rec.assert_triangle!("smoke.requests")
   abort "missing smoke-op span: #{rec.spans.map(&:name)}" unless rec.spans.map(&:name) == ["smoke-op"]
   abort "missing smoke.requests metric: #{rec.metrics.map(&:name)}" unless rec.metrics.map(&:name).include?("smoke.requests")
 end

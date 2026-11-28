@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "pathname"
 require_relative "../errors"
 require_relative "../options"
 require_relative "../redact"
@@ -44,37 +45,49 @@ module Libo11y
 
       attr_reader :pii_mode
 
+      # Loads the registries of the app_registries option and returns the
+      # sensitivity class of each key they declare. A source is a compiled
+      # registry, a Pathname, or a String. A String of one line is a path,
+      # and a String of several lines, or one that starts a flow mapping, is
+      # YAML text.
+      #
+      # @raise [InvalidAppRegistry] for a file that cannot be read, a
+      #   registry that does not parse or validate, or a namespace that two
+      #   sources declare
       def self.load_app_registries(spec_sources)
         return {} if spec_sources.nil?
 
         sources = spec_sources.is_a?(Array) ? spec_sources : [spec_sources]
-        by_ns = {}
-        classes = {}
-        sources.each do |src|
-          compiled = case src
-                     when Spec::AppRegistry::Compiled
-                       src
-                     when String
-                       if File.file?(src)
-                         Spec::AppRegistry.load_file(src)
-                       else
-                         Spec::AppRegistry.compile(Spec::AppRegistry.parse(src), source: "<inline>")
-                       end
-                     else
-                       raise InvalidAppRegistry, "o11y: invalid application registry source #{src.class}"
-                     end
-          prev = by_ns[compiled.namespace]
-          if prev
-            raise InvalidAppRegistry,
-                  "o11y: invalid application registry: duplicate namespace #{compiled.namespace.inspect} declared in #{prev} and #{compiled.source}"
+        declared = {}
+        sources.each_with_object({}) do |source, classes|
+          compiled = compile_app_registry(source)
+          label = compiled.source || "a compiled registry"
+          if declared.key?(compiled.namespace)
+            raise InvalidAppRegistry, "o11y: invalid application registry: duplicate namespace #{compiled.namespace.inspect} " \
+                                      "declared in #{declared[compiled.namespace]} and #{label}"
           end
-          by_ns[compiled.namespace] = compiled.source
+          declared[compiled.namespace] = label
           classes.merge!(compiled.classes)
-        rescue SystemCallError, Spec::AppRegistry::ParseError, Spec::AppRegistry::ValidationError => e
-          raise InvalidAppRegistry, "o11y: invalid application registry: #{e.message}"
         end
-        classes
       end
+
+      def self.compile_app_registry(source)
+        case source
+        when Spec::AppRegistry::Compiled then source
+        when Pathname then Spec::AppRegistry.load_file(source.to_s)
+        when String
+          if source.include?("\n") || source.lstrip.start_with?("{")
+            Spec::AppRegistry.compile(Spec::AppRegistry.parse_bytes(source), source: "<inline>")
+          else
+            Spec::AppRegistry.load_file(source)
+          end
+        else
+          raise InvalidAppRegistry, "o11y: invalid application registry: a source is a path, YAML text or a compiled registry, not #{source.class}"
+        end
+      rescue SystemCallError, Spec::AppRegistry::ParseError, Spec::AppRegistry::ValidationError => e
+        raise InvalidAppRegistry, "o11y: invalid application registry: #{e.message}"
+      end
+      private_class_method :compile_app_registry
 
       def initialize(pii_mode: PIIMode::DROP, pii_hash_key: nil, app_classes: nil, recorder: nil)
         mode = pii_mode.is_a?(Symbol) ? pii_mode : pii_mode.to_s.to_sym

@@ -65,7 +65,7 @@ module Libo11y
           @docs = []
           @stack = []
           @anchors = {}
-          @aliases = {}
+          @aliases = {}.compare_by_identity
           @doc_explicit = false
           @doc_version = nil
           @doc_root = nil
@@ -77,7 +77,7 @@ module Libo11y
           @doc_version = version && !version.empty? ? version : nil
           @doc_explicit = !implicit
           @anchors = {}
-          @aliases = {}
+          @aliases = {}.compare_by_identity
           @stack = []
           @doc_root = nil
         end
@@ -91,7 +91,7 @@ module Libo11y
           )
         end
 
-        def scalar(value, anchor, tag, plain, quoted, style)
+        def scalar(value, anchor, tag, plain, quoted, style) # rubocop:disable Metrics/ParameterLists -- Psych::Handler's signature
           quoted_or_block = quoted || !plain || (style != Psych::Nodes::Scalar::PLAIN)
           node = ScalarNode.new(tag: tag, value: value, quoted_or_block: quoted_or_block, anchor: anchor)
           @anchors[anchor] = node if anchor
@@ -103,7 +103,7 @@ module Libo11y
           raise SyntaxError, "unknown anchor '#{anchor}' referenced" unless target
 
           node = AliasNode.new(anchor: anchor)
-          @aliases[node.object_id] = target
+          @aliases[node] = target
           attach(node)
         end
 
@@ -189,73 +189,95 @@ module Libo11y
       # - Reject `\/` (yaml.v3 rejects escaped slash; libyaml accepts it)
       # - Rewrite `\'` inside double-quoted strings to `'` (yaml.v3 accepts it; libyaml rejects it)
       # - Reject `\uD800`-`\uDFFF` surrogate escapes
+      # Checks the escapes of double-quoted scalars as yaml.v3 does, before
+      # the text reaches Psych: \/ is not an escape, \' is one, and \u may
+      # not name a surrogate. A quote opens a scalar only where a scalar can
+      # start, so an apostrophe inside a plain scalar ("the user's id") or
+      # anywhere in a block scalar is ordinary text.
       def preprocess_double_quoted_escapes(text)
         out = String.new(encoding: Encoding::UTF_8, capacity: text.bytesize)
-        i = 0
-        len = text.length
-        in_single = false
-        in_double = false
-        in_comment = false
-
-        while i < len
-          ch = text[i]
-          if in_comment
-            out << ch
-            in_comment = false if ["\n", "\r"].include?(ch)
-            i += 1
-          elsif in_single
-            out << ch
-            if ch == "'"
-              if i + 1 < len && text[i + 1] == "'"
-                out << "'"
-                i += 2
-              else
-                in_single = false
-                i += 1
-              end
-            else
-              i += 1
+        quote = nil        # the quote character of an open quoted scalar, which may span lines
+        block_indent = nil # the indentation of the line that opened a block scalar
+        text.each_line do |line|
+          if quote.nil? && block_indent
+            if line.strip.empty? || line[/\A */].length > block_indent
+              out << line
+              next
             end
-          elsif in_double
-            if ch == "\\"
-              raise SyntaxError, "unterminated escape in double-quoted scalar" if i + 1 >= len
-
-              nxt = text[i + 1]
-              if nxt == "/"
-                raise SyntaxError, "found unknown escape character '/'"
-              elsif nxt == "'"
-                out << "'"
-                i += 2
-              elsif nxt == "u" && i + 5 < len
-                hex = text[i + 2, 4]
-                if /\A[0-9a-fA-F]{4}\z/.match?(hex)
-                  cp = hex.to_i(16)
-                  raise SyntaxError, "found invalid Unicode character escape code" if cp.between?(0xD800, 0xDFFF)
-                end
-                out << ch << nxt
-                i += 2
-              else
-                out << ch << nxt
-                i += 2
-              end
-            else
-              out << ch
-              in_double = false if ch == "\""
-              i += 1
-            end
-          else
-            if ch == "#" && (i.zero? || text[i - 1] == " " || text[i - 1] == "\t" || text[i - 1] == "\n" || text[i - 1] == "\r")
-              in_comment = true
-            elsif ch == "'"
-              in_single = true
-            elsif ch == "\""
-              in_double = true
-            end
-            out << ch
-            i += 1
+            block_indent = nil
           end
+          quote, opens_block = scan_escapes(line, quote, out)
+          block_indent = line[/\A */].length if opens_block
         end
         out
+      end
+
+      # Copies one line to out with its double-quoted escapes checked.
+      # Returns the quote still open at the end of the line, and whether the
+      # line opens a block scalar.
+      def scan_escapes(line, quote, out)
+        i = 0
+        while i < line.length
+          ch = line[i]
+          if quote == "'"
+            out << ch
+            if ch == "'" && line[i + 1] == "'"
+              out << "'"
+              i += 1
+            elsif ch == "'"
+              quote = nil
+            end
+          elsif quote == "\""
+            if ch == "\\"
+              i = copy_escape(line, i, out)
+              next
+            end
+            out << ch
+            quote = nil if ch == "\""
+          elsif ch == "#" && (i.zero? || [" ", "\t"].include?(line[i - 1]))
+            out << line[i..]
+            break
+          else
+            quote = ch if ["'", "\""].include?(ch) && scalar_start?(line, i)
+            out << ch
+          end
+          i += 1
+        end
+        [quote, quote.nil? && block_header?(line)]
+      end
+
+      # Copies the escape that starts at i, and returns the index after it.
+      def copy_escape(line, i, out)
+        nxt = line[i + 1]
+        raise SyntaxError, "unterminated escape in double-quoted scalar" if nxt.nil? && !line.end_with?("\n")
+        raise SyntaxError, "found unknown escape character '/'" if nxt == "/"
+
+        if nxt == "'"
+          out << "'"
+        else
+          hex = line[i + 2, 4].to_s
+          if nxt == "u" && /\A[0-9a-fA-F]{4}\z/.match?(hex) && hex.to_i(16).between?(0xD800, 0xDFFF)
+            raise SyntaxError, "found invalid Unicode character escape code"
+          end
+
+          out << "\\" << nxt.to_s
+        end
+        i + 2
+      end
+
+      # Whether a quote at index i opens a quoted scalar: it is the first
+      # thing in a value, a sequence entry or a flow collection.
+      def scalar_start?(line, i)
+        before = line[0, i].rstrip
+        return true if before.empty? || before.end_with?("[", "{", ",")
+
+        before.end_with?(":", "-", "?") && before.length < i
+      end
+
+      # Whether the line's value is a block scalar header, such as "key: |" or "- >-".
+      def block_header?(line)
+        code = line.sub(/(\A|\s)#.*\z/m, "").rstrip
+        code.match?(/(\A\s*|[:-]\s+)[|>][-+0-9]*\z/)
       end
 
       def parse_documents(text)

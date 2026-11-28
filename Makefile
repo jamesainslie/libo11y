@@ -190,7 +190,7 @@ DOTNET_RELEASE_VERSION ?= v0.1.0
 
 # The version ruby/lib/libo11y/version.rb carries, which
 # ruby-release-check.sh validates. Moves only in a release commit.
-RUBY_RELEASE_VERSION ?= v0.1.0
+RUBY_RELEASE_VERSION ?= v0.2.0
 
 # The version every java/ POM carries, which java-release-check.sh
 # validates. Moves only in a release commit.
@@ -503,13 +503,20 @@ c-sanitize:
 	cd c && zig build -j$(ZIG_BUILD_J) -Doptimize=Debug
 	C_SANITIZE_J=$(C_SANITIZE_J) c/tests/run_sanitized.sh c/zig-out conformance
 
-# Ruby gem (ruby/): install locked/bundle deps, RSpec (including shared
-# conformance, integrations, and OTLP wire suites), RuboCop, and hygiene check.
-ruby-check:
-	cd ruby && (bundle check || bundle install)
+# Ruby gem (ruby/): install the locked bundle (never changing the lockfile), RSpec (including shared
+# conformance, integrations, and OTLP wire suites), RuboCop, and the hygiene
+# check with its test.
+ruby-check: ruby-hygiene-test
+	cd ruby && (bundle check || BUNDLE_FROZEN=true bundle install)
 	cd ruby && bundle exec rspec
 	cd ruby && bundle exec rubocop --format simple
 	scripts/ruby-hygiene.sh ruby/lib
+
+# Test ruby-hygiene.sh against fixture trees. Declared phony here, not on the
+# shared line at the top, which every implementation edits.
+.PHONY: ruby-hygiene-test
+ruby-hygiene-test:
+	scripts/ruby-hygiene_test.sh
 
 # .NET solution (dotnet/): build with TreatWarningsAsErrors, xUnit suites
 # (including shared conformance, integrations, and OTLP wire tests), CLI check,

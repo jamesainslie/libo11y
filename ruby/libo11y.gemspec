@@ -25,6 +25,8 @@ Gem::Specification.new do |spec|
   spec.executables = ["libo11y"]
   spec.require_paths = ["lib"]
 
+  # A default gem through Ruby 3.4 and a bundled gem from 3.5, so it is declared.
+  spec.add_dependency "logger", "~> 1.6"
   spec.add_dependency "opentelemetry-api", "~> 1.11"
   spec.add_dependency "opentelemetry-common", "~> 0.25"
   spec.add_dependency "opentelemetry-exporter-otlp", "~> 0.37"

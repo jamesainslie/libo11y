@@ -3,96 +3,118 @@
 require "net/http"
 require "uri"
 require "opentelemetry"
+require_relative "internal/http_common"
 
 module Libo11y
-  # Instrumented Net::HTTP client helper that injects W3C headers without global monkey-patching.
+  # An instrumented Net::HTTP client. It records a client span and the
+  # http.client.request.duration histogram for each request and injects the
+  # trace context into the request headers. It patches nothing globally.
   class HttpClient
-    HTTP_DURATION_BUCKETS = [0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1.0, 2.5, 5.0, 7.5, 10.0].freeze
+    HTTP_DURATION_BUCKETS = Internal::HttpCommon::DURATION_BUCKETS
+    SCOPE_NAME = "libo11y.http"
 
+    # @param telemetry [Libo11y::Telemetry, nil] the handle to record
+    #   through. Without one the client uses the global providers.
+    # @param propagate_fn [#call, nil] returns false for a URI that must not
+    #   receive the trace context, such as a third party's
+    # @param peer_service [String, nil] the peer.service of the callee
     def initialize(telemetry: nil, propagate_fn: nil, peer_service: nil)
       @telemetry = telemetry
       @propagate_fn = propagate_fn
       @peer_service = peer_service
+      @mutex = Mutex.new
+      @duration = nil
     end
 
+    # Sends one request and returns the Net::HTTPResponse.
+    #
+    # @param method [Symbol, String] the request method, such as :get. A
+    #   method outside the standard set is sent as given and recorded as
+    #   _OTHER.
     def request(method, url, headers: {}, body: nil, open_timeout: 5, read_timeout: 15)
       uri = url.is_a?(URI) ? url : URI.parse(url.to_s)
       verb = method.to_s.upcase
-      sanitized_url = strip_credentials(uri)
+      normalized, original = Internal::HttpCommon.normalize_method(verb)
 
-      attrs = {
-        "http.request.method" => verb,
-        "url.full" => sanitized_url,
-        "server.address" => uri.host.to_s,
-        "server.port" => uri.port
-      }
-      attrs["peer.service"] = @peer_service.to_s if @peer_service && !@peer_service.to_s.empty?
+      attrs = { "http.request.method" => normalized, "server.address" => uri.host.to_s, "server.port" => uri.port }
+      metric_attrs = attrs.dup
+      attrs["http.request.method_original"] = original if original
+      attrs["url.full"] = without_credentials(uri)
+      attrs["peer.service"] = @peer_service.to_s unless @peer_service.to_s.empty?
 
-      tracer = @telemetry ? @telemetry.tracer("libo11y.http", Libo11y::VERSION) : OpenTelemetry.tracer_provider.tracer("libo11y.http", Libo11y::VERSION)
-      meter = @telemetry ? @telemetry.meter("libo11y.http", version: Libo11y::VERSION) : OpenTelemetry.meter_provider.meter("libo11y.http", version: Libo11y::VERSION)
-      @duration_hist ||= meter.create_histogram(
-        "http.client.request.duration",
-        unit: "s",
-        description: "Duration of HTTP client requests.",
-        explicit_bucket_boundaries: HTTP_DURATION_BUCKETS
-      )
-
-      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-      tracer.in_span(verb, attributes: attrs, kind: :client) do |span|
-        req_headers = headers.transform_keys(&:to_s).transform_values(&:to_s)
-        if @propagate_fn.nil? || @propagate_fn.call(uri)
-          propagator = @telemetry ? @telemetry.propagator : OpenTelemetry.propagation
-          propagator.inject(req_headers)
-        end
-
-        http = Net::HTTP.new(uri.host, uri.port)
-        http.use_ssl = uri.scheme == "https"
-        http.open_timeout = open_timeout
-        http.read_timeout = read_timeout
-
-        req_class = Net::HTTP.const_get(verb.capitalize)
-        req = req_class.new(uri.request_uri)
-        req_headers.each { |k, v| req[k] = v }
-        req.body = body unless body.nil?
-
-        status = nil
-        error = nil
-        begin
-          resp = http.request(req)
-          status = resp.code.to_i
+      started = Internal::HttpCommon.monotonic
+      span = tracer.start_span(Internal::HttpCommon.span_name(normalized), attributes: attrs, kind: :client)
+      begin
+        OpenTelemetry::Trace.with_span(span) do
+          response = send_request(uri, verb, outbound_headers(headers, uri), body, open_timeout: open_timeout, read_timeout: read_timeout)
+          status = response.code.to_i
           span.set_attribute("http.response.status_code", status)
-          if status >= 400
-            span.status = OpenTelemetry::Trace::Status.error("HTTP #{status}")
-            span.set_attribute("error.type", status.to_s)
-          end
-          resp
+          metric_attrs["http.response.status_code"] = status
+          failed(span, metric_attrs, status.to_s) if status >= 400
+          response
         rescue StandardError => e
-          error = e
           span.record_exception(e)
-          span.status = OpenTelemetry::Trace::Status.error(e.message)
-          span.set_attribute("error.type", e.class.name)
+          failed(span, metric_attrs, e.class.name)
           raise
-        ensure
-          duration = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
-          metric_attrs = {
-            "http.request.method" => verb,
-            "server.address" => uri.host.to_s,
-            "server.port" => uri.port
-          }
-          metric_attrs["http.response.status_code"] = status if status
-          metric_attrs["error.type"] = error ? error.class.name : status.to_s if error || (status && status >= 400)
-          @duration_hist.record(duration, attributes: metric_attrs)
         end
+      ensure
+        duration.record(Internal::HttpCommon.monotonic - started, attributes: metric_attrs)
+        span.finish
       end
     end
 
     private
 
-    def strip_credentials(uri)
+    def failed(span, metric_attrs, error_type)
+      span.set_attribute("error.type", error_type)
+      span.status = OpenTelemetry::Trace::Status.error
+      metric_attrs["error.type"] = error_type
+    end
+
+    # The caller's headers with the trace context of the active span. A
+    # propagation header the caller passed, in any case, is replaced.
+    def outbound_headers(headers, uri)
+      out = headers.to_h { |key, value| [key.to_s, value.to_s] }
+      return out unless @propagate_fn.nil? || @propagate_fn.call(uri)
+
+      propagator = @telemetry ? @telemetry.propagator : OpenTelemetry.propagation
+      injected = {}
+      propagator.inject(injected)
+      out.reject { |key, _| injected.keys.any? { |name| name.casecmp?(key) } }.merge(injected)
+    end
+
+    def send_request(uri, verb, headers, body, open_timeout:, read_timeout:)
+      http = Net::HTTP.new(uri.host, uri.port)
+      http.use_ssl = uri.scheme == "https"
+      http.open_timeout = open_timeout
+      http.read_timeout = read_timeout
+
+      # A generic request, so a method Net::HTTP has no class for is sent too.
+      request = Net::HTTPGenericRequest.new(verb, !body.nil?, verb != "HEAD", uri.request_uri, headers)
+      http.request(request, body)
+    end
+
+    def without_credentials(uri)
       clean = uri.dup
       clean.user = nil
       clean.password = nil
       clean.to_s
+    end
+
+    def tracer
+      provider = @telemetry ? @telemetry.tracer_provider : OpenTelemetry.tracer_provider
+      provider.tracer(SCOPE_NAME, Libo11y::VERSION)
+    end
+
+    def duration
+      @mutex.synchronize do
+        @duration ||= begin
+          provider = @telemetry ? @telemetry.meter_provider : OpenTelemetry.meter_provider
+          provider.meter(SCOPE_NAME, version: Libo11y::VERSION).create_histogram(
+            "http.client.request.duration", unit: "s", description: "Duration of HTTP client requests."
+          )
+        end
+      end
     end
   end
 end

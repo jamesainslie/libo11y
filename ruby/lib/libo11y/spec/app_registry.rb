@@ -123,7 +123,7 @@ module Libo11y
           aid = raw.object_id
           raise YamlV3::SyntaxError, "anchor '#{raw.anchor}' value contains itself" if @expanding[aid]
 
-          target = @aliases.fetch(aid)
+          target = @aliases.fetch(raw)
           @expanding[aid] = true
           @alias_depth += 1
           begin
@@ -154,9 +154,9 @@ module Libo11y
           end
         end
 
-        def duplicates?(mp)
+        def duplicates?(mapping)
           seen = {}
-          mp.pairs.each do |pair|
+          mapping.pairs.each do |pair|
             ident = node_identity(pair[0])
             if seen[ident]
               @duplicate = true
@@ -243,7 +243,7 @@ module Libo11y
           end
 
           is_map = lambda do |n|
-            target = n.is_a?(YamlV3::AliasNode) ? @aliases[n.object_id] : n
+            target = n.is_a?(YamlV3::AliasNode) ? @aliases[n] : n
             target.is_a?(YamlV3::MappingNode)
           end
 
@@ -399,7 +399,8 @@ module Libo11y
           end
 
           seen = {}
-          a.values.each do |v|
+          declared_values = a.values # an Attribute's member, not a Hash's values
+          declared_values.each do |v|
             trimmed = go_trim_space(v)
             fail_rule.call("libo11y_enum_value_whitespace", name, "value #{GoQuote.quote(v)}") if v != trimmed
             fail_rule.call("libo11y_enum_duplicate_value", name, "value #{GoQuote.quote(v)}") if seen[trimmed]
