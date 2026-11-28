@@ -10,6 +10,9 @@
  *   session records when replay is on and fnv1a32("replay:" + session.id) / 2^32 is below the
  *   sample rate, so every tab agrees: from the start when it is head-sampled, into a lead-up buffer
  *   in memory when it is not and onRetain is on. Otherwise the recorder does not run.
+ * - rrweb is not bundled with replay(). It is imported the first time a session will record, and
+ *   nothing is recorded until it has loaded. When it loads, the session must still be current and
+ *   consent still granted. A failed import turns replay off for the page, logging once.
  * - Closed segments of a kept session upload. A session that is not kept keeps its last
  *   LEAD_UP_SEGMENTS closed segments in memory; when it is kept they and the open segment upload,
  *   and when it ends unkept they are dropped.
@@ -29,7 +32,7 @@ import { clampReplay, parseReplayRemote, type ReplaySettings, resolveReplayLimit
 import type { SegmentEnvelope, SegmentView } from "./envelope.ts";
 import type { ReplayOptions } from "./options.ts";
 import { resolvePolicy } from "./policy.ts";
-import { type Recorder, type StartRecorder, startRecorder } from "./recorder.ts";
+import { type LoadRecorder, loadRecorder, type Recorder, type StartRecorder } from "./recorder.ts";
 import { type ClosedSegment, createSegmenter, type Segmenter } from "./segmenter.ts";
 import { allocateSegment, clearSequence, type LockManagerLike } from "./sequence.ts";
 import { createUploader } from "./upload.ts";
@@ -48,7 +51,8 @@ type Timers = { setTimeout(fn: () => void, ms: number): unknown; clearTimeout(h:
 
 /** What replay runs on. Internal: the unit tests replace parts of it. */
 export interface ReplayDeps {
-  readonly startRecorder: StartRecorder;
+  /** rrweb's recorder, loaded on first use: the recorder itself once loaded, else the load. */
+  readonly loadRecorder: LoadRecorder;
   readonly fetch: typeof fetch | undefined;
   readonly locks: LockManagerLike | undefined;
   readonly storage: Pick<Storage, "getItem" | "setItem" | "removeItem"> | undefined;
@@ -103,7 +107,7 @@ function selectorParses(s: string): boolean {
 export function defaultReplayDeps(): ReplayDeps {
   const g = globalThis as { navigator?: { locks?: LockManagerLike }; location?: { href?: string } };
   return {
-    startRecorder,
+    loadRecorder,
     fetch: pristineFetch,
     locks: g.navigator?.locks,
     storage: browserStorage(),
@@ -177,6 +181,8 @@ interface Recording {
 /** replay over deps. Internal: the seam the unit tests use. Throws O11yError INVALID_OPTION for invalid options. */
 export function replayWith(deps: ReplayDeps | (() => ReplayDeps), options: ReplayOptions = {}): RumCollector {
   const resolved = resolveOptions(options);
+  /** rrweb failed to load: replay stays off for the page, across restarts. */
+  let loadFailed = false;
   return {
     name: "replay",
     start(rt) {
@@ -217,9 +223,12 @@ export function replayWith(deps: ReplayDeps | (() => ReplayDeps), options: Repla
 
       /** The recording of the current session, while one runs. */
       let recording: Recording | undefined;
+      /** Identifies the latest begin, so a load that settles after a newer begin or a stop is ignored. */
+      let generation = 0;
 
       /** Ends the recording. Its open segment closes first, routed as the recording routed its own, unless discard. */
       const stopRecording = (discard: boolean): void => {
+        generation++;
         const r = recording;
         if (r === undefined) return;
         recording = undefined;
@@ -232,16 +241,38 @@ export function replayWith(deps: ReplayDeps | (() => ReplayDeps), options: Repla
 
       const begin = (session: SessionState | undefined): void => {
         stopRecording(false);
-        if (session === undefined || !rt.gate.recording()) return;
+        if (loadFailed || session === undefined || !rt.gate.recording()) return;
         const s = clampReplay(
           code,
           resolved.limits,
           parseReplayRemote(rt.remoteDocument()?.replay, d.validSelector),
         );
         if (!s.enabled || fnv1a32(`replay:${session.id}`) / 2 ** 32 >= s.sampleRate) return;
+        if (!session.sampled && !s.onRetain) return;
+        const loading = d.loadRecorder();
+        if (typeof loading === "function") {
+          record(session, s, loading);
+          return;
+        }
+        const mine = generation;
+        loading.then(
+          (start) => {
+            if (mine !== generation || !rt.gate.recording()) return;
+            if (rt.session.current()?.id !== session.id) return;
+            record(session, s, start);
+          },
+          (err: unknown) => {
+            if (loadFailed) return;
+            loadFailed = true;
+            d.warn(`o11y: rum-replay: replay is off: the recorder did not load: ${String(err)}`);
+          },
+        );
+      };
+
+      /** Records session with start, rrweb having loaded. */
+      const record = (session: SessionState, s: ReplaySettings, start: StartRecorder): void => {
         const kept = rt.session.decide(session.id) === "send";
         const direct = session.sampled || (kept && s.onRetain);
-        if (!direct && !s.onRetain) return;
         const id = session.id;
         const route: Route = { direct, live: true, ring: [] };
         let recorder: Recorder | undefined;
@@ -263,7 +294,7 @@ export function replayWith(deps: ReplayDeps | (() => ReplayDeps), options: Repla
         });
         const v = rt.views.current();
         if (v !== undefined) segmenter.view(viewOf(rt, v));
-        recorder = d.startRecorder(
+        recorder = start(
           s.policy,
           (e) => segmenter.push(e),
           (err) => d.warn(`o11y: rum-replay: the recorder failed: ${String(err)}`),

@@ -7,7 +7,7 @@ import { type FakeRuntime, fakeRuntime } from "../../rum/src/test-support/fake-r
 import { createFakeStorage } from "../../rum/src/test-support/fake-storage.ts";
 import { type ReplayDeps, replay, replayWith } from "./collector.ts";
 import type { SegmentEnvelope } from "./envelope.ts";
-import type { Recorder } from "./recorder.ts";
+import type { Recorder, StartRecorder } from "./recorder.ts";
 import type { RrwebEvent } from "./scrub.ts";
 import { SEQUENCE_KEY } from "./sequence.ts";
 
@@ -30,6 +30,8 @@ interface World {
   readonly storage: ReturnType<typeof createFakeStorage>;
   readonly rec: { starts: number; stops: number; emit: ((e: RrwebEvent) => void) | undefined };
   readonly warnings: string[];
+  /** The fake recorder that deps.loadRecorder hands out, already loaded. */
+  readonly start: StartRecorder;
 }
 
 function world(o: { kept?: boolean; sampled?: boolean; session?: string } = {}): World {
@@ -49,24 +51,25 @@ function world(o: { kept?: boolean; sampled?: boolean; session?: string } = {}):
   const rec: World["rec"] = { starts: 0, stops: 0, emit: undefined };
   let t = 1_700_000_000_000;
   const warnings: string[] = [];
+  const start: StartRecorder = (_policy, onEvent) => {
+    rec.starts++;
+    rec.emit = onEvent;
+    onEvent(meta(t++));
+    onEvent(full(t++));
+    const r: Recorder = {
+      checkout: () => {
+        onEvent(meta(t++));
+        onEvent(full(t++));
+      },
+      stop: () => {
+        rec.stops++;
+        rec.emit = undefined;
+      },
+    };
+    return r;
+  };
   const deps: ReplayDeps = {
-    startRecorder: (_policy, onEvent) => {
-      rec.starts++;
-      rec.emit = onEvent;
-      onEvent(meta(t++));
-      onEvent(full(t++));
-      const r: Recorder = {
-        checkout: () => {
-          onEvent(meta(t++));
-          onEvent(full(t++));
-        },
-        stop: () => {
-          rec.stops++;
-          rec.emit = undefined;
-        },
-      };
-      return r;
-    },
+    loadRecorder: () => start,
     fetch: (async (url: string, init: RequestInit) => {
       uploads.push({
         url: new URL(url),
@@ -87,7 +90,7 @@ function world(o: { kept?: boolean; sampled?: boolean; session?: string } = {}):
     recordingId: () => "rec-0f8fad5b",
     warn: (m) => warnings.push(m),
   };
-  return { rt, deps, uploads, storage, rec, warnings };
+  return { rt, deps, uploads, storage, rec, warnings, start };
 }
 
 async function settle(w: World): Promise<void> {
@@ -214,13 +217,12 @@ test("a remote document with replay enabled false keeps the recorder off", () =>
 
 test("remote configuration adds mask and block selectors and can only remove unmask ones", () => {
   const w = world();
-  let policy: Parameters<ReplayDeps["startRecorder"]>[0] | undefined;
-  const inner = w.deps.startRecorder;
+  let policy: Parameters<StartRecorder>[0] | undefined;
   const deps: ReplayDeps = {
     ...w.deps,
-    startRecorder: (p, e, err) => {
+    loadRecorder: () => (p, e, err) => {
       policy = p;
-      return inner(p, e, err);
+      return w.start(p, e, err);
     },
   };
   w.rt.document = {
@@ -336,4 +338,144 @@ test("replay validates its options when it is called", () => {
     );
   }
   assert.equal(replay().name, "replay");
+});
+
+/** A loader whose import the test settles by hand. */
+function manualLoader(w: World): {
+  readonly deps: ReplayDeps;
+  readonly loads: () => number;
+  resolve(): void;
+  reject(err: unknown): void;
+} {
+  let loads = 0;
+  let settle: { resolve(s: StartRecorder): void; reject(err: unknown): void } | undefined;
+  let loaded: StartRecorder | undefined;
+  let pending: Promise<StartRecorder> | undefined;
+  return {
+    deps: {
+      ...w.deps,
+      loadRecorder: () => {
+        if (loaded !== undefined) return loaded;
+        if (pending === undefined) {
+          loads++;
+          pending = new Promise<StartRecorder>((resolve, reject) => {
+            settle = { resolve, reject };
+          }).then((s) => {
+            loaded = s;
+            return s;
+          });
+        }
+        return pending;
+      },
+    },
+    loads: () => loads,
+    resolve: () => settle?.resolve(w.start),
+    reject: (err) => settle?.reject(err),
+  };
+}
+
+const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+test("nothing is recorded until rrweb has loaded, then the session records", async () => {
+  const w = world();
+  const l = manualLoader(w);
+  const stop = replayWith(l.deps).start(w.rt);
+  assert.equal(l.loads(), 1, "a session that will record loads rrweb");
+  assert.equal(w.rec.starts, 0, "nothing records before the load");
+  l.resolve();
+  await tick();
+  assert.equal(w.rec.starts, 1);
+  segment(w);
+  await settle(w);
+  assert.equal(w.uploads.length, 1);
+  stop();
+});
+
+test("a session that will not record never loads rrweb", () => {
+  for (const [what, setup, options] of [
+    ["unkept, onRetain off", (w: World) => w, {}],
+    [
+      "remote kill switch",
+      (w: World) => {
+        w.rt.document = { version: "c1", replay: { enabled: false } };
+        return w;
+      },
+      {},
+    ],
+    ["sampled out", (w: World) => w, { sampleRate: 0 }],
+  ] as const) {
+    const w = setup(world({ sampled: what !== "unkept, onRetain off" }));
+    const l = manualLoader(w);
+    const stop = replayWith(l.deps, options).start(w.rt);
+    assert.equal(l.loads(), 0, what);
+    stop();
+  }
+});
+
+test("a stop while rrweb loads leaves the recorder off", async () => {
+  const w = world();
+  const l = manualLoader(w);
+  const stop = replayWith(l.deps).start(w.rt);
+  stop();
+  l.resolve();
+  await tick();
+  assert.equal(w.rec.starts, 0);
+});
+
+test("a new session while rrweb loads records only the new session", async () => {
+  const w = world();
+  const l = manualLoader(w);
+  const stop = replayWith(l.deps).start(w.rt);
+  const previous = w.rt.session.current() as SessionState;
+  const next: SessionState = { ...previous, id: OTHER };
+  w.rt.setSessionState(next);
+  w.rt.sessionEvent({ type: "start", session: next, previous, local: true });
+  l.resolve();
+  await tick();
+  assert.equal(w.rec.starts, 1);
+  assert.equal(l.loads(), 1);
+  segment(w);
+  await settle(w);
+  assert.deepEqual(
+    w.uploads.map((u) => u.url.searchParams.get("session")),
+    [OTHER],
+  );
+  stop();
+});
+
+test("a session kept while rrweb loads uploads as it records", async () => {
+  const w = world({ sampled: false });
+  const l = manualLoader(w);
+  const stop = replayWith(l.deps, { onRetain: true }).start(w.rt);
+  w.rt.setKept(true);
+  w.rt.sessionEvent({ type: "kept", session: w.rt.session.current() as SessionState, local: true });
+  l.resolve();
+  await tick();
+  assert.equal(w.rec.starts, 1);
+  segment(w);
+  await settle(w);
+  assert.equal(w.uploads.length, 1);
+  stop();
+});
+
+test("a failed load turns replay off for the page without throwing or retrying", async () => {
+  const w = world();
+  const l = manualLoader(w);
+  const collector = replayWith(l.deps);
+  const stop = collector.start(w.rt);
+  l.reject(new Error("chunk failed"));
+  await tick();
+  assert.equal(w.rec.starts, 0);
+  assert.equal(w.warnings.length, 1);
+  assert.match(w.warnings[0] ?? "", /replay is off: the recorder did not load: Error: chunk failed/);
+  const previous = w.rt.session.current() as SessionState;
+  const next: SessionState = { ...previous, id: OTHER };
+  w.rt.setSessionState(next);
+  w.rt.sessionEvent({ type: "start", session: next, previous, local: true });
+  stop();
+  collector.start(w.rt)();
+  await tick();
+  assert.equal(l.loads(), 1, "the import is never retried");
+  assert.equal(w.rec.starts, 0);
+  assert.equal(w.warnings.length, 1, "it warns once");
 });
