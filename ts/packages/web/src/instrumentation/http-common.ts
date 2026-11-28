@@ -42,8 +42,8 @@ export interface HttpInternals {
   /** The instrumentation scope of the spans and the duration histogram. Default SCOPE. */
   readonly scope?: string;
   /**
-   * While it returns true, a request gets no span and no injection: React Native's fetch opens an
-   * XHR inside its own call, and that XHR must not count twice.
+   * XHR only. While it returns true, a send gets no span and no injection: bare React Native's
+   * fetch opens an XHR inside its own call, and that XHR must not count twice.
    */
   readonly skip?: () => boolean;
 }

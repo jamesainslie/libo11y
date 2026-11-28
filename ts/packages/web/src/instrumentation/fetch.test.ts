@@ -446,14 +446,13 @@ test("a Request from another realm is read as a Request, not stringified", async
   });
 });
 
-test("instrumentFetchWith: internals name the scope of the span and histogram, and skip passes a request straight through", async () => {
+test("instrumentFetchWith: internals name the scope of the span and histogram", async () => {
   await withRec(async (rec) => {
     const fake = fakeFetch();
-    let skipping = false;
     const traced = instrumentFetchWith(
       fake.fetch,
-      { telemetry: rec.telemetry, propagateTo: [/./] },
-      { scope: "@libo11y/react-native", skip: () => skipping },
+      { telemetry: rec.telemetry },
+      { scope: "@libo11y/react-native" },
     );
     await traced("/api/a");
     const span = onlyClient(rec);
@@ -463,9 +462,5 @@ test("instrumentFetchWith: internals name the scope of the span and histogram, a
       .filter((sm) => sm.metrics.some((m) => m.descriptor.name === DURATION_METRIC))
       .map((sm) => sm.scope.name);
     assert.deepEqual(scopes, ["@libo11y/react-native"]);
-    skipping = true;
-    await traced("/api/b");
-    assert.equal(clientSpans(rec).length, 1, "a skipped request records nothing");
-    assert.equal(fake.calls[1]?.headers.get("traceparent"), null, "and carries no context");
   });
 });

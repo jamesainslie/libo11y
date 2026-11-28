@@ -32,6 +32,7 @@
   },
   "devDependencies": {
     "@libo11y/test": "workspace:*",
+    "@opentelemetry/sdk-trace": "3.1.1",
     "@types/react": "19.3.0",
     "react": "19.3.1",
     "react-native": "0.88.1"
