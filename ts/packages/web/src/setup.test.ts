@@ -475,6 +475,36 @@ test("a hide flushes every provider, for setup and createTelemetry alike", async
   }
 });
 
+test("a hide whose flush fails reports it once through the telemetry's own reporter, for setup and createTelemetry alike", async () => {
+  for (const install of [true, false]) {
+    const h = harness();
+    const web = await setupWithDeps(
+      {
+        ...BASE,
+        spanProcessor: flushingProcessor(() =>
+          Promise.reject(new Error("collector at https://secret.example")),
+        ),
+      },
+      h.deps,
+      install,
+    );
+    const reports: Error[] = [];
+    (web as unknown as Record<symbol, unknown>)[Symbol.for("libo11y.report")] = (err: Error) =>
+      reports.push(err);
+    try {
+      h.document.set("hidden");
+      await tick();
+      assert.deepEqual(
+        reports.map((r) => r.message),
+        ["o11y: flush on hide failed: traces (Error)"],
+        `install=${install}`,
+      );
+    } finally {
+      await web.shutdown();
+    }
+  }
+});
+
 test("revoke clears the delivery, then flushes the providers into the closed gate", async () => {
   const h = harness();
   const web = await setupWithDeps(

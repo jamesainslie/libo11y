@@ -174,6 +174,15 @@ the error handler only, so core watches each exporter itself. `shutdown`
 also writes one `o11y.telemetry.dropped` event to the console for each
 signal in the report.
 
+An export that fails outside any `forceFlush` or `shutdown`, such as one
+the batch timer or the periodic reader started, is not in any report. Core
+says it with the same `o11y.telemetry.dropped` event, naming the signal
+and the class of the error, under `setup` and `createTelemetry` alike. The
+event goes to the console sink. When the console sink is off, it goes to
+the diagnostic stream instead, rate limited like the other diagnostic
+lines. It is never exported over OTLP. A later flush or shutdown does not
+report that failure again.
+
 Core watches the exporter of every signal it builds a processor for: the
 platform's exporters, and an injected `spanExporter` or `logExporter`. An
 injected `metricReader`, `spanProcessor` or `logProcessor` owns its

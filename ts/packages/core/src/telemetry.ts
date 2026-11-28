@@ -13,6 +13,10 @@
  * upstream log processor and metric reader keep to themselves. When shutdown has settled, the
  * exports still in flight are failed and their exporters stopped, so nothing the telemetry started
  * keeps the process alive.
+ *
+ * An export that fails outside any flush or shutdown, as one the batch timer or the periodic reader
+ * starts does, is said with o11y.telemetry.dropped, as shutdown says its losses. Upstream hands it
+ * to the global error handler only, which a telemetry from createTelemetryWith never installs.
  */
 import { EVENT_TELEMETRY_CONFIGURED, EVENT_TELEMETRY_DROPPED } from "@libo11y/spec";
 import {
@@ -48,7 +52,7 @@ import { ExemplarStore } from "./exemplars.ts";
 import { ExportWatch } from "./export-watch.ts";
 import { gatedLogRecordProcessor, gatedSampler, gatedSpanProcessor } from "./gate.ts";
 import { buildResource } from "./identity.ts";
-import { REPORT_KEY } from "./internal/report.ts";
+import { errorClass, REPORT_KEY } from "./internal/report.ts";
 import { seams } from "./internal/seams.ts";
 import { registerExemplarStore } from "./internal/stores.ts";
 import { after, MAX_TIMEOUT_MILLIS } from "./internal/timers.ts";
@@ -164,13 +168,22 @@ function report(errors: { signal: Signal | "lifecycle"; error: unknown }[]): Sig
 // one for what the instrumentation built on core reports. A getter that fails on every request
 // then cannot use up the lines an exporter failure needs.
 function rateLimitedErrorHandler(platform: Platform): (err: unknown) => void {
+  const write = rateLimitedDiagnostics(platform);
+  return (err) => {
+    if (err === undefined || err === null) return;
+    write("o11y: telemetry error", { error: causeText(err) });
+  };
+}
+
+// rateLimitedDiagnostics writes warn lines to the diagnostic stream through a token bucket of its
+// own: 5, refilled one per 30 s. A line written after some were held back says how many.
+function rateLimitedDiagnostics(platform: Platform): (msg: string, attributes: LogAttributes) => void {
   const burst = 5;
   const refillMillis = 30_000;
   let tokens = burst;
   let last = Date.now();
   let suppressed = 0;
-  return (err) => {
-    if (err === undefined || err === null) return;
+  return (msg, attrs) => {
     const now = Date.now();
     tokens = Math.min(burst, tokens + (now - last) / refillMillis);
     last = now;
@@ -179,17 +192,20 @@ function rateLimitedErrorHandler(platform: Platform): (err: unknown) => void {
       return;
     }
     tokens--;
-    const attributes: LogAttributes =
-      suppressed > 0 ? { error: causeText(err), suppressed } : { error: causeText(err) };
+    const attributes: LogAttributes = suppressed > 0 ? { ...attrs, suppressed } : attrs;
     suppressed = 0;
     try {
-      platform.writeDiagnosticLine(
-        formatTextLine({ time: new Date(now), level: "warn", msg: "o11y: telemetry error", attributes }),
-      );
+      platform.writeDiagnosticLine(formatTextLine({ time: new Date(now), level: "warn", msg, attributes }));
     } catch {
       // The diagnostic stream is the last resort; nothing is left to report to.
     }
   };
+}
+
+// droppedAttributes are o11y.telemetry.dropped's: the signal and the class of what failed, never
+// its message, which can quote an endpoint or a header.
+function droppedAttributes(signal: Signal, errorType: string): LogAttributes {
+  return { "o11y.signal": signal, "error.type": errorType };
 }
 
 function wants(route: ResolvedConfig["traces"]): boolean {
@@ -423,10 +439,7 @@ class TelemetryHandle implements Telemetry {
         emitEvent(
           this.parts.pipeline,
           EVENT_TELEMETRY_DROPPED,
-          {
-            "o11y.signal": signal,
-            "error.type": error instanceof Error ? error.constructor.name : typeof error,
-          },
+          droppedAttributes(signal, error instanceof Error ? error.constructor.name : typeof error),
           ROOT_CONTEXT,
           { consoleOnly: true },
         );
@@ -518,10 +531,20 @@ async function build(options: TelemetryOptions, platform: Platform): Promise<Par
   const exemplars = new ExemplarStore({
     filter: config.metrics === "none" || config.sdkDisabled ? "always_off" : config.exemplarFilter,
   });
+  // An export that fails while no flush or shutdown observes its watch is said here, once the log
+  // pipeline exists: o11y.telemetry.dropped to the console sink, as shutdown says it, or to the
+  // diagnostic stream when the console sink is off. Never to the OTLP leg, so a failing log export
+  // cannot feed itself.
+  let dropped: ((signal: Signal, error: unknown) => void) | undefined;
+  const watchFor = (signal: Signal, timeoutMillis: number): ExportWatch =>
+    new ExportWatch(timeoutMillis, (error) => dropped?.(signal, error));
   const watches: Record<Signal, ExportWatch> = {
-    traces: new ExportWatch(config.batch.spans.exportTimeoutMillis),
-    metrics: new ExportWatch(Math.min(config.metricExport.timeoutMillis, config.metricExport.intervalMillis)),
-    logs: new ExportWatch(config.batch.logs.exportTimeoutMillis),
+    traces: watchFor("traces", config.batch.spans.exportTimeoutMillis),
+    metrics: watchFor(
+      "metrics",
+      Math.min(config.metricExport.timeoutMillis, config.metricExport.intervalMillis),
+    ),
+    logs: watchFor("logs", config.batch.logs.exportTimeoutMillis),
   };
   // A platform's metric reader holds its own exporter. exemplarMetricExporter puts the watch on it.
   registerMetricWatch(exemplars, watches.metrics);
@@ -628,6 +651,13 @@ async function build(options: TelemetryOptions, platform: Platform): Promise<Par
       ...(platform.gate === undefined ? {} : { gate: platform.gate }),
     });
     const logger = new CoreLogger(pipeline);
+    const writeDiagnostic = config.console === "off" ? rateLimitedDiagnostics(platform) : undefined;
+    dropped = (signal, error) => {
+      const attrs = droppedAttributes(signal, errorClass(error));
+      if (writeDiagnostic !== undefined)
+        writeDiagnostic(EVENT_TELEMETRY_DROPPED, eventAttributes(EVENT_TELEMETRY_DROPPED, attrs));
+      else emitEvent(pipeline, EVENT_TELEMETRY_DROPPED, attrs, ROOT_CONTEXT, { consoleOnly: true });
+    };
     if (options.captureConsole === true && platform.console !== undefined) {
       restoreConsole = captureConsole(platform.console, logger);
     }

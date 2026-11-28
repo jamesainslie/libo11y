@@ -218,7 +218,10 @@ and from `pagehide` until `pageshow`, every attempt is an unload send.
 `setup` flushes every provider on `visibilitychange` to hidden and on
 `pagehide`. A second hide event while that flush runs adds no flush. A
 `pagehide` after it settles flushes again, so a background tab that is
-closed still sends what it recorded while hidden.
+closed still sends what it recorded while hidden. A flush on hide whose
+report is not ok is written once through the telemetry's own reporter to
+the diagnostic stream, naming each failed signal and the class of its
+error.
 
 An unload send is never compressed, because compression completes in a
 later task and the document can be gone by then. It goes by `fetch` with

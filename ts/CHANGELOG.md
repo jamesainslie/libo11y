@@ -96,6 +96,30 @@ adhere to [Semantic Versioning](https://semver.org/).
   were sent after a later grant. The same applied to the webext worker's
   queue and the content script's memory queue. Upgrade if your app lets
   users withdraw consent. A page that never revokes is not affected.
+- `@libo11y/core`: an export that fails outside `forceFlush` and
+  `shutdown` is no longer lost without a word. The batch span and log
+  processors and the periodic metric reader export on their own timers,
+  every 5 seconds by default, and upstream reports a failure there only
+  to the global OpenTelemetry error handler. Under `setup` that wrote one
+  `o11y: telemetry error` line that did not name the signal. Under
+  `createTelemetry` nothing was written at all. Each such failure now
+  emits `o11y.telemetry.dropped` with `o11y.signal` and `error.type`, the
+  event a failed shutdown emits, on both paths. It goes to the console
+  sink, or to the diagnostic stream, rate limited, when the console sink
+  is off, as it is by default in the browser and on React Native. It is
+  never sent over OTLP, so a failing log export cannot feed itself. A
+  later `forceFlush` or `shutdown` does not report the same failure
+  again. A report still lists only the failures that land during its own
+  call.
+- `@libo11y/web`, `@libo11y/webext`, `@libo11y/react-native` and
+  `@libo11y/rum`: a flush nobody awaits now says when it lost telemetry.
+  The flush on hide, the React Native flush when the app goes to the
+  background and RUM's retention flush for a kept session ignored the
+  report that `forceFlush` resolves with, so a failed signal went
+  unreported. A report that is not ok is now written once through the
+  telemetry's own reporter as `o11y: <step> failed: <signal> (<class>)`.
+  It names each failed signal and the class of its error, never the
+  error's message. Nothing throws.
 
 ## [0.3.0] - 2026-11-27
 
