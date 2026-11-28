@@ -12,6 +12,10 @@ servers and clients.
 npm install @libo11y/server
 ```
 
+`@opentelemetry/api` is a peer dependency. npm 7 and later and Bun install
+it automatically. If your application already depends on it, use a version
+that satisfies `>=1.10.0 <1.11.0`.
+
 ## Quick start
 
 ```ts

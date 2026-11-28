@@ -134,7 +134,7 @@ async function cleanup(steps: readonly (() => unknown)[]): Promise<void> {
 }
 
 /**
- * setupContentScript over deps. Internal: the seam the unit tests and @libo11y/rum use. With install
+ * setupContentScript over deps. Internal: the seam the unit tests and `@libo11y/rum` use. With install
  * false it builds the telemetry as web's createTelemetry does: no globals, no instrumentation and
  * no active consent, still flushing on hide (tests that run two contexts in one process).
  */

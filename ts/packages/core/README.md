@@ -15,8 +15,13 @@ and in a Manifest V3 extension
 [`@libo11y/webext`](https://github.com/jamesainslie/libo11y/tree/main/ts/packages/webext).
 
 ```sh
-npm install @libo11y/server @libo11y/core @opentelemetry/api
+npm install @libo11y/server @libo11y/core '@opentelemetry/api@>=1.10.0 <1.11.0'
 ```
+
+`@opentelemetry/api` is a peer dependency. npm 7 and later and Bun install
+it automatically. If your application already depends on it, use a version
+that satisfies `>=1.10.0 <1.11.0`. The example declares it directly because
+the code below imports it.
 
 An application calls `setup` from `@libo11y/server`, which also re-exports
 the `Telemetry`, `TelemetryOptions`, `Logger`, `SignalReport` and

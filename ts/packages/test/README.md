@@ -10,6 +10,10 @@ including Playwright's Node test runner. It does not run in browsers.
 npm install --save-dev @libo11y/test
 ```
 
+`@opentelemetry/api` is a peer dependency. npm 7 and later and Bun install
+it automatically. If your application already depends on it, use a version
+that satisfies `>=1.10.0 <1.11.0`.
+
 ## Quick start
 
 ```ts

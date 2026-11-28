@@ -12,7 +12,14 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { type PackageJson, pack, packOrder, setVersion, stagePackageJson } from "./release.ts";
+import {
+  lockfileWorkspaces,
+  type PackageJson,
+  pack,
+  packOrder,
+  setVersion,
+  stagePackageJson,
+} from "./release.ts";
 
 const spec: PackageJson = {
   name: "@libo11y/spec",
@@ -96,6 +103,22 @@ test("stagePackageJson pins every workspace dependency to the exact version", ()
   assert.equal(JSON.stringify(staged).includes("workspace:"), false);
 });
 
+test("stagePackageJson passes peer and dev dependency ranges through unchanged", () => {
+  const staged = stagePackageJson(
+    {
+      name: "@libo11y/x",
+      version: "0.0.0",
+      dependencies: { "@opentelemetry/core": "3.1.1" },
+      peerDependencies: { "@opentelemetry/api": ">=1.10.0 <1.11.0" },
+      devDependencies: { "@opentelemetry/api": "1.10.0" },
+    },
+    "1.0.0",
+  );
+  assert.deepEqual(staged.dependencies, { "@opentelemetry/core": "3.1.1" });
+  assert.deepEqual(staged.peerDependencies, { "@opentelemetry/api": ">=1.10.0 <1.11.0" });
+  assert.deepEqual(staged.devDependencies, { "@opentelemetry/api": "1.10.0" });
+});
+
 test("stagePackageJson maps a string export and a string bin", () => {
   const staged = stagePackageJson(
     { name: "@libo11y/x", version: "0.0.0", exports: "./src/index.ts", bin: "./src/cli.ts" },
@@ -133,6 +156,8 @@ function fixture(name: string, withDist = true): string {
         exports: { ".": "./src/index.ts" },
         bin: { fxb: "./src/cli.ts" },
         dependencies: { "@libo11y/fx-a": "workspace:*" },
+        peerDependencies: { "@opentelemetry/api": ">=1.10.0 <1.11.0" },
+        devDependencies: { "@opentelemetry/api": "1.10.0" },
         scripts: { build: "tsc" },
       },
     ],
@@ -199,6 +224,66 @@ test("setVersion rejects a version that is not semver", () => {
   assert.throws(() => setVersion(root, "v1.2.3"), /semver/);
 });
 
+// lockfile writes a bun.lock for the fixture workspace in the layout bun 1.3.13 writes.
+function lockfile(versionA: string, versionB: string): string {
+  return [
+    "{",
+    '  "lockfileVersion": 1,',
+    '  "configVersion": 1,',
+    '  "workspaces": {',
+    '    "": {',
+    '      "name": "fixture",',
+    "    },",
+    '    "packages/fx-a": {',
+    '      "name": "@libo11y/fx-a",',
+    `      "version": "${versionA}",`,
+    "    },",
+    '    "packages/fx-b": {',
+    '      "name": "@libo11y/fx-b",',
+    `      "version": "${versionB}",`,
+    '      "dependencies": {',
+    '        "@libo11y/fx-a": "workspace:*",',
+    "      },",
+    "    },",
+    "  },",
+    '  "packages": {',
+    '    "left-pad": ["left-pad@1.3.0", "", {}, "sha512-x"],',
+    '    "other": ["other@1.0.0", "", { "version": "0.0.0" }, "sha512-y"],',
+    "  }",
+    "}",
+    "",
+  ].join("\n");
+}
+
+test("lockfileWorkspaces reads each package workspace's name and version", () => {
+  assert.deepEqual(
+    lockfileWorkspaces(lockfile("1.0.0", "1.0.1")),
+    new Map([
+      ["packages/fx-a", { name: "@libo11y/fx-a", version: "1.0.0" }],
+      ["packages/fx-b", { name: "@libo11y/fx-b", version: "1.0.1" }],
+    ]),
+  );
+});
+
+test("setVersion sets the workspace versions in bun.lock and changes nothing else", () => {
+  const root = fixture("version-lock");
+  writeFileSync(join(root, "bun.lock"), lockfile("0.0.0", "0.0.0"));
+  setVersion(root, "2.3.4");
+  assert.equal(readFileSync(join(root, "bun.lock"), "utf8"), lockfile("2.3.4", "2.3.4"));
+});
+
+test("setVersion refuses a bun.lock that has no workspace for a package", () => {
+  const root = fixture("version-lock-missing");
+  writeFileSync(
+    join(root, "bun.lock"),
+    lockfile("0.0.0", "0.0.0").replace('"packages/fx-b"', '"packages/fx-c"'),
+  );
+  assert.throws(
+    () => setVersion(root, "2.3.4"),
+    /bun\.lock has no workspace packages\/fx-b; run bun install/,
+  );
+});
+
 test("pack writes publishable tarballs in dependency order", () => {
   const root = fixture("pack");
   setVersion(root, "1.0.0");
@@ -211,6 +296,7 @@ test("pack writes publishable tarballs in dependency order", () => {
   const b = tarballs[1] ?? "";
   const pkg = JSON.parse(tarFile(b, "package/package.json")) as PackageJson;
   assert.deepEqual(pkg.dependencies, { "@libo11y/fx-a": "1.0.0" });
+  assert.deepEqual(pkg.peerDependencies, { "@opentelemetry/api": ">=1.10.0 <1.11.0" });
   assert.deepEqual(pkg.bin, { fxb: "./dist/cli.js" });
   assert.equal("private" in pkg, false);
   assert.equal(JSON.stringify(pkg).includes("workspace:"), false);
@@ -287,6 +373,64 @@ test("the repository's packages are all in the @libo11y scope and share one vers
   }
 });
 
+test("the repository's bun.lock records every package at its package.json version", () => {
+  const root = join(import.meta.dirname, "..");
+  const locked = lockfileWorkspaces(readFileSync(join(root, "bun.lock"), "utf8"));
+  const packagesDir = join(root, "packages");
+  const dirs = readdirSync(packagesDir, { withFileTypes: true }).filter(
+    (e) => e.isDirectory() && existsSync(join(packagesDir, e.name, "package.json")),
+  );
+  assert.ok(dirs.length >= 4, "expected at least spec, core, server and test");
+  for (const entry of dirs) {
+    const pkg = JSON.parse(
+      readFileSync(join(packagesDir, entry.name, "package.json"), "utf8"),
+    ) as PackageJson;
+    const lock = locked.get(`packages/${entry.name}`);
+    assert.ok(lock !== undefined, `bun.lock has no workspace packages/${entry.name}; run bun install`);
+    assert.equal(lock.name, pkg.name, `bun.lock names packages/${entry.name} ${lock.name}`);
+    assert.equal(
+      lock.version,
+      pkg.version,
+      `bun.lock has ${pkg.name} at ${lock.version}, package.json at ${pkg.version}; run bun install`,
+    );
+  }
+});
+
+// The packages that take the OpenTelemetry API as a peer, as every upstream SDK package does, so an
+// application and libo11y share the one process-wide API. The RUM and React Native packages belong to
+// another program and are not listed yet.
+const API_PEERS = ["core", "server", "test", "web", "webext"];
+
+test("the platform packages take @opentelemetry/api as a peer in upstream's range and lock it for development", () => {
+  const packagesDir = join(import.meta.dirname, "..", "packages");
+  const upstream = JSON.parse(
+    readFileSync(
+      join(packagesDir, "core", "node_modules", "@opentelemetry", "sdk-trace", "package.json"),
+      "utf8",
+    ),
+  ) as PackageJson;
+  const range = upstream.peerDependencies?.["@opentelemetry/api"];
+  assert.ok(range !== undefined, "@opentelemetry/sdk-trace has no @opentelemetry/api peer");
+  for (const dir of API_PEERS) {
+    const pkg = JSON.parse(readFileSync(join(packagesDir, dir, "package.json"), "utf8")) as PackageJson;
+    assert.equal(
+      pkg.dependencies?.["@opentelemetry/api"],
+      undefined,
+      `${pkg.name} depends on @opentelemetry/api`,
+    );
+    assert.equal(
+      pkg.peerDependencies?.["@opentelemetry/api"],
+      range,
+      `${pkg.name}'s @opentelemetry/api peer`,
+    );
+    assert.match(
+      pkg.devDependencies?.["@opentelemetry/api"] ?? "",
+      /^\d+\.\d+\.\d+$/,
+      `${pkg.name} does not lock @opentelemetry/api to an exact version for development`,
+    );
+  }
+});
+
 test("pack refuses version 0.0.0 unless unreleased packages are allowed", () => {
   const root = fixture("unreleased");
   const out = join(work, "unreleased-out");
@@ -307,4 +451,18 @@ test("pack refuses a dist file whose source is gone", () => {
     () => pack(root, join(work, "stale-dist-out"), { allowUnreleased: true, quiet: true }),
     /@libo11y\/fx-a: dist\/old\/gone\.js has no source src\/old\/gone\.ts; rebuild/,
   );
+});
+
+test("pack refuses a declaration or source map whose source is gone", () => {
+  for (const [i, file] of ["gone.d.ts", "gone.d.ts.map", "gone.js.map"].entries()) {
+    const root = fixture(`stale-${i}`);
+    const dist = join(root, "packages", "fx-a", "dist");
+    writeFileSync(join(mkdirAll(join(dist, "old")), file), "\n");
+    assert.throws(
+      () => pack(root, join(work, `stale-${i}-out`), { allowUnreleased: true, quiet: true }),
+      new RegExp(
+        `@libo11y/fx-a: dist/old/${file.replaceAll(".", "\\.")} has no source src/old/gone\\.ts; rebuild`,
+      ),
+    );
+  }
 });

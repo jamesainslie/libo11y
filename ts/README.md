@@ -50,6 +50,11 @@ npm install @libo11y/server
 npm install --save-dev @libo11y/test
 ```
 
+`@libo11y/core`, `@libo11y/server`, `@libo11y/test`, `@libo11y/web` and
+`@libo11y/webext` declare `@opentelemetry/api` as a peer dependency.
+npm 7 and later and Bun install it automatically. If your application
+already depends on it, use a version that satisfies `>=1.10.0 <1.11.0`.
+
 `@libo11y/server` depends on `@libo11y/core` and `@libo11y/spec`, and it
 re-exports the core types an application needs most. Add `@libo11y/core`
 as a direct dependency to import `forceEmit`, `startRecord`,

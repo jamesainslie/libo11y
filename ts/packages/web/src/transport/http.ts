@@ -22,7 +22,7 @@ export interface HttpTransportOptions {
   readonly fetch?: typeof fetch;
   /** Default pristineSendBeacon; pass undefined explicitly where beacons do not exist (MV3 workers). */
   readonly sendBeacon?: ((url: string, data: BodyInit) => boolean) | undefined;
-  /** Default () => navigator.onLine !== false. */
+  /** Defaults to a function that returns `navigator.onLine !== false`. */
   readonly isOnline?: () => boolean;
 }
 

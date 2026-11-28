@@ -95,6 +95,9 @@ export { O11yErrorCode }
 export type OriginMatcher = string | RegExp;
 
 // @public
+export type OtlpSignal = "traces" | "metrics" | "logs";
+
+// @public
 export function recordDocumentLoad(opts?: DocumentLoadOptions): Promise<void>;
 
 // @public

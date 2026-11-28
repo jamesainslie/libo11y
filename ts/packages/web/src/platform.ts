@@ -26,7 +26,7 @@ export interface WebPlatformOptions {
   readonly delivery: Delivery;
   /** The consent gate, passed to core as Platform.gate. */
   readonly gate: RecordingGate;
-  /** The send mode, for the exporters' unload splitting. Default () => "normal". */
+  /** The send mode for the exporters' unload splitting. Defaults to a function that returns "normal". */
   readonly mode?: () => SendMode;
   /** Default createContextManager. */
   readonly contextManager?: () => ContextManager;
