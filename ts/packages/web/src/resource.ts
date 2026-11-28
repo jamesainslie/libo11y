@@ -4,6 +4,9 @@
 import type { ResourceLayers } from "@libo11y/core";
 import type { Attributes } from "@opentelemetry/api";
 import { SDK_INFO } from "@opentelemetry/core";
+import { parseResourceAttributes } from "./resource-env.ts";
+
+export { parseResourceAttributes } from "./resource-env.ts";
 
 /** The navigator fields the browser resource reads. */
 export interface NavigatorLike {
@@ -63,25 +66,4 @@ export async function detectBrowserResource(opts: BrowserResourceOptions): Promi
   const serviceName = opts.env.OTEL_SERVICE_NAME?.trim();
   if (nonEmpty(serviceName)) fromEnv["service.name"] = serviceName;
   return { detected, fromEnv };
-}
-
-/**
- * Parses OTEL_RESOURCE_ATTRIBUTES as the specification defines it: comma-separated key=value
- * pairs, percent-decoded, whitespace trimmed; a malformed pair is skipped.
- */
-export function parseResourceAttributes(raw: string | undefined): Attributes {
-  const out: Attributes = {};
-  if (raw === undefined) return out;
-  for (const pair of raw.split(",")) {
-    const eq = pair.indexOf("=");
-    if (eq < 0) continue;
-    try {
-      const key = decodeURIComponent(pair.slice(0, eq).trim());
-      const value = decodeURIComponent(pair.slice(eq + 1).trim());
-      if (key !== "") out[key] = value;
-    } catch {
-      // A pair whose percent-encoding is malformed is skipped.
-    }
-  }
-  return out;
 }

@@ -10,6 +10,7 @@ import {
   consentAllows,
   errorName,
   HEADERS_SETTER,
+  type HttpInternals,
   instrumentResolver,
   isHttpUrl,
   methodAttributes,
@@ -36,15 +37,24 @@ export function instrumentFetch(
   fetchImpl: typeof fetch = globalThis.fetch,
   opts: HttpInstrumentationOptions = {},
 ): typeof fetch {
-  const base = fetchImpl;
-  const instruments = instrumentResolver(opts.telemetry);
+  return instrumentFetchWith(fetchImpl, opts);
+}
+
+/** instrumentFetch with the internals a platform other than the browser sets. Internal. */
+export function instrumentFetchWith(
+  base: typeof fetch,
+  opts: HttpInstrumentationOptions,
+  internals: HttpInternals = {},
+): typeof fetch {
+  const instruments = instrumentResolver(opts.telemetry, internals.scope);
   const propagateTo = opts.propagateTo ?? [];
   const ignoreUrls = opts.ignoreUrls ?? [];
 
   const traced = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const request = asRequest(input);
     const url = requestUrl(request?.url ?? (input as string | URL), pageHref());
-    if (url === undefined || !isHttpUrl(url) || isIgnored(url, ignoreUrls)) return base(input, init);
+    if (url === undefined || !isHttpUrl(url) || isIgnored(url, ignoreUrls) || internals.skip?.())
+      return base(input, init);
     const { tracer, histogram, propagator, consent } = instruments();
     if (!consentAllows(consent)) return base(input, init);
 

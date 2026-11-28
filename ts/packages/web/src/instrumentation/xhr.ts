@@ -9,6 +9,7 @@ import {
   consentAllows,
   errorName,
   type HttpInstruments,
+  type HttpInternals,
   instrumentResolver,
   isHttpUrl,
   methodAttributes,
@@ -130,13 +131,21 @@ const DONE = 4;
  * later call straight through. A no-op where XMLHttpRequest does not exist (workers).
  */
 export function installXhrInstrumentation(opts: HttpInstrumentationOptions = {}): () => void {
+  return installXhrInstrumentationWith(opts);
+}
+
+/** installXhrInstrumentation with the internals a platform other than the browser sets. Internal. */
+export function installXhrInstrumentationWith(
+  opts: HttpInstrumentationOptions,
+  internals: HttpInternals = {},
+): () => void {
   const Xhr = (globalThis as { XMLHttpRequest?: typeof XMLHttpRequest }).XMLHttpRequest;
   if (installed || typeof Xhr !== "function") return () => {};
   const proto = Xhr.prototype;
   const originalOpen = proto.open;
   const originalSend = proto.send;
   const originalSetRequestHeader = proto.setRequestHeader;
-  const instruments = instrumentResolver(opts.telemetry);
+  const instruments = instrumentResolver(opts.telemetry, internals.scope);
   const propagateTo = opts.propagateTo ?? [];
   const ignoreUrls = opts.ignoreUrls ?? [];
   const requests = new WeakMap<XMLHttpRequest, Opened>();
@@ -161,7 +170,7 @@ export function installXhrInstrumentation(opts: HttpInstrumentationOptions = {})
   };
 
   const send = function (this: XMLHttpRequest, ...args: unknown[]): void {
-    const opened = done ? undefined : requests.get(this);
+    const opened = done || internals.skip?.() ? undefined : requests.get(this);
     // A send the XHR will refuse (one in flight, or done without a reopen) gets no span of its own.
     const sendable = opened?.finish === undefined && this.readyState === OPENED;
     const resolved =

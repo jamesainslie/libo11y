@@ -13,7 +13,7 @@ import type { ReadableSpan } from "@opentelemetry/sdk-trace";
 import { setActiveConsent } from "../consent/active.ts";
 import type { Consent, ConsentState } from "../contracts/consent.ts";
 import type { HttpRequestInfo } from "../options.ts";
-import { installFetchInstrumentation, instrumentFetch } from "./fetch.ts";
+import { installFetchInstrumentation, instrumentFetch, instrumentFetchWith } from "./fetch.ts";
 import { DURATION_BUCKETS, DURATION_METRIC } from "./http-common.ts";
 
 const PAGE = "https://app.example.com/page";
@@ -443,5 +443,29 @@ test("a Request from another realm is read as a Request, not stringified", async
     const sent = fake.calls[0]?.init?.headers as Headers;
     assert.equal(sent.get("authorization"), "Bearer t", "the Request's own headers are kept");
     assert.ok(sent.has("traceparent"));
+  });
+});
+
+test("instrumentFetchWith: internals name the scope of the span and histogram, and skip passes a request straight through", async () => {
+  await withRec(async (rec) => {
+    const fake = fakeFetch();
+    let skipping = false;
+    const traced = instrumentFetchWith(
+      fake.fetch,
+      { telemetry: rec.telemetry, propagateTo: [/./] },
+      { scope: "@libo11y/react-native", skip: () => skipping },
+    );
+    await traced("/api/a");
+    const span = onlyClient(rec);
+    assert.equal(span.instrumentationScope.name, "@libo11y/react-native");
+    const rm = await rec.metrics();
+    const scopes = rm.scopeMetrics
+      .filter((sm) => sm.metrics.some((m) => m.descriptor.name === DURATION_METRIC))
+      .map((sm) => sm.scope.name);
+    assert.deepEqual(scopes, ["@libo11y/react-native"]);
+    skipping = true;
+    await traced("/api/b");
+    assert.equal(clientSpans(rec).length, 1, "a skipped request records nothing");
+    assert.equal(fake.calls[1]?.headers.get("traceparent"), null, "and carries no context");
   });
 });

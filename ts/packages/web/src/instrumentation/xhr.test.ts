@@ -12,7 +12,7 @@ import type { ReadableSpan } from "@opentelemetry/sdk-trace";
 import type { Consent, ConsentState } from "../contracts/consent.ts";
 import type { HttpInstrumentationOptions, HttpRequestInfo } from "../options.ts";
 import { DURATION_METRIC } from "./http-common.ts";
-import { installXhrInstrumentation } from "./xhr.ts";
+import { installXhrInstrumentation, installXhrInstrumentationWith } from "./xhr.ts";
 
 const PAGE = "https://app.example.com/page";
 
@@ -463,5 +463,32 @@ test("a send the XHR refuses (in flight, or done without a reopen) records no sp
     xhr.respond(200);
     assert.throws(() => xhr.send(), { name: "InvalidStateError" });
     assert.equal(clientSpans(rec).length, 2, "a send after loadend without a reopen starts no span");
+  });
+});
+
+test("installXhrInstrumentationWith: internals name the scope, and skip passes a send straight through", async () => {
+  await withXhr(async ({ rec }) => {
+    let skipping = true;
+    const uninstall = installXhrInstrumentationWith(
+      { telemetry: rec.telemetry },
+      { scope: "@libo11y/react-native", skip: () => skipping },
+    );
+    try {
+      const skipped = new FakeXhr();
+      skipped.open("GET", "/api/a");
+      skipped.send();
+      skipped.respond(200);
+      assert.equal(clientSpans(rec).length, 0, "a skipped send records nothing");
+      assert.equal(skipped.header("traceparent"), undefined, "and carries no context");
+      skipping = false;
+      const xhr = new FakeXhr();
+      xhr.open("GET", "/api/b");
+      xhr.send();
+      xhr.respond(200);
+      const [span] = clientSpans(rec);
+      assert.equal(span?.instrumentationScope.name, "@libo11y/react-native");
+    } finally {
+      uninstall();
+    }
   });
 });
