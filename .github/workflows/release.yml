@@ -75,6 +75,20 @@
 # from RubyGems.org. The GitHub Release is titled `libo11y-ruby vX.Y.Z` (never
 # marked Latest) and attaches the gem and SHA256SUMS either way.
 #
+# A java/vX.Y.Z tag validates every java/ POM and java/CHANGELOG.md, runs
+# `make java-check`, builds the jars with sources and javadoc into a Maven
+# repository layout and runs a throwaway consumer against it
+# (scripts/java-release-check.sh). It signs every file, publishes them to
+# Maven Central through the Central Publisher Portal
+# (scripts/java-central-publish.sh), and then publishes the GitHub Release
+# titled `libo11y-java vX.Y.Z` (never marked Latest) with the six jars, the
+# signed repository layout as libo11y-java-vX.Y.Z-maven-repository.tar.gz
+# and SHA256SUMS. It needs the repository secrets MAVEN_CENTRAL_USERNAME,
+# MAVEN_CENTRAL_PASSWORD and MAVEN_GPG_PRIVATE_KEY (with
+# MAVEN_GPG_PASSPHRASE). A fork without them releases on GitHub alone, with a
+# warning. Rerunning is safe: a version Maven Central already serves is
+# skipped.
+#
 # An ops/vX.Y.Z tag validates the ops pack (generator drift, the gateway name
 # catalog, query lint, promtool checks and unit tests, kustomize), runs
 # scripts/ops-release-check.sh, and publishes the GitHub Release titled
@@ -83,7 +97,7 @@
 # matches what the check validated.
 #
 # scripts/release-tag.sh routes the tag. The verify job's kind output (go,
-# ts, zig, python, rust, c, dotnet, ruby or ops) selects the jobs and steps that run.
+# ts, zig, python, rust, c, dotnet, ruby, java or ops) selects the jobs and steps that run.
 name: release
 
 on:
@@ -101,6 +115,7 @@ on:
       - "c/v*"
       - "dotnet/v*"
       - "ruby/v*"
+      - "java/v*"
       - "ops/v*"
 
 permissions:
@@ -140,7 +155,7 @@ jobs:
         run: |
           # The script explains a refused tag on stderr.
           if ! scripts/release-tag.sh "$TAG" >"$RUNNER_TEMP/release-tag.out"; then
-            echo "::error::$TAG is not a release tag with a semantic version (go/vX.Y.Z, go/<submodule>/vX.Y.Z, go/o11yrum/vX.Y.Z, ts/vX.Y.Z, zig/vX.Y.Z, python/vX.Y.Z, rust/vX.Y.Z, c/vX.Y.Z, dotnet/vX.Y.Z, ruby/vX.Y.Z or ops/vX.Y.Z)"
+            echo "::error::$TAG is not a release tag with a semantic version (go/vX.Y.Z, go/<submodule>/vX.Y.Z, go/o11yrum/vX.Y.Z, ts/vX.Y.Z, zig/vX.Y.Z, python/vX.Y.Z, rust/vX.Y.Z, c/vX.Y.Z, dotnet/vX.Y.Z, ruby/vX.Y.Z, java/vX.Y.Z or ops/vX.Y.Z)"
             exit 1
           fi
           cat "$RUNNER_TEMP/release-tag.out" >>"$GITHUB_OUTPUT"
@@ -440,6 +455,28 @@ jobs:
         env:
           VERSION: ${{ steps.tag.outputs.version }}
         run: scripts/ruby-release-check.sh "v$VERSION"
+
+      # The Java branch. The release check requires every POM at the tag's
+      # version and a java/CHANGELOG.md section before it builds anything.
+      - name: Check the Java changelog has release notes
+        if: steps.tag.outputs.kind == 'java'
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: scripts/release-notes.sh "$VERSION" java/CHANGELOG.md
+      - uses: actions/setup-java@v4
+        if: steps.tag.outputs.kind == 'java'
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+          cache-dependency-path: java/**/pom.xml
+      - if: steps.tag.outputs.kind == 'java'
+        run: make java-check java-central-publish-test
+      - name: Build the Java artifacts and run a consumer against them
+        if: steps.tag.outputs.kind == 'java'
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: scripts/java-release-check.sh "v$VERSION"
 
       # The ops branch: the pack's own checks, then the release check, which
       # requires version.go, a dated ops/CHANGELOG.md section, generated
@@ -1723,6 +1760,106 @@ jobs:
             gh release upload "$TAG" "$gem_file" "$dist/SHA256SUMS" --clobber
           else
             gh release create "$TAG" "$gem_file" "$dist/SHA256SUMS" --title "$title" --notes-file "$notes" --verify-tag --prerelease="$PRERELEASE" --latest=false
+          fi
+
+  # A java/vX.Y.Z tag builds the artifacts once. The same files go to Maven
+  # Central, when the repository holds the credentials for it, and onto the
+  # GitHub Release.
+  java-release:
+    needs: verify
+    if: needs.verify.outputs.kind == 'java'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+          cache-dependency-path: java/**/pom.xml
+      # Maven Central takes only signed files from a verified namespace, so
+      # publishing there needs a Central Portal user token and a signing key
+      # as repository secrets. Without them the release still completes, from
+      # the GitHub Release alone. A partial set is a mistake, not a choice.
+      - name: Decide whether to publish to Maven Central
+        id: central
+        env:
+          MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          MAVEN_CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          MAVEN_GPG_PRIVATE_KEY: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
+        run: |
+          missing=()
+          for name in MAVEN_CENTRAL_USERNAME MAVEN_CENTRAL_PASSWORD MAVEN_GPG_PRIVATE_KEY; do
+            if [[ -z "${!name}" ]]; then
+              missing+=("$name")
+            fi
+          done
+          if [[ "${#missing[@]}" -eq 0 ]]; then
+            echo "configured=true" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "${#missing[@]}" -lt 3 ]]; then
+            echo "::error::Maven Central publishing is half configured; these repository secrets are not set: ${missing[*]}"
+            exit 1
+          fi
+          echo "configured=false" >>"$GITHUB_OUTPUT"
+          echo "::warning::Maven Central publishing is not configured, so $VERSION is released on GitHub only"
+          {
+            echo "### Not published to Maven Central"
+            echo
+            echo "The repository secrets MAVEN_CENTRAL_USERNAME, MAVEN_CENTRAL_PASSWORD and MAVEN_GPG_PRIVATE_KEY are not set."
+            echo "The artifacts are attached to the GitHub Release. Rerun this workflow once the secrets exist to publish $VERSION."
+          } >>"$GITHUB_STEP_SUMMARY"
+      - name: Build the release assets
+        env:
+          CENTRAL: ${{ steps.central.outputs.configured }}
+          MAVEN_GPG_PRIVATE_KEY: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+        run: |
+          args=(--dist "$RUNNER_TEMP/java-dist")
+          if [[ "$CENTRAL" == "true" ]]; then
+            args+=(--central-bundle "$RUNNER_TEMP/java-central-bundle.zip")
+          fi
+          scripts/java-release-check.sh "v$VERSION" "${args[@]}"
+      - name: Publish to Maven Central
+        if: steps.central.outputs.configured == 'true'
+        env:
+          MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          MAVEN_CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+        run: scripts/java-central-publish.sh "v$VERSION" "$RUNNER_TEMP/java-central-bundle.zip"
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+          CENTRAL: ${{ steps.central.outputs.configured }}
+        run: |
+          notes="$RUNNER_TEMP/release-notes.md"
+          dist="$RUNNER_TEMP/java-dist"
+          scripts/release-notes.sh "$VERSION" java/CHANGELOG.md >"$notes"
+          if [[ "$CENTRAL" != "true" ]]; then
+            {
+              echo
+              echo "Maven Central does not have this version. Install it from \`libo11y-java-v$VERSION-maven-repository.tar.gz\`, attached to this release, as [java/README.md](https://github.com/$GH_REPO/blob/$TAG/java/README.md#installing-from-a-github-release) describes."
+            } >>"$notes"
+          fi
+          title="libo11y-java v$VERSION"
+          assets=("$dist"/*)
+          # The Go main module's release stays the repository's Latest release.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "$TAG already has a release; replacing its title, notes, and assets"
+            gh release edit "$TAG" --title "$title" --notes-file "$notes" --prerelease="$PRERELEASE" --latest=false
+            gh release upload "$TAG" "${assets[@]}" --clobber
+          else
+            gh release create "$TAG" "${assets[@]}" --title "$title" --notes-file "$notes" --verify-tag --prerelease="$PRERELEASE" --latest=false
           fi
 
   ops-release:
