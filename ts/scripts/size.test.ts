@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type BudgetFile, buildOptions, compareBudgets, formatTable, splitSizes } from "./size.ts";
+import {
+  type BudgetFile,
+  buildOptions,
+  compareBudgets,
+  deltaBuild,
+  formatTable,
+  splitSizes,
+} from "./size.ts";
 
 const FILE: BudgetFile = {
   unit: "bytes",
@@ -80,4 +87,24 @@ test("buildOptions passes an entry's export conditions, as React Native's Metro 
   assert.deepEqual(rn.conditions, ["react-native"]);
   assert.deepEqual(rn.external, ["react-native"]);
   assert.equal(rn.target, "browser");
+});
+
+test("a delta bundles with its base entry's externals and export conditions", () => {
+  const file: BudgetFile = {
+    unit: "bytes",
+    entries: {
+      rn: { code: "a", budget: 1, external: ["react-native"], conditions: ["react-native"] },
+      web: { code: "b", budget: 1 },
+    },
+    deltas: {
+      "rn collector": { base: "rn", code: "c", budget: 1 },
+      "web collector": { base: "web", code: "d", budget: 1 },
+    },
+  };
+  assert.deepEqual(deltaBuild(file, "rn collector"), {
+    external: ["react-native"],
+    conditions: ["react-native"],
+  });
+  assert.deepEqual(deltaBuild(file, "web collector"), {});
+  assert.throws(() => deltaBuild(file, "nope"), /unknown delta/);
 });

@@ -1,0 +1,44 @@
+{
+  "name": "@libo11y/rum-react-native",
+  "version": "0.4.0",
+  "private": true,
+  "description": "libo11y RUM for React Native apps on Hermes: sessions that survive a relaunch, consent, session sampling with a retention buffer on device storage, screens, the app_load span and per-screen summaries over @libo11y/react-native. The handle works with @libo11y/rum-react and @libo11y/rum-connect.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts",
+    "./expo": "./src/expo.ts",
+    "./internal": "./src/internal.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jamesainslie/libo11y.git",
+    "directory": "ts/packages/rum-react-native"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "api": "api-extractor run --local && api-extractor run --local -c api-extractor.expo.json",
+    "api:check": "api-extractor run && api-extractor run -c api-extractor.expo.json"
+  },
+  "dependencies": {
+    "@libo11y/core": "workspace:*",
+    "@libo11y/react-native": "workspace:*",
+    "@libo11y/rum": "workspace:*",
+    "@libo11y/spec": "workspace:*",
+    "@libo11y/web": "workspace:*",
+    "@opentelemetry/api": "1.10.0"
+  },
+  "peerDependencies": {
+    "react-native": ">=0.88.0"
+  },
+  "devDependencies": {
+    "@libo11y/rum-connect": "workspace:*",
+    "@libo11y/rum-react": "workspace:*",
+    "@libo11y/test": "workspace:*",
+    "@opentelemetry/sdk-trace": "3.1.1",
+    "@types/react": "19.3.0",
+    "react": "19.3.1",
+    "react-native": "0.88.1"
+  }
+}

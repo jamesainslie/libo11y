@@ -12,7 +12,8 @@ test("the detected layer names the platform, the OS and the device class, and th
   assert.equal(detected["o11y.rum.platform"], "react_native");
   assert.equal(detected["os.name"], "ios");
   assert.equal(detected["o11y.rum.device.class"], "mobile");
-  assert.equal(typeof detected["telemetry.sdk.language"], "string");
+  assert.equal(detected["telemetry.sdk.language"], "javascript");
+  assert.equal(detected["telemetry.sdk.name"], "opentelemetry");
   assert.equal(typeof detected["telemetry.sdk.version"], "string");
   assert.deepEqual(fromEnv, {});
 });

@@ -5,6 +5,7 @@
  * of the source bundled for the browser. An entry may name external modules, such as react for an
  * adapter whose framework the app bundles anyway; they are left out of its bundle. An entry may name
  * export conditions, such as react-native for a React Native package, which Metro resolves with.
+ * A delta bundles with its base entry's externals and conditions.
  *
  * An entry or delta may set chunks, which bundles it with code splitting, as an app's bundler
  * would, and measures one part: "initial" is the entry chunk and every chunk it imports
@@ -89,6 +90,24 @@ export function compareBudgets(file: BudgetFile, absolute: Readonly<Record<strin
     rows.push({ name, size, budget: d.budget, over: size > d.budget });
   }
   return rows;
+}
+
+/**
+ * What delta name bundles with: its base entry's externals and export conditions, so both sides
+ * of the difference resolve their imports alike, such as a React Native collector over its setup.
+ */
+export function deltaBuild(
+  file: BudgetFile,
+  name: string,
+): { readonly external?: readonly string[]; readonly conditions?: readonly string[] } {
+  const d = file.deltas[name];
+  if (d === undefined) throw new Error(`size: unknown delta ${name}`);
+  const base = file.entries[d.base];
+  if (base === undefined) throw new Error(`size: delta ${name} names unknown base ${d.base}`);
+  return {
+    ...(base.external === undefined ? {} : { external: base.external }),
+    ...(base.conditions === undefined ? {} : { conditions: base.conditions }),
+  };
 }
 
 /** The rows as a markdown table. */
@@ -232,8 +251,10 @@ async function main(args: readonly string[]): Promise<number> {
   const absolute: Record<string, number> = {};
   for (const [name, e] of Object.entries(file.entries))
     absolute[name] = await measure(bun, dir, name, e.code, e.external, e.conditions, e.chunks);
-  for (const [name, d] of Object.entries(file.deltas))
-    absolute[name] = await measure(bun, dir, name, d.code, undefined, undefined, d.chunks);
+  for (const [name, d] of Object.entries(file.deltas)) {
+    const { external, conditions } = deltaBuild(file, name);
+    absolute[name] = await measure(bun, dir, name, d.code, external, conditions, d.chunks);
+  }
   const rows = compareBudgets(file, absolute);
   const table = formatTable(rows);
   process.stdout.write(table);

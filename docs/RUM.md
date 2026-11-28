@@ -54,8 +54,12 @@ first ships in `ts/v0.4.0`, with the gateway's replay storage in
 `go/o11yrum/v0.2.0`; see [Session replay](#session-replay). The React
 Native core first ships in `ts/v0.4.0` as a preview. None of these packages
 is on npm yet. Until their first npm publish, they install from the
-tarballs attached to the `ts/v0.4.0` GitHub Release. Every other named
-cell is planned.
+tarballs attached to the `ts/v0.4.0` GitHub Release. The React Native RUM
+cell (`@libo11y/rum-react-native`) is in development in
+`ts/packages/rum-react-native` and has not shipped. It first ships in the
+next TypeScript release. It returns the browser cell's `Rum` handle, so the
+React and Connect adapters work with it unchanged. Every other named cell
+is planned.
 
 ## Data model
 

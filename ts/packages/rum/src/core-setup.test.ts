@@ -243,3 +243,46 @@ test("a binding that fails leaves no lifecycle listener behind", async () => {
   );
   assert.equal(h.lifecycle.listeners(), 0);
 });
+
+test("viewKind gives every view that kind, startView's included, and the first is the load view", async () => {
+  const h = harness();
+  const t = await setupRumCore(OPTS, RUM, { ...h.deps, viewKind: "screen" });
+  open = t;
+  const rt = runtimeOf(t);
+  const first = rt?.views.current();
+  assert.equal(first?.kind, "screen");
+  assert.equal(rt?.views.loadView()?.id, first?.id);
+  t.rum.startView({ name: "next" });
+  assert.equal(rt?.views.current()?.kind, "screen");
+  assert.equal(rt?.views.loadView()?.id, first?.id, "a later screen is not the load view");
+  h.lifecycle.emit("hide");
+  await t.forceFlush();
+  const kinds = logRecords(h.transport)
+    .filter((r) => r["event.name"] === "o11y.rum.view.summary")
+    .map((r) => r["o11y.rum.view.kind"]);
+  assert.deepEqual(kinds, ["screen", "screen"]);
+});
+
+test("onRuntime gets the runtime before a grant at setup begins the load view", async () => {
+  const h = harness();
+  const seen: (string | undefined)[] = [];
+  const t = await setupRumCore(OPTS, RUM, {
+    ...h.deps,
+    onRuntime: (rt) => {
+      seen.push(rt.views.current()?.id);
+      rt.views.subscribe((e) => {
+        if (e.type === "start") seen.push(e.view.kind);
+      });
+    },
+  });
+  open = t;
+  assert.deepEqual(seen, [undefined, "initial"]);
+  assert.equal(runtimeOf(t)?.views.current()?.kind, "initial", "the web's kinds without viewKind");
+});
+
+test("initialViewStart places the first view where the platform's clock says the app started", async () => {
+  const h = harness();
+  const t = await setupRumCore(OPTS, RUM, { ...h.deps, perfNow: () => 5000, initialViewStart: () => 4200 });
+  open = t;
+  assert.equal(runtimeOf(t)?.views.current()?.startTime, 4200);
+});

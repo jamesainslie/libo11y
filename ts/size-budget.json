@@ -42,6 +42,18 @@
       "conditions": ["react-native"],
       "budget": 80640
     },
+    "@libo11y/rum-react-native setupRumReactNative": {
+      "code": "import { setupRumReactNative } from \"@libo11y/rum-react-native\"; (globalThis as Record<string, unknown>).__x = setupRumReactNative;\n",
+      "external": ["react-native"],
+      "conditions": ["react-native"],
+      "budget": 91904
+    },
+    "@libo11y/rum-react-native/expo setupRumExpo": {
+      "code": "import { setupRumExpo } from \"@libo11y/rum-react-native/expo\"; (globalThis as Record<string, unknown>).__x = setupRumExpo;\n",
+      "external": ["react-native", "expo-application", "expo-device", "expo-file-system", "expo-updates"],
+      "conditions": ["react-native"],
+      "budget": 93440
+    },
     "@libo11y/rum/bootstrap": {
       "code": "import { afterLoad, installRumBootstrap } from \"@libo11y/rum/bootstrap\"; (globalThis as Record<string, unknown>).__x = [afterLoad, installRumBootstrap];\n",
       "budget": 1536
@@ -93,6 +105,11 @@
       "code": "import { setupRum } from \"@libo11y/rum\"; import { replay } from \"@libo11y/rum-replay\"; (globalThis as Record<string, unknown>).__x = [setupRum, replay()];\n",
       "chunks": "initial",
       "budget": 11264
+    },
+    "@libo11y/rum-react-native screens()": {
+      "base": "@libo11y/rum-react-native setupRumReactNative",
+      "code": "import { screens, setupRumReactNative } from \"@libo11y/rum-react-native\"; (globalThis as Record<string, unknown>).__x = [setupRumReactNative, screens()];\n",
+      "budget": 1536
     }
   }
 }

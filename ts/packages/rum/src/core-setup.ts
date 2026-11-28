@@ -36,6 +36,7 @@ import {
   RUM_CONNECTION_EFFECTIVE_VALUES,
   type RUMPlatform,
   type RUMSessionRetained,
+  type RUMViewKind,
 } from "@libo11y/spec";
 import {
   type ConsentController,
@@ -126,6 +127,21 @@ export interface RumCoreDeps<O extends RumPlatformOptions, T extends Telemetry> 
    * the returned function when setup started with consent granted and no scope. Default none.
    */
   readonly bootstrap?: () => (runtime: RumRuntime) => void;
+  /**
+   * The kind of every view, for a platform with one kind of view, such as React Native's screen:
+   * the first view is the load view, and rum.startView's views have it too. Default the web's.
+   */
+  readonly viewKind?: RUMViewKind;
+  /**
+   * performance.now() when the first view starts, for a platform whose clock does not start at the
+   * page's navigation, as React Native's counts from the device's boot. Default 0, navigation start.
+   */
+  readonly initialViewStart?: () => number;
+  /**
+   * Called once with the runtime, before consent is wired, so the platform's own recorders (React
+   * Native's app_load) see the first grant's session start and load view, even at setup.
+   */
+  readonly onRuntime?: (runtime: RumRuntime) => void;
 }
 
 /** The synchronous storage remote configuration caches in. */
@@ -338,7 +354,12 @@ export async function setupRumCore<O extends RumPlatformOptions, T extends Telem
     now: deps.perfNow,
     prerendered: deps.prerendered,
     ...(deps.window === undefined ? {} : { window: deps.window }),
-    ...(deps.scope?.fixedView === true ? { initialStart: deps.perfNow } : {}),
+    ...(deps.scope?.fixedView === true
+      ? { initialStart: deps.perfNow }
+      : deps.initialViewStart === undefined
+        ? {}
+        : { initialStart: deps.initialViewStart }),
+    ...(deps.viewKind === undefined ? {} : { viewKind: deps.viewKind }),
   });
   views.subscribe((e) => {
     if (e.type === "start") {
@@ -620,6 +641,8 @@ export async function setupRumCore<O extends RumPlatformOptions, T extends Telem
       return () => collectorUrls.delete(key);
     },
   };
+
+  deps.onRuntime?.(runtime);
 
   // Collectors run only while consent is granted, remote configuration has not switched RUM off,
   // and the current session's settings enable them.
@@ -919,7 +942,7 @@ export async function setupRumCore<O extends RumPlatformOptions, T extends Telem
       if (!on()) return;
       const cause = active?.isRecording() === true ? active.spanContext() : undefined;
       views.start({
-        kind: "soft",
+        kind: deps.viewKind ?? "soft",
         ...(o?.name === undefined ? {} : { name: o.name }),
         ...(cause === undefined ? {} : { cause }),
       });

@@ -4,8 +4,8 @@
  * Every view the tracker starts gets a view span named "view <o11y.rum.view.name>" with
  * o11y.rum.span.shape view, the platform, the view's name, ID and kind, and its session.id. It
  * starts at the view's startTime. A soft or bfcache_restore view span is a root, linked to the
- * action that caused it when there is one. An initial or prerender view span is a child of
- * app_load (web's documentLoad span). Its creation waits for the span processor to report
+ * action that caused it when there is one. The load view's span (initial or prerender on the web,
+ * the first screen on React Native) is a child of app_load (web's documentLoad span). Its creation waits for the span processor to report
  * app_load, and once the view span is due to end it waits at most APP_LOAD_WAIT_MILLIS more, then
  * starts as a root. The tracker learns the span's context (attachSpan), so actions link to it.
  *
@@ -81,10 +81,10 @@ export const MUTATIONS: MutationObserverInit = {
   characterData: true,
 };
 
-const LOAD_SPAN_KINDS: ReadonlySet<string> = new Set(["initial", "prerender"]);
-
 interface OpenView {
   view: ViewState;
+  /** The load view, not restored from the back/forward cache: its span is a child of app_load. */
+  readonly load: boolean;
   readonly cause?: SpanContext;
   span?: Span;
   /** performance.now() the span is to end at, once known. */
@@ -125,12 +125,12 @@ export function viewsWith(opts: ViewsOptions, env: ViewsEnv): RumCollector {
       };
       // A fixed view (a content script) has no app_load: the host page's load is not its own.
       const waitsForAppLoad = (o: OpenView): boolean =>
-        LOAD_SPAN_KINDS.has(o.view.kind) && rt.views.appLoad() === undefined && rt.scope?.fixedView !== true;
+        o.load && rt.views.appLoad() === undefined && rt.scope?.fixedView !== true;
 
       const create = (o: OpenView): Span => {
         if (o.span !== undefined) return o.span;
         const v = o.view;
-        const appLoad = LOAD_SPAN_KINDS.has(v.kind) ? rt.views.appLoad() : undefined;
+        const appLoad = o.load ? rt.views.appLoad() : undefined;
         const span = rt.tracer.startSpan(
           `view ${v.name}`,
           {
@@ -215,6 +215,7 @@ export function viewsWith(opts: ViewsOptions, env: ViewsEnv): RumCollector {
       ): void => {
         const o: OpenView = {
           view,
+          load: view.kind !== "bfcache_restore" && rt.views.loadView()?.id === view.id,
           ...(cause === undefined ? {} : { cause }),
           rendered: false,
           timers: new Set(),

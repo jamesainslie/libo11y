@@ -208,3 +208,36 @@ test("rendered passes the time it rendered at, when given", () => {
     [1200, undefined],
   );
 });
+
+test("with a view kind, every view has it: the first begin's is the load view, later ones are not", () => {
+  let n = 0;
+  const session = fakeSession();
+  const tracker = createViewTracker({
+    session,
+    summary: createSummaryAccumulator({
+      platform: "react_native",
+      emit: () => {},
+      now: () => 0,
+      visible: () => true,
+    }),
+    viewName: () => "app",
+    location: () => "app:///",
+    now: () => 5,
+    prerendered: () => true,
+    viewKind: "screen",
+    randomId: () => `v${n++}`,
+  });
+  tracker.begin();
+  const first = tracker.current();
+  assert.equal(first?.kind, "screen", "the view kind beats prerender");
+  assert.equal(first?.startTime, 0);
+  assert.equal(tracker.loadView()?.id, first?.id);
+  tracker.start({ kind: "screen", name: "/next" });
+  assert.equal(tracker.loadView()?.id, first?.id);
+  session.rotate("s2");
+  assert.equal(tracker.current()?.kind, "screen", "a session change starts a view of the kind");
+  tracker.end();
+  tracker.begin();
+  assert.deepEqual([tracker.current()?.kind, tracker.current()?.name], ["screen", "app"]);
+  assert.equal(tracker.loadView()?.id, first?.id, "a later begin is not a load");
+});

@@ -8,6 +8,8 @@ export interface FakeStorage extends KeyValueStorage {
   readonly map: Map<string, string>;
   /** How many setItem and removeItem calls reached the storage. */
   writes(): number;
+  /** How many getItem calls asked for key. */
+  reads(key: string): number;
   /** Makes every later call of method reject (only for keys match accepts, when given), until heal. */
   fail(method: StorageMethod, match?: (key: string) => boolean): void;
   /** Stops every failure fail started. */
@@ -21,6 +23,7 @@ export function fakeStorage(): FakeStorage {
   const failing = new Map<StorageMethod, (key: string) => boolean>();
   let held: Promise<void> | undefined;
   let writes = 0;
+  const reads = new Map<string, number>();
   const run = <T>(method: StorageMethod, key: string, fn: () => T): Promise<T> =>
     failing.get(method)?.(key) === true
       ? Promise.reject(new Error(`fake storage: ${method} failed`))
@@ -34,11 +37,15 @@ export function fakeStorage(): FakeStorage {
   };
   return {
     map,
-    getItem: (k) => run("getItem", k, () => map.get(k) ?? null),
+    getItem: (k) => {
+      reads.set(k, (reads.get(k) ?? 0) + 1);
+      return run("getItem", k, () => map.get(k) ?? null);
+    },
     setItem: (k, v) => write("setItem", k, () => map.set(k, v)),
     removeItem: (k) => write("removeItem", k, () => map.delete(k)),
     getAllKeys: () => run("getAllKeys", "", () => [...map.keys()]),
     writes: () => writes,
+    reads: (k) => reads.get(k) ?? 0,
     fail: (m, match = () => true) => {
       failing.set(m, match);
     },

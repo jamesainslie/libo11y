@@ -134,6 +134,30 @@
         "react": "^18.3.0 || ^19.0.0",
       },
     },
+    "packages/rum-react-native": {
+      "name": "@libo11y/rum-react-native",
+      "version": "0.3.0",
+      "dependencies": {
+        "@libo11y/core": "workspace:*",
+        "@libo11y/react-native": "workspace:*",
+        "@libo11y/rum": "workspace:*",
+        "@libo11y/spec": "workspace:*",
+        "@libo11y/web": "workspace:*",
+        "@opentelemetry/api": "1.10.0",
+      },
+      "devDependencies": {
+        "@libo11y/rum-connect": "workspace:*",
+        "@libo11y/rum-react": "workspace:*",
+        "@libo11y/test": "workspace:*",
+        "@opentelemetry/sdk-trace": "3.1.1",
+        "@types/react": "19.3.0",
+        "react": "19.3.1",
+        "react-native": "0.88.1",
+      },
+      "peerDependencies": {
+        "react-native": ">=0.88.0",
+      },
+    },
     "packages/rum-replay": {
       "name": "@libo11y/rum-replay",
       "version": "0.3.0",
@@ -360,6 +384,8 @@
     "@libo11y/rum-connect": ["@libo11y/rum-connect@workspace:packages/rum-connect"],
 
     "@libo11y/rum-react": ["@libo11y/rum-react@workspace:packages/rum-react"],
+
+    "@libo11y/rum-react-native": ["@libo11y/rum-react-native@workspace:packages/rum-react-native"],
 
     "@libo11y/rum-replay": ["@libo11y/rum-replay@workspace:packages/rum-replay"],
 

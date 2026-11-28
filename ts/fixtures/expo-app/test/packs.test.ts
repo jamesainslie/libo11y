@@ -48,8 +48,25 @@ test("@libo11y/react-native exports ./expo, ./env and ./internal", () => {
   );
 });
 
+test("@libo11y/rum-react-native exports ./expo and ./internal, and @libo11y/rum its portable ./core", () => {
+  expect(Object.keys(manifest(join(modules, "@libo11y/rum-react-native")).exports)).toEqual(
+    expect.arrayContaining([".", "./expo", "./internal"]),
+  );
+  expect(Object.keys(manifest(join(modules, "@libo11y/rum")).exports)).toContain("./core");
+});
+
 test("one copy of each @libo11y package, at one version, none nested in another package", () => {
-  const names = ["@libo11y/core", "@libo11y/spec", "@libo11y/web", "@libo11y/react-native"];
+  const names = [
+    "@libo11y/core",
+    "@libo11y/spec",
+    "@libo11y/web",
+    "@libo11y/webext",
+    "@libo11y/react-native",
+    "@libo11y/rum",
+    "@libo11y/rum-react-native",
+    "@libo11y/rum-react",
+    "@libo11y/rum-connect",
+  ];
   expect(new Set(names.map((n) => manifest(join(modules, n)).version)).size).toBe(1);
   const nested = readdirSync(modules).flatMap((entry) => {
     const pkgs = entry.startsWith("@")
