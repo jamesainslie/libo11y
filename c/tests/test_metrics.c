@@ -30,9 +30,12 @@ static void test_sync_and_observable_instruments(void) {
     o11y_counter_i64_t c_i64 = o11y_meter_counter_i64(meter, "orders.count", NULL);
     o11y_counter_f64_t c_f64 = o11y_meter_counter_f64(meter, "orders.revenue", NULL);
     o11y_updown_i64_t ud = o11y_meter_updown_i64(meter, "orders.inflight", NULL);
+    o11y_updown_f64_t ud_f64 = o11y_meter_updown_f64(meter, "orders.delta", NULL);
+    o11y_gauge_i64_t g_i64 = o11y_meter_gauge_i64(meter, "cpu.cores", NULL);
     o11y_gauge_f64_t g = o11y_meter_gauge_f64(meter, "cpu.temp", NULL);
     o11y_histogram_options_t hopts = { .unit = "s" };
     o11y_histogram_f64_t h = o11y_meter_histogram_f64(meter, "http.server.request.duration", &hopts);
+    o11y_histogram_i64_t h_i64 = o11y_meter_histogram_i64(meter, "orders.batch.size", NULL);
 
     o11y_attr_t attrs[] = { o11y_kv_str("region", "us-west") };
     o11y_counter_i64_add(c_i64, NULL, 3, attrs, 1);
@@ -40,9 +43,12 @@ static void test_sync_and_observable_instruments(void) {
     o11y_counter_f64_add(c_f64, NULL, 19.5, attrs, 1);
     o11y_updown_i64_add(ud, NULL, 5, NULL, 0);
     o11y_updown_i64_add(ud, NULL, -2, NULL, 0);
+    o11y_updown_f64_add(ud_f64, NULL, 1.25, NULL, 0);
+    o11y_gauge_i64_record(g_i64, NULL, 8, NULL, 0);
     o11y_gauge_f64_record(g, NULL, 61.25, NULL, 0);
     o11y_histogram_f64_record(h, NULL, 0.042, attrs, 1);
     o11y_histogram_f64_record(h, NULL, 0.250, attrs, 1);
+    o11y_histogram_i64_record(h_i64, NULL, 12, NULL, 0);
 
     double q_depth = 17.5;
     int64_t jobs = 99;
@@ -67,6 +73,15 @@ static void test_sync_and_observable_instruments(void) {
 
     ASSERT_TRUE(o11y_test_metric_histogram_count(rec, "http.server.request.duration", &hcount));
     ASSERT_EQ_INT(2, (int64_t)hcount);
+
+    ASSERT_TRUE(o11y_test_metric_histogram_count(rec, "orders.batch.size", &hcount));
+    ASSERT_EQ_INT(1, (int64_t)hcount);
+
+    ASSERT_TRUE(o11y_test_metric_sum_f64(rec, "orders.delta", &sum_f));
+    ASSERT_EQ_DBL(1.25, sum_f, 1e-6);
+
+    ASSERT_TRUE(o11y_test_metric_sum_i64(rec, "cpu.cores", &sum_i));
+    ASSERT_EQ_INT(8, sum_i);
 
     ASSERT_TRUE(o11y_test_metric_sum_f64(rec, "queue.depth", &sum_f));
     ASSERT_EQ_DBL(17.5, sum_f, 1e-6);
@@ -183,10 +198,55 @@ static void test_exemplar_filter_always_off(void) {
     o11y_test_destroy(rec);
 }
 
+static void test_metric_sum_i64_rejects_non_finite_and_out_of_range(void) {
+    o11y_test_options_t topts = o11y_test_options_default();
+    o11y_test_recorder_t *rec = NULL;
+    ASSERT_EQ_ERR(O11Y_OK, o11y_test_start(&topts, &rec, NULL));
+
+    o11y_meter_t *m = o11y_meter(o11y_test_sdk(rec), "edge");
+    o11y_gauge_f64_t g_nan = o11y_meter_gauge_f64(m, "g.nan", NULL);
+    o11y_gauge_f64_t g_inf = o11y_meter_gauge_f64(m, "g.inf", NULL);
+    o11y_gauge_f64_t g_big = o11y_meter_gauge_f64(m, "g.big", NULL);
+    o11y_counter_f64_t c_ninf = o11y_meter_counter_f64(m, "c.ninf", NULL);
+
+    o11y_gauge_f64_record(g_nan, NULL, (double)NAN, NULL, 0);
+    o11y_gauge_f64_record(g_inf, NULL, (double)INFINITY, NULL, 0);
+    o11y_gauge_f64_record(g_big, NULL, 1e30, NULL, 0);
+    o11y_counter_f64_add(c_ninf, NULL, -(double)INFINITY, NULL, 0);
+
+    int64_t out = 42;
+    ASSERT_FALSE(o11y_test_metric_sum_i64(rec, "g.nan", &out));
+    ASSERT_FALSE(o11y_test_metric_sum_i64(rec, "g.inf", &out));
+    ASSERT_FALSE(o11y_test_metric_sum_i64(rec, "g.big", &out));
+    ASSERT_FALSE(o11y_test_metric_sum_i64(rec, "c.ninf", &out));
+
+    o11y_test_destroy(rec);
+}
+
+static void test_observable_after_shutdown_returns_error(void) {
+    o11y_options_t opts = o11y_options_default();
+    opts.env_mode = O11Y_ENV_HERMETIC;
+    opts.service_name = "obs-shut";
+    opts.environment = O11Y_ENVIRONMENT_TEST;
+    opts.console_enabled = false;
+    opts.runtime_metrics = false;
+
+    o11y_sdk_t *sdk = NULL;
+    ASSERT_EQ_ERR(O11Y_OK, o11y_init(&opts, &sdk, NULL));
+    o11y_meter_t *meter = o11y_meter(sdk, "obs");
+    ASSERT_EQ_ERR(O11Y_OK, o11y_shutdown(sdk, 1000, NULL));
+
+    int64_t val = 1;
+    ASSERT_EQ_ERR(O11Y_ERR_SHUTDOWN, o11y_meter_observable_gauge_i64(meter, "after.shutdown", NULL, observe_i64, &val));
+    o11y_destroy(sdk);
+}
+
 int main(void) {
     RUN_TEST(test_sync_and_observable_instruments);
     RUN_TEST(test_every_observable_instrument);
     RUN_TEST(test_exemplars_and_three_way_triangle);
     RUN_TEST(test_exemplar_filter_always_off);
+    RUN_TEST(test_metric_sum_i64_rejects_non_finite_and_out_of_range);
+    RUN_TEST(test_observable_after_shutdown_returns_error);
     TEST_SUMMARY("test_metrics");
 }

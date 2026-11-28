@@ -402,6 +402,165 @@ static void test_context_outlives_its_parent_and_its_span(void) {
     o11y_test_destroy(rec);
 }
 
+struct scratch_carrier_state {
+    char buf[128];
+};
+
+static const char *reused_buf_get(void *userdata, const char *key) {
+    struct scratch_carrier_state *s = (struct scratch_carrier_state *)userdata;
+    if (strcmp(key, "traceparent") == 0) {
+        snprintf(s->buf, sizeof(s->buf), "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01");
+        return s->buf;
+    }
+    if (strcmp(key, "tracestate") == 0) {
+        snprintf(s->buf, sizeof(s->buf), "vendor=kept");
+        return s->buf;
+    }
+    if (strcmp(key, "baggage") == 0) {
+        snprintf(s->buf, sizeof(s->buf), "tenant=acme");
+        return s->buf;
+    }
+    return NULL;
+}
+
+static void noop_set(void *userdata, const char *key, const char *value) {
+    (void)userdata;
+    (void)key;
+    (void)value;
+}
+
+static void test_carrier_get_reused_buffer_and_baggage_validation(void) {
+    o11y_test_options_t topts = o11y_test_options_default();
+    o11y_test_recorder_t *rec = NULL;
+    ASSERT_EQ_ERR(O11Y_OK, o11y_test_start(&topts, &rec, NULL));
+    o11y_sdk_t *sdk = o11y_test_sdk(rec);
+
+    struct scratch_carrier_state state = {0};
+    o11y_carrier_t carrier = { .userdata = &state, .get = reused_buf_get, .set = noop_set };
+    o11y_ctx_t *ext = o11y_extract(sdk, NULL, &carrier);
+    ASSERT_NOT_NULL(ext);
+    o11y_span_context_t sc = o11y_ctx_span_context(ext);
+    ASSERT_TRUE(o11y_span_context_is_valid(sc));
+    ASSERT_EQ_STR("vendor=kept", sc.trace_state);
+    ASSERT_EQ_STR("acme", o11y_ctx_baggage_get(ext, "tenant"));
+
+    /* Invalid W3C baggage key (whitespace) must not be kept or injected */
+    o11y_ctx_t *bad_bag = o11y_ctx_with_baggage_item(ext, "bad key", "val");
+    ASSERT_NOT_NULL(bad_bag);
+    ASSERT_NULL(o11y_ctx_baggage_get(bad_bag, "bad key"));
+
+    /* Enforce 64-member W3C limit */
+    o11y_ctx_t *many = o11y_ctx_create();
+    for (int i = 0; i < 70; i++) {
+        char kbuf[16];
+        snprintf(kbuf, sizeof(kbuf), "k%d", i);
+        o11y_ctx_t *next = o11y_ctx_with_baggage_item(many, kbuf, "v");
+        o11y_ctx_destroy(many);
+        many = next;
+    }
+    ASSERT_EQ_STR("v", o11y_ctx_baggage_get(many, "k63"));
+    ASSERT_NULL(o11y_ctx_baggage_get(many, "k64"));
+
+    o11y_ctx_destroy(many);
+    o11y_ctx_destroy(bad_bag);
+    o11y_ctx_destroy(ext);
+    o11y_test_destroy(rec);
+}
+
+static o11y_sdk_t *init_with_otel_propagators(const char *env_val, const o11y_propagator_t *explicit_props, size_t n, o11y_err_t *out_err, o11y_diagnostic_t *diag) {
+    o11y_env_pair_t env_pairs[] = {
+        { "OTEL_SERVICE_NAME", "prop-env" },
+        { "OTEL_RESOURCE_ATTRIBUTES", "deployment.environment.name=test" },
+        { "OTEL_TRACES_EXPORTER", "none" },
+        { "OTEL_METRICS_EXPORTER", "none" },
+        { "OTEL_LOGS_EXPORTER", "none" },
+        { "OTEL_PROPAGATORS", env_val },
+    };
+    o11y_options_t opts = o11y_options_default();
+    opts.env_mode = O11Y_ENV_PAIRS;
+    opts.env_pairs = env_pairs;
+    opts.env_pairs_len = 6;
+    opts.console_enabled = false;
+    opts.runtime_metrics = false;
+    opts.sampler_kind = O11Y_SAMPLER_ALWAYS_ON;
+    opts.propagators = explicit_props;
+    opts.propagators_len = n;
+    o11y_sdk_t *sdk = NULL;
+    o11y_err_t rc = o11y_init(&opts, &sdk, diag);
+    if (out_err) *out_err = rc;
+    return sdk;
+}
+
+static void test_otel_propagators_env(void) {
+    o11y_err_t rc = O11Y_OK;
+    o11y_diagnostic_t diag = {0};
+
+    /* 1. tracecontext only */
+    o11y_sdk_t *tc_sdk = init_with_otel_propagators(" tracecontext , tracecontext ", NULL, 0, &rc, &diag);
+    ASSERT_EQ_ERR(O11Y_OK, rc);
+    ASSERT_NOT_NULL(tc_sdk);
+    ASSERT_STR_CONTAINS(o11y_effective_config(tc_sdk), "o11y.config.propagators=traceparent,tracestate");
+
+    o11y_span_t *sp = o11y_tracer_start(o11y_tracer(tc_sdk, "p"), NULL, "op", NULL);
+    o11y_ctx_t *c1 = o11y_ctx_with_span(NULL, sp);
+    o11y_ctx_t *c2 = o11y_ctx_with_baggage_item(c1, "k", "v");
+    struct header_map hdrs = {0};
+    o11y_carrier_t carrier = { .userdata = &hdrs, .get = map_get, .set = map_set };
+    o11y_inject(tc_sdk, c2, &carrier);
+    ASSERT_NOT_NULL(map_get(&hdrs, "traceparent"));
+    ASSERT_NULL(map_get(&hdrs, "baggage"));
+    o11y_ctx_destroy(c2);
+    o11y_ctx_destroy(c1);
+    o11y_span_end(sp);
+    o11y_destroy(tc_sdk);
+
+    /* 2. baggage only */
+    o11y_sdk_t *bag_sdk = init_with_otel_propagators("baggage", NULL, 0, &rc, &diag);
+    ASSERT_EQ_ERR(O11Y_OK, rc);
+    sp = o11y_tracer_start(o11y_tracer(bag_sdk, "p"), NULL, "op", NULL);
+    c1 = o11y_ctx_with_span(NULL, sp);
+    c2 = o11y_ctx_with_baggage_item(c1, "k", "v");
+    memset(&hdrs, 0, sizeof(hdrs));
+    o11y_inject(bag_sdk, c2, &carrier);
+    ASSERT_NULL(map_get(&hdrs, "traceparent"));
+    ASSERT_EQ_STR("k=v", map_get(&hdrs, "baggage"));
+    o11y_ctx_destroy(c2);
+    o11y_ctx_destroy(c1);
+    o11y_span_end(sp);
+    o11y_destroy(bag_sdk);
+
+    /* 3. none injects nothing and sets effective config to none */
+    o11y_sdk_t *none_sdk = init_with_otel_propagators("none", NULL, 0, &rc, &diag);
+    ASSERT_EQ_ERR(O11Y_OK, rc);
+    ASSERT_STR_CONTAINS(o11y_effective_config(none_sdk), "o11y.config.propagators=none");
+    sp = o11y_tracer_start(o11y_tracer(none_sdk, "p"), NULL, "op", NULL);
+    c1 = o11y_ctx_with_span(NULL, sp);
+    c2 = o11y_ctx_with_baggage_item(c1, "k", "v");
+    memset(&hdrs, 0, sizeof(hdrs));
+    o11y_inject(none_sdk, c2, &carrier);
+    ASSERT_EQ_SIZE(0, hdrs.len);
+    o11y_ctx_destroy(c2);
+    o11y_ctx_destroy(c1);
+    o11y_span_end(sp);
+    o11y_destroy(none_sdk);
+
+    /* 4. Unknown propagator fails with O11Y_ERR_UNSUPPORTED_PROPAGATOR, even next to none, and explicit option beats it */
+    o11y_sdk_t *bad_sdk = init_with_otel_propagators("bogus", NULL, 0, &rc, &diag);
+    ASSERT_EQ_ERR(O11Y_ERR_UNSUPPORTED_PROPAGATOR, rc);
+    ASSERT_NULL(bad_sdk);
+    ASSERT_STR_CONTAINS(diag.message, "bogus");
+
+    bad_sdk = init_with_otel_propagators("none,TraceContext", NULL, 0, &rc, &diag);
+    ASSERT_EQ_ERR(O11Y_ERR_UNSUPPORTED_PROPAGATOR, rc);
+    ASSERT_NULL(bad_sdk);
+
+    o11y_propagator_t override_tc[] = { { .kind = O11Y_PROPAGATOR_TRACE_CONTEXT } };
+    o11y_sdk_t *override_sdk = init_with_otel_propagators("bogus", override_tc, 1, &rc, &diag);
+    ASSERT_EQ_ERR(O11Y_OK, rc);
+    ASSERT_NOT_NULL(override_sdk);
+    o11y_destroy(override_sdk);
+}
+
 int main(void) {
     RUN_TEST(test_w3c_inject_extract_and_baggage_egress_filter);
     RUN_TEST(test_baggage_egress_filter_is_per_sdk);
@@ -410,5 +569,7 @@ int main(void) {
     RUN_TEST(test_context_outlives_its_parent_and_its_span);
     RUN_TEST(test_detached_carrier_roundtrip_and_start_linked);
     RUN_TEST(test_proc_env_propagation);
+    RUN_TEST(test_carrier_get_reused_buffer_and_baggage_validation);
+    RUN_TEST(test_otel_propagators_env);
     TEST_SUMMARY("test_propagation");
 }

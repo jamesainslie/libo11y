@@ -12,21 +12,61 @@ pub const c_version: [:0]const u8 = @import("c_build_options").c_version ++ "";
 /// Allocator backed by libc malloc/realloc/free (thread-safe).
 pub const gpa: Allocator = std.heap.c_allocator;
 
-var io_state: std.atomic.Value(u8) = .init(0);
+var io_mutex: Mutex = .{};
+var io_refcount: usize = 0;
 var io_threaded: Io.Threaded = undefined;
 
-/// Returns the shared `std.Io` instance, initializing it once on first call.
-pub fn globalIo() Io {
-    if (io_state.load(.acquire) == 2) return io_threaded.io();
-    while (true) {
-        const prev = io_state.cmpxchgWeak(0, 1, .acq_rel, .acquire);
-        if (prev == null) {
-            io_threaded = .init(gpa, .{});
-            io_state.store(2, .release);
-            return io_threaded.io();
+/// Thread-safe mutex usable before `acquireIo` initializes `std.Io.Threaded`.
+pub const Mutex = struct {
+    inner: if (builtin.os.tag == .windows)
+        std.atomic.Value(u8)
+    else
+        std.c.pthread_mutex_t = if (builtin.os.tag == .windows)
+        .init(0)
+    else
+        std.c.PTHREAD_MUTEX_INITIALIZER,
+
+    pub fn lock(m: *Mutex) void {
+        if (builtin.os.tag == .windows) {
+            while (m.inner.cmpxchgWeak(0, 1, .acquire, .monotonic) != null) {
+                std.atomic.spinLoopHint();
+            }
+        } else {
+            _ = std.c.pthread_mutex_lock(&m.inner);
         }
-        if (prev.? == 2) return io_threaded.io();
-        std.atomic.spinLoopHint();
+    }
+
+    pub fn unlock(m: *Mutex) void {
+        if (builtin.os.tag == .windows) {
+            m.inner.store(0, .release);
+        } else {
+            _ = std.c.pthread_mutex_unlock(&m.inner);
+        }
+    }
+};
+
+/// Acquires a reference to the shared `std.Io` runtime, initializing it on
+/// the first live handle. Every `acquireIo` must be paired with `releaseIo`.
+pub fn acquireIo() Io {
+    io_mutex.lock();
+    defer io_mutex.unlock();
+    if (io_refcount == 0) {
+        io_threaded = .init(gpa, .{});
+    }
+    io_refcount += 1;
+    return io_threaded.io();
+}
+
+/// Releases a reference to the shared `std.Io` runtime. When the last handle
+/// is destroyed, worker threads are joined and prior POSIX signal handlers
+/// installed by `Io.Threaded.init` are restored.
+pub fn releaseIo() void {
+    io_mutex.lock();
+    defer io_mutex.unlock();
+    if (io_refcount == 0) return;
+    io_refcount -= 1;
+    if (io_refcount == 0) {
+        io_threaded.deinit();
     }
 }
 
@@ -66,17 +106,28 @@ pub fn freeZ(allocator: Allocator, z: [*:0]u8) void {
     allocator.free(s.ptr[0 .. s.len + 1]);
 }
 
-// POSIX global process environment pointer.
-extern "c" var environ: ?[*:null]?[*:0]u8;
+const darwin_env = if (builtin.os.tag.isDarwin()) struct {
+    extern "c" fn _NSGetEnviron() *?[*:null]?[*:0]u8;
+} else struct {
+    extern "c" var environ: ?[*:null]?[*:0]u8;
+};
 
-/// Snapshots the current process environment into `arena` as `[2][]const u8` pairs.
+fn processEnviron() ?[*:null]?[*:0]u8 {
+    if (builtin.os.tag == .windows) return null;
+    if (builtin.os.tag.isDarwin()) return darwin_env._NSGetEnviron().*;
+    return darwin_env.environ;
+}
+
+/// Snapshots only `OTEL_*` variables from the process environment into `arena`
+/// as `[2][]const u8` pairs. Unrelated host environment entries are never read
+/// or retained.
 pub fn readProcessEnvPairs(arena: Allocator) Allocator.Error![][2][]const u8 {
-    if (builtin.os.tag == .windows) return &.{};
-    const envp = environ orelse return &.{};
+    const envp = processEnviron() orelse return &.{};
     var list: std.ArrayList([2][]const u8) = .empty;
     var i: usize = 0;
     while (envp[i]) |entry_z| : (i += 1) {
         const entry = std.mem.span(entry_z);
+        if (!std.mem.startsWith(u8, entry, "OTEL_")) continue;
         const eq = std.mem.indexOfScalar(u8, entry, '=') orelse continue;
         const k = try arena.dupe(u8, entry[0..eq]);
         const v = try arena.dupe(u8, entry[eq + 1 ..]);

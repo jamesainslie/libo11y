@@ -3,6 +3,7 @@
 #include <pthread.h>
 #include <signal.h>
 #include <stdatomic.h>
+#include <stdlib.h>
 #include <unistd.h>
 
 #include "o11y/test.h"
@@ -18,6 +19,9 @@ static void test_version_and_error_names(void) {
     ASSERT_EQ_STR("O11Y_ERR_ALREADY_SETUP", o11y_err_name(O11Y_ERR_ALREADY_SETUP));
     ASSERT_EQ_STR("O11Y_ERR_NO_SERVICE_NAME", o11y_err_name(O11Y_ERR_NO_SERVICE_NAME));
     ASSERT_EQ_STR("O11Y_ERR_CANARY_REJECTED", o11y_err_name(O11Y_ERR_CANARY_REJECTED));
+    ASSERT_EQ_STR("O11Y_ERR_UNSUPPORTED_PROPAGATOR", o11y_err_name(O11Y_ERR_UNSUPPORTED_PROPAGATOR));
+    ASSERT_EQ_SIZE(sizeof(o11y_options_t), o11y_options_default().struct_size);
+    ASSERT_EQ_SIZE(sizeof(o11y_test_options_t), o11y_test_options_default().struct_size);
 }
 
 static void test_setup_typed_errors_and_diagnostics(void) {
@@ -86,6 +90,81 @@ static void test_setup_typed_errors_and_diagnostics(void) {
 
     /* Null out_sdk rejected safely */
     ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_init(&opts, NULL, &diag));
+
+    /* Zero-initialized options rejected safely instead of disabling strict_identity */
+    o11y_options_t zero_opts;
+    memset(&zero_opts, 0, sizeof(zero_opts));
+    zero_opts.env_mode = O11Y_ENV_HERMETIC;
+    diag.len = 0;
+    diag.message[0] = '\0';
+    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_init(&zero_opts, &sdk, &diag));
+    ASSERT_NULL(sdk);
+    ASSERT_TRUE(diag.len > 0);
+
+    o11y_test_options_t zero_topts;
+    memset(&zero_topts, 0, sizeof(zero_topts));
+    o11y_test_recorder_t *zrec = NULL;
+    diag.len = 0;
+    diag.message[0] = '\0';
+    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_test_start(&zero_topts, &zrec, &diag));
+    ASSERT_NULL(zrec);
+    ASSERT_TRUE(diag.len > 0);
+
+    /* NULL pointer with non-zero length rejected safely */
+    opts = o11y_options_default();
+    opts.env_mode = O11Y_ENV_PAIRS;
+    opts.env_pairs = NULL;
+    opts.env_pairs_len = 1;
+    opts.service_name = "checkout";
+    opts.environment = O11Y_ENVIRONMENT_TEST;
+    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_init(&opts, &sdk, &diag));
+    ASSERT_NULL(sdk);
+
+    opts = o11y_options_default();
+    opts.env_mode = O11Y_ENV_ENTRIES;
+    opts.env_entries = NULL;
+    opts.env_entries_len = 1;
+    opts.service_name = "checkout";
+    opts.environment = O11Y_ENVIRONMENT_TEST;
+    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_init(&opts, &sdk, &diag));
+    ASSERT_NULL(sdk);
+
+    opts = o11y_options_default();
+    opts.env_mode = O11Y_ENV_HERMETIC;
+    opts.service_name = "checkout";
+    opts.environment = O11Y_ENVIRONMENT_TEST;
+    opts.resource_attributes = NULL;
+    opts.resource_attributes_len = 1;
+    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_init(&opts, &sdk, &diag));
+    ASSERT_NULL(sdk);
+
+    opts = o11y_options_default();
+    opts.env_mode = O11Y_ENV_HERMETIC;
+    opts.service_name = "checkout";
+    opts.environment = O11Y_ENVIRONMENT_TEST;
+    opts.app_registries = NULL;
+    opts.app_registries_len = 1;
+    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_init(&opts, &sdk, &diag));
+    ASSERT_NULL(sdk);
+
+    opts = o11y_options_default();
+    opts.env_mode = O11Y_ENV_HERMETIC;
+    opts.service_name = "checkout";
+    opts.environment = O11Y_ENVIRONMENT_TEST;
+    opts.propagators = NULL;
+    opts.propagators_len = 1;
+    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_init(&opts, &sdk, &diag));
+    ASSERT_NULL(sdk);
+
+    opts = o11y_options_default();
+    opts.env_mode = O11Y_ENV_HERMETIC;
+    opts.service_name = "checkout";
+    opts.environment = O11Y_ENVIRONMENT_TEST;
+    opts.pii_mode = O11Y_PII_HASH;
+    opts.pii_hash_key = NULL;
+    opts.pii_hash_key_len = 32;
+    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_init(&opts, &sdk, &diag));
+    ASSERT_NULL(sdk);
 }
 
 /* An enum value the header does not define fails setup instead of becoming a default. */
@@ -268,8 +347,29 @@ static void test_null_safety_never_crashes(void) {
     o11y_test_grpc_receiver_destroy(NULL);
 
     ASSERT_EQ_STR("", o11y_effective_config(NULL));
-    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_shutdown(NULL, 100, NULL));
-    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_force_flush(NULL, 100, NULL));
+    o11y_shutdown_report_t report = {
+        .logs = O11Y_ERR_IO,
+        .metrics = O11Y_ERR_TIMEOUT,
+        .traces = O11Y_ERR_EXPORTER,
+    };
+    ASSERT_EQ_ERR(O11Y_OK, o11y_shutdown(NULL, 100, &report));
+    ASSERT_EQ_ERR(O11Y_OK, report.logs);
+    ASSERT_EQ_ERR(O11Y_OK, report.metrics);
+    ASSERT_EQ_ERR(O11Y_OK, report.traces);
+
+    report.logs = O11Y_ERR_IO;
+    report.metrics = O11Y_ERR_TIMEOUT;
+    report.traces = O11Y_ERR_EXPORTER;
+    ASSERT_EQ_ERR(O11Y_OK, o11y_force_flush(NULL, 100, &report));
+    ASSERT_EQ_ERR(O11Y_OK, report.logs);
+    ASSERT_EQ_ERR(O11Y_OK, report.metrics);
+    ASSERT_EQ_ERR(O11Y_OK, report.traces);
+
+    o11y_trace_id_t zero_tid = {0};
+    o11y_span_id_t zero_sid = {0};
+    o11y_trace_id_hex(zero_tid, NULL);
+    o11y_span_id_hex(zero_sid, NULL);
+
     o11y_log_info(NULL, NULL, "ignored", NULL, 0);
     o11y_event(NULL, NULL, "ignored", NULL, 0);
 }
@@ -343,7 +443,111 @@ static void test_shutdown_on_signals(void) {
     ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_shutdown_on_signals(sdk, &bad, NULL));
     bad.signals = NULL;
     ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_shutdown_on_signals(sdk, &bad, NULL));
-    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_shutdown_on_signals(NULL, NULL, NULL));
+
+    /* Non-catchable and OS-invalid signals are rejected and zero out_report. */
+    o11y_shutdown_report_t report = { .logs = O11Y_ERR_IO, .metrics = O11Y_ERR_IO, .traces = O11Y_ERR_IO };
+    int bad_sigs_kill[] = { SIGKILL };
+    bad.signals = bad_sigs_kill;
+    bad.signals_len = 1;
+    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_shutdown_on_signals(sdk, &bad, &report));
+    ASSERT_TRUE(o11y_shutdown_report_ok(report));
+
+    int bad_sigs_stop[] = { SIGSTOP };
+    bad.signals = bad_sigs_stop;
+    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_shutdown_on_signals(sdk, &bad, NULL));
+
+    int bad_sigs_invalid[] = { 999 };
+    bad.signals = bad_sigs_invalid;
+    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_shutdown_on_signals(sdk, &bad, NULL));
+
+    report.logs = O11Y_ERR_IO;
+    ASSERT_EQ_ERR(O11Y_ERR_INVALID_ARGUMENT, o11y_shutdown_on_signals(NULL, NULL, &report));
+    ASSERT_TRUE(o11y_shutdown_report_ok(report));
+    o11y_destroy(sdk);
+}
+
+static void dummy_sigpipe_handler(int sig) {
+    (void)sig;
+}
+
+static void test_runtime_signal_restore_process_env_entries_disabled_and_build_info(void) {
+    /* Destroying all handles restores prior SIGPIPE disposition. */
+    struct sigaction custom = {0};
+    struct sigaction prev_sigpipe = {0};
+    custom.sa_handler = dummy_sigpipe_handler;
+    sigemptyset(&custom.sa_mask);
+    ASSERT_EQ_INT(0, sigaction(SIGPIPE, &custom, &prev_sigpipe));
+
+    o11y_options_t opts = o11y_options_default();
+    opts.env_mode = O11Y_ENV_HERMETIC;
+    opts.service_name = "rt-check";
+    opts.environment = O11Y_ENVIRONMENT_TEST;
+    opts.console_enabled = false;
+    opts.runtime_metrics = false;
+    opts.build_info.enabled = true;
+    opts.build_info.version = "2.1.0";
+    opts.build_info.revision = "deadbeef";
+    opts.build_info.time = "2026-11-28T00:00:00Z";
+    opts.build_info.modified_set = true;
+    opts.build_info.modified = false;
+
+    o11y_sdk_t *sdk = NULL;
+    ASSERT_EQ_ERR(O11Y_OK, o11y_init(&opts, &sdk, NULL));
+    ASSERT_STR_CONTAINS(o11y_effective_config(sdk), "service.version=2.1.0");
+    o11y_shutdown_report_t fl_rep = {0};
+    ASSERT_EQ_ERR(O11Y_OK, o11y_force_flush(sdk, 1000, &fl_rep));
+    ASSERT_TRUE(o11y_shutdown_report_ok(fl_rep));
+    o11y_destroy(sdk);
+
+    struct sigaction after = {0};
+    ASSERT_EQ_INT(0, sigaction(SIGPIPE, NULL, &after));
+    ASSERT_TRUE(after.sa_handler == dummy_sigpipe_handler);
+    ASSERT_EQ_INT(0, sigaction(SIGPIPE, &prev_sigpipe, NULL));
+
+    /* Recreate after last destroy to verify clean re-init. */
+    o11y_test_recorder_t *rec = NULL;
+    ASSERT_EQ_ERR(O11Y_OK, o11y_test_start(NULL, &rec, NULL));
+    o11y_test_destroy(rec);
+
+    /* O11Y_ENV_ENTRIES + OTEL_SDK_DISABLED=true */
+    const char *entries[] = {
+        "OTEL_SERVICE_NAME=entries-svc",
+        "OTEL_RESOURCE_ATTRIBUTES=deployment.environment.name=staging",
+        "OTEL_SDK_DISABLED=true",
+        "OTEL_TRACES_EXPORTER=otlp",
+    };
+    o11y_options_t eopts = o11y_options_default();
+    eopts.env_mode = O11Y_ENV_ENTRIES;
+    eopts.env_entries = entries;
+    eopts.env_entries_len = 4;
+    eopts.console_enabled = false;
+    eopts.runtime_metrics = false;
+    ASSERT_EQ_ERR(O11Y_OK, o11y_init(&eopts, &sdk, NULL));
+    ASSERT_STR_CONTAINS(o11y_effective_config(sdk), "service.name=entries-svc");
+    ASSERT_STR_CONTAINS(o11y_effective_config(sdk), "o11y.config.traces=none");
+    o11y_destroy(sdk);
+
+    /* O11Y_ENV_PROCESS reads OTEL_* from process environment cleanly */
+    ASSERT_EQ_INT(0, setenv("OTEL_SERVICE_NAME", "proc-svc", 1));
+    ASSERT_EQ_INT(0, setenv("OTEL_RESOURCE_ATTRIBUTES", "deployment.environment.name=test", 1));
+    ASSERT_EQ_INT(0, setenv("OTEL_TRACES_EXPORTER", "none", 1));
+    ASSERT_EQ_INT(0, setenv("OTEL_METRICS_EXPORTER", "none", 1));
+    ASSERT_EQ_INT(0, setenv("OTEL_LOGS_EXPORTER", "none", 1));
+    ASSERT_EQ_INT(0, setenv("UNRELATED_SECRET_TOKEN", "do-not-retain", 1));
+
+    o11y_options_t popts = o11y_options_default();
+    popts.env_mode = O11Y_ENV_PROCESS;
+    popts.console_enabled = false;
+    popts.runtime_metrics = false;
+    o11y_err_t prc = o11y_init(&popts, &sdk, NULL);
+    unsetenv("OTEL_SERVICE_NAME");
+    unsetenv("OTEL_RESOURCE_ATTRIBUTES");
+    unsetenv("OTEL_TRACES_EXPORTER");
+    unsetenv("OTEL_METRICS_EXPORTER");
+    unsetenv("OTEL_LOGS_EXPORTER");
+    unsetenv("UNRELATED_SECRET_TOKEN");
+    ASSERT_EQ_ERR(O11Y_OK, prc);
+    ASSERT_STR_CONTAINS(o11y_effective_config(sdk), "service.name=proc-svc");
     o11y_destroy(sdk);
 }
 
@@ -356,5 +560,6 @@ int main(void) {
     RUN_TEST(test_non_strict_identity_migration_mode);
     RUN_TEST(test_null_safety_never_crashes);
     RUN_TEST(test_shutdown_on_signals);
+    RUN_TEST(test_runtime_signal_restore_process_env_entries_disabled_and_build_info);
     TEST_SUMMARY("test_core");
 }

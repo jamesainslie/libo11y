@@ -30,6 +30,12 @@
  * call on that span may run during or after it. The same holds for every
  * destroy function. Callbacks run on the thread that triggers them, which
  * for exporter errors and observable instruments is a libo11y thread.
+ *
+ * Signals. While at least one SDK, wide-event record, or test handle is live,
+ * libo11y keeps an internal I/O thread pool whose POSIX initialization sets
+ * no-op handlers for SIGIO and SIGPIPE. When the last handle is destroyed,
+ * libo11y joins those threads and restores the prior SIGIO and SIGPIPE
+ * dispositions.
  */
 
 #ifndef O11Y_H
@@ -76,12 +82,8 @@ typedef enum o11y_err {
     O11Y_ERR_INVALID_CARRIER = 12,
     O11Y_ERR_TIMEOUT = 13,
     O11Y_ERR_SHUTDOWN = 14,
-    O11Y_ERR_NOT_FOUND = 15,
-    O11Y_ERR_CONFORMANCE_FAILED = 16,
-    O11Y_ERR_CORRELATION_FAILED = 17,
-    O11Y_ERR_TRIANGLE_FAILED = 18,
-    O11Y_ERR_VIOLATIONS = 19,
-    O11Y_ERR_IO = 20
+    O11Y_ERR_IO = 15,
+    O11Y_ERR_UNSUPPORTED_PROPAGATOR = 16
 } o11y_err_t;
 
 /** Returns the name of err as a static string, such as "O11Y_ERR_TIMEOUT". Never NULL. */
@@ -142,7 +144,9 @@ bool o11y_trace_id_is_valid(o11y_trace_id_t id);
 bool o11y_span_id_is_valid(o11y_span_id_t id);
 bool o11y_span_context_is_valid(o11y_span_context_t sc);
 bool o11y_span_context_is_sampled(o11y_span_context_t sc);
+/** Writes 32 lowercase hex chars + NUL to out (NULL is ignored). */
 void o11y_trace_id_hex(o11y_trace_id_t id, char out[33]);
+/** Writes 16 lowercase hex chars + NUL to out (NULL is ignored). */
 void o11y_span_id_hex(o11y_span_id_t id, char out[17]);
 bool o11y_trace_id_parse_hex(const char *hex, o11y_trace_id_t *out);
 bool o11y_span_id_parse_hex(const char *hex, o11y_span_id_t *out);
@@ -460,7 +464,11 @@ static inline o11y_log_attr_t o11y_log_kv_masked(const char *key, const char *va
  * ========================================================================= */
 
 typedef enum o11y_env_mode {
-    /** Read standard OTEL_* variables from the process environment (default). */
+    /**
+     * Read standard OTEL_* variables from the process environment during setup.
+     * Only OTEL_* variables are inspected and copied transiently. The host must
+     * not concurrently mutate process environ while o11y_setup/o11y_init runs.
+     */
     O11Y_ENV_PROCESS = 0,
     /** Hermetic mode: ignore all OTEL_* variables; disable un-injected signals. */
     O11Y_ENV_HERMETIC = 1,
@@ -501,7 +509,10 @@ typedef enum o11y_console_target {
     O11Y_CONSOLE_CUSTOM = 2
 } o11y_console_target_t;
 
-/** Custom console write callback. Return O11Y_OK on success or error to reject. */
+/**
+ * Custom console write callback. Return O11Y_OK on success or error to reject.
+ * Runs under an internal console lock, so it must not log back to the same SDK.
+ */
 typedef o11y_err_t (*o11y_console_write_fn)(void *userdata, const uint8_t *bytes, size_t len);
 
 typedef enum o11y_pii_mode {
@@ -556,9 +567,13 @@ typedef struct o11y_histogram_buckets {
  * per-leg sensitivity classification.
  *
  * To drop the attribute, return false.
- * To keep unchanged, leave out_key_buf[0] == '\0' and return true.
- * To rename the key (or replace a string value), write NUL-terminated text into
- * out_key_buf / out_str_val_buf and set *out_replace_str_val = true if replacing value.
+ * To keep unchanged, leave out_key_buf[0] == '\0' and *out_replace_val = false
+ * and return true.
+ * To rename the key, write NUL-terminated text into out_key_buf (max 255 bytes).
+ * To replace the value, set *out_replace_val = true and either write
+ * NUL-terminated text into out_str_val_buf (leaving out_val->kind as
+ * O11Y_LOG_VAL_EMPTY) or populate *out_val with a replacement log value
+ * valid for the duration of the callback.
  */
 typedef bool (*o11y_attr_replacer_fn)(
     void *userdata,
@@ -570,7 +585,8 @@ typedef bool (*o11y_attr_replacer_fn)(
     size_t out_key_cap,
     char *out_str_val_buf,
     size_t out_str_val_cap,
-    bool *out_replace_str_val);
+    o11y_log_value_t *out_val,
+    bool *out_replace_val);
 
 /** Extra log sink callbacks (post-classification, correlated). */
 typedef struct o11y_log_sink {
@@ -592,7 +608,10 @@ typedef struct o11y_log_sink {
  */
 typedef struct o11y_carrier {
     void *userdata;
-    /** Returns the NUL-terminated value for key, or NULL when it is absent. */
+    /**
+     * Returns the NUL-terminated value for key, or NULL when absent.
+     * libo11y copies the string before calling get for the next key.
+     */
     const char *(*get)(void *userdata, const char *key);
     /** Stores value for key. Both strings are valid only during the call. */
     void (*set)(void *userdata, const char *key, const char *value);
@@ -635,6 +654,12 @@ typedef bool (*o11y_baggage_egress_allow_fn)(void *userdata, const char *key);
 typedef void (*o11y_error_handler_fn)(void *userdata, const char *message);
 
 typedef struct o11y_options {
+    /**
+     * Must be sizeof(o11y_options_t), initialized by o11y_options_default().
+     * Zero-initialized or mismatched structs are rejected with O11Y_ERR_INVALID_ARGUMENT.
+     */
+    size_t struct_size;
+
     o11y_env_mode_t env_mode;
     const o11y_env_pair_t *env_pairs;
     size_t env_pairs_len;
@@ -706,10 +731,11 @@ typedef struct o11y_options {
 
 /**
  * Returns the default options. Always start from this value: several
- * defaults are not zero (strict_identity, console_enabled, log_export,
- * runtime_metrics and startup_summary are true). An enum field set to a
- * value this header does not define fails setup with
- * O11Y_ERR_INVALID_ARGUMENT.
+ * defaults are not zero (struct_size = sizeof(o11y_options_t),
+ * strict_identity = true, log_level = O11Y_LEVEL_INFO, console_enabled = true,
+ * log_export = true, sampler_ratio = 1.0, runtime_metrics = true,
+ * startup_summary = true). Zero-initialized structs and enum fields outside the
+ * values defined in this header fail setup with O11Y_ERR_INVALID_ARGUMENT.
  */
 o11y_options_t o11y_options_default(void);
 
@@ -752,14 +778,19 @@ o11y_err_t o11y_init(
 /**
  * Shuts down logs, metrics, and traces concurrently under one shared timeout
  * (0 uses the 5000 ms default). Idempotent: concurrent and later callers wait
- * and receive the same per-signal report.
+ * and receive the same per-signal report. Accepts NULL sdk (zeroes out_report
+ * and returns O11Y_OK).
  */
 o11y_err_t o11y_shutdown(
     o11y_sdk_t *sdk,
     uint64_t timeout_ms,
     o11y_shutdown_report_t *out_report);
 
-/** Flushes all three signals under one shared timeout (0 = 5000 ms default). */
+/**
+ * Flushes logs, metrics, and traces sequentially under one shared timeout
+ * (0 uses the 5000 ms default). Accepts NULL sdk (zeroes out_report and
+ * returns O11Y_OK).
+ */
 o11y_err_t o11y_force_flush(
     o11y_sdk_t *sdk,
     uint64_t timeout_ms,
@@ -798,8 +829,9 @@ typedef struct o11y_signal_options {
 /**
  * Installs signal handlers, blocks until a signal arrives, restores SIG_DFL,
  * invokes before_shutdown, and shuts down sdk under one shared deadline.
- * Returns O11Y_ERR_INVALID_ARGUMENT, without waiting, for a NULL sdk, more
- * than 16 signals, or a signal number outside 1 to 64.
+ * Zeroes out_report on entry. Returns O11Y_ERR_INVALID_ARGUMENT, without
+ * waiting, for a NULL sdk, more than 16 signals, non-catchable signals
+ * (SIGKILL, SIGSTOP), or OS-invalid signal numbers.
  */
 o11y_err_t o11y_shutdown_on_signals(
     o11y_sdk_t *sdk,
@@ -835,7 +867,9 @@ o11y_ctx_t *o11y_ctx_with_force_emit(const o11y_ctx_t *parent);
 o11y_ctx_t *o11y_ctx_with_record(const o11y_ctx_t *parent, o11y_record_t *record);
 /**
  * Derives a context with the baggage member key set to value, replacing a
- * member of the same name. A NULL or empty key gives a copy of parent.
+ * member of the same name. Enforces W3C token validation on key, UTF-8
+ * validation on key and value, and W3C limits (64 members, 8192 bytes).
+ * An invalid or NULL/empty key returns a copy of parent.
  */
 o11y_ctx_t *o11y_ctx_with_baggage_item(const o11y_ctx_t *parent, const char *key, const char *value);
 
@@ -1011,9 +1045,12 @@ void o11y_gauge_f64_record(o11y_gauge_f64_t inst, const o11y_ctx_t *ctx, double 
  * Observable instruments. Each function registers callback, which libo11y
  * calls with userdata at every metric collection, on the collecting thread.
  * The callback reports values with o11y_observation_i64_observe or
- * o11y_observation_f64_observe. The registration lasts until the SDK is
- * destroyed, so callback and userdata must stay valid until then. Returns
- * O11Y_ERR_INVALID_ARGUMENT for a NULL meter or callback.
+ * o11y_observation_f64_observe under an internal provider lock, so callbacks
+ * must not create or register instruments on the same meter or block past the
+ * export deadline. The registration lasts until the SDK is destroyed, so
+ * callback and userdata must stay valid until then. Returns
+ * O11Y_ERR_INVALID_ARGUMENT for a NULL meter or callback, O11Y_ERR_SHUTDOWN
+ * after shutdown, or O11Y_ERR_OUT_OF_MEMORY if allocation fails.
  */
 o11y_err_t o11y_meter_observable_counter_i64(o11y_meter_t *meter, const char *name, const o11y_instrument_options_t *opts, o11y_observe_i64_fn callback, void *userdata);
 o11y_err_t o11y_meter_observable_counter_f64(o11y_meter_t *meter, const char *name, const o11y_instrument_options_t *opts, o11y_observe_f64_fn callback, void *userdata);
@@ -1026,6 +1063,7 @@ o11y_err_t o11y_meter_observable_gauge_f64(o11y_meter_t *meter, const char *name
  * Structured logging, Events, and Wide Events (Record)
  * ========================================================================= */
 
+/** Emits a structured log record. Unrecognized level values fall back to O11Y_LEVEL_INFO. */
 void o11y_log(
     o11y_sdk_t *sdk,
     o11y_level_t level,
@@ -1167,7 +1205,13 @@ bool o11y_derive_instance_id(
 /** Sanitizes an OTLP endpoint URL (strips userinfo/query/fragment; "unparseable" on ambiguity). */
 o11y_err_t o11y_sanitize_endpoint(const char *raw, size_t raw_len, char **out);
 
-/** Computes Go-exact PII canonical rendering and hmac-sha256:<32hex> token. */
+/**
+ * Computes Go-exact PII canonical rendering and hmac-sha256:<32hex> token.
+ * Zeroes out_canonical and out_token on entry before checking inputs.
+ * Note that out_canonical is a NUL-terminated C string; if a length-delimited
+ * string value contains embedded NUL bytes, all bytes are hashed into out_token
+ * while C string callers reading *out_canonical stop at the first NUL byte.
+ */
 o11y_err_t o11y_pii_hash_value(
     const o11y_log_value_t *value,
     const uint8_t *key,
@@ -1185,6 +1229,32 @@ o11y_err_t o11y_app_registry_check_bytes(
     size_t content_len,
     char **out_want,
     int *out_status);
+
+/* Verify standard int-sized enum ABI (reject -fshort-enums at compile time). */
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+#define O11Y_ENUM_ABI_ASSERT(T) _Static_assert(sizeof(T) == sizeof(int), "libo11y requires int-sized enums (do not compile with -fshort-enums)")
+#elif defined(__cplusplus) && __cplusplus >= 201103L
+#define O11Y_ENUM_ABI_ASSERT(T) static_assert(sizeof(T) == sizeof(int), "libo11y requires int-sized enums (do not compile with -fshort-enums)")
+#endif
+#ifdef O11Y_ENUM_ABI_ASSERT
+O11Y_ENUM_ABI_ASSERT(o11y_sensitivity_t);
+O11Y_ENUM_ABI_ASSERT(o11y_cardinality_t);
+O11Y_ENUM_ABI_ASSERT(o11y_err_t);
+O11Y_ENUM_ABI_ASSERT(o11y_attr_kind_t);
+O11Y_ENUM_ABI_ASSERT(o11y_log_value_kind_t);
+O11Y_ENUM_ABI_ASSERT(o11y_env_mode_t);
+O11Y_ENUM_ABI_ASSERT(o11y_protocol_t);
+O11Y_ENUM_ABI_ASSERT(o11y_level_t);
+O11Y_ENUM_ABI_ASSERT(o11y_console_format_t);
+O11Y_ENUM_ABI_ASSERT(o11y_console_target_t);
+O11Y_ENUM_ABI_ASSERT(o11y_pii_mode_t);
+O11Y_ENUM_ABI_ASSERT(o11y_sampler_kind_t);
+O11Y_ENUM_ABI_ASSERT(o11y_exemplar_filter_t);
+O11Y_ENUM_ABI_ASSERT(o11y_propagator_kind_t);
+O11Y_ENUM_ABI_ASSERT(o11y_span_kind_t);
+O11Y_ENUM_ABI_ASSERT(o11y_status_code_t);
+#undef O11Y_ENUM_ABI_ASSERT
+#endif
 
 #ifdef __cplusplus
 } /* extern "C" */

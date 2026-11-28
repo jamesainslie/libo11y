@@ -11,7 +11,8 @@ static bool replacer_rename_and_drop(
     size_t out_key_cap,
     char *out_str_val_buf,
     size_t out_str_val_cap,
-    bool *out_replace_str_val) {
+    o11y_log_value_t *out_val,
+    bool *out_replace_val) {
     (void)userdata;
     (void)groups;
     (void)groups_len;
@@ -26,7 +27,12 @@ static bool replacer_rename_and_drop(
     }
     if (strcmp(key, "rewrite_val") == 0) {
         snprintf(out_str_val_buf, out_str_val_cap, "%s", "rewritten");
-        *out_replace_str_val = true;
+        *out_replace_val = true;
+        return true;
+    }
+    if (strcmp(key, "rewrite_int") == 0) {
+        *out_val = o11y_log_val_int(99);
+        *out_replace_val = true;
         return true;
     }
     return true;
@@ -138,8 +144,9 @@ static void test_attr_replacer_runs_before_sensitivity(void) {
         o11y_log_kv_str("drop_me", "gone"),
         o11y_log_kv_str("alias_secret", "Bearer top-secret"),
         o11y_log_kv_str("rewrite_val", "original"),
+        o11y_log_kv_str("rewrite_int", "raw"),
     };
-    o11y_log_info(o11y_test_sdk(rec), NULL, "replaced", attrs, 3);
+    o11y_log_info(o11y_test_sdk(rec), NULL, "replaced", attrs, 4);
 
     const o11y_test_log_t *lr = o11y_test_find_log(rec, "replaced");
     ASSERT_NOT_NULL(lr);
@@ -147,6 +154,9 @@ static void test_attr_replacer_runs_before_sensitivity(void) {
     ASSERT_FALSE(o11y_test_log_has_attr(lr, "alias_secret"));
     ASSERT_FALSE(o11y_test_log_has_attr(lr, "http.request.header.authorization"));
     ASSERT_EQ_STR("rewritten", o11y_test_log_attr_str(lr, "rewrite_val"));
+    int64_t replaced_int = 0;
+    ASSERT_TRUE(o11y_test_log_attr_int(lr, "rewrite_int", &replaced_int));
+    ASSERT_EQ_INT(99, replaced_int);
     ASSERT_TRUE(o11y_test_violations(rec, O11Y_SIGNAL_LOGS, "secret_attribute") >= 1);
 
     o11y_test_destroy(rec);
@@ -236,6 +246,20 @@ static void test_wide_event_record_and_capture_redaction(void) {
     o11y_ctx_destroy(ctx);
     o11y_record_destroy(wide);
     o11y_test_destroy(rec_test);
+
+    /* Text console format writes readable KEY=VALUE text output. */
+    o11y_test_options_t text_opts = o11y_test_options_default();
+    text_opts.console_format = O11Y_CONSOLE_TEXT;
+    o11y_test_recorder_t *text_rec = NULL;
+    ASSERT_EQ_ERR(O11Y_OK, o11y_test_start(&text_opts, &text_rec, NULL));
+    o11y_log_attr_t text_attrs[] = { o11y_log_kv_str("order.id", "ord-9") };
+    o11y_log_info(o11y_test_sdk(text_rec), NULL, "text-line", text_attrs, 1);
+    size_t text_len = 0;
+    const char *text_out = o11y_test_console_output(text_rec, &text_len);
+    ASSERT_TRUE(text_len > 0);
+    ASSERT_STR_CONTAINS(text_out, "text-line");
+    ASSERT_STR_CONTAINS(text_out, "order.id=ord-9");
+    o11y_test_destroy(text_rec);
 }
 
 int main(void) {
