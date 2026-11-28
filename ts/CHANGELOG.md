@@ -4,7 +4,7 @@ All notable changes to the libo11y TypeScript packages are documented
 here: `@libo11y/spec`, `@libo11y/core`, `@libo11y/server`,
 `@libo11y/test`, `@libo11y/web`, `@libo11y/webext`, `@libo11y/rum`,
 `@libo11y/rum-react`, `@libo11y/rum-tanstack-router`, `@libo11y/rum-connect`,
-`@libo11y/rum-replay`, `@libo11y/react-native`, `@libo11y/rum-react-native` and `@libo11y/sourcemaps`, which release together at one version from a `ts/vX.Y.Z`
+`@libo11y/rum-replay`, `@libo11y/react-native`, `@libo11y/rum-react-native`, `@libo11y/rum-expo-router` and `@libo11y/sourcemaps`, which release together at one version from a `ts/vX.Y.Z`
 tag. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the packages
 adhere to [Semantic Versioning](https://semver.org/).
@@ -36,6 +36,22 @@ adhere to [Semantic Versioning](https://semver.org/).
   screen and after other screens. The `./expo` entry's `setupRumExpo`
   keeps it all in the app's documents, as `setupExpo` does. The fixture
   Expo app runs it under jest-expo.
+- `@libo11y/rum-expo-router`, the Expo Router adapter for
+  `@libo11y/rum-react-native`. In development: it is not released and not
+  on npm, and first ships in the next TypeScript release.
+  `useRumExpoRouter(rum)` in the root layout names screens by route
+  template, the segments `useSegments()` returns with groups and
+  placeholders kept, such as `/(studio)/projects/[projectId]`, never the
+  path. The first route names the view RUM started at launch; each new
+  pathname starts a screen. Once the route has settled, a zero-delay timer
+  after its commit, it calls `rum.viewRendered()`, so the first screen ends
+  `app_load` at its render instead of the 60-second cap. A navigation that
+  a redirect replaces before it settled is one screen, named after the
+  route that stayed. An unmatched path is the app's `+not-found` route,
+  `/+not-found`. `RumExpoRouter` is the same hook as a component, and
+  `routeTemplate` and `createRouteTracker` are its building blocks. Peer
+  dependencies `expo-router` 58 or later and React 19; tested on Expo SDK
+  58.
 
 ### Changed
 
@@ -53,7 +69,7 @@ adhere to [Semantic Versioning](https://semver.org/).
   was `webjs` or `nodejs` in 0.4.0.
 - `make ts-size` bundles a delta row with its base entry's externals and
   export conditions, and its budgets and the Metro bundle budget cover
-  `@libo11y/rum-react-native`.
+  `@libo11y/rum-react-native` and `@libo11y/rum-expo-router`.
 - `@libo11y/server`'s `instrumentFetch` now replaces the values of the
   `AWSAccessKeyId`, `Signature`, `sig` and `X-Goog-Signature` query keys
   in `url.full` with `REDACTED`, as `@libo11y/web` already does. These are

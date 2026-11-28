@@ -54,6 +54,12 @@
       "conditions": ["react-native"],
       "budget": 93440
     },
+    "@libo11y/rum-expo-router useRumExpoRouter": {
+      "code": "import { useRumExpoRouter } from \"@libo11y/rum-expo-router\"; (globalThis as Record<string, unknown>).__x = useRumExpoRouter;\n",
+      "external": ["react", "expo-router"],
+      "conditions": ["react-native"],
+      "budget": 512
+    },
     "@libo11y/rum/bootstrap": {
       "code": "import { afterLoad, installRumBootstrap } from \"@libo11y/rum/bootstrap\"; (globalThis as Record<string, unknown>).__x = [afterLoad, installRumBootstrap];\n",
       "budget": 1536

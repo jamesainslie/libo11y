@@ -1,13 +1,14 @@
 import { useRum } from "@libo11y/rum-react";
-import { createElement, type ReactElement, useEffect } from "react";
+import { createElement, Fragment, type ReactElement } from "react";
 import { Text } from "react-native";
 
-/** The home screen, which tells RUM it is on screen. */
+/** The home screen. The root layout names it; it shows whether rum-react's provider reaches it. */
 export default function Home(): ReactElement {
   const rum = useRum();
-  useEffect(() => {
-    rum?.setViewName("/");
-    rum?.viewRendered();
-  }, [rum]);
-  return createElement(Text, null, "home");
+  return createElement(
+    Fragment,
+    null,
+    createElement(Text, null, "home"),
+    rum === undefined ? null : createElement(Text, null, "rum ready"),
+  );
 }
