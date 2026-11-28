@@ -28,8 +28,9 @@ type Panel struct {
 	Options     map[string]any
 	Overrides   []any
 	Transforms  []any
-	Links       []Link // fieldConfig.defaults.links (data links)
-	Content     string // text panels (markdown)
+	Links       []Link         // fieldConfig.defaults.links (data links)
+	Custom      map[string]any // fieldConfig.defaults.custom, the panel type's own field options
+	Content     string         // text panels (markdown)
 }
 
 // Row panels span the grid and are one unit tall.
@@ -113,6 +114,9 @@ func (p Panel) defaults() map[string]any {
 			steps = append(steps, map[string]any{"color": s.Color, "value": v})
 		}
 		d["thresholds"] = map[string]any{"mode": "absolute", "steps": steps}
+	}
+	if len(p.Custom) > 0 {
+		d["custom"] = maps.Clone(p.Custom)
 	}
 	if len(p.Links) > 0 {
 		links := make([]any, 0, len(p.Links))

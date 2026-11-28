@@ -4,6 +4,7 @@
 package dash
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"slices"
@@ -34,6 +35,9 @@ type Dashboard struct {
 	Variables               []Variable
 	Rows                    [][]Panel // each inner slice fills 24 columns left to right
 	Links                   []Link
+	// TimeFrom is where the time picker starts, such as now-24h. The
+	// default is now-6h.
+	TimeFrom string
 }
 
 // JSON renders the dashboard with sorted keys, a two-space indent and a
@@ -65,6 +69,10 @@ func (d Dashboard) JSON() ([]byte, error) {
 	if panels == nil {
 		panels = []any{}
 	}
+	from := d.TimeFrom
+	if from == "" {
+		from = "now-6h"
+	}
 	v := map[string]any{
 		"uid":           d.UID,
 		"title":         d.Title,
@@ -74,7 +82,7 @@ func (d Dashboard) JSON() ([]byte, error) {
 		"version":       1,
 		"editable":      true,
 		"graphTooltip":  1,
-		"time":          map[string]any{"from": "now-6h", "to": "now"},
+		"time":          map[string]any{"from": from, "to": "now"},
 		"refresh":       "",
 		"timezone":      "",
 		"links":         links,
@@ -82,11 +90,16 @@ func (d Dashboard) JSON() ([]byte, error) {
 		"annotations":   map[string]any{"list": []any{builtinAnnotation}},
 		"panels":        panels,
 	}
-	b, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
+	// An encoder without HTML escaping keeps &, < and > in queries and
+	// links as written. Encode ends the document with a newline.
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(v); err != nil {
 		return nil, fmt.Errorf("dash: %s: %w", d.UID, err)
 	}
-	return append(b, '\n'), nil
+	return buf.Bytes(), nil
 }
 
 // builtinAnnotation is Grafana's own annotations and alerts query, which
@@ -118,7 +131,11 @@ func (v Variable) render() (map[string]any, error) {
 		}
 		out["datasource"] = *v.Datasource
 		out["definition"] = v.Query
-		out["query"] = map[string]any{"query": v.Query, "refId": "Var"}
+		if v.Datasource.Type == "loki" {
+			out["query"] = v.Query // the Loki datasource parses label_values() itself
+		} else {
+			out["query"] = map[string]any{"query": v.Query, "refId": "Var"}
+		}
 		out["refresh"] = 2
 		out["multi"] = v.Multi
 		out["includeAll"] = v.IncludeAll
