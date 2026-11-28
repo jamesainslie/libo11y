@@ -9,6 +9,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import threading
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
@@ -16,12 +17,15 @@ from typing import Any
 
 import pytest
 from opentelemetry._logs import LogRecord
+from opentelemetry.sdk._logs import LoggerProvider
+from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter
 
 import libo11y
 from libo11y._internal.logging_handler import (
     _STANDARD_LOG_ATTRS,  # pyright: ignore[reportPrivateUsage]
+    O11yLoggingHandler,
 )
-from libo11y._internal.policy import RULE_SECRET
+from libo11y._internal.policy import RULE_SECRET, SensitivityPolicy
 from libo11y.redact import Secret
 from libo11y.spec import ATTR_RULE, METRIC_SCHEMA_VIOLATIONS
 from libo11y.testing import Recorder, start_recorder
@@ -455,7 +459,7 @@ def test_exception_attributes_pass_through_the_replacer(
 
     assert "exception.stacktrace" not in p.otlp_attrs()[0]
     assert "exception.stacktrace" not in p.console_json()[0]
-    assert set(p.extra_attrs()[0]) == {"exception.type", "exception.message"}
+    assert set(p.extra_attrs()[0]) == {"exception.type", "exception.message", "error.type"}
 
 
 # Finding 4: ObservedTimestamp is the observation time.
@@ -516,3 +520,242 @@ def test_replacer_cannot_rename_an_attribute_to_a_correlation_id(
     assert p.otlp_attrs() == [{}]
     assert p.extra_attrs() == [{}]
     assert "fake" not in p.console.getvalue()
+
+
+# Item 9: error.type on ERROR and above when the record carries an exception.
+
+
+def test_error_record_with_exception_carries_error_type(
+    make_pipeline: Callable[..., _Pipeline],
+) -> None:
+    p = make_pipeline()
+
+    try:
+        _raise_checkout()
+    except _CheckoutError:
+        p.logger().exception("checkout failed")
+
+    assert p.otlp_attrs()[0]["error.type"] == f"{__name__}._CheckoutError"
+
+
+def test_warning_record_with_exception_has_no_error_type(
+    make_pipeline: Callable[..., _Pipeline],
+) -> None:
+    p = make_pipeline()
+
+    try:
+        _raise_checkout()
+    except _CheckoutError:
+        p.logger().warning("retrying checkout", exc_info=True)
+
+    attrs = p.otlp_attrs()[0]
+    assert "error.type" not in attrs
+    assert attrs["exception.type"] == f"{__name__}._CheckoutError"
+
+
+def test_caller_supplied_error_type_wins(make_pipeline: Callable[..., _Pipeline]) -> None:
+    p = make_pipeline()
+
+    try:
+        _raise_checkout()
+    except _CheckoutError:
+        p.logger().exception("checkout failed", extra={"error.type": "card_declined"})
+
+    assert p.otlp_attrs()[0]["error.type"] == "card_declined"
+
+
+# Item 6: force_emit bypasses the handler's gate on the public setup() path.
+
+
+@dataclass
+class _Global:
+    tel: libo11y.Telemetry
+    console: io.StringIO
+    exporter: InMemoryLogRecordExporter
+    extra: _ListHandler
+    errors: list[Exception]
+
+    def messages(self, leg: str) -> list[str]:
+        if leg == "console":
+            return [
+                json.loads(ln)["msg"] for ln in self.console.getvalue().splitlines() if ln.strip()
+            ]
+        if leg == "otlp":
+            self.tel.force_flush()
+            return [str(lr.log_record.body) for lr in self.exporter.get_finished_logs()]
+        return [r.getMessage() for r in self.extra.records]
+
+
+@pytest.fixture
+def global_setup() -> Iterator[_Global]:
+    console = io.StringIO()
+    exporter = InMemoryLogRecordExporter()
+    extra = _ListHandler()
+    errors: list[Exception] = []
+    tel = libo11y.setup(
+        env=libo11y.HERMETIC,
+        service_name="pipeline-test",
+        environment="test",
+        log_level=logging.INFO,
+        console_writer=console,
+        log_exporter=exporter,
+        extra_log_handlers=(extra,),
+        error_handler=errors.append,
+        runtime_metrics=False,
+        startup_summary=False,
+    )
+    try:
+        yield _Global(tel=tel, console=console, exporter=exporter, extra=extra, errors=errors)
+    finally:
+        tel.shutdown()
+
+
+_LEGS = ["console", "otlp", "extra"]
+
+
+@pytest.fixture
+def debug_logger() -> Iterator[logging.Logger]:
+    logger = logging.getLogger("pipeline.force_emit")
+    logger.setLevel(logging.DEBUG)
+    try:
+        yield logger
+    finally:
+        logger.setLevel(logging.NOTSET)
+
+
+@pytest.mark.parametrize("leg", _LEGS)
+def test_force_emit_delivers_a_record_below_the_handler_level(
+    global_setup: _Global, debug_logger: logging.Logger, leg: str
+) -> None:
+    with libo11y.force_emit():
+        debug_logger.debug("forced debug")
+
+    assert global_setup.messages(leg) == ["forced debug"]
+
+
+@pytest.mark.parametrize("leg", _LEGS)
+def test_record_below_the_handler_level_is_not_delivered_without_force_emit(
+    global_setup: _Global, debug_logger: logging.Logger, leg: str
+) -> None:
+    debug_logger.debug("plain debug")
+
+    assert global_setup.messages(leg) == []
+
+
+@pytest.mark.parametrize("leg", _LEGS)
+def test_event_name_attribute_alone_does_not_bypass_the_handler_level(
+    global_setup: _Global, debug_logger: logging.Logger, leg: str
+) -> None:
+    debug_logger.debug("not an event", extra={"event.name": "o11y.request.summary"})
+
+    assert global_setup.messages(leg) == []
+
+
+def test_force_emit_cannot_deliver_a_record_the_logger_level_rejects(
+    global_setup: _Global,
+) -> None:
+    inheriting = logging.getLogger("pipeline.force_emit.inherits_root")
+
+    with libo11y.force_emit():
+        inheriting.debug("dropped by logging")
+
+    assert global_setup.messages("console") == []
+
+
+# Item 8: OpenTelemetry SDK logs go to the error handler, never to the legs.
+
+
+def _log_from_thread(logger_name: str, message: str) -> None:
+    thread = threading.Thread(target=logging.getLogger(logger_name).error, args=(message,))
+    thread.start()
+    thread.join()
+
+
+def test_sdk_log_from_a_worker_thread_goes_only_to_the_error_handler(
+    global_setup: _Global,
+) -> None:
+    _log_from_thread("opentelemetry.sdk._logs._internal.export", "Failed to export logs batch")
+
+    assert [m for leg in _LEGS for m in global_setup.messages(leg)] == []
+    assert len(global_setup.errors) == 1
+    assert "Failed to export logs batch" in str(global_setup.errors[0])
+    assert "opentelemetry.sdk._logs._internal.export" in str(global_setup.errors[0])
+
+
+def test_logger_named_like_the_sdk_prefix_is_not_an_sdk_log(global_setup: _Global) -> None:
+    logging.getLogger("opentelemetry_app").warning("app warning")
+
+    assert global_setup.messages("console") == ["app warning"]
+    assert global_setup.errors == []
+
+
+def _bare_handler(errors: list[Exception], *, clock: Callable[[], float]) -> O11yLoggingHandler:
+    return O11yLoggingHandler(
+        level=logging.INFO,
+        policy=SensitivityPolicy(),
+        logger_provider=LoggerProvider(shutdown_on_exit=False),
+        console_enabled=False,
+        console_writer=None,
+        console_format=libo11y.ConsoleFormat.JSON,
+        log_export=False,
+        attr_replacer=None,
+        extra_handlers=(),
+        error_handler=errors.append,
+        clock=clock,
+    )
+
+
+def _sdk_record(message: str) -> logging.LogRecord:
+    return logging.LogRecord(
+        "opentelemetry.sdk.trace", logging.ERROR, __file__, 1, message, (), None
+    )
+
+
+def test_sdk_errors_are_rate_limited_with_a_suppressed_count() -> None:
+    now = [0.0]
+    errors: list[Exception] = []
+    handler = _bare_handler(errors, clock=lambda: now[0])
+
+    for i in range(8):
+        handler.handle(_sdk_record(f"failure {i}"))
+    now[0] += 30.0
+    handler.handle(_sdk_record("after refill"))
+
+    prefix = "o11y: telemetry error: opentelemetry.sdk.trace: "
+    assert [str(e) for e in errors] == [
+        f"{prefix}failure 0",
+        f"{prefix}failure 1",
+        f"{prefix}failure 2",
+        f"{prefix}failure 3",
+        f"{prefix}failure 4",
+        f"{prefix}after refill (suppressed 3)",
+    ]
+
+
+# Console rendering of bytes and non-finite floats.
+
+
+def _reject_constant(name: str) -> Any:
+    raise ValueError(f"not valid JSON: {name}")
+
+
+def test_text_console_renders_bytes_as_text(make_pipeline: Callable[..., _Pipeline]) -> None:
+    p = make_pipeline(console_format=libo11y.ConsoleFormat.TEXT)
+
+    p.logger().info("x", extra={"app.b": b"ab"})
+
+    assert " app.b=ab\n" in p.console.getvalue()
+
+
+def test_json_console_line_with_non_finite_floats_is_valid_json(
+    make_pipeline: Callable[..., _Pipeline],
+) -> None:
+    p = make_pipeline()
+
+    p.logger().info(
+        "x", extra={"app.nan": float("nan"), "app.inf": [float("inf"), {"neg": float("-inf")}]}
+    )
+
+    line = p.console.getvalue()
+    rec = json.loads(line, parse_constant=_reject_constant)
+    assert (rec["app.nan"], rec["app.inf"]) == ("nan", ["inf", {"neg": "-inf"}])

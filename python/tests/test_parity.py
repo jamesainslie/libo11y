@@ -15,7 +15,13 @@ from libo11y.spec import EVENT_NAME_KEY, EVENT_TELEMETRY_CONFIGURED
 from libo11y.testing import start_recorder
 
 
-def test_force_emit_bypasses_log_level() -> None:
+def test_force_emit_bypasses_the_handler_level_gate() -> None:
+    """force_emit lifts the libo11y handler's level (ERROR here) for an INFO record.
+
+    The logger is set to DEBUG first because force_emit cannot lift the
+    originating logger's own level: the standard library drops a record that
+    level rejects before any handler runs.
+    """
     buf = io.StringIO()
     with libo11y.init(
         env=libo11y.HERMETIC,
