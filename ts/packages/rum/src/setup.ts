@@ -24,6 +24,7 @@ import {
   ATTR_RUM_PLATFORM,
   ATTR_RUM_SESSION_RETAINED,
   ATTR_RUM_VIEW_ID,
+  EVENT_NAME_KEY,
   EVENT_RUM_SESSION_END,
   EVENT_RUM_SESSION_START,
   EVENT_RUM_VIEW_SUMMARY,
@@ -37,6 +38,8 @@ import {
   createSpanExporter,
   type Delivery,
   defaultSetupDeps,
+  isIgnored,
+  OTLP_SIGNALS,
   type OtlpBatch,
   openQueue,
   type PersistentQueue,
@@ -44,7 +47,7 @@ import {
   type SetupDeps,
   setupWithDeps,
 } from "@libo11y/web/internal";
-import { diag, type Span } from "@opentelemetry/api";
+import { type Attributes, diag, SeverityNumber, type Span } from "@opentelemetry/api";
 import { type ExportResult, ExportResultCode } from "@opentelemetry/core";
 import { ConsoleSpanExporter, type SpanExporter, type SpanProcessor } from "@opentelemetry/sdk-trace";
 import { recordInstantAction } from "./actions/record.ts";
@@ -308,6 +311,9 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
   const appExporter = webOptions.spanExporter;
   // An app that injects only a processor exports spans itself, so RUM adds no exporter.
   const forward = webOptions.spanProcessor === undefined || appExporter !== undefined;
+  /** The OTLP endpoints, once web resolved them. */
+  let ownUrls: readonly string[] = [];
+  const ignoreUrls = webOptions.instrumentations?.ignoreUrls ?? [];
   let spanTarget: SpanExporter | undefined =
     appExporter === undefined ? undefined : retainingSpanExporter(appExporter, routing);
   const webDeps: SetupDeps = {
@@ -320,6 +326,7 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
       deps.web.createHttpTransport(gatewayTransportOptions(o, resolved.clientToken, deps.now)),
     onPlatform: (platform, po) => {
       delivery = po.delivery;
+      ownUrls = OTLP_SIGNALS.flatMap((s) => (po.endpoints[s] === undefined ? [] : [po.endpoints[s]]));
       if (forward && appExporter === undefined) {
         const route = naturalTracesRoute(webOptions.hermetic === true, browserEnv(webOptions, po.endpoints));
         const inner =
@@ -343,6 +350,57 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
     installXhrInstrumentation: (o) => deps.web.installXhrInstrumentation({ ...o, onStart }),
   };
 
+  // Hide handling. On a navigation, Chromium fires pagehide before visibilitychange, and web's
+  // flush on hide runs once per hide and exports whatever is pending at that moment; a flush
+  // started after it waits for its export, which never completes once the page is gone. So RUM's
+  // listeners are registered before web's: on the first of pagehide or visibilitychange (hidden)
+  // they run the hide hooks (vitals commit their values) and emit the summaries, and web's flush
+  // then exports them with the detail already pending. web-vitals listens in the capture phase on
+  // window, so its own hide reports land before either listener runs.
+  const doc = deps.document;
+  const win = deps.window;
+  const hideHooks = new Set<() => void>();
+  let hideHandled = false;
+  /** What a hide sends, once setup finished. */
+  let afterHide: ((pagehide: boolean) => void) | undefined;
+  const runHide = (): void => {
+    if (hideHandled) return;
+    hideHandled = true;
+    summary.visibility(false);
+    for (const hook of [...hideHooks]) {
+      try {
+        hook();
+      } catch (err) {
+        diag.warn("o11y: rum: a hide hook threw", err);
+      }
+    }
+  };
+  const onVisibility = (): void => {
+    if (hidden()) {
+      runHide();
+      afterHide?.(false);
+    } else {
+      hideHandled = false;
+      summary.visibility(true);
+      session.touch();
+    }
+  };
+  const onPageHide = (): void => {
+    runHide();
+    afterHide?.(true);
+  };
+  const onPageShow = (): void => {
+    hideHandled = false;
+  };
+  const removeHideListeners = (): void => {
+    doc?.removeEventListener("visibilitychange", onVisibility);
+    win?.removeEventListener("pagehide", onPageHide);
+    win?.removeEventListener("pageshow", onPageShow);
+  };
+  doc?.addEventListener("visibilitychange", onVisibility);
+  win?.addEventListener("pagehide", onPageHide);
+  win?.addEventListener("pageshow", onPageShow);
+
   let t: WebTelemetry;
   try {
     t = await setupWithDeps(
@@ -357,6 +415,7 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
       deps.install !== false,
     );
   } catch (err) {
+    removeHideListeners();
     views.close();
     session.close();
     retention.close();
@@ -369,6 +428,9 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
     throw new O11yError("INVALID_OPTION", "rum: web setup built no consent controller");
   }
 
+  // Events with a body (semconv's browser.web_vital) are bridge records: core's redacting log
+  // processor classifies their attributes, and the retention exporters route them by session.id.
+  const bodyLogger = t.loggerProvider.getLogger("@libo11y/rum", VERSION);
   const runtime: RumRuntime = {
     platform: "web",
     telemetry: t,
@@ -380,20 +442,28 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
     bus,
     settings: () => settings,
     now: deps.perfNow,
-    emit(name, attrs = {}, ctx) {
+    emit(name, attrs = {}, ctx, body) {
       if (!gate.recording()) return;
       const s = session.current();
       const v = views.current();
-      t.event(
-        name,
-        {
-          ...(s === undefined ? {} : { [ATTR_SESSION_ID]: s.id }),
-          ...(v === undefined ? {} : { [ATTR_RUM_VIEW_ID]: v.id }),
-          ...(userId === undefined ? {} : { [ATTR_USER_ID]: userId }),
-          ...attrs,
-        },
-        ctx,
-      );
+      const merged = {
+        ...(s === undefined ? {} : { [ATTR_SESSION_ID]: s.id }),
+        ...(v === undefined ? {} : { [ATTR_RUM_VIEW_ID]: v.id }),
+        ...(userId === undefined ? {} : { [ATTR_USER_ID]: userId }),
+        ...attrs,
+      };
+      if (body === undefined) {
+        t.event(name, merged, ctx);
+        return;
+      }
+      bodyLogger.emit({
+        eventName: name,
+        severityNumber: SeverityNumber.INFO,
+        severityText: "INFO",
+        body: { ...body },
+        attributes: { ...(merged as Attributes), [EVENT_NAME_KEY]: name },
+        ...(ctx === undefined ? {} : { context: ctx }),
+      });
     },
     onRequestStart(hook) {
       hooks.add(hook);
@@ -404,6 +474,19 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
       active = span;
     },
     breadcrumbs: () => crumbs.snapshot(deps.perfNow()),
+    onHide(hook) {
+      hideHooks.add(hook);
+      return () => hideHooks.delete(hook);
+    },
+    ignored(url) {
+      let u: URL;
+      try {
+        u = new URL(url);
+      } catch {
+        return false;
+      }
+      return ownUrls.some((own) => u.href.startsWith(own)) || isIgnored(u, ignoreUrls);
+    },
   };
 
   // Collectors run only while consent is granted.
@@ -540,27 +623,13 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
     else if (everStarted) stopRecording();
   });
 
-  const doc = deps.document;
-  const win = deps.window;
-  const onVisibility = (): void => {
-    summary.visibility(!hidden());
-    if (hidden()) {
-      // A microtask, so vitals reported in the same visibilitychange land first (decision P7).
-      queueMicrotask(() => {
-        summary.flush();
-        void t.forceFlush();
-      });
-    } else session.touch();
-  };
-  const onPageHide = (): void => {
-    settleStarts();
+  afterHide = (pagehide) => {
+    if (pagehide) settleStarts();
     summary.flush();
     void t.forceFlush();
   };
   const onActivity = (): void => session.touch();
   const ACTIVITY = ["pointerdown", "keydown", "scroll", "touchstart"] as const;
-  doc?.addEventListener("visibilitychange", onVisibility);
-  win?.addEventListener("pagehide", onPageHide);
   for (const a of ACTIVITY) win?.addEventListener(a, onActivity, { capture: true, passive: true });
 
   const rum: Rum = {
@@ -611,8 +680,7 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
       stopAll();
       views.end();
       summary.flush();
-      doc?.removeEventListener("visibilitychange", onVisibility);
-      win?.removeEventListener("pagehide", onPageHide);
+      removeHideListeners();
       for (const a of ACTIVITY) win?.removeEventListener(a, onActivity, { capture: true });
       offGate();
       offRevoke();

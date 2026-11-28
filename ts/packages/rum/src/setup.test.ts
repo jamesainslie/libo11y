@@ -709,6 +709,147 @@ test("a rotated session's start still goes out when the page hides before the el
   assert.ok(starts.includes(rotated), "the rotated session's start was sent on pagehide");
 });
 
+function logBodies(t: FakeTransport): unknown[] {
+  return t.requests
+    .filter((r) => r.signal === "logs")
+    .flatMap((r) => {
+      const body = JSON.parse(r.body) as {
+        resourceLogs: { scopeLogs: { logRecords: { body?: unknown }[] }[] }[];
+      };
+      return body.resourceLogs.flatMap((rl) =>
+        rl.scopeLogs.flatMap((sl) => sl.logRecords.map((lr) => lr.body)),
+      );
+    });
+}
+
+test("an event with a body goes out with that body, the event name and the session", async () => {
+  const h = harness();
+  open = await setupRumWith({ ...OPTS, consent: { initial: "granted" } }, h.deps);
+  const rt = runtimeOf(open);
+  assert.ok(rt);
+  rt.emit("browser.web_vital", { "o11y.rum.element.selector": "#save" }, undefined, {
+    name: "inp",
+    value: 0.24,
+    delta: 0.24,
+    id: "v5-1",
+  });
+  await open.forceFlush();
+  const i = logRecords(h.transport).findIndex((r) => r["event.name"] === "browser.web_vital");
+  assert.ok(i >= 0, "the event was sent");
+  const record = logRecords(h.transport)[i];
+  assert.equal(record?.["session.id"], open.rum.sessionId());
+  assert.equal(record?.["o11y.rum.view.id"], rt.views.current()?.id);
+  assert.equal(record?.["o11y.rum.element.selector"], "#save");
+  assert.deepEqual(logBodies(h.transport)[i], {
+    kvlistValue: {
+      values: [
+        { key: "name", value: { stringValue: "inp" } },
+        { key: "value", value: { doubleValue: 0.24 } },
+        { key: "delta", value: { doubleValue: 0.24 } },
+        { key: "id", value: { stringValue: "v5-1" } },
+      ],
+    },
+  });
+});
+
+test("an event with a body is buffered for an unkept session and dropped without consent", async () => {
+  const h = harness();
+  open = await setupRumWith(
+    { ...OPTS, consent: { initial: "granted" }, rum: { sessionSampleRate: 0 } },
+    h.deps,
+  );
+  const rt = runtimeOf(open);
+  assert.ok(rt);
+  rt.emit("browser.web_vital", {}, undefined, { name: "lcp", value: 1, delta: 1, id: "a" });
+  await open.forceFlush();
+  assert.equal(sentEvents(h.transport).includes("browser.web_vital"), false);
+  await open.consent.revoke();
+  rt.emit("browser.web_vital", {}, undefined, { name: "lcp", value: 1, delta: 1, id: "b" });
+  open.consent.grant();
+  await until(() => open?.rum.sessionId() !== undefined, "the session");
+  runtimeOf(open)?.session.retain("error");
+  await new Promise((r) => setTimeout(r, 50));
+  await open.forceFlush();
+  assert.equal(sentEvents(h.transport).includes("browser.web_vital"), false);
+});
+
+test("the runtime ignores the OTLP endpoints and the app's ignoreUrls", async () => {
+  const h = harness();
+  open = await setupRumWith(
+    {
+      ...OPTS,
+      consent: { initial: "granted" },
+      instrumentations: { ignoreUrls: ["https://ads.test/", /\/health$/] },
+    },
+    h.deps,
+  );
+  const rt = runtimeOf(open);
+  assert.ok(rt);
+  assert.equal(rt.ignored("https://gateway.test/_o11y/v1/traces"), true);
+  assert.equal(rt.ignored("https://gateway.test/_o11y/v1/logs"), true);
+  assert.equal(rt.ignored("https://ads.test/pixel.gif"), true);
+  assert.equal(rt.ignored("https://app.test/health"), true);
+  assert.equal(rt.ignored("https://app.test/main.js"), false);
+  assert.equal(rt.ignored("not a url"), false);
+});
+
+/** The event names of each logs request, in order. */
+function logRequests(t: FakeTransport): unknown[][] {
+  return t.requests
+    .filter((r) => r.signal === "logs")
+    .map((r) => logRecords({ ...t, requests: [r] } as FakeTransport).map((a) => a["event.name"]));
+}
+
+for (const [how, hide] of [
+  ["pagehide", (h: Harness) => h.deps.window?.dispatchEvent(new Event("pagehide"))],
+  ["visibilitychange", (h: Harness) => h.document.hide()],
+] as const) {
+  test(`on ${how}, the hide hooks run and the summary is emitted before web's flush exports`, async () => {
+    const h = harness();
+    open = await setupRumWith({ ...OPTS, consent: { initial: "granted" } }, h.deps);
+    const rt = runtimeOf(open);
+    assert.ok(rt);
+    await open.forceFlush();
+    const before = h.transport.requests.length;
+    rt.emit("o11y.rum.frustration", { "o11y.rum.frustration.type": "dead" });
+    const view = rt.views.current();
+    assert.ok(view);
+    let hooks = 0;
+    rt.onHide(() => {
+      hooks++;
+      rt.summary.vital(view.id, "cls", 0.1);
+    });
+    hide(h);
+    hide(h);
+    await new Promise((r) => setTimeout(r, 0));
+    await open.forceFlush();
+    assert.equal(hooks, 1, "once per hide");
+    const after = logRequests({
+      ...h.transport,
+      requests: h.transport.requests.slice(before),
+    } as FakeTransport);
+    assert.deepEqual(after[0], ["o11y.rum.frustration", "o11y.rum.view.summary"]);
+    const summary = logRecords(h.transport).find((r) => r["event.name"] === "o11y.rum.view.summary");
+    assert.equal(summary?.["o11y.rum.summary.cls.value"], 0.1);
+  });
+}
+
+test("a page shown again is hidden again: the hooks run once per hide", async () => {
+  const h = harness();
+  open = await setupRumWith({ ...OPTS, consent: { initial: "granted" } }, h.deps);
+  const rt = runtimeOf(open);
+  assert.ok(rt);
+  let hooks = 0;
+  rt.onHide(() => hooks++);
+  h.document.hide();
+  h.deps.window?.dispatchEvent(new Event("pagehide"));
+  assert.equal(hooks, 1);
+  h.document.visibilityState = "visible";
+  h.document.dispatchEvent(new Event("visibilitychange"));
+  h.document.hide();
+  assert.equal(hooks, 2);
+});
+
 test("a request that ends after a revoke leaves no breadcrumb for the next grant", async () => {
   const h = harness();
   open = await setupRumWith({ ...OPTS, consent: { initial: "granted" } }, h.deps);
