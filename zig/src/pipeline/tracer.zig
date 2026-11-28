@@ -34,19 +34,23 @@ pub const Tracer = struct {
     provider: ?*TracerProvider,
     scope: resource_mod.InstrumentationScope,
 
-    /// A tracer whose spans record nothing and carry no span context.
+    /// A tracer whose spans record nothing. Each one carries its parent's
+    /// span context, as OpenTelemetry's no-op tracer does, so a context
+    /// derived from it still propagates the trace.
     pub const noop: Tracer = .{ .provider = null, .scope = .{ .name = "" } };
 
     /// Starts a span as a child of the span context in `ctx`, unless
     /// `options.new_root` is set. The sampler decides whether it records;
     /// a span it drops still gets ids, so propagation continues, but
-    /// records nothing. Never fails: when memory runs out, or after the
-    /// provider has shut down, it returns a no-op span.
+    /// records nothing. Never fails: when memory runs out it returns a
+    /// span that records nothing. The no-op tracer, and a provider that
+    /// has shut down, return a span that records nothing and carries the
+    /// parent's span context.
     pub fn start(tracer: *const Tracer, ctx: Context, name: []const u8, options: StartOptions) Span {
-        const provider = tracer.provider orelse return .noop;
-        if (provider.is_shutdown.load(.acquire)) return .noop;
-
         const parent: ids.SpanContext = if (options.new_root) .invalid else ctx.span_context;
+        const provider = tracer.provider orelse return .{ .span_context = parent };
+        if (provider.is_shutdown.load(.acquire)) return .{ .span_context = parent };
+
         const parent_ctx = if (options.new_root) ctx.withSpanContext(.invalid) else ctx;
         const trace_id = if (parent.isValid()) parent.trace_id else provider.id_generator.traceId();
         const result = provider.sampler.shouldSample(.{

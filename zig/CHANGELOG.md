@@ -54,6 +54,13 @@ Requires Zig 0.17.1.
   `span_id`. The reserved keys were dropped before the replacer ran but not
   after it, so a renamed attribute produced a duplicate JSON key on the
   console.
+- A span that records nothing keeps its parent's span context. The no-op
+  tracer, which `Telemetry.tracer` returns while `OTEL_SDK_DISABLED` is set,
+  and a tracer whose provider has shut down returned a span with an invalid
+  context. `ctx.withSpan(&span)` then discarded an inbound trace, so an
+  outgoing request started a new trace and logs lost their trace ID.
+- `Telemetry.tracerProvider()` returns null while `OTEL_SDK_DISABLED` is
+  set. It returned a provider whose tracers still recorded spans in memory.
 
 ## [0.1.0] - 2026-11-26
 

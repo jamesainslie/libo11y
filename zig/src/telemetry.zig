@@ -12,6 +12,7 @@ const Context = @import("context.zig").Context;
 const detached_mod = @import("detached.zig");
 const error_handler_mod = @import("error_handler.zig");
 const goquote = @import("goquote.zig");
+const ids = @import("pipeline/ids.zig");
 const log_pipeline_mod = @import("log_pipeline.zig");
 const policy_runtime = @import("policy_runtime.zig");
 const process_metrics_mod = @import("process_metrics.zig");
@@ -387,7 +388,9 @@ pub const Telemetry = struct {
         return report;
     }
 
-    /// Returns a tracer for `name` (or the no-op tracer when disabled).
+    /// Returns a tracer for `name`, or the no-op tracer when disabled. A
+    /// span the no-op tracer starts records nothing and keeps its parent's
+    /// span context, so propagation and log correlation continue.
     pub fn tracer(self: *Telemetry, name: []const u8) *const tracer_mod.Tracer {
         return self.tracerWithScope(.{ .name = name });
     }
@@ -421,8 +424,12 @@ pub const Telemetry = struct {
         return self.logger_provider;
     }
 
-    /// Returns the underlying `TracerProvider`.
+    /// Returns the underlying `TracerProvider`, or null while
+    /// `OTEL_SDK_DISABLED` switches the SDK off, so no caller reaches a
+    /// provider that would still record spans in memory. Use `tracer`, which
+    /// then returns the no-op tracer.
     pub fn tracerProvider(self: *Telemetry) ?*tracer_mod.TracerProvider {
+        if (self.disabled) return null;
         return self.tracer_provider;
     }
 
@@ -1789,6 +1796,31 @@ test "OTEL_SDK_DISABLED disables exports and runtime metrics while keeping conso
     try testing.expect(std.mem.indexOf(u8, t.effectiveConfig(), "o11y.config.traces=none") != null);
     try testing.expect(std.mem.indexOf(u8, t.effectiveConfig(), "o11y.config.runtime_metrics=false") != null);
     try testing.expectEqual(@as(usize, 0), span_exp.count());
+
+    // No provider is exposed that could still record spans in memory.
+    try testing.expect(t.tracerProvider() == null);
+
+    // An inbound trace still continues: a span started under a remote
+    // parent keeps that parent's identity, so an outbound call carries it.
+    const remote: ids.SpanContext = .{
+        .trace_id = ids.TraceId.parseHex("4bf92f3577b34da6a3ce929d0e0e4736").?,
+        .span_id = ids.SpanId.parseHex("00f067aa0ba902b7").?,
+        .flags = .sampled_flag,
+        .remote = true,
+    };
+    const inbound = Context.background.withSpanContext(remote);
+    var server_span = t.tracer("app").start(inbound, "GET /orders", .{ .kind = .server });
+    defer server_span.end();
+    const handler_ctx = inbound.withSpan(&server_span);
+    var client_span = t.tracer("app").start(handler_ctx, "GET", .{ .kind = .client });
+    defer client_span.end();
+    const outbound = handler_ctx.withSpan(&client_span);
+    try testing.expectEqualSlices(u8, &remote.trace_id.bytes, &outbound.span_context.trace_id.bytes);
+    try testing.expectEqualSlices(u8, &remote.span_id.bytes, &outbound.span_context.span_id.bytes);
+
+    console.buf.clearRetainingCapacity();
+    t.logger().info(handler_ctx, "in the handler", .{});
+    try testing.expect(std.mem.indexOf(u8, console.buf.items, "\"trace_id\":\"4bf92f3577b34da6a3ce929d0e0e4736\"") != null);
 }
 
 test "log PII violation counts once per sink (console + OTLP) and shutdown emits telemetry.dropped on failing exporter" {
