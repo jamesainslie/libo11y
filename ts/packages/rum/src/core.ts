@@ -83,6 +83,14 @@ export { parseSessionState, SESSION_STORAGE_KEY } from "./session/state.ts";
 export { type ResolvedRum, resolveSettings } from "./settings.ts";
 export { APP_LOAD_SPAN, type RumSpanProcessorOptions, rumSpanProcessor } from "./span-processor.ts";
 export { createSummaryAccumulator, type SummaryOptions } from "./summary/accumulator.ts";
+export {
+  type MutationObserverCtor,
+  type MutationObserverLike,
+  VIEW_SPAN_CAP_MILLIS,
+  type ViewsEnv,
+  type ViewsOptions,
+  viewsWith,
+} from "./views/collector.ts";
 export { afterNextPaint, type PaintHost } from "./views/paint.ts";
 export { createViewTracker, type ViewTrackerOptions } from "./views/tracker.ts";
 export { gatewayTransportOptions, withWireParams } from "./wire.ts";

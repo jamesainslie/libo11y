@@ -3,6 +3,7 @@
  * seams. Tests only; never built.
  */
 import type { LogAttributes } from "@libo11y/core";
+import type { RUMViewKind } from "@libo11y/spec";
 import type { Context, Span, SpanContext } from "@opentelemetry/api";
 import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
 import { createBus } from "../bus.ts";
@@ -263,7 +264,9 @@ export interface FakeRuntime extends RumRuntime {
 
 const FIXED_VIEW: ViewState = { id: "v0", name: "/", kind: "initial", startTime: 0, sessionId: "s1" };
 
-export function fakeRuntime(opts: { readonly realViews?: boolean } = {}): FakeRuntime {
+export function fakeRuntime(
+  opts: { readonly realViews?: boolean; readonly viewKind?: RUMViewKind } = {},
+): FakeRuntime {
   const clock = manualTimers();
   const env = fakeEnv(clock);
   const exporter = new InMemorySpanExporter();
@@ -325,6 +328,7 @@ export function fakeRuntime(opts: { readonly realViews?: boolean } = {}): FakeRu
           location: () => env.history.location.href,
           now: () => clock.now(),
           prerendered: () => false,
+          ...(opts.viewKind === undefined ? {} : { viewKind: opts.viewKind }),
         })
       : {
           current: () => FIXED_VIEW,

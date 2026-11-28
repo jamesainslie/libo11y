@@ -1,9 +1,12 @@
 /**
  * The view tracker: the initial (or prerender) view at begin, a bfcache_restore view on a
  * persisted pageshow, a soft view of the same name when the session changes (decision P14), and
- * the soft views views() and the router adapters start. Every view opens in the summary
- * accumulator and closes when it ends. views() records the view spans and attaches their contexts.
+ * the soft views views() and the router adapters start. A platform whose views are all of one
+ * kind, as React Native's screens, passes viewKind: the first begin's view is then the load view and
+ * every view has that kind. Every view opens in the summary accumulator and closes when it ends.
+ * views() records the view spans and attaches their contexts.
  */
+import type { RUMViewKind } from "@libo11y/spec";
 
 import type { SpanContext } from "@opentelemetry/api";
 import type { SessionManager } from "../contracts/session.ts";
@@ -25,6 +28,12 @@ export interface ViewTrackerOptions {
   readonly window?: EventTarget;
   /** When the initial view starts, performance.now(). Default 0, navigation start; a content script's view starts when RUM begins. */
   readonly initialStart?: () => number;
+  /**
+   * The kind of every view the tracker starts itself (the load view, the view of a session change
+   * and of a later begin), for a platform with one kind of view, such as React Native's screen.
+   * Default the web's: initial or prerender, then soft.
+   */
+  readonly viewKind?: RUMViewKind;
   readonly randomId?: () => string;
 }
 
@@ -49,7 +58,9 @@ export function createViewTracker(opts: ViewTrackerOptions): ViewTracker & { clo
     return ended;
   };
 
-  const start = (o: ViewStartOptions): ViewState => {
+  const later: RUMViewKind = opts.viewKind ?? "soft";
+  /** Starts a view; asLoad makes it the load view. */
+  const start = (o: ViewStartOptions, asLoad = LOAD_KINDS.has(o.kind)): ViewState => {
     const previous = endCurrent();
     const session = opts.session.current();
     const view: ViewState = {
@@ -61,7 +72,7 @@ export function createViewTracker(opts: ViewTrackerOptions): ViewTracker & { clo
     };
     if (session === undefined) return view; // no consent: nothing is tracked
     current = view;
-    if (LOAD_KINDS.has(view.kind)) load = view;
+    if (asLoad) load = view;
     opts.summary.open(view);
     emit({
       type: "start",
@@ -82,13 +93,13 @@ export function createViewTracker(opts: ViewTrackerOptions): ViewTracker & { clo
 
   const unsubscribe = opts.session.subscribe((e) => {
     if (e.type !== "start" || e.previous === undefined || current === undefined) return;
-    if (current.sessionId !== e.session.id) start({ kind: "soft", name: current.name, rendered: true });
+    if (current.sessionId !== e.session.id) start({ kind: later, name: current.name, rendered: true });
   });
 
   return {
     current: () => current,
     loadView: () => load,
-    start,
+    start: (o) => start(o),
     rename(name) {
       if (current === undefined) return;
       current = { ...current, name };
@@ -114,8 +125,9 @@ export function createViewTracker(opts: ViewTrackerOptions): ViewTracker & { clo
       // A later begin (consent granted again) is a new session on a page already loaded, so its
       // view is soft and starts now (decision P14).
       if (load === undefined) {
-        start({ kind: opts.prerendered() ? "prerender" : "initial", startTime: opts.initialStart?.() ?? 0 });
-      } else start({ kind: "soft", name: load.name });
+        const kind = opts.viewKind ?? (opts.prerendered() ? "prerender" : "initial");
+        start({ kind, startTime: opts.initialStart?.() ?? 0 }, true);
+      } else start({ kind: later, name: load.name });
     },
     end() {
       endCurrent();

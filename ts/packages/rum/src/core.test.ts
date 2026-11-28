@@ -25,10 +25,6 @@ const DENIED_FILES = [
   "actions/collector.ts",
   "actions/naming.ts",
   "errors/collector.ts",
-  // The web's views collector and its History API watcher. A later milestone that admits them
-  // takes them off this list on purpose.
-  "views/collector.ts",
-  "views/history.ts",
 ];
 const DENIED_DIRS = ["vitals/", "resources/", "bootstrap/", "webext/"];
 
@@ -61,6 +57,7 @@ test("@libo11y/rum/core evaluates and makes IDs with every browser global remove
     `const m = await import(${JSON.stringify(pathToFileURL(ENTRY).href)});`,
     `if (typeof m.setupRumCore !== "function") throw new Error("no setupRumCore");`,
     `if (!/^[0-9a-f-]{36}$/.test(m.randomUuid())) throw new Error("no UUID");`,
+    `if (m.viewsWith({ history: false }, {}).name !== "views") throw new Error("no viewsWith");`,
     `console.log("ok");`,
   ].join("\n");
   // Bun runs this file under bun test; the child is always Node, which runs .ts by type stripping.

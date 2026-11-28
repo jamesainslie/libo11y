@@ -287,3 +287,32 @@ test("a fixed view scope follows no URL change and puts its attributes on every 
   assert.equal(spans.length, 1);
   assert.equal(spans[0]?.attributes["url.domain"], "host.test");
 });
+
+test("with one view kind, the load view's span is a child of app_load and a later view's is a root", async () => {
+  const rt = fakeRuntime({ realViews: true, viewKind: "screen" });
+  const env = rt.fakeEnv();
+  rt.views.begin();
+  const stop = viewsWith({ history: false }, env).start(rt);
+  const appLoad = rt.tracer.startSpan("app_load");
+  rt.views.appLoadStarted(appLoad.spanContext());
+  rt.t = 200;
+  rt.views.rendered();
+  env.frame();
+  env.task();
+  rt.t = 1000;
+  rt.views.start({ kind: "screen", name: "/next" });
+  rt.t = 1030;
+  rt.views.rendered();
+  env.frame();
+  env.task();
+  appLoad.end();
+  const spans = await finished(rt);
+  const load = spans.find((s) => s.name === "view /");
+  const next = spans.find((s) => s.name === "view /next");
+  assert.equal(load?.attributes["o11y.rum.view.kind"], "screen");
+  assert.equal(load?.parentSpanContext?.spanId, appLoad.spanContext().spanId);
+  assert.equal(next?.attributes["o11y.rum.view.kind"], "screen");
+  assert.equal(next?.parentSpanContext, undefined);
+  assert.equal(millis(next?.endTime ?? [0, 0]) - millis(next?.startTime ?? [0, 0]), 30);
+  stop();
+});
