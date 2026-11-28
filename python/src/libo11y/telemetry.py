@@ -435,11 +435,14 @@ class Telemetry:
         """The default shutdown and flush timeout in seconds."""
         return self._shutdown_timeout
 
-    def _deadline(self, timeout: float | None) -> float:
+    def _budget(self, timeout: float | None) -> float:
         budget = self._shutdown_timeout if timeout is None else timeout
         if not math.isfinite(budget) or budget < 0:
             raise ValueError("timeout must be finite and non-negative")
-        return time.monotonic() + budget
+        return budget
+
+    def _deadline(self, timeout: float | None) -> float:
+        return time.monotonic() + self._budget(timeout)
 
     def _emit_dropped(self, report: ShutdownReport, deadline: float) -> None:
         if report.ok:
@@ -482,13 +485,15 @@ class Telemetry:
         Work that exceeds the deadline continues on a daemon thread.
         """
         global _global_telemetry
-        deadline = self._deadline(timeout)
+        budget = self._budget(timeout)
         with self._shutdown_lock:
             is_leader = not self._shutdown_started
             self._shutdown_started = True
+        deadline = time.monotonic() + budget
 
         if not is_leader:
-            self._shutdown_done.wait(_remaining(deadline))
+            if not self._shutdown_done.is_set():
+                self._shutdown_done.wait(_remaining(deadline))
             if self._shutdown_report is not None:
                 return self._shutdown_report
             return _report({"shutdown": TimeoutError("o11y: timed out waiting for shutdown")})

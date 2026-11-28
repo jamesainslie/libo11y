@@ -596,6 +596,7 @@ def test_hermetic_detects_ambient_otel_sdk_disabled(monkeypatch: pytest.MonkeyPa
 def test_shutdown_idempotent_concurrent_and_timeout() -> None:
     class _SlowSpanExporter(SpanExporter):
         def __init__(self) -> None:
+            self.entered = threading.Event()
             self.release = threading.Event()
 
         def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
@@ -603,6 +604,7 @@ def test_shutdown_idempotent_concurrent_and_timeout() -> None:
             return SpanExportResult.SUCCESS
 
         def shutdown(self) -> None:
+            self.entered.set()
             self.release.wait(timeout=2.0)
 
     slow = _SlowSpanExporter()
@@ -618,23 +620,31 @@ def test_shutdown_idempotent_concurrent_and_timeout() -> None:
         shutdown_timeout=0.05,
     )
 
-    results: list[libo11y.ShutdownReport] = []
+    leader_results: list[libo11y.ShutdownReport] = []
+    follower_results: list[libo11y.ShutdownReport] = []
 
-    def _call() -> None:
-        results.append(tel.shutdown())
+    leader = threading.Thread(target=lambda: leader_results.append(tel.shutdown()))
+    followers = [
+        threading.Thread(target=lambda: follower_results.append(tel.shutdown(1.0)))
+        for _ in range(3)
+    ]
+    leader.start()
+    try:
+        assert slow.entered.wait(timeout=2.0)
+        for t in followers:
+            t.start()
+        leader.join(timeout=2.0)
+        for t in followers:
+            t.join(timeout=2.0)
+    finally:
+        slow.release.set()
 
-    threads = [threading.Thread(target=_call) for _ in range(4)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(timeout=2.0)
-    slow.release.set()
-
-    assert len(results) == 4
-    first = results[0]
+    assert len(leader_results) == 1
+    assert len(follower_results) == 3
+    first = leader_results[0]
     assert not first.ok
     assert "traces" in first.timed_out
-    assert all(r is first for r in results)
+    assert all(r is first for r in follower_results)
     assert tel.shutdown() is first
     assert EVENT_TELEMETRY_DROPPED in buf.getvalue()
 
