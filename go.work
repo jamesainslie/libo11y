@@ -6,4 +6,5 @@ use (
 	./go/o11ygin
 	./go/o11yrum
 	./go/o11ysql
+	./ops
 )

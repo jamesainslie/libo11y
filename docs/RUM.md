@@ -40,7 +40,10 @@ The two browser cores first ship in `ts/v0.2.1`. The gateway first ships
 in `go/o11yrum/v0.1.0`, with the `ghcr.io/jamesainslie/o11yrum-gateway`
 image, and [its README](../go/o11yrum/README.md) covers configuration and
 deployment. The browser RUM cell, `@libo11y/rum`, is in development in
-`ts/packages/rum` and has not shipped. Every other named cell is planned.
+`ts/packages/rum` and has not shipped. Its adapters for React
+(`@libo11y/rum-react`), TanStack Router (`@libo11y/rum-tanstack-router`)
+and Connect (`@libo11y/rum-connect`) are in development beside it. Every
+other named cell is planned.
 
 ## Data model
 
