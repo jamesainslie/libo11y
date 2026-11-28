@@ -50,7 +50,7 @@ class AppRegistryConformanceTest {
     void generatedSpecConstantsPresent() {
         assertTrue(Spec.SCHEMA_URL.startsWith("https://schemas.o11y.ing/libo11y/"));
         assertEquals("event.name", Spec.EVENT_NAME_KEY);
-        assertTrue(Spec.DeploymentEnvironment.isValid(Spec.DeploymentEnvironment.PRODUCTION));
+        assertTrue(Spec.DeploymentEnvironment.isRegistered(Spec.DeploymentEnvironment.PRODUCTION));
         assertEquals(SpecTables.Sensitivity.SECRET, SpecTables.SENSITIVITY_OF.get("http.request.header.authorization"));
     }
 

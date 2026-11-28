@@ -28,6 +28,8 @@ var javaReservedTypes = map[string]bool{
 	"Sensitivity": true, "Cardinality": true, "Requirement": true, "InstrumentKind": true,
 	"ResourceAttr": true, "EventInfo": true, "MetricInfo": true,
 	"DeploymentEnvironment": true, "Object": true, "String": true, "Class": true, "System": true,
+	"Key": true, "TemplateKey": true, "ValueType": true, "WireValue": true,
+	"Objects": true, "Optional": true, "Set": true, "Long": true, "Double": true, "Boolean": true,
 }
 
 var javaKeywords = map[string]bool{
@@ -86,53 +88,464 @@ func javaHeader(b *strings.Builder, m *model) {
 	b.WriteString("package ing.o11y.libo11y.spec.generated;\n\n")
 }
 
+// javaReservedMembers are names an enum constant may not take, because the
+// generated enum declares a static field of that name.
+var javaReservedMembers = map[string]bool{"WIRE_VALUES": true}
+
+// javaDoc renders text, which is already Javadoc, as a one-line comment at indent.
+func javaDoc(b *strings.Builder, indent, text string) {
+	fmt.Fprintf(b, "%s/** %s */\n", indent, text)
+}
+
+// javaSentence returns brief as one Javadoc sentence ending in a period, or
+// "" when brief is empty. It escapes what Javadoc would read as HTML, a tag,
+// or the end of the comment.
+func javaSentence(brief string) string {
+	brief = strings.Join(strings.Fields(brief), " ")
+	brief = strings.NewReplacer(
+		"&", "&amp;", "<", "&lt;", ">", "&gt;", "@", "&#64;", "*/", "*&#47;",
+	).Replace(brief)
+	if brief == "" || strings.HasSuffix(brief, ".") {
+		return brief
+	}
+	return brief + "."
+}
+
 type javaEnum struct {
 	typeName string
 	key      string
+	brief    string
 	members  []enumMember
 	names    []string
 }
 
+// javaEnums returns the closed value sets of the minted attributes, which
+// become Java enums.
 func (m *model) javaEnums() ([]javaEnum, error) {
 	var enums []javaEnum
 	for _, a := range m.minted {
 		if members := a.enumMembers(); len(members) > 0 {
-			enums = append(enums, javaEnum{typeName: javaTypeName(a.ID), key: a.ID, members: members})
+			enums = append(enums, javaEnum{typeName: javaTypeName(a.ID), key: a.ID, brief: a.Brief, members: members})
 		}
-	}
-	if env := m.environmentValues(); len(env) > 0 {
-		members := make([]enumMember, len(env))
-		for i, v := range env {
-			members[i] = enumMember{ID: v, Value: v}
-		}
-		enums = append(enums, javaEnum{typeName: "DeploymentEnvironment", key: environmentKey, members: members})
 	}
 	types := map[string]string{}
-	for i, e := range enums {
-		if !javaTypePattern.MatchString(e.typeName) || javaKeywords[strings.ToLower(e.typeName)] {
-			return nil, fmt.Errorf("%w: attribute %s: %q is not a Java type name", errJavaName, e.key, e.typeName)
-		}
-		if other, dup := types[e.typeName]; dup {
-			return nil, fmt.Errorf("%w: attributes %s and %s both become enum %s", errJavaName, other, e.key, e.typeName)
-		}
-		if javaReservedTypes[e.typeName] && e.key != environmentKey {
-			return nil, fmt.Errorf("%w: attribute %s: enum %s would collide with a spec type", errJavaName, e.key, e.typeName)
-		}
-		types[e.typeName] = e.key
-		seen := map[string]string{}
-		for _, member := range e.members {
-			name := javaConstName(member.ID)
-			if !javaConstPattern.MatchString(name) || name == "ALL" {
-				return nil, fmt.Errorf("%w: attribute %s: member %s: %q is not a Java constant name", errJavaName, e.key, member.ID, name)
-			}
-			if other, dup := seen[name]; dup {
-				return nil, fmt.Errorf("%w: attribute %s: members %s and %s both become %s", errJavaName, e.key, other, member.ID, name)
-			}
-			seen[name] = member.ID
-			enums[i].names = append(enums[i].names, name)
+	for i := range enums {
+		if err := javaCheckEnum(&enums[i], types); err != nil {
+			return nil, err
 		}
 	}
 	return enums, nil
+}
+
+// javaEnvironment returns the registered deployment.environment.name values.
+// The set is open (an application registers more with extraEnvironments),
+// so it becomes a class of String constants, never a Java enum.
+func (m *model) javaEnvironment() (*javaEnum, error) {
+	env := m.environmentValues()
+	if len(env) == 0 {
+		return nil, nil
+	}
+	e := &javaEnum{typeName: "DeploymentEnvironment", key: environmentKey}
+	for _, v := range env {
+		e.members = append(e.members, enumMember{ID: v, Value: v})
+	}
+	if err := javaCheckEnum(e, map[string]string{}); err != nil {
+		return nil, err
+	}
+	return e, nil
+}
+
+// javaCheckEnum validates e's type and member names and fills e.names.
+// types maps the enum type names taken so far to their attribute keys.
+func javaCheckEnum(e *javaEnum, types map[string]string) error {
+	if !javaTypePattern.MatchString(e.typeName) || javaKeywords[strings.ToLower(e.typeName)] {
+		return fmt.Errorf("%w: attribute %s: %q is not a Java type name", errJavaName, e.key, e.typeName)
+	}
+	if other, dup := types[e.typeName]; dup {
+		return fmt.Errorf("%w: attributes %s and %s both become enum %s", errJavaName, other, e.key, e.typeName)
+	}
+	if javaReservedTypes[e.typeName] && e.key != environmentKey {
+		return fmt.Errorf("%w: attribute %s: enum %s would collide with a spec type", errJavaName, e.key, e.typeName)
+	}
+	types[e.typeName] = e.key
+	seen := map[string]string{}
+	for _, member := range e.members {
+		name := javaConstName(member.ID)
+		if !javaConstPattern.MatchString(name) || name == "ALL" || name == "REGISTERED" || javaReservedMembers[name] {
+			return fmt.Errorf("%w: attribute %s: member %s: %q is not a Java constant name", errJavaName, e.key, member.ID, name)
+		}
+		if other, dup := seen[name]; dup {
+			return fmt.Errorf("%w: attribute %s: members %s and %s both become %s", errJavaName, e.key, other, member.ID, name)
+		}
+		seen[name] = member.ID
+		e.names = append(e.names, name)
+	}
+	return nil
+}
+
+// javaValueType maps a registry scalar type to the Java value class and the
+// Spec.ValueType constant of its key. It reports false for a type the Java
+// API cannot carry, such as an array.
+func javaValueType(scalar string) (class, valueType string, ok bool) {
+	switch scalar {
+	case "string":
+		return "String", "STRING", true
+	case "boolean":
+		return "Boolean", "BOOLEAN", true
+	case "int":
+		return "Long", "LONG", true
+	case "double":
+		return "Double", "DOUBLE", true
+	}
+	return "", "", false
+}
+
+// javaKey is one generated attribute key constant.
+type javaKey struct {
+	name     string // registry key
+	doc      string
+	scalar   string // registry type: string, boolean, int, double, enum or template[...]
+	template bool
+	class    string // Java value class
+	vtype    string // Spec.ValueType constant
+}
+
+// javaKeyFor types the attribute name of registry type scalar. enumType is
+// the Java enum of a closed value set, or "".
+func javaKeyFor(name, scalar, enumType, doc string) (javaKey, error) {
+	k := javaKey{name: name, doc: doc, scalar: scalar}
+	inner := scalar
+	if rest, ok := strings.CutPrefix(scalar, "template["); ok && strings.HasSuffix(rest, "]") {
+		k.template = true
+		inner = strings.TrimSuffix(rest, "]")
+	}
+	if enumType != "" {
+		k.class, k.vtype = enumType, "STRING"
+		return k, nil
+	}
+	class, vtype, ok := javaValueType(inner)
+	if !ok {
+		return javaKey{}, fmt.Errorf("%w: attribute %s: type %q has no Java key type", errJavaName, name, scalar)
+	}
+	k.class, k.vtype = class, vtype
+	return k, nil
+}
+
+// javaKeys returns the typed key of every minted attribute, then of every
+// upstream attribute the registry copies, typed by its o11y.type annotation.
+func (m *model) javaKeys() ([]javaKey, error) {
+	var keys []javaKey
+	for _, a := range m.minted {
+		enumType := ""
+		if len(a.enumMembers()) > 0 {
+			enumType = javaTypeName(a.ID)
+		}
+		doc := "The {@code " + a.ID + "} attribute key."
+		if s := javaSentence(a.Brief); s != "" {
+			doc = "The {@code " + a.ID + "} attribute key: " + s
+		}
+		k, err := javaKeyFor(a.ID, a.scalarType(), enumType, doc)
+		if err != nil {
+			return nil, err
+		}
+		keys = append(keys, k)
+	}
+	types := map[string]string{}
+	for _, tier := range m.tierOrder {
+		for _, a := range m.tiers[tier] {
+			if a.Annotations["o11y.gen"] != "copy" {
+				continue
+			}
+			typ := a.Annotations["o11y.type"]
+			if prev, seen := types[a.name()]; seen && prev != typ {
+				return nil, fmt.Errorf("%w: copied attribute %s has o11y.type %q and %q", errJavaName, a.name(), prev, typ)
+			}
+			types[a.name()] = typ
+		}
+	}
+	for _, name := range m.copiedRefs() {
+		if types[name] == "" {
+			return nil, fmt.Errorf("%w: copied attribute %s has no o11y.type annotation to type its key", errJavaName, name)
+		}
+		k, err := javaKeyFor(name, types[name], "", "The upstream {@code "+name+"} attribute key.")
+		if err != nil {
+			return nil, err
+		}
+		keys = append(keys, k)
+	}
+	return keys, nil
+}
+
+// javaSpecTypes is the hand-written part of Spec.java: the typed key classes
+// the generated constants instantiate.
+const javaSpecTypes = `
+    /** The type an attribute value has on the wire. */
+    public enum ValueType {
+        /** A string; a closed enum travels as its wire string. */
+        STRING,
+        /** A boolean. */
+        BOOLEAN,
+        /** A 64-bit integer. */
+        LONG,
+        /** A 64-bit floating-point number. */
+        DOUBLE
+    }
+
+    /** A registry value that travels on the wire as a string. Every closed enum in this class implements it. */
+    public interface WireValue {
+        /**
+         * Returns the value as the registry spells it on the wire.
+         *
+         * @return the wire value
+         */
+        String value();
+    }
+
+    /**
+     * An attribute key typed by the value its registry entry allows. A key of a closed value set is
+     * typed by that set's enum. libo11y's own API accepts these keys, so a value of the wrong type
+     * does not compile.
+     *
+     * @param <T> the Java type of the attribute's value
+     */
+    public static final class Key<T> {
+        private final String key;
+        private final ValueType type;
+        private final Class<T> valueClass;
+
+        private Key(String key, ValueType type, Class<T> valueClass) {
+            this.key = key;
+            this.type = type;
+            this.valueClass = valueClass;
+        }
+
+        /**
+         * Returns the attribute name.
+         *
+         * @return the attribute name, as it appears on the wire
+         */
+        public String getKey() {
+            return key;
+        }
+
+        /**
+         * Returns the type the value has on the wire.
+         *
+         * @return the wire type
+         */
+        public ValueType getType() {
+            return type;
+        }
+
+        /**
+         * Returns the Java type of the value.
+         *
+         * @return the value class
+         */
+        public Class<T> getValueClass() {
+            return valueClass;
+        }
+
+        /**
+         * Returns {@code value} as it goes on the wire: a closed enum constant becomes its wire
+         * string, and any other value is returned unchanged.
+         *
+         * @param value the value, or {@code null}
+         * @return the wire value, or {@code null} when {@code value} is {@code null}
+         */
+        public Object wireValue(T value) {
+            return value instanceof WireValue w ? w.value() : value;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            return o instanceof Key<?> other
+                    && key.equals(other.key)
+                    && type == other.type
+                    && valueClass.equals(other.valueClass);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(key, type, valueClass);
+        }
+
+        /** Returns the attribute name. */
+        @Override
+        public String toString() {
+            return key;
+        }
+    }
+
+    /**
+     * A registered attribute prefix whose full key the caller completes with a suffix, as in
+     * {@code o11y.label.<name>}. {@link #of(String)} builds the typed key.
+     *
+     * @param <T> the Java type of every completed key's value
+     */
+    public static final class TemplateKey<T> {
+        private final String key;
+        private final ValueType type;
+        private final Class<T> valueClass;
+
+        private TemplateKey(String key, ValueType type, Class<T> valueClass) {
+            this.key = key;
+            this.type = type;
+            this.valueClass = valueClass;
+        }
+
+        /**
+         * Returns the registered prefix, without the trailing dot.
+         *
+         * @return the template's attribute name
+         */
+        public String getKey() {
+            return key;
+        }
+
+        /**
+         * Returns the type every completed key's value has on the wire.
+         *
+         * @return the wire type
+         */
+        public ValueType getType() {
+            return type;
+        }
+
+        /**
+         * Returns the Java type of every completed key's value.
+         *
+         * @return the value class
+         */
+        public Class<T> getValueClass() {
+            return valueClass;
+        }
+
+        /**
+         * Returns the key {@code <prefix>.<suffix>}.
+         *
+         * @param suffix the caller-chosen part of the key; not null or empty
+         * @return the typed key
+         * @throws NullPointerException if {@code suffix} is null
+         * @throws IllegalArgumentException if {@code suffix} is empty
+         */
+        public Key<T> of(String suffix) {
+            Objects.requireNonNull(suffix, "suffix");
+            if (suffix.isEmpty()) {
+                throw new IllegalArgumentException("template key " + key + " needs a non-empty suffix");
+            }
+            return new Key<>(key + "." + suffix, type, valueClass);
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            return o instanceof TemplateKey<?> other
+                    && key.equals(other.key)
+                    && type == other.type
+                    && valueClass.equals(other.valueClass);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(key, type, valueClass);
+        }
+
+        /** Returns the registered prefix. */
+        @Override
+        public String toString() {
+            return key;
+        }
+    }
+
+    private static <T> Key<T> key(String key, ValueType type, Class<T> valueClass) {
+        return new Key<>(key, type, valueClass);
+    }
+
+    private static <T> TemplateKey<T> templateKey(String key, ValueType type, Class<T> valueClass) {
+        return new TemplateKey<>(key, type, valueClass);
+    }
+`
+
+func writeJavaEnum(b *strings.Builder, e javaEnum) {
+	b.WriteString("\n")
+	doc := "The closed value set for {@code " + e.key + "}."
+	if s := javaSentence(e.brief); s != "" {
+		doc += " " + s
+	}
+	javaDoc(b, "    ", doc)
+	fmt.Fprintf(b, "    public enum %s implements WireValue {\n", e.typeName)
+	for i, member := range e.members {
+		doc := javaSentence(member.Brief)
+		if doc == "" {
+			doc = "The value {@code " + member.Value + "}."
+		}
+		javaDoc(b, "        ", doc)
+		sep := ","
+		if i == len(e.members)-1 {
+			sep = ";"
+		}
+		fmt.Fprintf(b, "        %s(%s)%s\n", e.names[i], javaQuote(member.Value), sep)
+	}
+	values := make([]string, len(e.members))
+	for i, member := range e.members {
+		values[i] = member.Value
+	}
+	b.WriteString("\n")
+	javaDoc(b, "        ", "Every wire value of {@code "+e.key+"}.")
+	fmt.Fprintf(b, "        public static final Set<String> WIRE_VALUES = Set.of(%s);\n\n", strings.Join(javaQuoteAll(values), ", "))
+	b.WriteString("        private final String value;\n\n")
+	fmt.Fprintf(b, "        %s(String value) {\n            this.value = value;\n        }\n\n", e.typeName)
+	b.WriteString("        @Override\n        public String value() {\n            return value;\n        }\n\n")
+	b.WriteString("        /** Returns the wire value, so string conversion never emits the constant's name. */\n")
+	b.WriteString("        @Override\n        public String toString() {\n            return value;\n        }\n\n")
+	b.WriteString("        /**\n")
+	b.WriteString("         * Returns the constant whose wire value is {@code value}.\n")
+	b.WriteString("         *\n")
+	b.WriteString("         * @param value an untrusted wire value, or {@code null}\n")
+	b.WriteString("         * @return the constant, or an empty {@code Optional} for {@code null} or a value the registry does not list\n")
+	b.WriteString("         */\n")
+	fmt.Fprintf(b, "        public static Optional<%s> fromValue(String value) {\n", e.typeName)
+	b.WriteString("            if (value == null) {\n                return Optional.empty();\n            }\n")
+	b.WriteString("            return switch (value) {\n")
+	for i, member := range e.members {
+		fmt.Fprintf(b, "                case %s -> Optional.of(%s);\n", javaQuote(member.Value), e.names[i])
+	}
+	b.WriteString("                default -> Optional.empty();\n            };\n        }\n\n")
+	b.WriteString("        /**\n")
+	b.WriteString("         * Reports whether {@code value} is one of these wire values.\n")
+	b.WriteString("         *\n")
+	b.WriteString("         * @param value an untrusted wire value, or {@code null}\n")
+	b.WriteString("         * @return whether {@link #fromValue(String)} finds a constant for it\n")
+	b.WriteString("         */\n")
+	b.WriteString("        public static boolean isValid(String value) {\n")
+	b.WriteString("            return value != null && WIRE_VALUES.contains(value);\n")
+	b.WriteString("        }\n")
+	b.WriteString("    }\n")
+}
+
+func writeJavaEnvironment(b *strings.Builder, e *javaEnum) {
+	b.WriteString("\n")
+	javaDoc(b, "    ", "The registered values of {@code "+e.key+"}. The set is open: an application registers more at setup, so this is a class of String constants rather than an enum.")
+	fmt.Fprintf(b, "    public static final class %s {\n", e.typeName)
+	fmt.Fprintf(b, "        private %s() {}\n\n", e.typeName)
+	for i, member := range e.members {
+		javaDoc(b, "        ", "The registered value {@code "+member.Value+"}.")
+		fmt.Fprintf(b, "        public static final String %s = %s;\n", e.names[i], javaQuote(member.Value))
+	}
+	b.WriteString("\n")
+	javaDoc(b, "        ", "Every value the registry lists. An application may register more.")
+	fmt.Fprintf(b, "        public static final Set<String> REGISTERED = Set.of(%s);\n\n", strings.Join(e.names, ", "))
+	b.WriteString("        /**\n")
+	b.WriteString("         * Reports whether the registry lists {@code value}. An unlisted value may still be one the\n")
+	b.WriteString("         * application registered.\n")
+	b.WriteString("         *\n")
+	b.WriteString("         * @param value the value, or {@code null}\n")
+	b.WriteString("         * @return whether {@link #REGISTERED} holds {@code value}\n")
+	b.WriteString("         */\n")
+	b.WriteString("        public static boolean isRegistered(String value) {\n")
+	b.WriteString("            return value != null && REGISTERED.contains(value);\n")
+	b.WriteString("        }\n")
+	b.WriteString("    }\n")
 }
 
 // genJavaSpec renders java/libo11y-spec/src/main/java/ing/o11y/libo11y/spec/generated/Spec.java.
@@ -141,33 +554,63 @@ func genJavaSpec(m *model) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	env, err := m.javaEnvironment()
+	if err != nil {
+		return "", err
+	}
+	keys, err := m.javaKeys()
+	if err != nil {
+		return "", err
+	}
 	var b strings.Builder
 	javaHeader(&b, m)
-	b.WriteString("import java.util.Set;\n\n")
-	b.WriteString("/** Generated libo11y specification constants, attribute keys, events, metrics, and closed enums. */\n")
+	b.WriteString("import java.util.Objects;\nimport java.util.Optional;\nimport java.util.Set;\n\n")
+	b.WriteString("/** Generated libo11y specification constants, typed attribute keys, events, metrics, and closed enums. */\n")
 	b.WriteString("public final class Spec {\n")
 	b.WriteString("    private Spec() {}\n\n")
+	b.WriteString("    /** The schema URL stamped on every resource libo11y builds. */\n")
 	fmt.Fprintf(&b, "    public static final String SCHEMA_URL = %s;\n", javaQuote(m.schemaURL))
+	b.WriteString("    /** The libo11y specification version this library implements. */\n")
 	fmt.Fprintf(&b, "    public static final String SPEC_VERSION = %s;\n", javaQuote(m.specVersion))
+	b.WriteString("    /** The pinned OpenTelemetry semantic conventions version. */\n")
 	fmt.Fprintf(&b, "    public static final String SEMCONV_VERSION = %s;\n", javaQuote(m.semconvVersion))
+	b.WriteString("    /** The log attribute that carries an event's name. */\n")
 	fmt.Fprintf(&b, "    public static final String EVENT_NAME_KEY = %s;\n", javaQuote("event.name"))
+	b.WriteString(javaSpecTypes)
 
 	for _, e := range enums {
-		fmt.Fprintf(&b, "\n    public static final class %s {\n", e.typeName)
-		fmt.Fprintf(&b, "        private %s() {}\n\n", e.typeName)
-		for i, member := range e.members {
-			fmt.Fprintf(&b, "        public static final String %s = %s;\n", e.names[i], javaQuote(member.Value))
-		}
-		fmt.Fprintf(&b, "\n        public static final Set<String> ALL = Set.of(%s);\n\n", strings.Join(e.names, ", "))
-		b.WriteString("        public static boolean isValid(String value) {\n")
-		b.WriteString("            return value != null && ALL.contains(value);\n")
-		b.WriteString("        }\n")
-		b.WriteString("    }\n")
+		writeJavaEnum(&b, e)
+	}
+	if env != nil {
+		writeJavaEnvironment(&b, env)
 	}
 
-	writeGroup := func(className string, entries []string) error {
+	seen := map[string]string{}
+	b.WriteString("\n    /** Attribute keys: the ones the libo11y specification mints, then the upstream ones it copies. */\n")
+	b.WriteString("    public static final class Attributes {\n")
+	b.WriteString("        private Attributes() {}\n\n")
+	for _, k := range keys {
+		name := javaConstName(k.name)
+		if !javaConstPattern.MatchString(name) {
+			return "", fmt.Errorf("%w: %s: %q is not a Java constant name", errJavaName, k.name, name)
+		}
+		if other, dup := seen[name]; dup {
+			return "", fmt.Errorf("%w: %s and %s both become constant Attributes.%s", errJavaName, other, k.name, name)
+		}
+		seen[name] = k.name
+		javaDoc(&b, "        ", k.doc)
+		if k.template {
+			fmt.Fprintf(&b, "        public static final TemplateKey<%s> %s = templateKey(%s, ValueType.%s, %s.class);\n", k.class, name, javaQuote(k.name), k.vtype, k.class)
+		} else {
+			fmt.Fprintf(&b, "        public static final Key<%s> %s = key(%s, ValueType.%s, %s.class);\n", k.class, name, javaQuote(k.name), k.vtype, k.class)
+		}
+	}
+	b.WriteString("    }\n")
+
+	writeGroup := func(className, classDoc string, entries []string) error {
 		seen := map[string]string{}
-		fmt.Fprintf(&b, "\n    public static final class %s {\n", className)
+		fmt.Fprintf(&b, "\n    /** %s */\n", classDoc)
+		fmt.Fprintf(&b, "    public static final class %s {\n", className)
 		fmt.Fprintf(&b, "        private %s() {}\n\n", className)
 		for _, raw := range entries {
 			name := javaConstName(raw)
@@ -178,26 +621,18 @@ func genJavaSpec(m *model) (string, error) {
 				return fmt.Errorf("%w: %s and %s both become constant %s.%s", errJavaName, other, raw, className, name)
 			}
 			seen[name] = raw
+			fmt.Fprintf(&b, "        /** The {@code %s} name. */\n", raw)
 			fmt.Fprintf(&b, "        public static final String %s = %s;\n", name, javaQuote(raw))
 		}
 		b.WriteString("    }\n")
 		return nil
 	}
 
-	var attrKeys []string
-	for _, a := range m.minted {
-		attrKeys = append(attrKeys, a.ID)
-	}
-	attrKeys = append(attrKeys, m.copiedRefs()...)
-	if err := writeGroup("Attributes", attrKeys); err != nil {
-		return "", err
-	}
-
 	var eventNames []string
 	for _, ev := range m.events {
 		eventNames = append(eventNames, ev.Name)
 	}
-	if err := writeGroup("Events", eventNames); err != nil {
+	if err := writeGroup("Events", "Registered event names.", eventNames); err != nil {
 		return "", err
 	}
 
@@ -205,7 +640,7 @@ func genJavaSpec(m *model) (string, error) {
 	for _, mt := range m.metrics {
 		metricNames = append(metricNames, mt.MetricName)
 	}
-	if err := writeGroup("Metrics", metricNames); err != nil {
+	if err := writeGroup("Metrics", "Registered metric names.", metricNames); err != nil {
 		return "", err
 	}
 
@@ -351,6 +786,8 @@ func genJavaTables(m *model) (string, error) {
 	b.WriteString("    public static final Map<String, Sensitivity> SENSITIVITY_OF = buildSensitivity();\n")
 	b.WriteString("    public static final Map<String, Cardinality> CARDINALITY_OF = buildCardinality();\n")
 	b.WriteString("    public static final Map<String, String> LEGACY_KEYS = buildLegacyKeys();\n")
+	b.WriteString("    /** The registry type of every attribute that has a key in {@code Spec.Attributes}: string, boolean, int, double, enum or template[...]. */\n")
+	b.WriteString("    public static final Map<String, String> ATTRIBUTE_TYPES = buildAttributeTypes();\n")
 
 	labels := make([]string, len(m.metricLabels))
 	for i, a := range m.metricLabels {
@@ -406,6 +843,17 @@ func genJavaTables(m *model) (string, error) {
 	b.WriteString("        Map<String, String> map = new LinkedHashMap<>();\n")
 	for _, name := range slices.Sorted(maps.Keys(m.legacyKeys)) {
 		fmt.Fprintf(&b, "        map.put(%s, %s);\n", javaQuote(name), javaQuote(m.legacyKeys[name]))
+	}
+	b.WriteString("        return Collections.unmodifiableMap(map);\n    }\n")
+
+	keys, err := m.javaKeys()
+	if err != nil {
+		return "", err
+	}
+	b.WriteString("\n    private static Map<String, String> buildAttributeTypes() {\n")
+	b.WriteString("        Map<String, String> map = new LinkedHashMap<>();\n")
+	for _, k := range keys {
+		fmt.Fprintf(&b, "        map.put(%s, %s);\n", javaQuote(k.name), javaQuote(k.scalar))
 	}
 	b.WriteString("        return Collections.unmodifiableMap(map);\n    }\n")
 

@@ -44,7 +44,6 @@ import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.test.web.servlet.MockMvc;
-import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RestController;
@@ -152,15 +151,11 @@ class SpringBootStarterTest {
         String inboundTraceId = "4bf92f3577b34da6a3ce929d0e0e4736";
         String inboundHeader = "00-" + inboundTraceId + "-00f067aa0ba902b7-01";
 
-        MvcResult result = mockMvc.perform(get("/orders/42").header("traceparent", inboundHeader))
+        mockMvc.perform(get("/orders/42").header("traceparent", inboundHeader))
                 .andExpect(status().isOk())
                 .andExpect(content().string("order:42"))
-                .andExpect(header().exists("Server-Timing"))
-                .andReturn();
-
-        String serverTiming = result.getResponse().getHeader("Server-Timing");
-        assertNotNull(serverTiming);
-        assertTrue(serverTiming.contains(inboundTraceId), "Server-Timing should reflect adopted trace: " + serverTiming);
+                // Server-Timing is only added to HTML responses; this one is text/plain.
+                .andExpect(header().doesNotExist("Server-Timing"));
 
         // Route-aware server span + child Observation span
         SpanData serverSpan = recorder.spans().stream()
@@ -187,7 +182,7 @@ class SpringBootStarterTest {
         assertEquals("42", summary.attributes().get("order.id"));
         assertEquals("/orders/{id}", summary.attributes().get("http.route"));
         assertEquals("primary", summary.attributes().get("store"));
-        assertEquals(Spec.Outcome.SUCCESS, summary.attributes().get(Spec.Attributes.OUTCOME));
+        assertEquals(Spec.Outcome.SUCCESS.value(), summary.attributes().get(Spec.Attributes.OUTCOME.getKey()));
 
         // Both HTTP server histogram AND Micrometer counter carry trace exemplars!
         recorder.assertConforms();

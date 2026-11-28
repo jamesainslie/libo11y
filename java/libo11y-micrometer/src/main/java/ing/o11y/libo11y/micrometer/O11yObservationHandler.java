@@ -6,12 +6,20 @@ import ing.o11y.libo11y.spec.generated.Spec;
 import io.micrometer.common.KeyValue;
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationHandler;
+import io.opentelemetry.context.Context;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
  * Micrometer {@link ObservationHandler} bridging {@code @Observed} and {@code Observation}
  * lifecycles into libo11y's {@link O11yRecord} wide events and structured logging.
+ *
+ * <p>An observation that stops inside an active {@link O11yRecord} adds its key values to that
+ * record. It never sets the record's {@code o11y.outcome}, {@code o11y.duration} or error: those
+ * belong to the code that started the record (the request middleware), so a nested or child
+ * observation, failed or not, cannot change the outcome or duration of the request's wide event.
+ * An observation with no active record emits its own event, carrying its own outcome and duration,
+ * when standalone events are enabled.
  */
 public final class O11yObservationHandler implements ObservationHandler<Observation.Context> {
     private static final String START_NANOS_KEY = "libo11y.observation.start_nanos";
@@ -39,22 +47,7 @@ public final class O11yObservationHandler implements ObservationHandler<Observat
     }
 
     @Override
-    public void onError(Observation.Context context) {
-        Throwable err = context.getError();
-        if (err == null) {
-            return;
-        }
-        O11yRecord record = O11yRecord.current();
-        if (record != null) {
-            record.recordError(err);
-        }
-    }
-
-    @Override
     public void onStop(Observation.Context context) {
-        Long startNanos = context.get(START_NANOS_KEY);
-        double durationSec = startNanos != null ? (System.nanoTime() - startNanos) / 1_000_000_000.0 : 0.0;
-
         Map<String, Object> attrs = new LinkedHashMap<>();
         for (KeyValue kv : context.getLowCardinalityKeyValues()) {
             attrs.put(kv.getKey(), kv.getValue());
@@ -62,19 +55,28 @@ public final class O11yObservationHandler implements ObservationHandler<Observat
         for (KeyValue kv : context.getHighCardinalityKeyValues()) {
             attrs.put(kv.getKey(), kv.getValue());
         }
-        if (context.getError() != null) {
-            attrs.put(Spec.Attributes.OUTCOME, Spec.Outcome.FAILURE);
-            attrs.put("error.type", context.getError().getClass().getName());
-        } else {
-            attrs.putIfAbsent(Spec.Attributes.OUTCOME, Spec.Outcome.SUCCESS);
-        }
-        attrs.put(Spec.Attributes.DURATION, durationSec);
 
-        O11yRecord record = O11yRecord.current();
+        O11yRecord record = O11yRecord.fromContext(Context.current());
         if (record != null) {
+            // The record's owner decides the outcome and duration of the wide event.
+            attrs.remove(Spec.Attributes.OUTCOME.getKey());
+            attrs.remove(Spec.Attributes.DURATION.getKey());
             record.setAll(attrs);
-        } else if (emitStandaloneEvent && context.getName() != null && !context.getName().isEmpty()) {
-            telemetry.event(context.getName(), attrs);
+            return;
         }
+        if (!emitStandaloneEvent || context.getName() == null || context.getName().isEmpty()) {
+            return;
+        }
+        Throwable error = context.getError();
+        if (error != null) {
+            attrs.put(Spec.Attributes.OUTCOME.getKey(), Spec.Outcome.FAILURE.value());
+            attrs.put("error.type", error.getClass().getName());
+        } else {
+            attrs.putIfAbsent(Spec.Attributes.OUTCOME.getKey(), Spec.Outcome.SUCCESS.value());
+        }
+        Long startNanos = context.get(START_NANOS_KEY);
+        double durationSec = startNanos != null ? (System.nanoTime() - startNanos) / 1_000_000_000.0 : 0.0;
+        attrs.put(Spec.Attributes.DURATION.getKey(), durationSec);
+        telemetry.event(context.getName(), attrs);
     }
 }

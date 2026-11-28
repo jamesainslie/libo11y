@@ -28,6 +28,8 @@ public final class O11yFailureAnalyzer extends AbstractFailureAnalyzer<O11yExcep
                     "Verify OTEL_*_EXPORTER and OTEL_EXPORTER_OTLP_*_PROTOCOL use supported OTLP values (http/protobuf or grpc).";
             case INVALID_OPTION ->
                     "Review your 'libo11y.*' properties and OTEL_* environment variables for invalid values.";
+            case INVALID_CARRIER ->
+                    "Check the serialized detached carrier text: it must be a query string with a valid W3C traceparent.";
         };
         return new FailureAnalysis(description, action, cause);
     }
