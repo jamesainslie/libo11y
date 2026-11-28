@@ -287,4 +287,4 @@ c-check:
 
 # vuln runs last: it depends on the advisory database and the toolchain's
 # patch level, so local runs exercise every other gate first.
-ci: lint vet test tidy-check spec-check spec-drift ts-check ts-size ts-browser-test rum-e2e rust-check rust-msrv zig-check python-check c-check schema-published-test release-notes-test release-tag-test rust-release-check-test ts-browser-bundle-test ts-npm-plan-test release-check vuln
+ci: lint vet test tidy-check spec-check spec-drift ops-check ts-check ts-size ts-browser-test rum-e2e rust-check rust-msrv zig-check python-check c-check schema-published-test release-notes-test release-tag-test rust-release-check-test ts-browser-bundle-test ts-npm-plan-test release-check vuln
