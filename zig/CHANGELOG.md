@@ -73,6 +73,14 @@ Requires Zig 0.17.1.
   cannot build the header list for a hop. It fell back to the caller's
   original headers, which on a cross-origin redirect still held the trace
   context and privileged headers it was meant to strip.
+- `o11y.shutdownOnSignals` no longer loses a signal that arrives while it
+  registers its handlers. It installed the handlers before it published the
+  pipe they write to, so a signal in between was dropped and the call
+  waited on an empty pipe.
+- Concurrent OTLP/HTTP exports each report their own failure detail to the
+  error handler. An exporter read the transport's shared diagnostic buffer
+  after it released the transport, so another export could overwrite the
+  text first.
 
 ## [0.1.0] - 2026-11-26
 

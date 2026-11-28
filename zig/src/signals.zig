@@ -32,8 +32,9 @@ pub const Options = struct {
     before_shutdown: ?BeforeShutdown = null,
     /// Signals to wait on. Defaults to SIGINT and SIGTERM.
     signals: []const std.posix.SIG = &.{ .INT, .TERM },
-    /// Optional event signaled immediately after the POSIX signal handlers are
-    /// installed, allowing callers and tests to synchronize without sleeping.
+    /// Optional event set once every POSIX signal handler is installed, so
+    /// callers and tests can synchronize without sleeping. Before it is set
+    /// a signal still has its previous action.
     ready_event: ?*Io.Event = null,
 };
 
@@ -51,6 +52,39 @@ fn posixSignalHandler(_: std.posix.SIG) callconv(.c) void {
     if (fd < 0) return;
     const byte = [1]u8{1};
     _ = std.posix.system.write(@intCast(fd), &byte, 1);
+}
+
+/// Publishes `write_fd`, then installs the handler for each of `signals`.
+/// The pipe comes first, so a signal delivered the instant its handler is
+/// installed is written to it. In the other order the handler would find no
+/// pipe, drop the signal, and leave the caller waiting on an empty pipe.
+///
+/// `installed`, when set, runs right after each handler is installed. Tests
+/// use it to deliver a signal at that moment.
+fn arm(write_fd: std.posix.fd_t, signals: []const std.posix.SIG, installed: ?*const fn (sig: std.posix.SIG) void) void {
+    signal_pipe_write_fd.store(@intCast(write_fd), .release);
+    const act: std.posix.Sigaction = .{
+        .handler = .{ .handler = posixSignalHandler },
+        .mask = std.posix.sigemptyset(),
+        .flags = 0,
+    };
+    for (signals) |sig| {
+        std.posix.sigaction(sig, &act, null);
+        if (installed) |f| f(sig);
+    }
+}
+
+/// Restores default handling for `signals`, then retires the pipe.
+fn disarm(signals: []const std.posix.SIG) void {
+    const dfl: std.posix.Sigaction = .{
+        .handler = .{ .handler = std.posix.SIG.DFL },
+        .mask = std.posix.sigemptyset(),
+        .flags = 0,
+    };
+    for (signals) |sig| {
+        std.posix.sigaction(sig, &dfl, null);
+    }
+    signal_pipe_write_fd.store(-1, .release);
 }
 
 /// Installs signal handlers for `options.signals`, waits until one arrives,
@@ -76,18 +110,7 @@ pub fn shutdownOnSignals(io: Io, telemetry: anytype, options: Options) @TypeOf(t
         _ = std.posix.system.close(pipe_fds[1]);
     }
 
-    // Install handlers BEFORE publishing signal_pipe_write_fd so any observer
-    // polling signal_pipe_write_fd (including tests raising a signal) is
-    // guaranteed that every sigaction is already active.
-    const act: std.posix.Sigaction = .{
-        .handler = .{ .handler = posixSignalHandler },
-        .mask = std.posix.sigemptyset(),
-        .flags = 0,
-    };
-    for (options.signals) |sig| {
-        std.posix.sigaction(sig, &act, null);
-    }
-    signal_pipe_write_fd.store(@intCast(pipe_fds[1]), .release);
+    arm(pipe_fds[1], options.signals, null);
     if (options.ready_event) |ev| ev.set(io);
 
     // Block reading a single byte from the self-pipe. Retry on EINTR.
@@ -100,15 +123,7 @@ pub fn shutdownOnSignals(io: Io, telemetry: anytype, options: Options) @TypeOf(t
     }
 
     // Restore default handling immediately so a second signal kills the process.
-    const dfl: std.posix.Sigaction = .{
-        .handler = .{ .handler = std.posix.SIG.DFL },
-        .mask = std.posix.sigemptyset(),
-        .flags = 0,
-    };
-    for (options.signals) |sig| {
-        std.posix.sigaction(sig, &dfl, null);
-    }
-    signal_pipe_write_fd.store(-1, .release);
+    disarm(options.signals);
 
     const shared_deadline = deadline_mod.after(io, options.timeout);
     if (options.before_shutdown) |cb| {
@@ -151,23 +166,47 @@ test "shutdownOnSignals handles a real POSIX signal, restores SIG.DFL, and runs 
     };
 
     var state: State = .{};
+    var ready: Io.Event = .unset;
     var waiter = try testing.io.concurrent(struct {
-        fn run(s: *State) bool {
+        fn run(s: *State, ready_ev: *Io.Event) bool {
             return shutdownOnSignals(testing.io, s, .{
                 .signals = &.{.USR1},
                 .before_shutdown = .{ .ptr = s, .func = State.before },
+                .ready_event = ready_ev,
             });
         }
-    }.run, .{&state});
+    }.run, .{ &state, &ready });
 
-    // Wait briefly until signal_pipe_write_fd is armed, then raise SIGUSR1.
-    var spins: usize = 0;
-    while (signal_pipe_write_fd.load(.acquire) < 0 and spins < 200) : (spins += 1) {
-        testing.io.sleep(.fromMilliseconds(5), .awake) catch {};
-    }
+    // The handler is installed once `ready` is set, so the signal cannot
+    // arrive while SIGUSR1 still has its default action.
+    ready.waitUncancelable(testing.io);
     try std.posix.raise(.USR1);
 
     const ok = waiter.await(testing.io);
     try testing.expect(ok);
     try testing.expectEqualStrings("BS", &state.order);
+}
+
+test "a signal delivered the instant its handler is installed reaches the pipe" {
+    if (builtin.os.tag == .windows) return;
+
+    var pipe_fds: [2]std.posix.fd_t = .{ -1, -1 };
+    try testing.expectEqual(std.posix.E.SUCCESS, std.posix.errno(std.posix.system.pipe(&pipe_fds)));
+    defer {
+        _ = std.posix.system.close(pipe_fds[0]);
+        _ = std.posix.system.close(pipe_fds[1]);
+    }
+
+    // The handler runs on this thread before `raise` returns. If the pipe
+    // were published only after the handlers, it would find no pipe and
+    // the signal would be lost.
+    arm(pipe_fds[1], &.{.USR1}, struct {
+        fn raise(sig: std.posix.SIG) void {
+            std.posix.raise(sig) catch {};
+        }
+    }.raise);
+    defer disarm(&.{.USR1});
+
+    var poll_fds = [_]std.posix.pollfd{.{ .fd = pipe_fds[0], .events = std.posix.POLL.IN, .revents = 0 }};
+    try testing.expectEqual(@as(usize, 1), try std.posix.poll(&poll_fds, 0));
 }

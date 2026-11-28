@@ -418,6 +418,51 @@ test "TLS: mutual TLS needs the client certificate" {
     try testing.expectEqual(1, r.requestCount());
 }
 
+test "concurrent sendDetail callers each get their own failure detail" {
+    var r = try Receiver.start(testing.allocator, testing.io, .{
+        .replies = &.{
+            .{ .status = 400, .body = "err-one" },
+            .{ .status = 403, .body = "err-two" },
+        },
+    });
+    defer r.stop();
+    var t = try newTransport(r, .{ .endpoint = "", .content_type = "application/x-protobuf", .retry = .{ .enabled = false } });
+    defer t.destroy();
+
+    const Caller = struct {
+        buf: [512]u8 = undefined,
+        len: usize = 0,
+        err: ?transport.SendError = null,
+        fn run(self: *@This(), tr: *Transport) void {
+            if (tr.sendDetail("x", soon(), &self.buf, &self.len)) |resp| {
+                var owned = resp;
+                owned.deinit(testing.allocator);
+            } else |e| {
+                self.err = e;
+            }
+        }
+    };
+    var c1: Caller = .{};
+    var c2: Caller = .{};
+    var f1 = try testing.io.concurrent(Caller.run, .{ &c1, t });
+    var f2 = try testing.io.concurrent(Caller.run, .{ &c2, t });
+    f1.await(testing.io);
+    f2.await(testing.io);
+
+    try testing.expectEqual(@as(?transport.SendError, error.Rejected), c1.err);
+    try testing.expectEqual(@as(?transport.SendError, error.Rejected), c2.err);
+    const s1 = c1.buf[0..c1.len];
+    const s2 = c2.buf[0..c2.len];
+    // Each caller holds one whole detail, and between them they hold both.
+    const one_in_1 = std.mem.indexOf(u8, s1, "err-one") != null;
+    const two_in_1 = std.mem.indexOf(u8, s1, "err-two") != null;
+    const one_in_2 = std.mem.indexOf(u8, s2, "err-one") != null;
+    const two_in_2 = std.mem.indexOf(u8, s2, "err-two") != null;
+    try testing.expect(one_in_1 != two_in_1);
+    try testing.expect(one_in_2 != two_in_2);
+    try testing.expect(one_in_1 != one_in_2);
+}
+
 test "an Io without concurrency fails the send inside its deadline" {
     // Socket reads cannot time out, so an attempt that ran inline could
     // outlive the deadline. Without a concurrent task the send fails as a
