@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -16,12 +17,28 @@ import (
 	"github.com/jamesainslie/libo11y/ops/internal/fixture"
 )
 
-// Grafana's end-to-end selectors for a variable picker: the button that
-// shows the current value, and one option of the open list.
-const (
-	pickerValue  = `[data-testid="data-testid Dashboard template variables Variable Value DropDown value link text %s"]`
-	pickerOption = `[data-testid="data-testid Dashboard template variables Variable Value DropDown option text %s"]`
-)
+// appVariable is the explorer's app variable as Grafana's dashboard scene
+// holds it after running its query.
+type appVariable struct {
+	Query   any      `json:"query"`
+	Options []string `json:"options"`
+	Loading bool     `json:"loading"`
+	Error   string   `json:"error"`
+}
+
+// appVariableState reads the app variable from the dashboard scene, which
+// Grafana exposes as window.__grafanaSceneContext. The option list is what
+// the picker offers, so this checks the label_values() query ran against
+// Loki without opening the picker.
+const appVariableState = `(() => {
+  const v = window.__grafanaSceneContext?.state?.$variables?.getByName?.('app');
+  if (!v) return { loading: true, error: '', options: [] };
+  return {
+    query: v.state.query, loading: !!v.state.loading,
+    error: v.state.error ? String(v.state.error) : '',
+    options: (v.state.options ?? []).map(o => String(o.value)),
+  };
+})()`
 
 // viewIDParam reads the view_id query parameter of a link, still encoded.
 var viewIDParam = regexp.MustCompile(`[?&]var-view_id=([^&]*)`)
@@ -58,15 +75,14 @@ func checkInBrowser(t *testing.T) {
 	t.Run("the loki app variable lists the app", func(t *testing.T) {
 		vctx, cancelV := context.WithTimeout(browser, 45*time.Second)
 		defer cancelV()
-		err := chromedp.Do(vctx,
-			chromedp.Click(fmt.Sprintf(pickerValue, "All")),
-			chromedp.WaitVisible(fmt.Sprintf(pickerOption, fixture.Service)),
-		)
-		if err != nil {
-			t.Errorf("the app variable's options do not include %q: %v", fixture.Service, err)
-		}
-		// Close the picker, so it does not cover the panels.
-		_ = chromedp.Do(vctx, chromedp.KeyEvent("\x1b")) // best effort
+		waitFor(t, "the app variable to list "+fixture.Service, 30*time.Second, func() (bool, string) {
+			v, err := chromedp.Run(vctx, chromedp.Evaluate[appVariable](appVariableState))
+			if err != nil {
+				return false, err.Error()
+			}
+			done := !v.Loading && v.Error == "" && slices.Contains(v.Options, fixture.Service)
+			return done, fmt.Sprintf("%+v", v)
+		})
 	})
 
 	t.Run("the view link percent-encodes the view ID once", func(t *testing.T) {
