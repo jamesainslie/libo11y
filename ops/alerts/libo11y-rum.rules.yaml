@@ -39,7 +39,7 @@ groups:
         annotations:
           dashboard: /d/libo11y-rum-vitals
           description: The LCP p75 over the last hour has been above 4 s for 30 minutes, with at least 200 samples an hour.
-          runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumvitalpoor
+          runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.1/ops/README.md#o11yrumvitalpoor
           summary: LCP p75 is poor for {{ $labels.service_name }}
       - alert: O11yRUMVitalRegression
         expr: |-
@@ -54,7 +54,7 @@ groups:
         annotations:
           dashboard: /d/libo11y-rum-vitals
           description: The LCP p75 over the last hour is more than 1.25 times the same hour a week ago and above the good bound of 2.5 s.
-          runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumvitalregression
+          runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.1/ops/README.md#o11yrumvitalregression
           summary: LCP p75 regressed for {{ $labels.service_name }}
       - alert: O11yRUMVitalPoor
         expr: |-
@@ -67,7 +67,7 @@ groups:
         annotations:
           dashboard: /d/libo11y-rum-vitals
           description: The INP p75 over the last hour has been above 0.5 s for 30 minutes, with at least 200 samples an hour.
-          runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumvitalpoor
+          runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.1/ops/README.md#o11yrumvitalpoor
           summary: INP p75 is poor for {{ $labels.service_name }}
       - alert: O11yRUMVitalRegression
         expr: |-
@@ -82,7 +82,7 @@ groups:
         annotations:
           dashboard: /d/libo11y-rum-vitals
           description: The INP p75 over the last hour is more than 1.25 times the same hour a week ago and above the good bound of 0.2 s.
-          runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumvitalregression
+          runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.1/ops/README.md#o11yrumvitalregression
           summary: INP p75 regressed for {{ $labels.service_name }}
       - alert: O11yRUMVitalPoor
         expr: |-
@@ -95,7 +95,7 @@ groups:
         annotations:
           dashboard: /d/libo11y-rum-vitals
           description: The CLS p75 over the last hour has been above 0.25 for 30 minutes, with at least 200 samples an hour.
-          runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumvitalpoor
+          runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.1/ops/README.md#o11yrumvitalpoor
           summary: CLS p75 is poor for {{ $labels.service_name }}
       - alert: O11yRUMVitalRegression
         expr: |-
@@ -110,7 +110,7 @@ groups:
         annotations:
           dashboard: /d/libo11y-rum-vitals
           description: The CLS p75 over the last hour is more than 1.25 times the same hour a week ago and above the good bound of 0.1.
-          runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumvitalregression
+          runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.1/ops/README.md#o11yrumvitalregression
           summary: CLS p75 regressed for {{ $labels.service_name }}
       - alert: O11yRUMVitalPoor
         expr: |-
@@ -123,7 +123,7 @@ groups:
         annotations:
           dashboard: /d/libo11y-rum-vitals
           description: The FCP p75 over the last hour has been above 3 s for 30 minutes, with at least 200 samples an hour.
-          runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumvitalpoor
+          runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.1/ops/README.md#o11yrumvitalpoor
           summary: FCP p75 is poor for {{ $labels.service_name }}
       - alert: O11yRUMVitalRegression
         expr: |-
@@ -138,7 +138,7 @@ groups:
         annotations:
           dashboard: /d/libo11y-rum-vitals
           description: The FCP p75 over the last hour is more than 1.25 times the same hour a week ago and above the good bound of 1.8 s.
-          runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumvitalregression
+          runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.1/ops/README.md#o11yrumvitalregression
           summary: FCP p75 regressed for {{ $labels.service_name }}
       - alert: O11yRUMVitalPoor
         expr: |-
@@ -151,7 +151,7 @@ groups:
         annotations:
           dashboard: /d/libo11y-rum-vitals
           description: The TTFB p75 over the last hour has been above 1.8 s for 30 minutes, with at least 200 samples an hour.
-          runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumvitalpoor
+          runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.1/ops/README.md#o11yrumvitalpoor
           summary: TTFB p75 is poor for {{ $labels.service_name }}
       - alert: O11yRUMVitalRegression
         expr: |-
@@ -166,7 +166,7 @@ groups:
         annotations:
           dashboard: /d/libo11y-rum-vitals
           description: The TTFB p75 over the last hour is more than 1.25 times the same hour a week ago and above the good bound of 0.8 s.
-          runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumvitalregression
+          runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.1/ops/README.md#o11yrumvitalregression
           summary: TTFB p75 regressed for {{ $labels.service_name }}
       - alert: O11yRUMErrorRateHigh
         expr: |-
@@ -178,5 +178,5 @@ groups:
         annotations:
           dashboard: /d/libo11y-rum-errors
           description: The app reported more than 0.1 errors per view over the last 15 minutes, with at least 50 views.
-          runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumerrorratehigh
+          runbook_url: https://github.com/jamesainslie/libo11y/blob/ops/v0.1.1/ops/README.md#o11yrumerrorratehigh
           summary: Error rate is high for {{ $labels.service_name }}

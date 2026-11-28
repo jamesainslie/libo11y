@@ -1,6 +1,6 @@
 # libo11y RUM ops pack
 
-The current release is `ops/v0.1.0`. Its GitHub Release, `libo11y-ops v0.1.0`, attaches the pack as `libo11y-ops-v0.1.0.tar.gz` with `SHA256SUMS`. The changes are in [CHANGELOG.md](CHANGELOG.md).
+The current release is `ops/v0.1.1`. Its GitHub Release, `libo11y-ops v0.1.1`, attaches the pack as `libo11y-ops-v0.1.1.tar.gz` with `SHA256SUMS`. The changes are in [CHANGELOG.md](CHANGELOG.md).
 
 The ops pack is a generic Grafana and Prometheus pack for libo11y RUM. It holds dashboards for the metrics the `o11yrum-gateway` derives, error and frustration views, a session explorer over Tempo and Loki, a dashboard for the gateway's own telemetry, and Prometheus recording and alert rules.
 
@@ -20,7 +20,7 @@ The pack covers RUM. Dashboards for core services (RED by route and RPC, depende
 
 - **Grafana import.** Import each file in `dashboards/` (Dashboards, New, Import), and pick your Prometheus, Loki and Tempo datasources in the variables at the top.
 - **Grafana provisioning.** Point a file dashboard provider at a directory holding `dashboards/*.json`, and load the rule files in `alerts/*.rules.yaml` through Prometheus's `rule_files`.
-- **Kubernetes.** Apply the kustomization, which needs the Prometheus Operator and Grafana's dashboard sidecar (see [Kubernetes](#kubernetes)). Use the unpacked release archive or the remote base `https://github.com/jamesainslie/libo11y//ops?ref=ops/v0.1.0`.
+- **Kubernetes.** Apply the kustomization, which needs the Prometheus Operator and Grafana's dashboard sidecar (see [Kubernetes](#kubernetes)). Use the unpacked release archive or the remote base `https://github.com/jamesainslie/libo11y//ops?ref=ops/v0.1.1`.
 
 To check a downloaded archive, run `sha256sum -c SHA256SUMS` (or `shasum -a 256 -c SHA256SUMS`) next to it.
 
@@ -147,7 +147,7 @@ Prometheus has failed to scrape a gateway for 5 minutes. The alert sees only gat
 `thresholds.yaml` holds every threshold, minimum traffic and the gateway selector the rules use. The vital bounds default to the specification's rating table. To use your own values, copy the file, change it, and generate the pack:
 
 ```sh
-go run github.com/jamesainslie/libo11y/ops/cmd/opsgen@ops/v0.1.0 -thresholds my-thresholds.yaml -out my-pack/
+go run github.com/jamesainslie/libo11y/ops/cmd/opsgen@ops/v0.1.1 -thresholds my-thresholds.yaml -out my-pack/
 ```
 
 `min_views_per_hour` sets two gates: the vital alerts need that many samples of the vital an hour, and the error rate alert needs a quarter of it in views over 15 minutes, never less than one view. `opsgen` parses every rule it generates and refuses thresholds that produce PromQL Prometheus would not load.
@@ -169,7 +169,7 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: monitoring
 resources:
-  - https://github.com/jamesainslie/libo11y//ops?ref=ops/v0.1.0
+  - https://github.com/jamesainslie/libo11y//ops?ref=ops/v0.1.1
 labels:
   - pairs:
       release: kube-prometheus-stack
