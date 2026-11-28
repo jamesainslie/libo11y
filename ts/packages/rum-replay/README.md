@@ -12,11 +12,80 @@ are never recorded.
 
 The package is in development and has not shipped yet. It is not part of
 `ts/v0.3.0` and first ships in the next TypeScript release, at the same
-version as `@libo11y/rum`. This version holds the privacy core:
-text masking, URL and CSS stripping, the event scrubber, the DOM-backed
-scrub context and the remote configuration clamp. The `replay()`
-collector, segments and upload come in a later change, so the package
-records nothing yet.
+version as `@libo11y/rum`. The RUM gateway stores what it uploads once an
+app enables replay; see
+[Session replay](../../../go/o11yrum/README.md#session-replay) in the
+gateway's README. The gateway's replay support is not released yet either.
+
+## Usage
+
+Installing the collector is the opt-in. It records only while RUM's
+consent is `granted`.
+
+```ts
+import { errors, setupRum, views } from "@libo11y/rum";
+import { replay } from "@libo11y/rum-replay";
+
+const telemetry = await setupRum({
+  serviceName: "shop",
+  endpoint: "https://rum.example.com",
+  consent: { initial: "pending" },
+  rum: {
+    clientToken: "pub-shop",
+    collectors: [views(), errors(), replay({ privacy: { unmask: [".public"] } })],
+  },
+});
+```
+
+| Option              | Default                                      | Meaning                                                                                                                                |
+| ------------------- | -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `sampleRate`        | `1`                                          | The share of head-sampled sessions that record, 0 to 1                                                                                 |
+| `onRetain`          | `false`                                      | Also record sessions that are not head-sampled, into memory only, and upload that lead-up if an error or frustration keeps the session |
+| `privacy`           | `{}`                                         | `unmask`, `mask` and `block` selectors. See [Privacy model](#privacy-model)                                                            |
+| `limits.sampleRate` | `[sampleRate, sampleRate]`                   | The range remote configuration may move `sampleRate` within                                                                            |
+| `url`               | `new URL("/_o11y/v1/replay", location.href)` | The gateway's replay endpoint. RUM counts it as its own traffic, so its requests are never instrumented                                |
+
+`replay()` throws `O11yError` with code `INVALID_OPTION` for an invalid
+option.
+
+## How it records
+
+- **Which sessions.** A session records when replay is on and
+  `fnv1a32("replay:" + session.id) / 2^32` is below `sampleRate`, so every
+  tab of a session agrees. A head-sampled session records from its start
+  and uploads as it goes. With `onRetain`, a session that is not
+  head-sampled records into memory: the last two closed segments and the
+  open one. If an error or frustration keeps the session, they upload and
+  the rest of the session uploads as it goes. If the session ends unkept,
+  they are dropped.
+- **rrweb loads lazily.** `replay()` itself adds about 10 KB to the page,
+  gzipped. rrweb's recorder, about 24 KB gzipped, is imported with a
+  dynamic `import()` the first time a session will record, so a page whose
+  session never records never downloads it. Bundlers emit it as a chunk of
+  its own. Nothing is recorded until it has loaded. If it fails to load,
+  replay stays off for the page, logs one warning and does not retry.
+- **Segments.** Each segment is self-contained: it starts with a full
+  snapshot, so a player can start at any segment and a lost upload loses
+  only its own time. A segment closes after 30 seconds, at 1 MiB or
+  10,000 events, when the page hides and when the session changes. An idle
+  page sends nothing.
+- **Upload.** A segment is gzipped and sent with
+  `POST <url>?service=&session=&segment=&sent_at=&client_token=`, without
+  credentials and uninstrumented, one at a time and in order. Segment
+  numbers count per session across tabs, under a Web Lock. `429` and `503`
+  retry after `Retry-After`, at most three attempts, and any other `4xx`
+  drops the segment. At most 4 segments and 4 MiB wait to upload; the
+  oldest goes first past either bound.
+- **Errors point at the replay.** While a session uploads, its
+  `o11y.rum.error` and `o11y.rum.frustration` events carry
+  `o11y.rum.replay.segment`, the number of the segment being sent or last
+  sent.
+- **Consent.** Revoking consent stops the recorder, drops everything not
+  yet sent and removes the shared segment counter.
+- **Where it runs.** Replay records pages and extension pages. It refuses
+  to start, with one warning, in an extension content script, which must
+  not record the host page, and in a browser without Web Locks or
+  `CompressionStream`.
 
 ## Privacy model
 
@@ -39,9 +108,9 @@ Both implementations run the shared vectors in
 | Stylesheets                                                                                    | Kept, with URLs stripped, unless a mask covers them                                                                                                                                            |
 | Elements under `[data-o11y-block]` or a `privacy.block` selector                               | Replaced by an empty placeholder of the same size. Nothing added inside them later is recorded                                                                                                 |
 | `value`, `checked` and `selected` attributes                                                   | Never recorded                                                                                                                                                                                 |
-| `title`, `alt`, `placeholder`, `aria-label`, `label`, `content` and other text attributes      | Masked like text                                                                                                                                                                               |
+| `title`, `alt`, `placeholder`, `aria-label`, `label`, `content` and other text attributes      | Masked like text. An unmasked `content` that holds a URL (`og:url`, `og:image`, a refresh) is stripped like a URL attribute                                                                    |
 | `href`, `src`, `srcset`, `poster`, `xlink:href`                                                | Path kept, query reduced to RUM's `queryAllowList`, fragment and userinfo removed. Every scheme but `http` and `https` (`data:`, `blob:`, `javascript:`, `mailto:` and the rest) becomes empty |
-| `url()` and URL strings in `style` and CSS                                                     | Stripped the same way                                                                                                                                                                          |
+| `url()`, URL strings and bare URLs in `style` and CSS                                          | Stripped the same way, also in custom properties (`--bg: https://cdn.example/a.png?token=1`)                                                                                                   |
 | Every other attribute (`on*` handlers, `data-*`, `srcdoc` and the rest)                        | Removed                                                                                                                                                                                        |
 | Input events, canvas, fonts, console logs, custom and plugin events                            | Never recorded                                                                                                                                                                                 |
 
@@ -80,8 +149,8 @@ page. Block the parts of a page where they carry personal data:
   signature pad or a drawing that renders to SVG records what the user drew.
   Block it.
 - **CSS** is kept with its URLs stripped. A stylesheet or a `style`
-  attribute that holds personal data in a string, such as a custom property,
-  keeps it.
+  attribute that holds personal data in a string that is not a URL, such
+  as a custom property, keeps it.
 - **URL paths** are kept. Only the query and fragment are stripped, so a
   path that holds an email address or an account number keeps it.
 - **`id`, `class` and `name`** are kept.
