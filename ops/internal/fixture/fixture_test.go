@@ -1,8 +1,10 @@
 package fixture
 
 import (
+	"encoding/json"
 	"os"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -266,5 +268,36 @@ func TestDeterministic(t *testing.T) {
 		if a[i].Path != b[i].Path || string(a[i].Body) != string(b[i].Body) {
 			t.Fatalf("request %d differs between calls", i)
 		}
+	}
+}
+
+// Symbolicated traffic names the release the source map is uploaded for,
+// and its one error's stack has a frame in the mapped script, so the
+// gateway looks the map up and counts the frame.
+func TestSymbolicatedShape(t *testing.T) {
+	d := decode(t, []Request{Symbolicated(now)})
+	if len(d.logs) != 1 {
+		t.Fatalf("%d records, want one error", len(d.logs))
+	}
+	l := d.logs[0]
+	if eventName(l.rec) != "o11y.rum.error" || str(l.rec.Attributes(), "exception.type") == "" {
+		t.Errorf("record %s %v is not a complete error", eventName(l.rec), l.rec.Attributes().AsRaw())
+	}
+	if got := str(l.res, "service.version"); got != Version {
+		t.Errorf("service.version %q, want %s", got, Version)
+	}
+	if stack := str(l.rec.Attributes(), "exception.stacktrace"); !strings.Contains(stack, "("+ScriptURL+":1:") {
+		t.Errorf("stack %q has no frame in %s", stack, ScriptURL)
+	}
+	var m struct {
+		Version  int      `json:"version"`
+		Sources  []string `json:"sources"`
+		Mappings string   `json:"mappings"`
+	}
+	if err := json.Unmarshal(SourceMap(), &m); err != nil {
+		t.Fatal(err)
+	}
+	if m.Version != 3 || len(m.Sources) == 0 || m.Mappings == "" {
+		t.Errorf("source map %+v is not a version 3 map with mappings", m)
 	}
 }

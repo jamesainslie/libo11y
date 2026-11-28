@@ -25,10 +25,18 @@ const (
 	View1     = "v1-9a2e"
 )
 
-// The gateway's public OTLP paths.
+// The gateway's public paths: OTLP, and the source map upload.
 const (
-	PathTraces = "/_o11y/v1/traces"
-	PathLogs   = "/_o11y/v1/logs"
+	PathTraces     = "/_o11y/v1/traces"
+	PathLogs       = "/_o11y/v1/logs"
+	PathSourcemaps = "/_o11y/v1/sourcemaps"
+)
+
+// The release Symbolicated traffic comes from, and the minified script its
+// stack names. The source map from SourceMap is uploaded for this pair.
+const (
+	Version   = "1.4.0"
+	ScriptURL = Origin + "/assets/app.min.js"
 )
 
 // Unminted is an o11y.* key the specification does not define. The
@@ -248,4 +256,28 @@ func mustJSON(b []byte, err error) []byte {
 		panic(fmt.Sprintf("fixture: marshal OTLP/JSON: %v", err))
 	}
 	return b
+}
+
+// Symbolicated returns a logs request from release Version with one
+// o11y.rum.error whose stack has a frame in ScriptURL. Sent after
+// SourceMap is uploaded, it moves the symbolication frames counter.
+func Symbolicated(now time.Time) Request {
+	ld, sl := newLogs()
+	ld.ResourceLogs().At(0).Resource().Attributes().PutStr("service.version", Version)
+	e := record(sl, now.Add(7*time.Second), "o11y.rum.error", View1)
+	e.SetSeverityNumber(plog.SeverityNumberError)
+	e.SetSeverityText("ERROR")
+	a := e.Attributes()
+	a.PutStr("o11y.rum.error.source", "uncaught")
+	a.PutStr("o11y.rum.view.name", views[1].name)
+	a.PutStr("exception.type", "TypeError")
+	a.PutStr("exception.message", "cart is undefined")
+	a.PutStr("exception.stacktrace", "TypeError: cart is undefined\n    at n ("+ScriptURL+":1:1)")
+	return Request{Path: PathLogs, Body: mustJSON(plogotlp.NewExportRequestFromLogs(ld).MarshalJSON())}
+}
+
+// SourceMap returns a version 3 source map for ScriptURL that maps its
+// first column to addToCart in src/cart.ts.
+func SourceMap() []byte {
+	return []byte(`{"version":3,"file":"app.min.js","sources":["src/cart.ts"],"names":["addToCart"],"mappings":"AAAAA"}`)
 }
