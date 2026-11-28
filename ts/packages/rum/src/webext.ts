@@ -9,6 +9,7 @@ export type {
   AddErrorOptions,
   BootstrapEntry,
   CollectorName,
+  EventBody,
   RemoteConfig,
   RemoteConfigClient,
   RemoteConfigConnection,

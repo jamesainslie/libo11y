@@ -10,10 +10,13 @@ import { installRumBootstrapOn, takeBootstrap } from "../bootstrap/buffer.ts";
 import { CONFIG_STORAGE_KEY, remoteConfig } from "../config/remote.ts";
 import type { CollectorName, RumRuntime } from "../contracts/runtime.ts";
 import { errorsWith } from "../errors/collector.ts";
+import { longAnimationFrames } from "../loaf.ts";
+import { resources } from "../resources/collector.ts";
 import { SESSION_STORAGE_KEY } from "../session/local-store.ts";
 import { runtimeOf } from "../setup.ts";
 import { createFakeStorage } from "../test-support/fake-storage.ts";
 import { views } from "../views/collector.ts";
+import { vitals } from "../vitals/collector.ts";
 import { contentScope, errorSourceUrl } from "./scope.ts";
 import { allowRumSessionInContentScripts } from "./session-store.ts";
 import {
@@ -177,17 +180,26 @@ function named(name: CollectorName) {
 }
 
 test("a content script refuses collectors that would measure the host page", async () => {
-  for (const name of ["vitals", "resources", "long_animation_frames"] as const) {
+  for (const collector of [vitals(), resources(), longAnimationFrames()]) {
     const ext = createFakeExtension(EXT_ID);
     await assert.rejects(
       setupRumExtensionWith(
-        { ...OPTS, context: "content", rum: { collectors: [named(name)] } },
+        { ...OPTS, context: "content", rum: { collectors: [collector] } },
         rig(ext, "content").deps,
       ),
       (err: unknown) =>
-        err instanceof O11yError && err.code === "INVALID_OPTION" && err.message.includes(name),
+        err instanceof O11yError && err.code === "INVALID_OPTION" && err.message.includes(collector.name),
     );
   }
+});
+
+test("an extension page may run the collectors a content script refuses", async () => {
+  const ext = createFakeExtension(EXT_ID);
+  const t = await start(
+    { ...OPTS, context: "page", rum: { collectors: [named("vitals"), named("resources")] } },
+    rig(ext, "page").deps,
+  );
+  assert.ok(t.rum);
 });
 
 test("a content script refuses documentLoad, which would record the host page's load", async () => {
