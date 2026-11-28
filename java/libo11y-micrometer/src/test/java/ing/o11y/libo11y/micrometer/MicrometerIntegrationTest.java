@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ing.o11y.libo11y.O11yRecord;
@@ -22,6 +23,7 @@ import io.opentelemetry.sdk.metrics.data.MetricData;
 import io.opentelemetry.sdk.metrics.data.PointData;
 import io.opentelemetry.sdk.trace.data.SpanData;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
@@ -129,8 +131,21 @@ class MicrometerIntegrationTest {
                 assertFalse(summary.attributes().containsKey(Spec.Attributes.OUTCOME));
                 assertFalse(summary.attributes().containsKey(Spec.Attributes.DURATION));
 
+                // This record's owner sets none of the request summary's required attributes, and
+                // the nested observation must not set its outcome or duration, so the conformance
+                // gate reports exactly that contract and nothing else.
+                AssertionError partialSummary = assertThrows(AssertionError.class, rec::assertConforms);
+                assertEquals(List.of(
+                                "event o11y.request.summary: missing required attribute http.request.method",
+                                "event o11y.request.summary: missing required attribute http.response.status_code",
+                                "event o11y.request.summary: missing required attribute o11y.outcome",
+                                "event o11y.request.summary: missing required attribute o11y.duration"),
+                        partialSummary.getMessage().lines()
+                                .filter(l -> l.startsWith("  - "))
+                                .map(l -> l.substring(4))
+                                .toList());
+
                 // Full triangle: Observation created span + correlated log + Micrometer timer with exemplar
-                rec.assertConforms();
                 rec.assertTriangle(span.getTraceId());
             }
         }

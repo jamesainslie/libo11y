@@ -7,17 +7,12 @@ import ing.o11y.libo11y.StructuredLogger;
 import ing.o11y.libo11y.Telemetry;
 import ing.o11y.libo11y.spec.generated.Spec;
 import ing.o11y.libo11y.spec.generated.SpecTables;
-import io.opentelemetry.api.common.AttributeKey;
-import io.opentelemetry.api.common.Attributes;
+import io.opentelemetry.sdk.common.CompletableResultCode;
 import io.opentelemetry.sdk.logs.data.LogRecordData;
 import io.opentelemetry.sdk.logs.export.SimpleLogRecordProcessor;
-import io.opentelemetry.sdk.metrics.data.DoublePointData;
 import io.opentelemetry.sdk.metrics.data.ExemplarData;
-import io.opentelemetry.sdk.metrics.data.HistogramPointData;
-import io.opentelemetry.sdk.metrics.data.LongPointData;
 import io.opentelemetry.sdk.metrics.data.MetricData;
 import io.opentelemetry.sdk.metrics.data.PointData;
-import io.opentelemetry.sdk.resources.Resource;
 import io.opentelemetry.sdk.testing.exporter.InMemoryLogRecordExporter;
 import io.opentelemetry.sdk.testing.exporter.InMemoryMetricReader;
 import io.opentelemetry.sdk.testing.exporter.InMemorySpanExporter;
@@ -31,6 +26,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 /**
@@ -38,6 +34,8 @@ import java.util.function.Consumer;
  * Never reads ambient {@code OTEL_*} environment variables or touches process globals.
  */
 public final class O11yRecorder implements AutoCloseable {
+    private static final Duration FLUSH_TIMEOUT = Duration.ofSeconds(2);
+
     public record RecordedExemplar(String metricName, String traceId, String spanId, double value) {}
 
     private final InMemorySpanExporter spanExporter;
@@ -119,8 +117,17 @@ public final class O11yRecorder implements AutoCloseable {
         return logExporter;
     }
 
+    /**
+     * Flushes the trace and log pipelines, so spans and log records buffered by a batch processor
+     * reach their exporters. Metrics are not flushed: the recorder reads them by collecting its
+     * in-memory reader, and flushing that reader would run a collection that discards the
+     * exemplars recorded since the last one.
+     */
     public void forceFlush() {
-        telemetry.forceFlush(Duration.ofSeconds(2));
+        CompletableResultCode.ofAll(List.of(
+                        telemetry.sdkTracerProvider().forceFlush(),
+                        telemetry.sdkLoggerProvider().forceFlush()))
+                .join(FLUSH_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
     }
 
     public List<SpanData> spans() {
@@ -185,52 +192,40 @@ public final class O11yRecorder implements AutoCloseable {
         metricReader.collectAllMetrics(); // drain any prior exemplars
     }
 
-    /** Asserts schema URL, tier-0 identity, and zero leaked SECRET attributes across all signals. */
+    /**
+     * Fails if the code under test broke the libo11y specification, listing every problem found in
+     * one {@link AssertionError}. It is the consumer-facing conformance gate, and runs the checks of
+     * Go's {@code o11ytest.AssertConforms} in the same order:
+     * <ol>
+     *   <li>the resource carries the schema URL and every required tier-0 attribute;</li>
+     *   <li>after a flush, so buffered telemetry is counted, the {@code o11y.schema.violations}
+     *       self-metric shows no secret-classified attribute the code under test tried to put on a
+     *       span, log record or the resource (the pipeline removed it, but secrets must never be
+     *       emitted), and no identity rule that {@code strictIdentity(false)} let startup skip;</li>
+     *   <li>no log record or structured log entry carries a secret-classified attribute in the
+     *       clear, and every registered event record carries the attributes and templates its
+     *       contract in {@link SpecTables#EVENTS} requires;</li>
+     *   <li>no span, span event or span link carries a secret-classified attribute in the clear;</li>
+     *   <li>no metric data point or exemplar carries an attribute the policy removes from metrics.</li>
+     * </ol>
+     * Sensitivity comes from the telemetry's policy, so keys an application registry classifies are
+     * checked too. The environment is validated by the SDK at startup against the specification
+     * values and any {@code extraEnvironments}; a lenient startup that failed it is reported in step 2.
+     *
+     * @throws AssertionError listing every problem, when any check fails
+     */
     public void assertConforms() {
-        Resource res = telemetry.resource();
-        if (!Spec.SCHEMA_URL.equals(res.getSchemaUrl())) {
-            throw new AssertionError("resource schema URL = " + res.getSchemaUrl() + ", want " + Spec.SCHEMA_URL);
+        List<String> problems = new ArrayList<>();
+        ConformanceChecks.checkResource(telemetry.resource(), problems);
+        forceFlush();
+        List<MetricData> collected = metrics();
+        ConformanceChecks.checkViolations(collected, problems);
+        ConformanceChecks.checkLogs(telemetry.policy(), logs(), entries(), problems);
+        ConformanceChecks.checkSpans(telemetry.policy(), spans(), problems);
+        ConformanceChecks.checkMetrics(telemetry.policy(), collected, problems);
+        if (!problems.isEmpty()) {
+            throw new AssertionError("libo11y conformance check failed:\n  - " + String.join("\n  - ", problems));
         }
-        Attributes resAttrs = res.getAttributes();
-        for (String req : SpecTables.REQUIRED_TIER0) {
-            String val = resAttrs.get(AttributeKey.stringKey(req));
-            if (val == null || val.isEmpty()) {
-                throw new AssertionError("missing required tier-0 resource attribute: " + req);
-            }
-        }
-        String env = resAttrs.get(AttributeKey.stringKey("deployment.environment.name"));
-        if (!SpecTables.ENVIRONMENT_VALUES.contains(env)) {
-            throw new AssertionError("unexpected deployment.environment.name: " + env);
-        }
-
-        // Verify no SECRET attribute leaked onto any span, log, or metric
-        for (SpanData sp : spans()) {
-            checkNoSecrets("span:" + sp.getName(), sp.getAttributes());
-        }
-        for (LogRecordData lr : logs()) {
-            checkNoSecrets("log", lr.getAttributes());
-        }
-        for (MetricData md : metrics()) {
-            for (PointData pt : md.getData().getPoints()) {
-                checkNoSecrets("metric:" + md.getName(), pt.getAttributes());
-                if (pt instanceof LongPointData || pt instanceof DoublePointData || pt instanceof HistogramPointData) {
-                    pt.getAttributes().forEach((k, v) -> {
-                        if (telemetry.policy().isMetricDisallowed(k.getKey())) {
-                            throw new AssertionError("disallowed metric attribute leaked: " + k.getKey()
-                                    + " on " + md.getName());
-                        }
-                    });
-                }
-            }
-        }
-    }
-
-    private void checkNoSecrets(String surface, Attributes attrs) {
-        attrs.forEach((k, v) -> {
-            if (telemetry.policy().sensitivityOf(k.getKey()) == SpecTables.Sensitivity.SECRET) {
-                throw new AssertionError("secret attribute leaked on " + surface + ": " + k.getKey());
-            }
-        });
     }
 
     /** Asserts that at least one span AND one log record share the given trace ID. */
