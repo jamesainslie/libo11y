@@ -687,7 +687,7 @@ pub(crate) fn build_sdk(mut settings: Settings) -> Result<Sdk, Error> {
 
     // The exporters can fail; the providers cannot, and run threads once
     // built.
-    let exporters = exporters(&mut settings, &selection, &env)?;
+    let exporters = exporters(&mut settings, &selection, &env, &handler)?;
 
     let metric_failures = ExportFailures::default();
     let (meter_provider, process_metrics) = build_meter_provider(MeterParts {
@@ -826,6 +826,7 @@ fn exporters(
     settings: &mut Settings,
     selection: &Selection,
     env: &EnvLookup,
+    handler: &ErrorHandler,
 ) -> Result<Exporters, Error> {
     let metrics = match selection.metrics.route {
         Route::Injected => settings.metric_exporter.take(),
@@ -833,7 +834,7 @@ fn exporters(
             if let Some(unused) = settings.metric_exporter.take() {
                 unused.discard();
             }
-            metric_exporter_for(route, &selection.metrics, env)?
+            metric_exporter_for(route, &selection.metrics, env, handler)?
         }
     };
     let spans = match selection.traces.route {

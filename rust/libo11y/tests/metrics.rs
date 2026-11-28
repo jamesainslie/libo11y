@@ -451,6 +451,54 @@ fn view_filtered_exemplar_attributes_never_leak_secrets_or_pii() {
 }
 
 #[test]
+fn view_renamed_streams_do_not_attach_exemplars_from_colliding_instrument_names() {
+    let sink = MemoryMetricSink::new();
+    let sdk = hermetic("view-renamed-collision")
+        .without_runtime_metrics()
+        .with_view(|inst: &Instrument| match inst.name() {
+            "metric.a" => Stream::builder().with_name("metric.b").build().ok(),
+            "metric.b" => Stream::builder().with_name("metric.c").build().ok(),
+            _ => None,
+        })
+        .with_metric_sink(sink.clone())
+        .build()
+        .expect("SDK");
+
+    let meter = sdk.meter("svc");
+    let a = meter.u64_counter("metric.a").build();
+    let b = meter.u64_counter("metric.b").build();
+
+    let (cx_a, _, _) = sampled_cx(0x901, 0xa01);
+    {
+        let _g = cx_a.attach();
+        a.add(1, &[]);
+    }
+    let (cx_b, _, _) = sampled_cx(0x902, 0xa02);
+    {
+        let _g = cx_b.attach();
+        b.add(99, &[]);
+    }
+
+    sdk.force_flush().expect("flush");
+    let reqs = sink.requests();
+    let b_dps = number_points(last_metric(&reqs, "metric.b"));
+    assert_eq!(b_dps.len(), 1);
+    assert!(
+        b_dps[0].exemplars.is_empty(),
+        "exported stream metric.b (renamed from metric.a) must not receive exemplars from original metric.b: {:?}",
+        b_dps[0].exemplars
+    );
+    let c_dps = number_points(last_metric(&reqs, "metric.c"));
+    assert_eq!(c_dps.len(), 1);
+    assert!(
+        c_dps[0].exemplars.is_empty(),
+        "renamed stream metric.c must not receive misattached exemplars: {:?}",
+        c_dps[0].exemplars
+    );
+    sdk.shutdown().expect("shutdown");
+}
+
+#[test]
 fn last_matching_histogram_buckets_rule_wins_for_both_sdk_and_exemplars() {
     let sink = MemoryMetricSink::new();
     let sdk = hermetic("hist-precedence")

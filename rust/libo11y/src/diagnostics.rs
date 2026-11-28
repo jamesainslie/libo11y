@@ -49,6 +49,20 @@ impl TelemetryError {
         }
     }
 
+    /// A diagnostic reported directly by a telemetry component, bypassing
+    /// `tracing` so it reaches the error handler even without a global
+    /// subscriber.
+    #[cfg_attr(
+        not(any(feature = "otlp-http", feature = "otlp-grpc")),
+        allow(dead_code, reason = "used by OTLP metric sinks")
+    )]
+    pub(crate) fn with_target(target: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            target: Some(target.into()),
+            message: message.into(),
+        }
+    }
+
     /// The `tracing` target of the OpenTelemetry crate that reported the
     /// error, such as `opentelemetry_sdk`, or `None` for libo11y's own.
     #[must_use]

@@ -104,7 +104,9 @@ impl opentelemetry::trace::Tracer for CellTracer {
 /// Whether `metadata` is eligible for the span layer at `span_level`:
 /// non-diagnostic spans at or above `span_level`, and only `ERROR` events, so
 /// an error event sets the span's status and every other event is a log record
-/// only.
+/// only. `sqlx::query` events are excluded so raw SQL in `db.statement` or
+/// `summary` cannot reach span events when a caller lowers `SQLx`'s query log
+/// level to `ERROR`.
 fn span_layer_eligible(metadata: &Metadata<'_>, span_level: Level) -> bool {
     if is_diagnostic(metadata) {
         return false;
@@ -112,7 +114,11 @@ fn span_layer_eligible(metadata: &Metadata<'_>, span_level: Level) -> bool {
     if metadata.is_span() {
         *metadata.level() <= span_level
     } else {
-        metadata.is_event() && *metadata.level() == Level::ERROR
+        let target = metadata.target();
+        metadata.is_event()
+            && *metadata.level() == Level::ERROR
+            && target != "sqlx::query"
+            && !target.starts_with("sqlx::query::")
     }
 }
 

@@ -67,38 +67,24 @@ fn copy(err: &OTelSdkError) -> OTelSdkError {
     }
 }
 
-impl ExportFailures {
-    /// Records a failed export into every open window.
-    pub(crate) fn record(&self, result: &OTelSdkResult) {
-        let Err(err) = result else { return };
-        let windows = self
-            .0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone();
-        for window in windows {
-            window.add(err);
-        }
-    }
+/// An open failure-recording window. Dropping it removes the window even if
+/// the guarded call panics.
+#[derive(Debug)]
+pub(crate) struct FailureWindow {
+    failures: ExportFailures,
+    window: Option<Arc<Window>>,
+}
 
-    /// Runs `call` inside a window and returns its error, if any, followed
-    /// by the export failures recorded meanwhile that the error does not
-    /// already carry, then a count of the failed exports beyond the first
-    /// five distinct ones. Empty means nothing failed.
-    pub(crate) fn during<F>(&self, call: F) -> Vec<SharedError>
-    where
-        F: FnOnce() -> OTelSdkResult,
-    {
-        let window = Arc::new(Window::default());
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(Arc::clone(&window));
-        let result = call();
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .retain(|open| !Arc::ptr_eq(open, &window));
+impl FailureWindow {
+    /// Closes the window and returns `result`'s error, if any, followed by the
+    /// export failures recorded meanwhile that the error does not already
+    /// carry, then a count of the failed exports beyond the first five
+    /// distinct ones. Empty means nothing failed.
+    pub(crate) fn finish(mut self, result: OTelSdkResult) -> Vec<SharedError> {
+        let Some(window) = self.window.take() else {
+            return Vec::new();
+        };
+        self.failures.remove(&window);
         let state = std::mem::take(&mut *window.0.lock().unwrap_or_else(PoisonError::into_inner));
 
         let mut errors: Vec<SharedError> = Vec::new();
@@ -123,6 +109,64 @@ impl ExportFailures {
             errors.push(Arc::new(MoreFailures { count: state.more }));
         }
         errors
+    }
+}
+
+impl Drop for FailureWindow {
+    fn drop(&mut self) {
+        if let Some(window) = self.window.take() {
+            self.failures.remove(&window);
+        }
+    }
+}
+
+impl ExportFailures {
+    /// Records a failed export into every open window.
+    pub(crate) fn record(&self, result: &OTelSdkResult) {
+        let Err(err) = result else { return };
+        let windows = self
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        for window in windows {
+            window.add(err);
+        }
+    }
+
+    /// Opens a recording window that stays registered until
+    /// [`FailureWindow::finish`] or drop.
+    pub(crate) fn open(&self) -> FailureWindow {
+        let window = Arc::new(Window::default());
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(Arc::clone(&window));
+        FailureWindow {
+            failures: self.clone(),
+            window: Some(window),
+        }
+    }
+
+    fn remove(&self, window: &Arc<Window>) {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|open| !Arc::ptr_eq(open, window));
+    }
+
+    /// Runs `call` inside a window and returns its error, if any, followed
+    /// by the export failures recorded meanwhile that the error does not
+    /// already carry, then a count of the failed exports beyond the first
+    /// five distinct ones. Empty means nothing failed.
+    #[cfg(test)]
+    pub(crate) fn during<F>(&self, call: F) -> Vec<SharedError>
+    where
+        F: FnOnce() -> OTelSdkResult,
+    {
+        let window = self.open();
+        let result = call();
+        window.finish(result)
     }
 
     /// Whether a shutdown or a flush is recording failures, for tests that
@@ -346,5 +390,18 @@ mod tests {
             texts(&errors),
             ["Operation timed out after 1s", "Operation failed: batch"]
         );
+    }
+
+    #[test]
+    fn a_panicking_call_closes_its_window() {
+        let failures = ExportFailures::default();
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = failures.during(|| -> OTelSdkResult {
+                failures.record(&failure("before panic"));
+                panic!("boom");
+            });
+        }));
+        assert!(panicked.is_err());
+        assert!(!failures.window_open(), "window leaked after panic");
     }
 }
