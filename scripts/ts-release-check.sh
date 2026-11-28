@@ -119,8 +119,10 @@ printf '{ "name": "libo11y-consumer", "private": true, "type": "module" }\n' >"$
 	# for the browser with no Node builtin, from every entry point. The
 	# release workflow's npm-smoke job runs the same check on the
 	# published versions.
-	"$repo_root/scripts/ts-browser-bundle-check.sh" "$consumer" @libo11y/web=setup @libo11y/webext @libo11y/rum=setupRum
-	echo "ts-release-check: @libo11y/web, @libo11y/webext and @libo11y/rum bundle for the browser"
+	"$repo_root/scripts/ts-browser-bundle-check.sh" "$consumer" @libo11y/web=setup @libo11y/webext @libo11y/rum=setupRum \
+		@libo11y/rum-react=RumErrorBoundary @libo11y/rum-tanstack-router=instrumentTanStackRouter \
+		@libo11y/rum-connect=connectRequestNaming
+	echo "ts-release-check: @libo11y/web, @libo11y/webext, @libo11y/rum and the RUM adapters bundle for the browser"
 
 	# The published declarations must typecheck for a nodenext consumer.
 	cat >check.ts <<'TS'

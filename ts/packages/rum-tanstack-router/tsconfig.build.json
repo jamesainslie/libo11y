@@ -1,0 +1,5 @@
+{
+  "extends": "../../tsconfig.build.json",
+  "compilerOptions": { "lib": ["es2023", "dom", "dom.iterable"], "types": [] },
+  "exclude": ["${configDir}/src/**/*.test.ts"]
+}

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type BudgetFile, compareBudgets, formatTable } from "./size.ts";
+import { type BudgetFile, buildOptions, compareBudgets, formatTable } from "./size.ts";
 
 const FILE: BudgetFile = {
   unit: "bytes",
@@ -35,4 +35,13 @@ test("formatTable renders a markdown table", () => {
   ]);
   assert.match(md, /\| base \| 90 \| 100 \| ok \|/);
   assert.match(md, /\| extra \| 14 \| 10 \| over \|/);
+});
+
+test("buildOptions bundles for the browser and keeps an entry's externals out of the bundle", () => {
+  const plain = buildOptions("/tmp/a.ts", undefined);
+  assert.deepEqual(plain.entrypoints, ["/tmp/a.ts"]);
+  assert.equal(plain.target, "browser");
+  assert.equal(plain.minify, true);
+  assert.equal("external" in plain, false);
+  assert.deepEqual(buildOptions("/tmp/a.ts", ["react"]).external, ["react"]);
 });

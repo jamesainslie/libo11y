@@ -37,7 +37,10 @@ Four cells exist today: the Go core (`go`), the Bun and Node core
 (`@libo11y/server`), the browser core (`@libo11y/web`) and the MV3
 extension core (`@libo11y/webext`). The two browser cores first ship in
 `ts/v0.2.1`. The browser RUM cell, `@libo11y/rum`, is in development in
-`ts/packages/rum` and has not shipped. Every other named cell is planned.
+`ts/packages/rum` and has not shipped. Its adapters for React
+(`@libo11y/rum-react`), TanStack Router (`@libo11y/rum-tanstack-router`)
+and Connect (`@libo11y/rum-connect`) are in development beside it. Every
+other named cell is planned.
 
 ## Data model
 
