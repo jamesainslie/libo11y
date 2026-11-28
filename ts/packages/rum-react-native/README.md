@@ -105,5 +105,6 @@ not that tap's child.
 
 ## Status
 
-In development. The package is not released and not on npm. Errors, taps
+In development. The package is not released and not on npm. It first
+ships in the next TypeScript release, after `ts/v0.4.0`. Errors, taps
 and the Expo Router adapter come in later steps.

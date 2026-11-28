@@ -25,20 +25,21 @@ each release.
 | [`@libo11y/rum-react`](packages/rum-react)                     | the React adapter for `@libo11y/rum`: `RumProvider`, `useRum` and `RumErrorBoundary`, which records render errors with the component stack                                                                                                                                                  |
 | [`@libo11y/rum-tanstack-router`](packages/rum-tanstack-router) | the TanStack Router adapter for `@libo11y/rum`: `instrumentTanStackRouter` names views by route template and times soft navigations                                                                                                                                                         |
 | [`@libo11y/rum-connect`](packages/rum-connect)                 | the Connect adapter for `@libo11y/rum`: `connectRequestNaming` names the fetch spans of Connect RPCs by service and method                                                                                                                                                                  |
-| [`@libo11y/rum-replay`](packages/rum-replay)                   | privacy-first session replay for `@libo11y/rum`. `replay()` records with rrweb behind libo11y's scrubber, masks text by default, never records input values and loads rrweb only to record. In development                                                                                  |
-| [`@libo11y/react-native`](packages/react-native)               | the React Native platform: `setupReactNative`, the mobile resource, a retry queue that saves each batch on device storage before sending, AppState flushing, consent, and `fetch` and XHR spans. `./expo` adds `setupExpo`. In development                                                  |
+| [`@libo11y/rum-replay`](packages/rum-replay)                   | privacy-first session replay for `@libo11y/rum`. `replay()` records with rrweb behind libo11y's scrubber, masks text by default, never records input values and loads rrweb only to record                                                                                                  |
+| [`@libo11y/react-native`](packages/react-native)               | the React Native platform: `setupReactNative`, the mobile resource, a retry queue that saves each batch on device storage before sending, AppState flushing, consent, and `fetch` and XHR spans. `./expo` adds `setupExpo`. A preview                                                       |
 | [`@libo11y/rum-react-native`](packages/rum-react-native)       | RUM for React Native over `@libo11y/react-native`: `setupRumReactNative`, sessions that survive a relaunch, screens, the `app_load` span and per-screen summaries, with the `Rum` handle `@libo11y/rum-react` and `@libo11y/rum-connect` take. `./expo` adds `setupRumExpo`. In development |
 
 `@libo11y/web` and `@libo11y/webext` first ship in `ts/v0.2.1`.
 `@libo11y/rum`, `@libo11y/rum-react`, `@libo11y/rum-tanstack-router`,
 `@libo11y/rum-connect` and `@libo11y/sourcemaps` first ship in
-`ts/v0.3.0`. They are not on npm yet. Until their first npm publish, they
-install from the tarballs attached to the
-[`ts/v0.3.0` GitHub Release](https://github.com/jamesainslie/libo11y/releases/tag/ts/v0.3.0),
-whose notes list the exact URLs. `@libo11y/rum-replay` is in development
-and has not shipped yet. It first ships in the next TypeScript release.
-`@libo11y/react-native` and `@libo11y/rum-react-native` are in development
-and have not shipped yet.
+`ts/v0.3.0`. `@libo11y/rum-replay` and `@libo11y/react-native` first ship
+in `ts/v0.4.0`. `@libo11y/react-native` is a preview: its API can change
+in a minor release. These seven packages are not on npm yet. Until their
+first npm publish, they install from the tarballs attached to the
+[`ts/v0.4.0` GitHub Release](https://github.com/jamesainslie/libo11y/releases/tag/ts/v0.4.0),
+whose notes list the exact URLs.
+`@libo11y/rum-react-native` is in development and has not shipped yet.
+It first ships in the next TypeScript release.
 Every package implements spec 1.3.0.
 [docs/PARITY.md](../docs/PARITY.md) compares every capability with Go.
 
@@ -62,7 +63,7 @@ npm install @libo11y/web      # pages
 npm install @libo11y/webext   # Manifest V3 service workers, content scripts and extension pages
 npm install @libo11y/rum      # RUM over @libo11y/web (release tarball until it reaches npm)
 npm install @libo11y/rum-react @libo11y/rum-tanstack-router @libo11y/rum-connect   # RUM adapters (release tarballs until they reach npm)
-npm install @libo11y/rum-replay   # session replay for RUM (in development)
+npm install @libo11y/rum-replay   # session replay for RUM (release tarball until it reaches npm)
 ```
 
 The [web README](packages/web/README.md) and the

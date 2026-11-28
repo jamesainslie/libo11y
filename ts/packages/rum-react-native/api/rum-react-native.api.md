@@ -66,7 +66,7 @@ export function screens(): RumCollector;
 export function setupRumReactNative(options?: RumReactNativeSetupOptions): Promise<ReactNativeRumTelemetry>;
 
 // @public
-export const VERSION = "0.3.0";
+export const VERSION = "0.4.0";
 
 // (No @packageDocumentation comment for this package)
 

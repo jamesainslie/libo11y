@@ -1,6 +1,6 @@
 {
   "name": "@libo11y/sourcemaps",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "Uploads JavaScript source maps to the libo11y RUM gateway so it can symbolicate browser and React Native stack traces. A library and the libo11y-sourcemaps command for Bun and Node.",
   "license": "Apache-2.0",

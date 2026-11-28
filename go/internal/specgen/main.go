@@ -527,6 +527,17 @@ func render(m *model) (map[string]string, error) {
 	outputs[csSpecPath] = csSpec
 	outputs[csTablesPath] = csTables
 	outputs[csGoPrintPath] = genCsGoPrint()
+	javaSpec, err := genJavaSpec(m)
+	if err != nil {
+		return nil, err
+	}
+	javaTables, err := genJavaTables(m)
+	if err != nil {
+		return nil, err
+	}
+	outputs[javaSpecPath] = javaSpec
+	outputs[javaTablesPath] = javaTables
+	outputs[javaGoPrintPath] = genJavaGoPrint()
 	goSources := []struct{ rel, src string }{
 		{"go/spec/spec.go", genSpec(m)},
 		{"go/internal/spectables/tables.go", tables},

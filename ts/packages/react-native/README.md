@@ -56,5 +56,14 @@ imports none of them. Tested on Expo SDK 58 only.
 
 ## Status
 
-In development. The package is not released and not on npm. The RUM
-package `@libo11y/rum-react-native` comes in a later step.
+A preview. The package first ships in `ts/v0.4.0`, and its API can change
+in a minor release until the RUM package for React Native,
+`@libo11y/rum-react-native`, ships on top of it. It is not on npm yet.
+Until its first npm publish, install it from the tarball attached to the
+[`ts/v0.4.0` GitHub Release](https://github.com/jamesainslie/libo11y/releases/tag/ts/v0.4.0),
+whose notes list the exact URL:
+
+```sh
+npm install \
+  https://github.com/jamesainslie/libo11y/releases/download/ts/v0.4.0/libo11y-react-native-0.4.0.tgz
+```

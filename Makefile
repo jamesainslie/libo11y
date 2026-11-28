@@ -8,7 +8,7 @@ GO_TEST_P ?= 4
 # gate runs on each module separately.
 GO_MODULES := go go/o11ygin go/o11yconnect go/o11ysql go/o11yrum ops
 
-.PHONY: spec-check spec-generate spec-drift ops-generate ops-check ops-integration-up ops-integration-down ops-integration ops-promtool-test ops-release-check ops-release-check-test test lint vet tidy-check vuln release-check zig-release-check python-release-check rust-release-check rust-release-check-test c-release-check o11yrum-release-check print-o11yrum-release-version o11yrum-image schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-rn-bundle-test ts-npm-plan-test ts-install ts-check ts-size ts-browser-test ts-rn-check rum-e2e rust-check rust-msrv zig-check zig-integrations-check zig-hygiene-test python-check python-hygiene-test c-check ruby-check dotnet-check ci
+.PHONY: spec-check spec-generate spec-drift ops-generate ops-check ops-integration-up ops-integration-down ops-integration ops-promtool-test ops-release-check ops-release-check-test test lint vet tidy-check vuln release-check zig-release-check python-release-check rust-release-check rust-release-check-test c-release-check o11yrum-release-check print-o11yrum-release-version o11yrum-image schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-rn-bundle-test ts-npm-plan-test ts-install ts-check ts-size ts-browser-test ts-rn-check rum-e2e rust-check rust-msrv zig-check zig-integrations-check zig-hygiene-test python-check python-hygiene-test c-check ruby-check dotnet-check java-check ci
 
 # Validate the spec registry against the libo11y policy suite (naming,
 # ownership, sensitivity, cardinality, events, units).
@@ -16,7 +16,7 @@ spec-check:
 	cd go && go run ./internal/specgen -root .. -check
 
 # Directories holding generated artifacts.
-GENERATED := go/spec go/internal/spectables docs/taxonomy spec/schemas ts/packages/spec/src/generated rust/libo11y-spec/src/generated zig/src/spec/generated python/src/libo11y/spec/_generated c/include/o11y/spec.h ruby/lib/libo11y/spec/generated dotnet/src/Libo11y.Spec/Generated go/o11yrum/internal/rumspec
+GENERATED := go/spec go/internal/spectables docs/taxonomy spec/schemas ts/packages/spec/src/generated rust/libo11y-spec/src/generated zig/src/spec/generated python/src/libo11y/spec/_generated c/include/o11y/spec.h ruby/lib/libo11y/spec/generated dotnet/src/Libo11y.Spec/Generated java/libo11y-spec/src/main/java/ing/o11y/libo11y/spec/generated go/o11yrum/internal/rumspec
 
 # Validate the registry, then regenerate go/spec, go/internal/spectables,
 # docs/taxonomy, spec/schemas, ts/packages/spec/src/generated,
@@ -106,14 +106,18 @@ ts-rn-check: ts-install
 ts-browser-test: ts-install
 	cd ts && bun run test:browser
 
-# The RUM gateway end-to-end journey: builds o11yrum-gateway and runs the
+# The RUM gateway end-to-end journeys: builds o11yrum-gateway and runs the
 # journey in ts/packages/sourcemaps/src/e2e under Node and Bun against the
-# in-process OTLP sink from @libo11y/test.
+# in-process OTLP sink from @libo11y/test, then the session replay journey
+# (ts/packages/rum-replay/browser/gateway-journey.pw.ts) in Playwright's
+# Chromium: record in a browser, store through the gateway, read back with
+# a token, replay with @rrweb/replay, erase. Needs Playwright's Chromium.
 rum-e2e: ts-install
 	@set -e; tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; \
 	(cd go/o11yrum && go build -o "$$tmp/o11yrum-gateway" ./cmd/o11yrum-gateway); \
 	cd ts && O11YRUM_GATEWAY_BIN="$$tmp/o11yrum-gateway" node --test packages/sourcemaps/src/e2e/*.test.ts \
-		&& O11YRUM_GATEWAY_BIN="$$tmp/o11yrum-gateway" bun test --timeout 60000 packages/sourcemaps/src/e2e
+		&& O11YRUM_GATEWAY_BIN="$$tmp/o11yrum-gateway" bun test --timeout 60000 packages/sourcemaps/src/e2e \
+		&& O11YRUM_GATEWAY_BIN="$$tmp/o11yrum-gateway" bun run test:browser --project=rum-chromium packages/rum-replay/browser/gateway-journey.pw.ts
 
 # Rust workspace (rust/): formatting, clippy with warnings as errors, the
 # tests, and the docs with warnings as errors (needs cargo with rustfmt and
@@ -162,7 +166,7 @@ RELEASE_VERSION ?= v0.4.0
 # validates. Like RELEASE_VERSION, it moves only in a release commit,
 # together with the packages' versions (bun scripts/release.ts version).
 # The packages stay at 0.0.0 until the first TypeScript release.
-TS_RELEASE_VERSION ?= v0.3.0
+TS_RELEASE_VERSION ?= v0.4.0
 
 # The version the Zig package manifests (build.zig.zon and zig/build.zig.zon)
 # carry, which zig-release-check.sh validates. Moves only in a release commit.
@@ -184,7 +188,7 @@ C_RELEASE_VERSION ?= v0.1.0
 # o11yrum-release-check.sh validates and the release workflow requires to
 # match the tag. Moves only in a release commit, together with the
 # script's default and a dated go/o11yrum/CHANGELOG.md section.
-O11YRUM_RELEASE_VERSION ?= v0.1.0
+O11YRUM_RELEASE_VERSION ?= v0.2.0
 
 # The ops pack version (ops/vX.Y.Z), which ops-release-check.sh validates
 # against ops/internal/version/version.go, ops/CHANGELOG.md and the
@@ -392,6 +396,13 @@ dotnet-check:
 	cd dotnet && dotnet run --project src/Libo11y.Cli -- registry check ../conformance/appregistry/valid.yaml
 	scripts/dotnet-hygiene.sh dotnet/src
 
+# Java Maven reactor (java/): compile with -Xlint:all -Werror on Java 21, run
+# all unit, shared conformance, Micrometer, Spring Boot, CLI, and OTLP wire
+# suites, plus the hygiene gate.
+java-check:
+	cd java && mvn -B test
+	scripts/java-hygiene.sh java
+
 # vuln runs last: it depends on the advisory database and the toolchain's
 # patch level, so local runs exercise every other gate first.
-ci: lint vet test tidy-check spec-check spec-drift ops-check ops-integration ts-check ts-size ts-browser-test ts-rn-check rum-e2e o11yrum-image rust-check rust-msrv zig-check python-check c-check ruby-check dotnet-check schema-published-test release-notes-test release-tag-test ops-promtool-test ops-release-check-test rust-release-check-test ts-browser-bundle-test ts-rn-bundle-test ts-npm-plan-test release-check vuln
+ci: lint vet test tidy-check spec-check spec-drift ops-check ops-integration ts-check ts-size ts-browser-test ts-rn-check rum-e2e o11yrum-image rust-check rust-msrv zig-check python-check c-check ruby-check dotnet-check java-check schema-published-test release-notes-test release-tag-test ops-promtool-test ops-release-check-test rust-release-check-test ts-browser-bundle-test ts-rn-bundle-test ts-npm-plan-test release-check vuln

@@ -1,6 +1,6 @@
 {
   "name": "@libo11y/rum-react-native",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "libo11y RUM for React Native apps on Hermes: sessions that survive a relaunch, consent, session sampling with a retention buffer on device storage, screens, the app_load span and per-screen summaries over @libo11y/react-native. The handle works with @libo11y/rum-react and @libo11y/rum-connect.",
   "license": "Apache-2.0",

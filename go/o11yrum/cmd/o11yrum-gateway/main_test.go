@@ -11,11 +11,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime/debug"
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -860,4 +862,108 @@ apps:
 			}
 		})
 	}
+}
+
+// TestServeReloadsReadTokensOnSIGHUP rotates the read API's token with
+// SIGHUP, and checks a bad token file keeps the tokens in use.
+func TestServeReloadsReadTokensOnSIGHUP(t *testing.T) {
+	quietTelemetry(t)
+	// The test process catches SIGHUP too, so a gateway that does not
+	// would leave the test running instead of killing it.
+	guard := make(chan os.Signal, 4)
+	signal.Notify(guard, syscall.SIGHUP)
+	defer signal.Stop(guard)
+	dir := t.TempDir()
+	const oldToken, newToken = "read-token-0123456789abcdef", "rotated-token-fedcba9876543210"
+	tokens := filepath.Join(dir, "read-tokens")
+	writeTestFile(t, tokens, oldToken+"\n")
+	writeTestFile(t, filepath.Join(dir, "gateway.yaml"), `listen: 127.0.0.1:0
+environment: test
+object_store: {filesystem: {root: store}}
+replay: {read_listen: "127.0.0.1:0", read_token_file: read-tokens}
+apps:
+  - service_name: shop-web
+    origins: ["https://shop.example"]
+    replay: {enabled: true}
+`)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pr, pw := io.Pipe()
+	defer func() { _ = pw.Close() }()
+	lines := make(chan string, 64)
+	tee := io.TeeReader(pr, lineWriter(lines))
+	done := make(chan int, 1)
+	go func() { done <- run(ctx, []string{"-config", filepath.Join(dir, "gateway.yaml")}, io.Discard, pw) }()
+	read := "http://" + waitForAddresses(t, tee, listeningMarker, readListeningMarker)[1]
+	path := read + "/v1/replay/shop-web/sessions/0b7e5c1e-6f2a-4c55-9b1e-1f2d3c4b5a69"
+	status := func(token string) int {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodGet, path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+	hangup := func(want string) {
+		t.Helper()
+		if err := syscall.Kill(syscall.Getpid(), syscall.SIGHUP); err != nil {
+			t.Fatal(err)
+		}
+		timeout := time.After(10 * time.Second)
+		for {
+			select {
+			case line := <-lines:
+				if strings.Contains(line, want) {
+					return
+				}
+			case <-timeout:
+				t.Fatalf("no %q line within 10s of SIGHUP", want)
+			}
+		}
+	}
+	if got := status(oldToken); got != http.StatusNotFound {
+		t.Fatalf("old token before the rotation: %d", got)
+	}
+	writeTestFile(t, tokens, newToken+"\n")
+	hangup("reloaded replay.read_token_file")
+	if got := status(newToken); got != http.StatusNotFound {
+		t.Errorf("new token after SIGHUP: %d", got)
+	}
+	if got := status(oldToken); got != http.StatusUnauthorized {
+		t.Errorf("old token after SIGHUP: %d", got)
+	}
+	writeTestFile(t, tokens, "short\n")
+	hangup("keeping the tokens in use")
+	if got := status(newToken); got != http.StatusNotFound {
+		t.Errorf("new token after a failed reload: %d", got)
+	}
+	cancel()
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("exit %d", code)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the gateway did not shut down")
+	}
+}
+
+// lineWriter sends each line written to it on lines, dropping lines when
+// nobody is reading.
+type lineWriter chan<- string
+
+func (w lineWriter) Write(p []byte) (int, error) {
+	for line := range strings.SplitSeq(strings.TrimRight(string(p), "\n"), "\n") {
+		select {
+		case w <- line:
+		default:
+		}
+	}
+	return len(p), nil
 }

@@ -6,8 +6,9 @@
 //
 // It serves the gateway under /_o11y/v1/, liveness at /healthz and
 // readiness at /readyz, and drains in-flight requests on SIGINT or
-// SIGTERM. Once shutdown begins /readyz answers 503, and the gateway keeps
-// serving for the configuration's shutdown_delay before it drains. When
+// SIGTERM. SIGHUP reloads replay.read_token_file. Once shutdown begins
+// /readyz answers 503, and the gateway keeps serving for the
+// configuration's shutdown_delay before it drains. When
 // the configuration sets no sinks.otlp.endpoint, batches go to
 // OTEL_EXPORTER_OTLP_ENDPOINT if that is set.
 //
@@ -45,6 +46,7 @@ import (
 	"runtime/debug"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -255,6 +257,13 @@ func parseOTLPHeaders(raw string) (map[string]string, error) {
 
 // serve runs the gateway until ctx ends, then drains it.
 func serve(ctx context.Context, cfg *o11yrum.Config, sink *o11yrum.OTLPSink, store o11yrum.ObjectStore, stderr io.Writer) (err error) {
+	// SIGHUP reloads the read API's tokens, so they rotate without a
+	// restart. It is caught from the start, so a signal sent while the
+	// gateway starts never ends it; one that arrives before the handler
+	// exists is handled once it does. During the drain it is ignored.
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	defer signal.Stop(hup)
 	// The producer is registered before o11y.New builds the metric reader,
 	// which asks autoexport for its producers.
 	producer := o11yrum.NewMetricProducer()
@@ -325,6 +334,15 @@ func serve(ctx context.Context, cfg *o11yrum.Config, sink *o11yrum.OTLPSink, sto
 		_, _ = fmt.Fprintf(stderr, "o11yrum-gateway: replay read API listening on %s\n", readLn.Addr())
 	}
 	go func() { serveErr <- srv.Serve(ln) }()
+	// The reloader stops before serve returns, and so before the handler
+	// closes and before run's caller reads stderr.
+	reloadCtx, stopReload := context.WithCancel(ctx)
+	var reloader sync.WaitGroup
+	reloader.Go(func() { reloadOnHangup(reloadCtx, hup, h, cfg.Replay.ReadTokenFile != "", stderr) })
+	defer func() {
+		stopReload()
+		reloader.Wait()
+	}()
 	select {
 	case err := <-serveErr:
 		return errors.Join(err, shutdown(ctx, servers))
@@ -342,6 +360,27 @@ func serve(ctx context.Context, cfg *o11yrum.Config, sink *o11yrum.OTLPSink, sto
 		}
 	}
 	return shutdown(ctx, servers)
+}
+
+// reloadOnHangup reloads the replay read API's tokens on each signal from
+// hup until ctx ends, and reports the result on stderr. A failed reload
+// keeps the tokens in use.
+func reloadOnHangup(ctx context.Context, hup <-chan os.Signal, h *o11yrum.Handler, tokenFile bool, stderr io.Writer) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-hup:
+		}
+		switch err := h.ReloadReplayReadTokens(); {
+		case !tokenFile:
+			_, _ = fmt.Fprintln(stderr, "o11yrum-gateway: SIGHUP: no replay.read_token_file to reload")
+		case err != nil:
+			_, _ = fmt.Fprintf(stderr, "o11yrum-gateway: SIGHUP: keeping the tokens in use: %v\n", err)
+		default:
+			_, _ = fmt.Fprintln(stderr, "o11yrum-gateway: SIGHUP: reloaded replay.read_token_file")
+		}
+	}
 }
 
 // newServer returns an HTTP server for handler with the gateway's

@@ -52,7 +52,7 @@ shipping `Libo11y.Spec`, `Libo11y`, `Libo11y.AspNetCore`, `Libo11y.Db`,
 `conformance/` suite (instance-id, endpoint-sanitize, PII hash, and all 46
 application registry cases).
 
-The matrix describes the latest releases: `go/v0.4.0`, `ts/v0.3.0`,
+The matrix describes the latest releases: `go/v0.4.0`, `ts/v0.4.0`,
 `zig/v0.1.0`, `python/v0.1.0`, `c/v0.1.0`, and `rust/v0.1.0`.
 
 A status describes how a capability is designed and built. It does not say
@@ -211,8 +211,11 @@ known defect. `ts/v0.2.1` fixed the last ones, which
 
 ## Upcoming and planned clients
 
-No released implementation exists yet for Java. When it ships, it gets its
-own status and form columns in the matrix above, against the same baseline.
-
-- **Java** (planned): not started; planned to build over the OpenTelemetry
-  Java SDK and SLF4J.
+Java (`java/`, unreleased, targeting `java/v0.1.0`) targets Java 21+ over
+OpenTelemetry Java SDK 1.68.0, Micrometer 1.18.0, Micrometer Tracing 1.8.0,
+and Spring Boot 4.2.0 (`libo11y-spec`, `libo11y`, `libo11y-micrometer`,
+`libo11y-spring-boot-starter`, `libo11y-test`, and `libo11y-cli`), passing the
+full shared `conformance/` suite (instance-id, endpoint-sanitize, PII hash, and
+all 46 application registry cases). When it ships its first tagged release, it
+gets its own status and form columns in the matrix above, against the same
+baseline.

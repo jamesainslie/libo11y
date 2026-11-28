@@ -13,8 +13,69 @@ adhere to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `@libo11y/rum-react-native`, RUM for React Native apps on Hermes over
+  `@libo11y/react-native`. In development: it is not released and not on
+  npm, and first ships in the next TypeScript release.
+  `setupRumReactNative` returns the same `Rum` handle as the browser's
+  `setupRum`, so `@libo11y/rum-react` and `@libo11y/rum-connect` work with
+  it unchanged. Every view is a screen, named `rum.initialViewName`
+  (default `"app"`) until a router adapter or `rum.setViewName` names it.
+  The session, the retention buffer of sessions not yet kept and the
+  remote configuration cache live in the app's key-value storage, written
+  only once consent is granted, so a relaunch within the 15-minute idle
+  window continues the session. A new screen counts as activity. A revoke
+  removes all three, also when only an earlier launch had consent.
+  AppState drives hide and show: going to the background emits the view
+  summaries and flushes. App metrics export with delta temporality, as the
+  gateway requires. `screens()` records a view span per screen that ends
+  at the first frame after `rum.viewRendered()`, at most 10 seconds. One
+  `app_load` span per process runs from React Native's
+  `rnStartupTiming.startTime` to the first screen's render, at most 60
+  seconds, and parents the first screen's span, which starts with it. It
+  is recorded on the first grant, also when consent comes after the first
+  screen and after other screens. The `./expo` entry's `setupRumExpo`
+  keeps it all in the app's documents, as `setupExpo` does. The fixture
+  Expo app runs it under jest-expo.
+
+### Changed
+
+- `@libo11y/rum/core`: `setupRumCore` takes `viewKind`, for a platform
+  whose views are all of one kind, such as React Native's `screen`, and
+  `onRuntime`, which hands a platform's own recorders the runtime before
+  consent is wired, and `initialViewStart`, where the first view starts on
+  a clock that does not count from navigation start. The views collector
+  parents the load view's span to `app_load` by the tracker's load view
+  rather than by its kind, the same rule on the web. The core exports
+  `viewsWith` for a platform's own views collector.
+- `@libo11y/react-native`: the resource's `telemetry.sdk.language` is
+  `javascript`, whichever OpenTelemetry build the bundler resolves. Metro
+  resolves OpenTelemetry's browser build and jest its Node build, so it
+  was `webjs` or `nodejs` in 0.4.0.
+- `make ts-size` bundles a delta row with its base entry's externals and
+  export conditions, and its budgets and the Metro bundle budget cover
+  `@libo11y/rum-react-native`.
+
+## [0.4.0] - 2026-11-27
+
+This release adds session replay, `@libo11y/rum-replay`, and a preview of
+the React Native platform, `@libo11y/react-native` with its `./expo`
+entry point. It also makes revoking consent clear the offline queue at
+once, and reports export failures that happen outside a flush, which
+0.3.0 lost without a word. The RUM gateway stores replay from
+`go/o11yrum/v0.2.0` on.
+
+The two new packages are not on npm yet, and neither are `@libo11y/rum`,
+`@libo11y/rum-react`, `@libo11y/rum-tanstack-router`,
+`@libo11y/rum-connect` and `@libo11y/sourcemaps`. Until their first npm
+publish they install from the tarballs attached to the GitHub Release
+for `ts/v0.4.0`, whose notes end with the exact `npm install` URLs. The
+React Native packages are a preview: their API can change in a minor
+release.
+
+### Added
+
 - `@libo11y/rum-replay`, privacy-first session replay for `@libo11y/rum`.
-  In development; it is not on npm yet. Installing the `replay()`
+  It is not on npm yet. Installing the `replay()`
   collector is the opt-in, and it records only while consent is granted.
   Every rrweb event passes through libo11y's own scrubber, an allow-list
   of event types, sources, node fields and attributes, before anything is
@@ -45,8 +106,8 @@ adhere to [Semantic Versioning](https://semver.org/).
   the collector to clamp.
 - `conformance/rum-replay/`, the replay scrubbing vectors that the
   collector and the RUM gateway both run.
-- `@libo11y/react-native`, the platform for React Native apps on Hermes.
-  In development; it is not released and not on npm. `setupReactNative`
+- `@libo11y/react-native`, the platform for React Native apps on Hermes,
+  as a preview. It is not on npm yet. `setupReactNative`
   builds telemetry over the OpenTelemetry JS providers with a mobile
   resource (`o11y.rum.platform` `react_native`, `os.name` and
   `o11y.rum.device.class`) and batch settings suited to a phone. Every
@@ -60,8 +121,7 @@ adhere to [Semantic Versioning](https://semver.org/).
   even when fetch runs over XHR, and `traceFetch` wraps a fetch the global
   patch does not reach, such as `expo/fetch` imported directly. Trace
   context goes only to the origins in `propagateTo`. Every endpoint must be
-  an absolute http or https URL. The resource's `telemetry.sdk.language`
-  is `javascript`, whichever OpenTelemetry build the bundler resolves.
+  an absolute http or https URL.
 - `@libo11y/react-native/expo`, the Expo entry point. `setupExpo` keeps
   the retry queue in files under the app's documents directory, sets
   `service.version` from the native app version and
@@ -72,29 +132,6 @@ adhere to [Semantic Versioning](https://semver.org/).
   packed packages and runs a jest-expo suite, and CI exports it for iOS
   and Android with Hermes bytecode under a Metro bundle budget
   (`make ts-rn-check`).
-- `@libo11y/rum-react-native`, RUM for React Native apps on Hermes over
-  `@libo11y/react-native`. In development; it is not released and not on
-  npm. `setupRumReactNative` returns the same `Rum` handle as the
-  browser's `setupRum`, so `@libo11y/rum-react` and `@libo11y/rum-connect`
-  work with it unchanged. Every view is a screen, named
-  `rum.initialViewName` (default `"app"`) until a router adapter or
-  `rum.setViewName` names it. The session, the retention buffer of
-  sessions not yet kept and the remote configuration cache live in the
-  app's key-value storage, written only once consent is granted, so a
-  relaunch within the 15-minute idle window continues the session. A new
-  screen counts as activity. A revoke removes all three, also when only
-  an earlier launch had consent.
-  AppState drives hide and show: going to the background emits the view
-  summaries and flushes. App metrics export with delta temporality, as the
-  gateway requires. `screens()` records a view span per screen that ends
-  at the first frame after `rum.viewRendered()`, at most 10 seconds. One
-  `app_load` span per process runs from React Native's
-  `rnStartupTiming.startTime` to the first screen's render, at most 60
-  seconds, and parents the first screen's span, which starts with it. It
-  is recorded on the first grant, also when consent comes after the first
-  screen and after other screens. The
-  `./expo` entry's `setupRumExpo` keeps it all in the app's documents, as
-  `setupExpo` does. The fixture Expo app runs it under jest-expo.
 - `@libo11y/core` exports `sha1`, for platforms without Web Crypto.
 
 ### Changed
@@ -109,14 +146,6 @@ adhere to [Semantic Versioning](https://semver.org/).
   global removed. Browser behavior is unchanged. `@libo11y/web/portable`
   also exports `parseResourceAttributes` and the fetch and XHR
   instrumentation with an instrumentation scope of the caller's choosing.
-- `@libo11y/rum/core`: `setupRumCore` takes `viewKind`, for a platform
-  whose views are all of one kind, such as React Native's `screen`, and
-  `onRuntime`, which hands a platform's own recorders the runtime before
-  consent is wired, and `initialViewStart`, where the first view starts on
-  a clock that does not count from navigation start. The views collector parents the load view's span to
-  `app_load` by the tracker's load view rather than by its kind, the same
-  rule on the web. The core exports `viewsWith` for a platform's own views
-  collector.
 
 ### Fixed
 
@@ -727,7 +756,8 @@ with the exact `npm install` URLs. Every package now implements spec
   protobuf. `decodeOtlpProtobuf` and `normalizeOtlp` decode and compare
   bodies directly.
 
-[Unreleased]: https://github.com/jamesainslie/libo11y/compare/ts/v0.3.0...HEAD
+[Unreleased]: https://github.com/jamesainslie/libo11y/compare/ts/v0.4.0...HEAD
+[0.4.0]: https://github.com/jamesainslie/libo11y/compare/ts/v0.3.0...ts/v0.4.0
 [0.3.0]: https://github.com/jamesainslie/libo11y/compare/ts/v0.2.1...ts/v0.3.0
 [0.2.1]: https://github.com/jamesainslie/libo11y/compare/ts/v0.2.0...ts/v0.2.1
 [0.2.0]: https://github.com/jamesainslie/libo11y/compare/ts/v0.1.2...ts/v0.2.0

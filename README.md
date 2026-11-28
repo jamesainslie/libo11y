@@ -14,14 +14,14 @@ everything is correlated and exported over OTLP.
 | Language | Status | Location |
 |----------|--------|----------|
 | Go | Implemented | [`go/`](go/) |
-| TypeScript | Implemented for Bun, Node, browsers and Manifest V3 extensions. The browser packages first ship in `ts/v0.2.1`, and browser RUM in `ts/v0.3.0` | [`ts/`](ts/) |
+| TypeScript | Implemented for Bun, Node, browsers and Manifest V3 extensions. The browser packages first ship in `ts/v0.2.1`, browser RUM in `ts/v0.3.0`, and session replay and the React Native preview in `ts/v0.4.0` | [`ts/`](ts/) |
 | Zig | Implemented for Zig 0.17.1 (`zig/v0.1.0`) | [`zig/`](zig/) |
 | Python | Implemented for Python 3.12, 3.13, and 3.14 (`python/v0.1.0`) | [`python/`](python/) |
 | C | Implemented for C11 (`c/v0.1.0`, pure C11 ABI backed by `zig/`) | [`c/`](c/) |
 | Rust | Implemented for Rust 1.88+ (`rust/v0.1.0`; `libo11y-sqlx` requires 1.94) | [`rust/`](rust/) |
 | Ruby | Implemented for Ruby 3.3 and 3.4 | [`ruby/`](ruby/) |
 | .NET | Implemented for .NET 10 (C#) | [`dotnet/`](dotnet/) |
-| Java | Planned | [`java/`](java/) |
+| Java | Implemented for Java 21+ (OpenTelemetry, Micrometer, Spring Boot 4) | [`java/`](java/) |
 
 ## Design principles
 
@@ -90,13 +90,14 @@ validation tables the runtime and test harness share. See [`docs/SPEC.md`](docs/
 specification and [`docs/taxonomy/`](docs/taxonomy/) for the generated
 attribute tables.
 
-The registry generates Go, TypeScript, Rust, Zig, Python, C, Ruby, and .NET outputs:
+The registry generates Go, TypeScript, Rust, Zig, Python, C, Ruby, .NET, and Java outputs:
 `go/spec` and `go/internal/spectables`, `@libo11y/spec` in
 [`ts/packages/spec`](ts/packages/spec), `rust/libo11y-spec/src/generated`,
 `zig/src/spec/generated`, `python/src/libo11y/spec/_generated`,
 [`c/include/o11y/spec.h`](c/include/o11y/spec.h),
-`ruby/lib/libo11y/spec/generated`, and
-`dotnet/src/Libo11y.Spec/Generated`.
+`ruby/lib/libo11y/spec/generated`,
+`dotnet/src/Libo11y.Spec/Generated`, and
+`java/libo11y-spec/src/main/java/ing/o11y/libo11y/spec/generated`.
 Spec 1.1.0 adds the conventions for libo11y RUM, the real-user-monitoring
 product, which [`docs/RUM.md`](docs/RUM.md) describes.
 
@@ -126,11 +127,13 @@ pick up the standard-library security fixes.
 The RUM gateway is its own Go module, `go/o11yrum`, with its own version
 line. It receives OTLP from browsers, browser extensions and React Native
 apps, validates and enriches it, derives the standard RUM metrics, and
-forwards it to your collector. Install the command or pull the image:
+forwards it to your collector. It also stores session replay from
+`@libo11y/rum-replay`, serves it on an internal read API, and erases it
+on request. Install the command or pull the image:
 
 ```sh
-go install github.com/jamesainslie/libo11y/go/o11yrum/cmd/o11yrum-gateway@v0.1.0
-docker pull ghcr.io/jamesainslie/o11yrum-gateway:0.1.0
+go install github.com/jamesainslie/libo11y/go/o11yrum/cmd/o11yrum-gateway@v0.2.0
+docker pull ghcr.io/jamesainslie/o11yrum-gateway:0.2.0
 ```
 
 [`go/o11yrum/README.md`](go/o11yrum/README.md) covers configuration and
@@ -145,7 +148,7 @@ Grafana, provision them, or install the whole pack with kustomize from the
 
 The latest Go release, `go/v0.4.0`, implements spec 1.3.0 and stamps that
 version's schema URL on every resource. The TypeScript packages at
-`ts/v0.3.0` implement spec 1.3.0 too.
+`ts/v0.4.0` implement spec 1.3.0 too.
 
 ## Quick start (Go)
 
@@ -225,7 +228,7 @@ npm install @libo11y/rum-react       # RUM adapters: React, TanStack Router and 
 npm install @libo11y/rum-tanstack-router
 npm install @libo11y/rum-connect
 npm install @libo11y/rum-replay      # session replay for RUM
-npm install @libo11y/react-native    # React Native apps (in development)
+npm install @libo11y/react-native    # React Native apps (preview)
 npm install @libo11y/rum-react-native # RUM for React Native apps (in development)
 npm install --save-dev @libo11y/sourcemaps # uploads source maps to the RUM gateway
 ```
@@ -237,15 +240,17 @@ OpenTelemetry JS 3.x. `@libo11y/server` and `@libo11y/test` run on Bun
 by default they record nothing until the application grants consent.
 `@libo11y/rum`, its adapters `@libo11y/rum-react`,
 `@libo11y/rum-tanstack-router` and `@libo11y/rum-connect`, and
-`@libo11y/sourcemaps` first ship in `ts/v0.3.0` and are not on npm yet.
-Until their first npm publish, they install from the tarballs attached to
-the
-[`ts/v0.3.0` GitHub Release](https://github.com/jamesainslie/libo11y/releases/tag/ts/v0.3.0),
-whose notes list the exact URLs. `@libo11y/rum-replay` is in development
-and has not shipped yet. It first ships in the next TypeScript release.
-`@libo11y/react-native`, the platform for React Native apps on Hermes, and
-`@libo11y/rum-react-native`, RUM over it, are in development and have not
-shipped yet.
+`@libo11y/sourcemaps` first ship in `ts/v0.3.0`. `@libo11y/rum-replay`
+and `@libo11y/react-native`, the platform for React Native apps on
+Hermes, first ship in `ts/v0.4.0`, and `@libo11y/react-native` is a
+preview whose API can change in a minor release. These seven packages
+are not on npm yet. Until their first npm publish, they install from the
+tarballs attached to the
+[`ts/v0.4.0` GitHub Release](https://github.com/jamesainslie/libo11y/releases/tag/ts/v0.4.0),
+whose notes list the exact URLs.
+`@libo11y/rum-react-native`, RUM for React Native apps over
+`@libo11y/react-native`, is in development and has not shipped yet. It
+first ships in the next TypeScript release.
 
 ## Quick start (TypeScript)
 
@@ -595,6 +600,52 @@ signals. Use `O11y.Init` for non-global handles in tests and dependency
 injection. See [`dotnet/README.md`](dotnet/README.md) for the full .NET
 documentation.
 
+## Installation (Java)
+
+```xml
+<dependency>
+    <groupId>ing.o11y</groupId>
+    <artifactId>libo11y-spring-boot-starter</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+</dependency>
+```
+
+Requires Java 21+ and aligns on Spring Boot 4.2.0, OpenTelemetry Java SDK 1.68.0,
+Micrometer 1.18.0, and Micrometer Tracing 1.8.0. Seven Maven artifacts ship
+together (`libo11y-bom`, `libo11y-spec`, `libo11y`, `libo11y-micrometer`,
+`libo11y-spring-boot-starter`, `libo11y-test`, and `libo11y-cli`). It implements
+spec 1.3.0.
+
+## Quick start (Java)
+
+```java
+try (Telemetry telemetry = O11y.setup(O11yOptions.builder()
+        .serviceName("checkout")
+        .environment(Spec.DeploymentEnvironment.PRODUCTION)
+        .build())) {
+    Span span = telemetry.tracer("checkout").spanBuilder("checkout.place")
+            .setAttribute("order.id", "ord-42")
+            .startSpan();
+    try (Scope ignored = span.makeCurrent()) {
+        telemetry.logger().info("order placed", Map.of("order.id", "ord-42"));
+        telemetry.meter("checkout").counterBuilder("checkout.orders")
+                .setUnit("{order}")
+                .build()
+                .add(1L, Attributes.of(AttributeKey.stringKey("payment.method"), "card"), Context.current());
+    } finally {
+        span.end();
+    }
+}
+```
+
+In Spring Boot applications, add `libo11y-spring-boot-starter` and set
+`spring.application.name` and `libo11y.environment`: auto-configuration wires a
+single OTLP pipeline for OpenTelemetry, Micrometer (`O11yMeterRegistry` with
+sensitivity filtering and trace-based exemplars), `ObservationRegistry`, SLF4J/Logback,
+Spring MVC (`Server-Timing` and `o11y.request.summary` canonical lines),
+`RestClient`, JDBC `DataSource`, and `SmartLifecycle` graceful shutdown. See
+[`java/README.md`](java/README.md) for the full Java documentation.
+
 ## Versioning
 
 Each language library versions and releases independently with path-prefixed
@@ -614,12 +665,15 @@ build provenance.
 The TypeScript packages release in lockstep. One `ts/vX.Y.Z` tag publishes
 `@libo11y/spec`, `@libo11y/core`, `@libo11y/server`, `@libo11y/test`,
 `@libo11y/web`, `@libo11y/webext`, `@libo11y/rum`, `@libo11y/rum-react`,
-`@libo11y/rum-tanstack-router`, `@libo11y/rum-connect` and
+`@libo11y/rum-tanstack-router`, `@libo11y/rum-connect`,
+`@libo11y/rum-replay`, `@libo11y/react-native` and
 `@libo11y/sourcemaps` to npm at version X.Y.Z, with provenance, through
 npm trusted publishing. The first version on npm is 0.1.1, and
 `@libo11y/web` and `@libo11y/webext` join at 0.2.1. The RUM packages and
-`@libo11y/sourcemaps` first ship in `ts/v0.3.0` and are not on npm yet,
-so they install from that release's tarballs until their first publish.
+`@libo11y/sourcemaps` first ship in `ts/v0.3.0`, and
+`@libo11y/rum-replay` and `@libo11y/react-native` in `ts/v0.4.0`. None of
+them is on npm yet, so they install from the latest release's tarballs
+until their first publish.
 The TypeScript packages implement spec 1.3.0. Each
 TypeScript release is listed in [`ts/CHANGELOG.md`](ts/CHANGELOG.md).
 Trusted publishing cannot create a package on npm, so a release leaves a

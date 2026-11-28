@@ -9,8 +9,8 @@ The generator produces the attribute tables in `docs/taxonomy/`, the Go
 `spec` package, the TypeScript package `@libo11y/spec`, the Zig `o11y.spec`
 namespace, the Python `libo11y.spec` package, the C11 header
 `c/include/o11y/spec.h`, the Ruby `Libo11y::Spec` module, the .NET
-`Libo11y.Spec` assembly, and the Rust `libo11y-spec`
-crate from it. Where this prose and the registry disagree, the registry wins.
+`Libo11y.Spec` assembly, the Java `ing.o11y.libo11y.spec.generated` package,
+and the Rust `libo11y-spec` crate from it. Where this prose and the registry disagree, the registry wins.
 
 Where the Go implementation does not yet enforce a requirement, this
 document says so next to the requirement. Section 8 lists the enforcement
@@ -546,8 +546,8 @@ Status: spec 1.3.0 is released. Its schema file is served at its schema
 URL, and the commit is tagged `spec/v1.3.0`. Spec 1.2.0 is tagged
 `spec/v1.2.0`, spec 1.1.0 is tagged `spec/v1.1.0`, and spec 1.0.0 is
 tagged `spec/v1.0.0` together with `go/v0.1.0`. The TypeScript packages
-implement spec 1.3.0 from `ts/v0.3.0`, and `ts/v0.2.1` implements spec
-1.2.0.
+implement spec 1.3.0 from `ts/v0.3.0`, `ts/v0.4.0` included, and
+`ts/v0.2.1` implements spec 1.2.0.
 
 ## 8. Enforcement layers
 
