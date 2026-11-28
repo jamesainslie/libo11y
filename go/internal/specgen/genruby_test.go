@@ -2,6 +2,9 @@ package main
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -88,5 +91,37 @@ func TestGenRbRejectsCollidingConstNames(t *testing.T) {
 	_, err := genRbSpec(m)
 	if !errors.Is(err, errRbName) {
 		t.Fatalf("genRbSpec error = %v, want errRbName", err)
+	}
+}
+
+// TestRbReservedTypesCoverHandWrittenModules reads the hand-written files
+// under ruby/lib/libo11y/spec and requires every module they define in
+// Libo11y::Spec to be reserved, so a registry enum can never generate a
+// module of the same name.
+func TestRbReservedTypesCoverHandWrittenModules(t *testing.T) {
+	// spec/generated holds the generator's own output, so the glob leaves it out.
+	files, err := filepath.Glob("../../../ruby/lib/libo11y/spec/*.rb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	files = append(files, "../../../ruby/lib/libo11y/spec.rb")
+	// A module directly inside `module Libo11y` / `module Spec` sits at four spaces.
+	module := regexp.MustCompile(`(?m)^    (?:module|class) ([A-Z][A-Za-z0-9]*)`)
+	found := 0
+	for _, file := range files {
+		src, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, match := range module.FindAllStringSubmatch(string(src), -1) {
+			found++
+			if name := match[1]; !rbReservedTypes[name] {
+				t.Errorf("%s defines Libo11y::Spec::%s, which rbReservedTypes does not reserve", filepath.Base(file), name)
+			}
+		}
+	}
+	// A rewrite of those files in another style would otherwise pass unchecked.
+	if found == 0 {
+		t.Fatal("found no module in the hand-written files under ruby/lib/libo11y/spec")
 	}
 }
