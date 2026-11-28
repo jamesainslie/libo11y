@@ -66,6 +66,7 @@ test("one copy of each @libo11y package, at one version, none nested in another 
     "@libo11y/rum-react-native",
     "@libo11y/rum-react",
     "@libo11y/rum-connect",
+    "@libo11y/rum-expo-router",
   ];
   expect(new Set(names.map((n) => manifest(join(modules, n)).version)).size).toBe(1);
   const nested = readdirSync(modules).flatMap((entry) => {
