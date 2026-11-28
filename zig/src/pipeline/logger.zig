@@ -26,9 +26,10 @@ pub const Logger = struct {
     /// A logger that emits nothing.
     pub const noop: Logger = .{ .provider = null, .scope = .{ .name = "" } };
 
-    /// Emits a record. When the record carries no valid trace id, the
-    /// trace id, span id and trace flags come from the span context in
-    /// `ctx`. An unset observed timestamp becomes now. The record is
+    /// Emits a record. The trace id, span id and trace flags come from the
+    /// span context in `ctx` and from nowhere else: a record has no fields
+    /// for them, so a caller cannot set them (SPEC section 4). An unset
+    /// observed timestamp becomes now. The record is
     /// copied under the provider's limits, the policy runs over its
     /// attributes, and every processor sees it in order. Never fails:
     /// without processors, after shutdown, or when memory runs out, the
@@ -40,18 +41,16 @@ pub const Logger = struct {
         defer provider.endOperation();
 
         var r = record;
-        if (!r.trace_id.isValid()) {
-            const sc = ctx.span_context;
-            if (sc.isValid()) {
-                r.trace_id = sc.trace_id;
-                r.span_id = sc.span_id;
-                r.trace_flags = sc.flags;
-            }
-        }
         if (r.observed_timestamp == 0) r.observed_timestamp = span_mod.nowUnixNano(provider.io);
 
         const data = LogData.create(provider.gpa, r, &provider.resource, &logger.scope, provider.limits) orelse return;
         defer data.release();
+        const sc = ctx.span_context;
+        if (sc.isValid()) {
+            data.trace_id = sc.trace_id;
+            data.span_id = sc.span_id;
+            data.trace_flags = sc.flags;
+        }
         data.attributes = provider.policy.applyLog(data.attributes, data.allocator());
         for (provider.processors) |p| p.onEmit(ctx, data);
     }

@@ -44,6 +44,16 @@ Requires Zig 0.17.1.
   inline when the `Io` has no concurrent task left. An inline read could
   outlive the export deadline. The attempt now counts as a retryable
   failure, so the send ends by its deadline.
+- A log record's trace ID, span ID and trace flags come only from the
+  `o11y.Context` it is emitted with. The record type that
+  `Telemetry.loggerProvider()` loggers take had `trace_id`, `span_id` and
+  `trace_flags` fields, and a valid `trace_id` there replaced the active
+  span's identity. The fields are gone, which is a source change for a
+  caller that set them.
+- An `attr_replacer` can no longer write a second top-level `trace_id` or
+  `span_id`. The reserved keys were dropped before the replacer ran but not
+  after it, so a renamed attribute produced a duplicate JSON key on the
+  console.
 
 ## [0.1.0] - 2026-11-26
 

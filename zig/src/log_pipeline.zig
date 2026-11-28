@@ -211,9 +211,6 @@ pub const LogPipeline = struct {
                 .severity_text = level.asStr(),
                 .body = .{ .string = msg },
                 .attributes = processed,
-                .trace_id = ctx.span_context.trace_id,
-                .span_id = ctx.span_context.span_id,
-                .trace_flags = ctx.span_context.flags,
             });
         }
 
@@ -275,7 +272,8 @@ pub const LogPipeline = struct {
     /// Applies fan-out preprocessing: drops top-level `trace_id`/`span_id`
     /// and empty keys, recurses into maps and arrays with bounded depth,
     /// cycle detection, and node budget, and invokes `attr_replacer` once
-    /// per leaf attribute.
+    /// per leaf attribute. A leaf the replacer renames to a reserved
+    /// top-level key is dropped too.
     fn processAttrs(
         self: *const LogPipeline,
         arena: Allocator,
@@ -286,9 +284,7 @@ pub const LogPipeline = struct {
     ) []log_record.KeyValue {
         var out = std.ArrayList(log_record.KeyValue).initCapacity(arena, attrs.len) catch return &.{};
         for (attrs) |a| {
-            if (path.len == 0 and (std.mem.eql(u8, a.key, "trace_id") or std.mem.eql(u8, a.key, "span_id"))) {
-                continue;
-            }
+            if (path.len == 0 and isReservedKey(a.key)) continue;
             if (a.value == .map) {
                 if (depth >= policy_runtime.max_composite_depth or !walk.spend()) continue;
                 const members = a.value.map;
@@ -319,6 +315,9 @@ pub const LogPipeline = struct {
             if (self.attr_replacer) |rep| {
                 const replaced = rep.replace(rep.ptr, path, cur, arena) orelse continue;
                 if (replaced.key.len == 0) continue;
+                // The reserved keys stay reserved after replacement, so a
+                // replacer cannot write a second top-level trace_id.
+                if (path.len == 0 and isReservedKey(replaced.key)) continue;
                 cur = replaced;
             }
             out.append(arena, cur) catch {};
@@ -385,6 +384,12 @@ pub const LogPipeline = struct {
         try self.console_writer.writeAll(self.io, buf.written());
     }
 };
+
+/// Reports whether `key` is one of the top-level keys only the correlation
+/// layer may write (SPEC section 4).
+fn isReservedKey(key: []const u8) bool {
+    return std.mem.eql(u8, key, "trace_id") or std.mem.eql(u8, key, "span_id");
+}
 
 fn prependCorrelation(arena: Allocator, sc: ids.SpanContext, attrs: []const log_record.KeyValue) []const log_record.KeyValue {
     if (!sc.isValid()) return attrs;
@@ -909,6 +914,47 @@ test "console JSON formats time, level, msg, correlation, and redacted attribute
     try testing.expect(std.mem.indexOf(u8, line, "\"secret\":\"REDACTED\"") != null);
     try testing.expect(std.mem.indexOf(u8, line, "spoofed") == null);
     try testing.expect(std.mem.indexOf(u8, line, "10.0.0.1") == null);
+}
+
+test "a replacer cannot rename an attribute to a reserved top-level trace key" {
+    var policy = try policy_runtime.Policy.init(testing.allocator, .drop, "", .empty, null);
+    defer policy.deinit();
+
+    var cap: TestBufferWriter = .{ .gpa = testing.allocator };
+    defer cap.deinit();
+
+    const replacer: AttrReplacer = .{
+        .replace = struct {
+            fn f(_: ?*anyopaque, path: []const []const u8, attr: log_record.KeyValue, _: Allocator) ?log_record.KeyValue {
+                if (std.mem.eql(u8, attr.key, "tid")) return .{ .key = "trace_id", .value = attr.value };
+                if (std.mem.eql(u8, attr.key, "sid")) return .{ .key = "span_id", .value = attr.value };
+                _ = path;
+                return attr;
+            }
+        }.f,
+    };
+
+    var pl = try LogPipeline.init(testing.allocator, testing.io, .info, true, .json, cap.writer(), replacer, null, &.{}, &policy);
+    defer pl.deinit();
+
+    const log: Logger = .{ .pipeline = &pl };
+    const sc: ids.SpanContext = .{
+        .trace_id = ids.TraceId.parseHex("4bf92f3577b34da6a3ce929d0e0e4736").?,
+        .span_id = ids.SpanId.parseHex("00f067aa0ba902b7").?,
+        .flags = .sampled_flag,
+    };
+    log.info(Context.background.withSpanContext(sc), "renamed", .{
+        .tid = "spoofed-trace",
+        .sid = "spoofed-span",
+        .nested = .{ .tid = "kept-inside-a-group" },
+    });
+    const line = cap.buf.items;
+    // Exactly one of each reserved key, and it is the real identity.
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, line, "\"trace_id\":\"4bf92f3577b34da6a3ce929d0e0e4736\""));
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, line, "\"span_id\":\"00f067aa0ba902b7\""));
+    try testing.expect(std.mem.indexOf(u8, line, "spoofed") == null);
+    // The keys are reserved at the top level only.
+    try testing.expect(std.mem.indexOf(u8, line, "\"nested\":{\"trace_id\":\"kept-inside-a-group\"}") != null);
 }
 
 test "user replacer runs before sensitivity policy so renamed-to-PII key is still dropped" {
