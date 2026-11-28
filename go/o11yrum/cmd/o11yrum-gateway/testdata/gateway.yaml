@@ -1,6 +1,9 @@
 # A complete o11yrum-gateway configuration.
 listen: 127.0.0.1:0
 environment: test
+# How long to keep serving after SIGTERM with /readyz answering 503,
+# before the listener closes and requests drain. Default 0.
+shutdown_delay: 0s
 
 telemetry:
   service_name: o11yrum-gateway
