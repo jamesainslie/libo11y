@@ -16,6 +16,4 @@ contract.
   W3C propagation injection, `SpanKind::Client` spans, userinfo stripping on
   `url.full`, and `http.client.request.duration` histograms with exemplars.
 
-This crate is in progress and has not been published yet.
-
 Licensed under the Apache License, Version 2.0.

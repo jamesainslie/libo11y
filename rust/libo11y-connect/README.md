@@ -17,6 +17,4 @@ RPC semantic conventions (v1.41.0).
   `with_filter(...)`, and `with_canonical_line()` (emitting
   `o11y.request.summary` enriched by `libo11y::Record`).
 
-This crate is in progress and has not been published yet.
-
 Licensed under the Apache License, Version 2.0.

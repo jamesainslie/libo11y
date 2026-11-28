@@ -18,7 +18,7 @@ through standard `tracing` and OpenTelemetry APIs.
 | [`libo11y-redact`](libo11y-redact/) | Capture-time redaction: `Secret<T>`, `Masked<T>`, the `Redact` trait, and `#[derive(Redact)]` re-export |
 | [`libo11y-macros`](libo11y-macros/) | The `#[derive(Redact)]` procedural macro supporting `#[o11y(...)]` (`mask`, `redact`, `omit`, `confidential`, `secret`) |
 | [`libo11y-test`](libo11y-test/) | Hermetic test harness (`Recorder`, `assert_conforms`, `assert_correlated`, `assert_triangle`) and in-process OTLP HTTP/gRPC receivers |
-| [`libo11y-http`](libo11y-http/) | Tower HTTP server and client instrumentation layers (`ServerLayer`, `ClientLayer`), route-aware naming, `with_canonical_line`, `with_ignore_paths`, `with_public_endpoint`, and optional `axum` `MatchedPath` extraction |
+| [`libo11y-http`](libo11y-http/) | Tower HTTP server and client instrumentation layers (`ServerLayer`, `ClientLayer`), route-aware naming, `with_canonical_line`, `with_server_timing`, `with_ignore_paths`, `with_public_endpoint`, and optional `axum` `MatchedPath` extraction |
 | [`libo11y-reqwest`](libo11y-reqwest/) | `reqwest-middleware` client instrumentation (`O11yMiddleware`) with W3C propagation and `http.client.request.duration` exemplars |
 | [`libo11y-tonic`](libo11y-tonic/) | Tower server and client instrumentation layers for `tonic` gRPC (`rpc.*` semconv 1.41.0, `with_ignore_health_checks`, `with_public_endpoint`) |
 | [`libo11y-connect`](libo11y-connect/) | Connect RPC server and client instrumentation (`connectrpc` / `grpc`, canonical log lines, health checks, public endpoint) |
@@ -42,7 +42,7 @@ libo11y-test = "0.1"
 Initialize telemetry once at startup with `Sdk::builder().setup()?` (or
 `.build()?` for an independent, global-free handle):
 
-```rust
+```rust,no_run
 use libo11y::{Environment, PiiMode, Sdk};
 use libo11y::opentelemetry::KeyValue;
 
@@ -87,9 +87,12 @@ Application code instruments with ordinary `tracing` spans and events:
 - `Builder::build()` touches no process globals. Compose `sdk.tracing_layer()`
   or `sdk.subscriber()` explicitly (for example with
   `tracing::subscriber::with_default` or `WithSubscriber`).
-- Span-event deduplication: every `tracing` event flows to the log pipeline
-  (console JSON/text, OTLP logs, and extra `LogSink`s), while only `ERROR`
-  events reach the span layer (with `with_error_events_to_status(true)` and
+- Span-level filtering and event deduplication: the span layer exports `INFO`
+  and higher spans by default (configurable via `Builder::span_level`) and
+  honors OpenTelemetry telemetry suppression; every `tracing` event flows to
+  the log pipeline (console JSON/text, OTLP logs, and extra `LogSink`s), while
+  only `ERROR` events reach the span layer (with
+  `with_error_events_to_status(true)` and
   `with_error_events_to_exceptions(false)`), preventing duplicate non-error
   span events.
 - Diagnostics emitted by OpenTelemetry crates (`opentelemetry*` targets) are
@@ -194,8 +197,8 @@ libo11y registry check o11y-registry.yaml
 ```
 
 Exit codes match Go (`go/cmd/libo11y`) and TypeScript (`@libo11y/spec`): `0`
-when all files are valid, `1` on policy violations or duplicate namespaces, `2`
-on usage, read, or parse errors.
+when all files are valid, `1` on policy violations, `2` on usage, read, or
+parse errors.
 
 ## MSRV policy
 
