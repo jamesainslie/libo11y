@@ -312,6 +312,81 @@ class RedactTest {
         throw new IllegalStateException("conformance/ directory not found");
     }
 
+
+    /** An exception whose message folds in a field the caller tagged secret, like Go's taggedErr. */
+    static final class TaggedException extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+
+        @O11yRedact(Mode.SECRET)
+        private final String token;
+
+        TaggedException(String token) {
+            this.token = token;
+        }
+
+        @Override
+        public String getMessage() {
+            return "auth failed: " + token;
+        }
+    }
+
+    /** An exception that folds a value of unknown type into its message, like Go's opaqueCauseErr. */
+    static final class OpaqueDetailException extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+
+        private final transient Object detail;
+
+        OpaqueDetailException(Object detail) {
+            this.detail = detail;
+        }
+
+        @Override
+        public String getMessage() {
+            return "op: " + (detail instanceof Secret<?> s ? s.expose() : String.valueOf(detail));
+        }
+    }
+
+    record ErrorHolder(Throwable plain, @O11yRedact(Mode.MASK) Throwable masked) {}
+
+    @Test
+    void cleanErrorsRenderTheirTextAndMaskedErrorsTheirMaskedText() {
+        IllegalStateException wrapped = new IllegalStateException("db", new IOException("conn refused"));
+        assertEquals("java.lang.IllegalStateException: db", Redact.scrub(wrapped));
+        assertEquals("ing.o11y.libo11y.RedactTest$OpaqueDetailException: op: timeout",
+                Redact.scrub(new OpaqueDetailException("timeout")));
+
+        Map<String, Object> out = asMap(Redact.scrub(new ErrorHolder(wrapped, wrapped)));
+        assertEquals("java.lang.IllegalStateException: db", out.get("plain"));
+        assertEquals(Redact.mask("java.lang.IllegalStateException: db"), out.get("masked"));
+    }
+
+    @Test
+    void anErrorThatCouldCarryProtectionRendersRedacted() {
+        TaggedException tagged = new TaggedException("raw-err-tok-1");
+        RuntimeException wrapTag = new RuntimeException(new TaggedException("raw-err-tok-2"));
+        IllegalStateException causeTag = new IllegalStateException("ctx", new TaggedException("raw-err-tok-3"));
+        OpaqueDetailException opaqueSecret = new OpaqueDetailException(Secret.of("raw-err-tok-4"));
+        OpaqueDetailException opaqueTagged = new OpaqueDetailException(new TaggedException("raw-err-tok-5"));
+        IllegalStateException suppressed = new IllegalStateException("ok");
+        suppressed.addSuppressed(new TaggedException("raw-err-tok-6"));
+
+        for (Throwable err : List.of(tagged, wrapTag, causeTag, opaqueSecret, opaqueTagged, suppressed)) {
+            assertEquals(Redact.REDACTED, Redact.scrub(err), err.getClass().getName());
+        }
+        Map<String, Object> out = asMap(Redact.scrub(new ErrorHolder(wrapTag, causeTag)));
+        assertEquals(Redact.REDACTED, out.get("plain"));
+        assertEquals(Redact.REDACTED, out.get("masked"));
+    }
+
+    @Test
+    void aCauseChainDeeperThanTheBoundRendersRedacted() {
+        Throwable deep = new IllegalStateException("leaf");
+        for (int i = 0; i <= Redact.MAX_DEPTH; i++) {
+            deep = new IllegalStateException("level", deep);
+        }
+        assertEquals(Redact.REDACTED, Redact.scrub(deep));
+    }
+
     @SuppressWarnings("unchecked")
     private static Map<String, Object> asMap(Object v) {
         return (Map<String, Object>) assertInstanceOf(Map.class, v);

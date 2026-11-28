@@ -1,6 +1,5 @@
 package ing.o11y.libo11y;
 
-import ing.o11y.libo11y.internal.PolicyBridges;
 import ing.o11y.libo11y.internal.SensitivityPolicy;
 import ing.o11y.libo11y.spec.generated.Spec;
 import io.opentelemetry.api.common.AttributeKey;
@@ -25,6 +24,7 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiFunction;
 import java.util.function.Consumer;
+import java.util.function.UnaryOperator;
 import java.util.logging.Level;
 
 /**
@@ -60,6 +60,8 @@ public final class StructuredLogger {
     private final List<Consumer<LogEntry>> extraSinks;
     private final Map<String, Object> boundAttrs;
     private final AtomicBoolean sinkFailureReported;
+    /** Marks an OTLP record's context as classified here, so the policy processor does not classify it again. */
+    private final UnaryOperator<Context> classifiedMark;
 
     StructuredLogger(
             Logger otelLogger,
@@ -69,9 +71,10 @@ public final class StructuredLogger {
             OutputStream consoleOutput,
             BiFunction<String, Object, Object> attrReplacer,
             List<Consumer<LogEntry>> extraSinks,
-            Map<String, Object> boundAttrs) {
+            Map<String, Object> boundAttrs,
+            UnaryOperator<Context> classifiedMark) {
         this(otelLogger, policy, minLevel, consoleEnabled, consoleOutput, attrReplacer, extraSinks, boundAttrs,
-                new AtomicBoolean());
+                new AtomicBoolean(), classifiedMark);
     }
 
     private StructuredLogger(
@@ -83,8 +86,10 @@ public final class StructuredLogger {
             BiFunction<String, Object, Object> attrReplacer,
             List<Consumer<LogEntry>> extraSinks,
             Map<String, Object> boundAttrs,
-            AtomicBoolean sinkFailureReported) {
+            AtomicBoolean sinkFailureReported,
+            UnaryOperator<Context> classifiedMark) {
         this.sinkFailureReported = sinkFailureReported;
+        this.classifiedMark = classifiedMark;
         this.otelLogger = otelLogger;
         this.policy = policy;
         this.minLevel = minLevel == null ? Severity.INFO : minLevel;
@@ -102,7 +107,7 @@ public final class StructuredLogger {
         }
         return new StructuredLogger(
                 otelLogger, policy, minLevel, consoleEnabled, consoleOutput, attrReplacer, extraSinks, merged,
-                sinkFailureReported);
+                sinkFailureReported, classifiedMark);
     }
 
     public StructuredLogger with(String key, Object value) {
@@ -110,7 +115,7 @@ public final class StructuredLogger {
         merged.put(key, value);
         return new StructuredLogger(
                 otelLogger, policy, minLevel, consoleEnabled, consoleOutput, attrReplacer, extraSinks, merged,
-                sinkFailureReported);
+                sinkFailureReported, classifiedMark);
     }
 
     public void debug(String message) {
@@ -175,7 +180,22 @@ public final class StructuredLogger {
             String eventName,
             Map<String, Object> attrs,
             boolean bypassLevelGate) {
-        emitRecord(context, severity, message, eventName, attrs, bypassLevelGate, false);
+        emitRecord(context, severity, message, eventName, attrs, bypassLevelGate, false, true);
+    }
+
+    /**
+     * Emits a record, classified as every record is, on the console leg and the extra sinks only,
+     * never on the OTLP log leg. Log bridges use it for the OpenTelemetry SDK's own diagnostics:
+     * exporting an exporter's failure through the pipeline that failed would queue a new record
+     * for every failed export, for as long as the collector is down.
+     *
+     * @param context the context whose span the record is correlated with, or null for the current one
+     * @param severity the record's severity, gated by the minimum level
+     * @param message the record's message
+     * @param attrs the record's attributes, or null
+     */
+    public void emitLocal(Context context, Severity severity, String message, Map<String, Object> attrs) {
+        emitRecord(context, severity, message, null, attrs, false, false, false);
     }
 
     /**
@@ -183,7 +203,7 @@ public final class StructuredLogger {
      * {@link O11y#setup} can fail with {@code CANARY_REJECTED}.
      */
     void emitStartupCanary(Context context, String eventName, Map<String, Object> attrs) {
-        emitRecord(context, Severity.INFO, eventName, eventName, attrs, true, true);
+        emitRecord(context, Severity.INFO, eventName, eventName, attrs, true, true, true);
     }
 
     private void emitRecord(
@@ -193,7 +213,8 @@ public final class StructuredLogger {
             String eventName,
             Map<String, Object> attrs,
             boolean bypassLevelGate,
-            boolean failOnSinkError) {
+            boolean failOnSinkError,
+            boolean toOtlp) {
         Context ctx = context == null ? Context.current() : context;
         boolean forced = bypassLevelGate || ForceEmit.isForced(ctx);
         if (!forced && severity.getSeverityNumber() < minLevel.getSeverityNumber()) {
@@ -270,14 +291,14 @@ public final class StructuredLogger {
         }
 
         // 3. OTLP log leg
-        if (otelLogger != null) {
+        if (otelLogger != null && toOtlp) {
             LogRecordBuilder builder = otelLogger.logRecordBuilder()
                     .setTimestamp(now)
                     .setSeverity(severity)
                     .setSeverityText(severity.name())
                     .setBody(entry.message())
                     // Marked as classified so the policy processor does not tokenize a token again.
-                    .setContext(PolicyBridges.PolicyLogRecordProcessor.markClassified(ctx));
+                    .setContext(classifiedMark.apply(ctx));
             if (eventName != null && !eventName.isEmpty()) {
                 builder.setEventName(eventName);
             }

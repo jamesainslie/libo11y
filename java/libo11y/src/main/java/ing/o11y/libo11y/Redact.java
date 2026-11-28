@@ -210,8 +210,11 @@ public final class Redact {
      * primitive arrays are returned unchanged, so every input the sensitivity policy tokenizes
      * keeps its token. Maps become maps with string keys, and iterables and object arrays become
      * lists. Under a mask, a map becomes a map keyed by sorted position, each entry holding the
-     * masked key and the protected value, so masked keys cannot collide. Any other value renders
-     * as its {@code toString()}, masked under a mask.
+     * masked key and the protected value, so masked keys cannot collide. A {@link Throwable}
+     * renders as its {@code toString()}, masked under a mask, when nothing reachable from it (its
+     * fields, its cause chain and its suppressed errors) could carry protection, and as {@value
+     * #REDACTED} otherwise, because its message may fold that content into its text, as Go renders
+     * an error. Any other value renders as its {@code toString()}, masked under a mask.
      *
      * <p>Scrubbing never throws. A cycle, a value deeper than {@link #MAX_DEPTH}, a component or
      * field it cannot read (such as one in a package the module does not open), and a method that
@@ -275,6 +278,10 @@ public final class Redact {
             }
             if (isScalar(value)) {
                 return floor == Level.MASK ? maskValue(value) : value;
+            }
+            if (value instanceof Throwable error) {
+                String text = errorText(error);
+                return floor == Level.MASK && !REDACTED.equals(text) ? mask(text) : text;
             }
             Class<?> cls = value.getClass();
             if (cls.isArray() && cls.getComponentType().isPrimitive() && floor == Level.PASSTHROUGH) {
@@ -394,6 +401,92 @@ public final class Redact {
     }
 
     private record KeyedValue(String text, boolean redacted, Object value) {}
+
+    /** How many values {@link #errorIsClean} visits for one error before it fails closed, as in Go. */
+    private static final int MAX_ERROR_NODES = 256;
+
+    /**
+     * Returns the error's {@code toString()} when nothing reachable from it could carry
+     * protection, and {@value #REDACTED} otherwise, because its message may fold that content
+     * into its text. This is Go's rule for an error value.
+     */
+    private static String errorText(Throwable error) {
+        int[] budget = {MAX_ERROR_NODES};
+        return errorIsClean(error, budget, 0) ? error.toString() : REDACTED;
+    }
+
+    /**
+     * Reports whether nothing reachable from {@code value} could carry protection. An error is
+     * visited through its own fields (above the platform classes), its cause and its suppressed
+     * errors, so a cause that is not exposed through {@link Throwable#getCause()} is still
+     * checked; maps, iterables and arrays are visited element by element; any other value is
+     * clean when {@link #mayCarryProtection} says its class is. Running out of budget or depth, a
+     * field that cannot be read, and a method that throws all fail closed.
+     */
+    private static boolean errorIsClean(Object value, int[] budget, int depth) {
+        if (--budget[0] < 0 || depth > MAX_DEPTH) {
+            return false;
+        }
+        if (value == null) {
+            return true;
+        }
+        if (value instanceof Secret<?> || value instanceof Masked<?>) {
+            return false;
+        }
+        if (value instanceof Throwable error) {
+            for (Field f : instanceFields(error.getClass())) {
+                if (f.isAnnotationPresent(O11yRedact.class)) {
+                    return false;
+                }
+                Object fieldValue;
+                try {
+                    f.setAccessible(true);
+                    fieldValue = f.get(error);
+                } catch (IllegalAccessException | RuntimeException e) {
+                    return false;
+                }
+                if (!errorIsClean(fieldValue, budget, depth + 1)) {
+                    return false;
+                }
+            }
+            Throwable cause = error.getCause();
+            if (cause != error && !errorIsClean(cause, budget, depth + 1)) {
+                return false;
+            }
+            for (Throwable s : error.getSuppressed()) {
+                if (!errorIsClean(s, budget, depth + 1)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        if (value instanceof Map<?, ?> map) {
+            for (Map.Entry<?, ?> e : map.entrySet()) {
+                if (!errorIsClean(e.getKey(), budget, depth + 1) || !errorIsClean(e.getValue(), budget, depth + 1)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        if (value instanceof Iterable<?> iter) {
+            for (Object el : iter) {
+                if (!errorIsClean(el, budget, depth + 1)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        Class<?> cls = value.getClass();
+        if (cls.isArray() && !cls.getComponentType().isPrimitive()) {
+            for (int i = 0, n = Array.getLength(value); i < n; i++) {
+                if (!errorIsClean(Array.get(value, i), budget, depth + 1)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        return !mayCarryProtection(cls);
+    }
 
     private static boolean isScalar(Object value) {
         return value instanceof String

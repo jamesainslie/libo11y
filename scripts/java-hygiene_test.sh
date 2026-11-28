@@ -79,6 +79,12 @@ expect_pass "passes test sources and generated code" "$(tree exempt \
 	'm/src/main/java/ing/o11y/libo11y/spec/generated/Gen.java=class Gen { void f() { System.err.println("x"); } }' \
 	'm/target/classes/Copy.java=class Copy { void f(Exception e) { e.printStackTrace(); } }')"
 
+expect_failure "fails a print in the cli module" 1 "cli/Main.java:" \
+	"$(tree cli-print 'libo11y-cli/src/main/java/cli/Main.java=class Main { void f() { System.out.println("x"); } }')"
+
+expect_pass "passes the cli handing its streams to run" "$(tree cli-streams \
+	'libo11y-cli/src/main/java/cli/Main.java=class Main {\n    static void main(String[] a) {\n        run(a, System.out, System.err);\n        System.out.flush();\n        System.err.flush();\n    }\n}')"
+
 expect_failure "refuses a missing root" 2 "$work/missing" "$work/missing"
 
 if [[ "$failures" -gt 0 ]]; then

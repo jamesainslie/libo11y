@@ -57,6 +57,8 @@ import java.util.Collection;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
+import java.util.function.UnaryOperator;
+import javax.management.ListenerNotFoundException;
 import javax.management.NotificationEmitter;
 import javax.management.NotificationListener;
 import javax.management.openmbean.CompositeData;
@@ -247,11 +249,12 @@ public final class PolicyBridges {
      * each record is classified, and each violation counted, exactly once. The SDK's record cannot
      * remove an attribute, so the delegate receives a view whose reads return the classified
      * attributes; a record with nothing classified is passed through untouched. Records from
-     * libo11y's own {@code StructuredLogger} are already classified (see {@link #markClassified})
+     * libo11y's own {@code StructuredLogger} are already classified (see {@link #classifiedMark})
      * and pass through, so their tokens match the console's. The record body is not classified.
      */
     public static final class PolicyLogRecordProcessor implements LogRecordProcessor {
-        private static final ContextKey<Boolean> CLASSIFIED_KEY = ContextKey.named("libo11y.log.classified");
+        /** This instance's mark. Context keys compare by identity, so no other code can recreate it. */
+        private final ContextKey<Boolean> classifiedKey = ContextKey.named("libo11y.log.classified");
 
         private final SensitivityPolicy policy;
         private final LogRecordProcessor delegate;
@@ -262,11 +265,13 @@ public final class PolicyBridges {
         }
 
         /**
-         * Returns {@code context} marked as carrying a record that libo11y's structured logger has
-         * already classified. Internal to libo11y: a record emitted with this mark bypasses the policy.
+         * Returns the operation that marks a context as carrying a record libo11y's structured logger
+         * has already classified, so this processor does not classify it again. The mark belongs to
+         * this instance: only the code its owner hands the operation to can set it, and the mark is
+         * cleared before a delegate sees the context, so a context captured downstream carries none.
          */
-        public static Context markClassified(Context context) {
-            return context.with(CLASSIFIED_KEY, Boolean.TRUE);
+        public UnaryOperator<Context> classifiedMark() {
+            return context -> context.with(classifiedKey, Boolean.TRUE);
         }
 
         @Override
@@ -274,8 +279,8 @@ public final class PolicyBridges {
             if (delegate == null) {
                 return;
             }
-            if (context != null && Boolean.TRUE.equals(context.get(CLASSIFIED_KEY))) {
-                delegate.onEmit(context, logRecord);
+            if (context != null && Boolean.TRUE.equals(context.get(classifiedKey))) {
+                delegate.onEmit(context.with(classifiedKey, Boolean.FALSE), logRecord);
                 return;
             }
             Attributes clean = LogAttributeClassifier.classify(logRecord.getAttributes(), policy);
@@ -826,13 +831,13 @@ public final class PolicyBridges {
             }
         }
 
-        static List<AutoCloseable> register(Meter meter) {
+        static List<Registration> register(Meter meter) {
             DoubleHistogram duration = meter.histogramBuilder("jvm.gc.duration")
                     .setDescription("Duration of JVM garbage collection actions.")
                     .setUnit("s")
                     .setExplicitBucketBoundariesAdvice(BUCKETS)
                     .build();
-            List<AutoCloseable> registrations = new ArrayList<>();
+            List<Registration> registrations = new ArrayList<>();
             for (GarbageCollectorMXBean gc : ManagementFactory.getGarbageCollectorMXBeans()) {
                 if (!(gc instanceof NotificationEmitter emitter)) {
                     continue;
@@ -854,12 +859,18 @@ public final class PolicyBridges {
         }
     }
 
+    /** One thing the runtime metrics registered; only removing a GC listener declares a checked exception. */
+    @FunctionalInterface
+    private interface Registration {
+        void close() throws ListenerNotFoundException;
+    }
+
     public static final class JvmRuntimeMetrics implements AutoCloseable {
         private static final AttributeKey<String> MEMORY_TYPE = AttributeKey.stringKey("jvm.memory.type");
         private static final AttributeKey<String> POOL_NAME = AttributeKey.stringKey("jvm.memory.pool.name");
         private static final AttributeKey<Boolean> THREAD_DAEMON = AttributeKey.booleanKey("jvm.thread.daemon");
 
-        private final List<AutoCloseable> registrations = new ArrayList<>();
+        private final List<Registration> registrations = new ArrayList<>();
 
         public static JvmRuntimeMetrics register(Meter meter) {
             JvmRuntimeMetrics metrics = new JvmRuntimeMetrics();
@@ -876,7 +887,7 @@ public final class PolicyBridges {
                                 m.record(usage.getUsed(), Attributes.of(MEMORY_TYPE, type, POOL_NAME, pool.getName()));
                             }
                         }
-                    }));
+                    })::close);
 
             metrics.registrations.add(meter.upDownCounterBuilder("jvm.memory.committed")
                     .setDescription("Measure of memory committed.")
@@ -889,7 +900,7 @@ public final class PolicyBridges {
                                 m.record(usage.getCommitted(), Attributes.of(MEMORY_TYPE, type, POOL_NAME, pool.getName()));
                             }
                         }
-                    }));
+                    })::close);
 
             ThreadMXBean threads = ManagementFactory.getThreadMXBean();
             metrics.registrations.add(meter.upDownCounterBuilder("jvm.thread.count")
@@ -900,7 +911,7 @@ public final class PolicyBridges {
                         int nonDaemon = Math.max(0, threads.getThreadCount() - daemon);
                         m.record(daemon, Attributes.of(THREAD_DAEMON, true));
                         m.record(nonDaemon, Attributes.of(THREAD_DAEMON, false));
-                    }));
+                    })::close);
 
             if (GcNotifications.available()) {
                 metrics.registrations.addAll(GcNotifications.register(meter));
@@ -909,16 +920,33 @@ public final class PolicyBridges {
             return metrics;
         }
 
+        /**
+         * Closes every registration, even after one fails, then throws the first failure with the
+         * others suppressed onto it, so the shutdown report carries it on the metrics signal.
+         */
         @Override
         public void close() {
-            for (AutoCloseable reg : registrations) {
+            RuntimeException failure = null;
+            for (Registration reg : registrations) {
+                RuntimeException failed;
                 try {
                     reg.close();
-                } catch (Exception ignored) {
-                    // best effort
+                    continue;
+                } catch (ListenerNotFoundException ex) {
+                    failed = new IllegalStateException("libo11y could not remove a JVM GC notification listener", ex);
+                } catch (RuntimeException ex) {
+                    failed = ex;
+                }
+                if (failure == null) {
+                    failure = failed;
+                } else if (failed != failure) {
+                    failure.addSuppressed(failed);
                 }
             }
             registrations.clear();
+            if (failure != null) {
+                throw failure;
+            }
         }
     }
 }

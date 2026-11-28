@@ -30,6 +30,15 @@ public final class ResourceComposer {
     /** The OpenTelemetry Go container detector's pattern, applied to each /proc/self/cgroup line. */
     private static final Pattern CONTAINER_ID_RE = Pattern.compile("^.*/(?:.*[-:])?([0-9a-f]+)(?:\\.|[\\t\\n\\f\\r ]*$)");
     private static final Path CGROUP_PATH = Path.of("/proc/self/cgroup");
+    private static final Path MOUNTINFO_PATH = Path.of("/proc/self/mountinfo");
+    /*
+     * The OpenTelemetry Java cgroup v2 container detector's patterns (CgroupV2ContainerIdExtractor
+     * in opentelemetry-java-instrumentation's resources library), applied to /proc/self/mountinfo.
+     */
+    private static final Pattern MOUNTINFO_CRIO_RE = Pattern.compile("/crio-([0-9a-f]{64})");
+    private static final Pattern MOUNTINFO_CONTAINERD_RE = Pattern.compile("cri-containerd:([0-9a-f]{64})");
+    private static final Pattern MOUNTINFO_CONTAINERS_RE =
+            Pattern.compile("^\\d+ \\d+ \\d+:\\d+ [^ ]*/containers/[^ ]*?([0-9a-f]{64})");
 
     /** Rule counted when no usable service.name resolves under lenient identity. */
     public static final String RULE_IDENTITY_SERVICE_NAME = "identity_service_name";
@@ -230,11 +239,59 @@ public final class ResourceComposer {
     }
 
     private static String detectContainerId() {
-        if (!Files.isReadable(CGROUP_PATH)) {
+        return detectContainerId(CGROUP_PATH, MOUNTINFO_PATH);
+    }
+
+    /**
+     * Detects the container ID the way the OpenTelemetry Java container resource does: from the
+     * cgroup v1 file first, and, when it names none (a cgroup v2 host, where it reads
+     * {@code 0::/}), from the mount table. The two file locations are parameters for tests.
+     */
+    static String detectContainerId(Path cgroup, Path mountinfo) {
+        String fromCgroup = readIfPresent(cgroup);
+        String id = fromCgroup == null ? null : containerIdFromCgroup(fromCgroup);
+        if (id != null) {
+            return id;
+        }
+        String fromMountinfo = readIfPresent(mountinfo);
+        return fromMountinfo == null ? null : containerIdFromMountinfo(fromMountinfo);
+    }
+
+    /**
+     * Extracts the container ID from /proc/self/mountinfo content the way the OpenTelemetry Java
+     * cgroup v2 detector does: a CRI-O scope ({@code /crio-<id>}) first, then a containerd cgroup
+     * ({@code cri-containerd:<id>}), then the last ID in a mount root under a {@code containers}
+     * directory, such as Docker's {@code /var/lib/docker/containers/<id>/hostname}. Only the
+     * mount root field is read for the last form, so an overlay layer directory in the mount
+     * options is never taken for the container. Returns null when no line matches.
+     */
+    static String containerIdFromMountinfo(String mountinfo) {
+        String[] lines = mountinfo.split("\\r?\\n");
+        for (Pattern p : List.of(MOUNTINFO_CRIO_RE, MOUNTINFO_CONTAINERD_RE)) {
+            for (String line : lines) {
+                Matcher m = p.matcher(line);
+                if (m.find()) {
+                    return m.group(1);
+                }
+            }
+        }
+        String last = null;
+        for (String line : lines) {
+            Matcher m = MOUNTINFO_CONTAINERS_RE.matcher(line);
+            if (m.find()) {
+                last = m.group(1);
+            }
+        }
+        return last;
+    }
+
+    /** Returns the file's content, or null when it is absent or unreadable. */
+    private static String readIfPresent(Path file) {
+        if (!Files.isReadable(file)) {
             return null;
         }
         try {
-            return containerIdFromCgroup(Files.readString(CGROUP_PATH, StandardCharsets.UTF_8));
+            return Files.readString(file, StandardCharsets.UTF_8);
         } catch (IOException | UncheckedIOException ex) {
             // A missing container ID degrades telemetry identity; it never blocks startup.
             return null;
