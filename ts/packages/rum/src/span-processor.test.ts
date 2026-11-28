@@ -6,7 +6,7 @@ import { createBus } from "./bus.ts";
 import type { RumSignal } from "./contracts/runtime.ts";
 import { APP_LOAD_SPAN, rumSpanProcessor } from "./span-processor.ts";
 
-function setup(session: { id: string } | null = { id: "s1" }) {
+function setup(session: { id: string } | null = { id: "s1" }, timeOrigin?: number) {
   const exporter = new InMemorySpanExporter();
   const bus = createBus();
   const signals: RumSignal[] = [];
@@ -27,6 +27,7 @@ function setup(session: { id: string } | null = { id: "s1" }) {
     userId: () => "u-123",
     bus,
     now: () => 5,
+    ...(timeOrigin === undefined ? {} : { timeOrigin }),
   });
   const tp = new TracerProvider({ spanProcessors: [processor, new SimpleSpanProcessor({ exporter })] });
   return { tp, exporter, signals, appLoads };
@@ -164,4 +165,20 @@ test("a request that ends without a response carries its error.type to the bus",
   await tp.forceFlush();
   const end = signals.find((s) => s.type === "request-end");
   assert.equal(end?.type === "request-end" ? end.errorType : undefined, "AbortError");
+});
+
+test("a request's end on the bus is never earlier than the span's own end time", async () => {
+  // WebKit's span end can trail performance.now() by a millisecond. An action that settled at
+  // the bus time would then end before its child request, so the bus reports the later of the two.
+  const { tp, signals } = setup({ id: "s1" }, 1_000_000);
+  tp.getTracer("@libo11y/web")
+    .startSpan("GET", {
+      kind: SpanKind.CLIENT,
+      startTime: 1_000_002,
+      attributes: { "http.request.method": "GET", "url.full": "https://api.test/q" },
+    })
+    .end(1_000_009);
+  await tp.forceFlush();
+  const end = signals.find((s) => s.type === "request-end");
+  assert.equal(end?.at, 9);
 });
