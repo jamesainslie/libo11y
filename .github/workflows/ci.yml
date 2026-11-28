@@ -103,6 +103,35 @@ jobs:
           key: ops-promtool-${{ runner.os }}-${{ hashFiles('scripts/ops-promtool.sh') }}
       - run: make ops-check ops-promtool-test GO_TEST_P=4
 
+  # The ops pack against real backends: Loki, Tempo, Prometheus, Grafana and
+  # a collector in Docker Compose (ops/test/compose.yaml), behind the gateway
+  # built from this checkout. Every panel query runs through Grafana's query
+  # API, Prometheus loads every rule, and headless Chrome (which
+  # ubuntu-latest ships) checks the session explorer's data link and Loki
+  # variable. The containers' logs are uploaded when it fails.
+  ops-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.x"
+          check-latest: true
+          cache-dependency-path: |
+            ops/go.sum
+            go/go.sum
+            go/o11yrum/go.sum
+      - run: make ops-integration
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ops-integration-logs
+          path: ops-integration.log
+          if-no-files-found: ignore
+
   ts:
     runs-on: ubuntu-latest
     timeout-minutes: 10

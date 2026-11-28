@@ -1,0 +1,74 @@
+# The integration environment for the libo11y RUM ops pack: Loki, Tempo,
+# Prometheus, Grafana and an OpenTelemetry Collector. The gateway runs on
+# the host, built from this checkout by the test, and the containers reach
+# it through host.docker.internal. Grafana provisions the datasources from
+# ops/datasources/example.yaml and the dashboards from ops/dashboards, and
+# Prometheus loads the rules from ops/alerts, so the test exercises the
+# committed artifacts as an operator installs them.
+#
+# Run it through `make ops-integration`, which always tears it down. It is
+# not a load test: the test sends a few dozen requests.
+name: libo11y-ops-it
+
+services:
+  loki:
+    image: grafana/loki:3.7.10
+    command: ["-config.file=/etc/loki/loki.yaml"]
+    volumes:
+      - ./loki.yaml:/etc/loki/loki.yaml:ro
+    ports:
+      - "127.0.0.1:13100:3100"
+    mem_limit: 512m
+
+  tempo:
+    image: grafana/tempo:3.1.1
+    command: ["-target=all", "-config.file=/etc/tempo/tempo.yaml"]
+    volumes:
+      - ./tempo.yaml:/etc/tempo/tempo.yaml:ro
+    ports:
+      - "127.0.0.1:13200:3200"
+    mem_limit: 512m
+
+  otelcol:
+    image: otel/opentelemetry-collector-contrib:0.165.0
+    command: ["--config=/etc/otelcol/otelcol.yaml"]
+    volumes:
+      - ./otelcol.yaml:/etc/otelcol/otelcol.yaml:ro
+    ports:
+      - "127.0.0.1:4318:4318"
+      - "127.0.0.1:13133:13133"
+    depends_on: [loki, tempo]
+    mem_limit: 256m
+
+  prometheus:
+    image: prom/prometheus:v3.15.1
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../alerts:/etc/prometheus/rules:ro
+    ports:
+      - "127.0.0.1:19090:9090"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    mem_limit: 512m
+
+  grafana:
+    image: grafana/grafana:13.3.1
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+    volumes:
+      - ../datasources/example.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
+      - ./grafana/provisioning/dashboards/dashboards.yaml:/etc/grafana/provisioning/dashboards/dashboards.yaml:ro
+      - ../dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "127.0.0.1:13000:3000"
+    depends_on: [loki, tempo, prometheus]
+    mem_limit: 512m
