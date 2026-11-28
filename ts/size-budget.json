@@ -36,6 +36,12 @@
       "conditions": ["react-native"],
       "budget": 79360
     },
+    "@libo11y/react-native/expo setupExpo": {
+      "code": "import { setupExpo } from \"@libo11y/react-native/expo\"; (globalThis as Record<string, unknown>).__x = setupExpo;\n",
+      "external": ["react-native", "expo-application", "expo-device", "expo-file-system", "expo-updates"],
+      "conditions": ["react-native"],
+      "budget": 80640
+    },
     "@libo11y/rum/bootstrap": {
       "code": "import { afterLoad, installRumBootstrap } from \"@libo11y/rum/bootstrap\"; (globalThis as Record<string, unknown>).__x = [afterLoad, installRumBootstrap];\n",
       "budget": 1536

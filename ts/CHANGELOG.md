@@ -61,6 +61,16 @@ adhere to [Semantic Versioning](https://semver.org/).
   patch does not reach, such as `expo/fetch` imported directly. Trace
   context goes only to the origins in `propagateTo`. Every endpoint must be
   an absolute http or https URL.
+- `@libo11y/react-native/expo`, the Expo entry point. `setupExpo` keeps
+  the retry queue in files under the app's documents directory, sets
+  `service.version` from the native app version and
+  `o11y.rum.device.class` from `expo-device`, and sets
+  `o11y.rum.app.update_id` only when the app runs an over-the-air update.
+  The four Expo modules it imports are optional peer dependencies, at SDK
+  58 or later. A fixture Expo app in `ts/fixtures/expo-app` installs the
+  packed packages and runs a jest-expo suite, and CI exports it for iOS
+  and Android with Hermes bytecode under a Metro bundle budget
+  (`make ts-rn-check`).
 - `@libo11y/core` exports `sha1`, for platforms without Web Crypto.
 
 ### Changed

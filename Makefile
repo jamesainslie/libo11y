@@ -8,7 +8,7 @@ GO_TEST_P ?= 4
 # gate runs on each module separately.
 GO_MODULES := go go/o11ygin go/o11yconnect go/o11ysql go/o11yrum ops
 
-.PHONY: spec-check spec-generate spec-drift ops-generate ops-check ops-integration-up ops-integration-down ops-integration ops-promtool-test ops-release-check ops-release-check-test test lint vet tidy-check vuln release-check zig-release-check python-release-check rust-release-check rust-release-check-test c-release-check o11yrum-release-check print-o11yrum-release-version o11yrum-image schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-rn-bundle-test ts-npm-plan-test ts-install ts-check ts-size ts-browser-test rum-e2e rust-check rust-msrv zig-check zig-integrations-check zig-hygiene-test python-check python-hygiene-test c-check ruby-check dotnet-check ci
+.PHONY: spec-check spec-generate spec-drift ops-generate ops-check ops-integration-up ops-integration-down ops-integration ops-promtool-test ops-release-check ops-release-check-test test lint vet tidy-check vuln release-check zig-release-check python-release-check rust-release-check rust-release-check-test c-release-check o11yrum-release-check print-o11yrum-release-version o11yrum-image schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-rn-bundle-test ts-npm-plan-test ts-install ts-check ts-size ts-browser-test ts-rn-check rum-e2e rust-check rust-msrv zig-check zig-integrations-check zig-hygiene-test python-check python-hygiene-test c-check ruby-check dotnet-check ci
 
 # Validate the spec registry against the libo11y policy suite (naming,
 # ownership, sensitivity, cardinality, events, units).
@@ -82,6 +82,20 @@ ts-check: ts-install
 # collector delta, minified and gzip-compressed, against its budget.
 ts-size: ts-install
 	cd ts && bun scripts/size.ts --check
+
+# The React Native packages in a real Expo app (ts/fixtures/expo-app, SDK 58):
+# build and pack every @libo11y/* package, install the tarballs, typecheck
+# the fixture against the real Expo modules, run its jest-expo suite, export
+# it for iOS and Android with Hermes bytecode, and check what @libo11y and
+# @opentelemetry add to the Android bundle against ts/rn-bundle-budget.json
+# (needs bun and node; downloads the fixture's dependencies). expo export
+# empties its output directory first, so exactly one Android map remains.
+ts-rn-check: ts-install
+	bash ts/scripts/rn-fixture.sh
+	cd ts/fixtures/expo-app && bun run typecheck && bun run test && bun run export:native && bun run export:size
+	cd ts && set -- fixtures/expo-app/dist-size/_expo/static/js/android/*.js.map \
+		&& { [ "$$#" -eq 1 ] && [ -f "$$1" ] || { echo "ts-rn-check: expected one Android source map, found: $$*" >&2; exit 1; }; } \
+		&& bun scripts/rn-bundle-size.ts --check --summary "$${GITHUB_STEP_SUMMARY:-/dev/null}" --map "$$1" --bundle "$${1%.map}"
 
 # Browser suites under Playwright: @libo11y/web and @libo11y/webext in
 # headless Chromium, @libo11y/rum and its adapters in headless Chromium,
@@ -380,4 +394,4 @@ dotnet-check:
 
 # vuln runs last: it depends on the advisory database and the toolchain's
 # patch level, so local runs exercise every other gate first.
-ci: lint vet test tidy-check spec-check spec-drift ops-check ops-integration ts-check ts-size ts-browser-test rum-e2e o11yrum-image rust-check rust-msrv zig-check python-check c-check ruby-check dotnet-check schema-published-test release-notes-test release-tag-test ops-promtool-test ops-release-check-test rust-release-check-test ts-browser-bundle-test ts-rn-bundle-test ts-npm-plan-test release-check vuln
+ci: lint vet test tidy-check spec-check spec-drift ops-check ops-integration ts-check ts-size ts-browser-test ts-rn-check rum-e2e o11yrum-image rust-check rust-msrv zig-check python-check c-check ruby-check dotnet-check schema-published-test release-notes-test release-tag-test ops-promtool-test ops-release-check-test rust-release-check-test ts-browser-bundle-test ts-rn-bundle-test ts-npm-plan-test release-check vuln

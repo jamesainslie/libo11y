@@ -1,0 +1,14 @@
+{
+  "expo": {
+    "name": "libo11y fixture",
+    "slug": "libo11y-fixture",
+    "scheme": "libo11yfixture",
+    "version": "1.0.0",
+    "platforms": ["ios", "android", "web"],
+    "ios": { "bundleIdentifier": "ing.o11y.fixture" },
+    "android": { "package": "ing.o11y.fixture" },
+    "web": { "bundler": "metro", "output": "single" },
+    "plugins": ["expo-router"],
+    "experiments": { "typedRoutes": false }
+  }
+}

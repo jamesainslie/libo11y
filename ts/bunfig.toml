@@ -1,0 +1,3 @@
+[test]
+# The fixture Expo app runs its own jest suite (make ts-rn-check); Bun cannot load it.
+pathIgnorePatterns = ["fixtures/**"]

@@ -1,6 +1,8 @@
 /**
- * The real React Native dependencies. The only module of this package that imports a value from
- * react-native, so node tests never load it (boundary.test.ts enforces that).
+ * @libo11y/react-native/env: the real React Native dependencies, for @libo11y/rum-react-native's
+ * binding, which wraps them. For libo11y packages only: it follows the package version, carries no
+ * compatibility promise and has no API report. The only module of this package that imports a
+ * value from react-native, so node tests never load it (boundary.test.ts enforces that).
  */
 import {
   createConsentController,
