@@ -70,7 +70,7 @@ function fakeDelivery(): FakeDelivery {
     },
     drain: async () => {},
     clear: async () => {},
-    shutdown: async () => {},
+    shutdown: async () => ({ timedOut: [] }),
   };
 }
 

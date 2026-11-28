@@ -7,7 +7,7 @@
  * and revocation. The exporters (WP1) sit on a Delivery.
  */
 import type { RecordingGate } from "@libo11y/core";
-import type { OtlpBatch } from "./otlp.ts";
+import type { OtlpBatch, OtlpSignal } from "./otlp.ts";
 import type { PersistentQueue } from "./queue.ts";
 
 /** How an attempt may be sent. */
@@ -23,6 +23,8 @@ export type SendMode =
 /** One send attempt. */
 export interface SendRequest extends OtlpBatch {
   readonly mode: SendMode;
+  /** Aborts the attempt. Delivery.shutdown aborts the attempts still in flight at its deadline. */
+  readonly abortSignal?: AbortSignal;
 }
 
 /** The outcome of one attempt. */
@@ -96,6 +98,18 @@ export interface DeliveryOptions {
   readonly clearTimer?: (handle: unknown) => void;
 }
 
+/** Options for Delivery.shutdown. */
+export interface DeliveryShutdownOptions {
+  /** How long shutdown may wait for the attempts in flight. Default: no limit. */
+  readonly timeoutMillis?: number;
+}
+
+/** What Delivery.shutdown left unfinished. */
+export interface DeliveryShutdownReport {
+  /** The signals, each once, with an attempt still in flight at the deadline. */
+  readonly timedOut: readonly OtlpSignal[];
+}
+
 /** Delivers batches through a Transport with the gate, the queue and retry around it. */
 export interface Delivery {
   /** Sends one batch, or queues it for retry. Never rejects. */
@@ -107,6 +121,12 @@ export interface Delivery {
   drain(): Promise<void>;
   /** Cancels the retry timer and clears the queue. Consent revocation calls it. */
   clear(): Promise<void>;
-  /** Cancels the timer and stops listening; queued entries stay for the next page or wake. */
-  shutdown(): Promise<void>;
+  /**
+   * Cancels the timer and stops listening, then waits for the drain in progress. With
+   * opts.timeoutMillis it also waits for the deliveries in flight, and only until that deadline:
+   * then it aborts every attempt still in flight, releases the leases of their queued entries, which
+   * stay for the next page or wake like every other queued entry, and reports their signals. Later
+   * calls return the first call's promise. Never rejects.
+   */
+  shutdown(opts?: DeliveryShutdownOptions): Promise<DeliveryShutdownReport>;
 }

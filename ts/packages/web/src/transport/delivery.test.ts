@@ -113,7 +113,9 @@ test("an ok attempt is sent and touches no queue", async () => {
   const s = setupDelivery();
   assert.deepEqual(await s.delivery.deliver(BATCH), { outcome: "sent" });
   assert.equal(s.transport.requests.length, 1);
-  assert.deepEqual(s.transport.requests[0], { ...BATCH, mode: "normal" });
+  const { abortSignal, ...req } = s.transport.requests[0] ?? { abortSignal: undefined };
+  assert.deepEqual(req, { ...BATCH, mode: "normal" });
+  assert.equal(abortSignal?.aborted, false, "every attempt carries shutdown's abort signal");
   assert.equal(s.queue.entries.size, 0);
   assert.equal(s.timers.armed.size, 0);
 });
@@ -594,4 +596,98 @@ test("persistFirst keeps nothing when the gate closes while the attempt is on th
   assert.deepEqual(await d.deliver(BATCH), { outcome: "dropped" });
   assert.equal(s.queue.entries.size, 0);
   await d.shutdown();
+});
+
+// heldTransport answers no send until release, and records each send's abort signal.
+function heldTransport(): {
+  send: (req: { signal: string; abortSignal?: AbortSignal }) => Promise<{ kind: "ok" }>;
+  readonly aborts: (AbortSignal | undefined)[];
+  release(): void;
+} {
+  const aborts: (AbortSignal | undefined)[] = [];
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return {
+    aborts,
+    async send(req) {
+      aborts.push(req.abortSignal);
+      await held;
+      return { kind: "ok" };
+    },
+    release: () => release(),
+  };
+}
+
+test("shutdown with a deadline aborts a drain send still in flight and keeps its entry, lease released", async () => {
+  const s = setupDelivery();
+  const t = heldTransport();
+  const d = createDelivery({ transport: t, queue: s.queue, gate: s.gate, isOnline: () => true, now: s.now });
+  await s.queue.put({ signal: "logs", body: "{}" });
+  void d.drain();
+  await settle();
+  assert.equal(t.aborts.length, 1, "the entry is on the wire");
+
+  const started = performance.now();
+  const report = await d.shutdown({ timeoutMillis: 5 });
+  assert.ok(performance.now() - started < 60, "shutdown keeps its deadline");
+  assert.deepEqual(report.timedOut, ["logs"]);
+  assert.equal(t.aborts[0]?.aborted, true, "the send was aborted");
+  const [entry] = [...s.queue.entries.values()];
+  assert.equal(s.queue.entries.size, 1, "the entry stays for the next page load or wake");
+  assert.equal(entry?.leaseUntil, 0, "and its lease is released");
+
+  t.release();
+  await settle();
+  assert.equal(s.queue.entries.size, 1, "a send that settles after the deadline changes nothing");
+});
+
+test("shutdown with a deadline reports the signals of deliveries still in flight", async () => {
+  const s = setupDelivery();
+  const t = heldTransport();
+  const d = createDelivery({ transport: t, queue: s.queue, gate: s.gate, isOnline: () => true, now: s.now });
+  const delivered = d.deliver({ signal: "metrics", body: "{}" });
+  await settle();
+  const report = await d.shutdown({ timeoutMillis: 5 });
+  assert.deepEqual(report.timedOut, ["metrics"]);
+  t.release();
+  await delivered;
+  assert.equal(s.queue.entries.size, 0, "nothing is queued after the deadline");
+});
+
+test("a persist-first batch in flight at the deadline stays queued with its lease released", async () => {
+  const s = setupDelivery();
+  const t = heldTransport();
+  const d = createDelivery({
+    transport: t,
+    queue: s.queue,
+    gate: s.gate,
+    persistFirst: true,
+    isOnline: () => true,
+    now: s.now,
+  });
+  const delivered = d.deliver(BATCH);
+  await settle();
+  const report = await d.shutdown({ timeoutMillis: 5 });
+  assert.deepEqual(report.timedOut, ["traces"]);
+  assert.equal([...s.queue.entries.values()][0]?.leaseUntil, 0);
+  t.release();
+  await delivered;
+  assert.equal(s.queue.entries.size, 1, "the send that finished late does not remove it");
+});
+
+test("shutdown that finishes within its deadline reports nothing, and later calls share the first", async () => {
+  const s = setupDelivery();
+  const t = heldTransport();
+  const d = createDelivery({ transport: t, queue: s.queue, gate: s.gate, isOnline: () => true, now: s.now });
+  await s.queue.put({ signal: "traces", body: "{}" });
+  void d.drain();
+  await settle();
+  const first = d.shutdown({ timeoutMillis: 1000 });
+  assert.equal(d.shutdown(), first);
+  setTimeout(() => t.release(), 5);
+  assert.deepEqual((await first).timedOut, []);
+  assert.equal(s.queue.entries.size, 0, "the send in flight finished and its entry was removed");
+  assert.equal(t.aborts[0]?.aborted, false);
 });

@@ -26,6 +26,7 @@ export function createFakeDelivery(options: DeliveryOptions, log: string[] = [])
     },
     async shutdown() {
       log.push("shutdown");
+      return { timedOut: [] };
     },
   };
 }

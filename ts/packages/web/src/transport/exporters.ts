@@ -1,7 +1,13 @@
 /**
  * WP1 (transport). The SDK exporters over a Delivery, and the ExporterSet a platform builds.
  */
-import { type ExporterRequest, type ExporterSet, exemplarMetricExporter, O11yError } from "@libo11y/core";
+import {
+  type ExporterRequest,
+  type ExporterSet,
+  exemplarMetricExporter,
+  O11yError,
+  type RecordingGate,
+} from "@libo11y/core";
 import { type ExportResult, ExportResultCode } from "@opentelemetry/core";
 import {
   ConsoleLogRecordExporter,
@@ -21,6 +27,7 @@ import { OTLP_SIGNALS, type OtlpSignal } from "../contracts/otlp.ts";
 import type { Delivery, DeliveryResult, SendMode } from "../contracts/transport.ts";
 import type { SignalEndpoints } from "./endpoints.ts";
 import { UNLOAD_BODY_LIMIT } from "./http.ts";
+import { baselineOf, type MetricBaseline, sinceBaseline } from "./metric-baseline.ts";
 import { serializeLogs, serializeMetrics, serializeSpans } from "./serialize.ts";
 
 /** Options the exporters share. */
@@ -37,6 +44,12 @@ export interface ExporterOptions {
    * accepts only delta sums and histograms, so `@libo11y/rum` asks for "delta".
    */
   readonly metricTemporality?: "cumulative" | "delta";
+  /**
+   * The consent gate. A metric collection exported while it is closed sets the consent boundary,
+   * and later cumulative collections are exported as their change since it (sinceBaseline), so a
+   * revocation leaves no earlier total to export. Without a gate there is no boundary.
+   */
+  readonly gate?: RecordingGate;
 }
 
 const encoder = new TextEncoder();
@@ -127,10 +140,17 @@ export function createLogExporter(delivery: Delivery, opts?: ExporterOptions): L
   return deliveryExporter<ReadableLogRecord>(delivery, "logs", serializeLogs, opts?.mode ?? NORMAL);
 }
 
-/** The PushMetricExporter counterpart, cumulative temporality unless asked for delta, never split. */
+/**
+ * The PushMetricExporter counterpart, cumulative temporality unless asked for delta, never split.
+ * With a gate, a collection exported while the gate is closed is not delivered and becomes the
+ * consent boundary: every later collection is exported as sinceBaseline(collection, boundary),
+ * and one with nothing left is not delivered. The next collection exported into a closed gate
+ * moves the boundary.
+ */
 export function createMetricExporter(
   delivery: Delivery,
   temporality: "cumulative" | "delta" = "cumulative",
+  gate?: RecordingGate,
 ): PushMetricExporter {
   const selected = temporality === "delta" ? AggregationTemporality.DELTA : AggregationTemporality.CUMULATIVE;
   const inner = deliveryExporter<ResourceMetrics>(
@@ -139,8 +159,22 @@ export function createMetricExporter(
     (items) => serializeMetrics(items[0] as ResourceMetrics),
     NORMAL,
   );
+  let baseline: MetricBaseline | undefined;
   return {
-    export: (metrics, resultCallback) => inner.export([metrics], resultCallback),
+    export(metrics, resultCallback) {
+      if (gate !== undefined && !gate.recording()) {
+        // The revocation flush lands here, with the totals recorded before the revoke.
+        baseline = baselineOf(metrics);
+        resultCallback({ code: ExportResultCode.SUCCESS });
+        return;
+      }
+      const since = baseline === undefined ? metrics : sinceBaseline(metrics, baseline);
+      if (since === undefined) {
+        resultCallback({ code: ExportResultCode.SUCCESS });
+        return;
+      }
+      inner.export([since], resultCallback);
+    },
     forceFlush: () => inner.forceFlush(),
     shutdown: () => inner.shutdown(),
     selectAggregationTemporality: () => selected,
@@ -211,7 +245,8 @@ export function createExporterSet(
     metrics === "console"
       ? (): PushMetricExporter => new ConsoleMetricExporter()
       : metrics === "otlp" && endpoints.metrics !== undefined
-        ? (): PushMetricExporter => createMetricExporter(delivery, exporterOpts.metricTemporality)
+        ? (): PushMetricExporter =>
+            createMetricExporter(delivery, exporterOpts.metricTemporality, exporterOpts.gate)
         : undefined;
   if (metricInner !== undefined) {
     metricReader = build("metric reader", () => {

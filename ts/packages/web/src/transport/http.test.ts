@@ -404,3 +404,47 @@ test("by default exports use pristineFetch, never a fetch patched after load", a
   assert.equal(patchedCalls, 0);
   assert.deepEqual(received, [{ method: "POST", type: "application/json", body: '{"resourceSpans":[]}' }]);
 });
+
+test("the request's abort signal aborts the fetch, and the send is a retry", async () => {
+  const f = fakeFetch();
+  const hanging = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    f.calls.push({ url: String(input), init: init ?? {} });
+    return new Promise<Response>((_, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+    });
+  }) as typeof fetch;
+  const t = transport({ fetch: hanging, timeoutMillis: 60_000 });
+  const abort = new AbortController();
+  const sent = t.send({ ...req("{}"), abortSignal: abort.signal });
+  await new Promise((r) => setTimeout(r, 0));
+  abort.abort();
+  const got = await sent;
+  assert.equal(got.kind, "retry");
+  assert.equal(f.calls[0]?.init.signal?.aborted, true);
+});
+
+test("without AbortSignal.any the abort signal still aborts the fetch, and a timeout still counts", async () => {
+  const saved = AbortSignal.any;
+  try {
+    (AbortSignal as { any?: unknown }).any = undefined;
+    const hanging = (async (_: RequestInfo | URL, init?: RequestInit) =>
+      new Promise<Response>((_r, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+      })) as typeof fetch;
+    const abort = new AbortController();
+    const sent = transport({ fetch: hanging, timeoutMillis: 60_000 }).send({
+      ...req("{}"),
+      abortSignal: abort.signal,
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    abort.abort();
+    assert.equal((await sent).kind, "retry");
+    const timedOut = await transport({ fetch: hanging, timeoutMillis: 20 }).send({
+      ...req("{}"),
+      abortSignal: new AbortController().signal,
+    });
+    assert.match(timedOut.kind === "retry" ? timedOut.reason : "", /timeout/);
+  } finally {
+    AbortSignal.any = saved;
+  }
+});

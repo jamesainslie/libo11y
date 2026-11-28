@@ -30,6 +30,7 @@ import {
   type QueueOptions,
   type SignalEndpoints,
   setActiveConsent,
+  shutdownWithin,
   type VisibilitySource,
   type WebPlatformOptions,
   webPlatform,
@@ -160,7 +161,8 @@ export async function setupContentScriptWith(
     // Messaging the worker needs no network; the worker queues while the browser is offline.
     isOnline: () => true,
   });
-  steps.unshift(() => delivery.shutdown());
+  // Kept apart from steps: a working handle shuts the delivery down under its deadline itself.
+  const stopDelivery = (): unknown => delivery.shutdown();
 
   const endpoints: SignalEndpoints = {
     traces: WORKER_ENDPOINT,
@@ -187,7 +189,7 @@ export async function setupContentScriptWith(
       ? await setupWith(coreOptions, platform)
       : await createTelemetryWith(coreOptions, platform);
   } catch (err) {
-    await cleanup(steps);
+    await cleanup([stopDelivery, ...steps]);
     throw err;
   }
 
@@ -217,7 +219,8 @@ export async function setupContentScriptWith(
   let shutdownPromise: Promise<SignalReport> | undefined;
   handle.shutdown = (opts) => {
     shutdownPromise ??= (async () => {
-      const report = await coreShutdown(opts);
+      // One deadline: core's providers, then the delivery's drain in what is left of it.
+      const report = await shutdownWithin(coreShutdown, delivery, opts);
       await cleanup([
         ...uninstalls,
         () => {

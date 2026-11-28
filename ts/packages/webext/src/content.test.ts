@@ -4,6 +4,7 @@ import type { DocumentLoadOptions, HttpInstrumentationOptions } from "@libo11y/w
 import {
   activeConsent,
   type ConsentControllerOptions,
+  createDelivery,
   type VisibilitySource,
   type WebPlatformOptions,
 } from "@libo11y/web/internal";
@@ -371,5 +372,46 @@ test("install false builds the telemetry without globals, instrumentation or the
   } finally {
     await first.shutdown();
     await second.shutdown();
+  }
+});
+
+test("shutdown keeps its deadline with a send to the worker held open, and reports the timeout", async () => {
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const aborts: (AbortSignal | undefined)[] = [];
+  const r = rig();
+  void r.queue.put({ signal: "logs", body: "{}" });
+  r.deps = {
+    ...r.deps,
+    createDelivery: (o) =>
+      createDelivery({
+        ...o,
+        transport: {
+          async send(req) {
+            aborts.push(req.abortSignal);
+            await held;
+            return { kind: "ok" };
+          },
+        },
+      }),
+  };
+  const h = await setupContentScriptWith(BASE, r.deps);
+  try {
+    // The grant opens the gate, and the delivery drains the queued batch to the worker.
+    h.consent.grant();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(aborts.length, 1);
+    const started = performance.now();
+    const report = await h.shutdown({ timeoutMillis: 5 });
+    assert.ok(performance.now() - started < 60, "shutdown kept its deadline");
+    assert.deepEqual(
+      report.errors.map((e) => [e.signal, (e.error as Error).message]),
+      [["logs", "o11y: shutdown logs: deadline exceeded"]],
+    );
+    assert.equal(aborts[0]?.aborted, true);
+  } finally {
+    release();
   }
 });

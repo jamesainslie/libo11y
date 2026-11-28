@@ -2,12 +2,13 @@
  * WP1 (transport). Delivery: the gate, persist-first, retry from the queue, Retry-After and drain.
  */
 import { diag } from "@opentelemetry/api";
-import type { OtlpBatch } from "../contracts/otlp.ts";
+import type { OtlpBatch, OtlpSignal } from "../contracts/otlp.ts";
 import type { QueueEntry } from "../contracts/queue.ts";
 import type {
   Delivery,
   DeliveryOptions,
   DeliveryResult,
+  DeliveryShutdownReport,
   SendMode,
   SendResult,
 } from "../contracts/transport.ts";
@@ -16,6 +17,10 @@ import { backoffDelay } from "./retry.ts";
 const SENT: DeliveryResult = { outcome: "sent" };
 const QUEUED: DeliveryResult = { outcome: "queued" };
 const GATE_DROP: DeliveryResult = { outcome: "dropped" };
+const NOTHING_TIMED_OUT: DeliveryShutdownReport = { timedOut: [] };
+
+/** The longest a timer can wait. */
+const MAX_TIMER_MILLIS = 2_147_483_647;
 
 /** DeliveryOptions.leaseMillis when none is given. */
 export const DEFAULT_LEASE_MILLIS = 30_000;
@@ -51,6 +56,21 @@ function defaultClearTimer(handle: unknown): void {
   clearTimeout(handle as ReturnType<typeof setTimeout>);
 }
 
+// within resolves true when work settles within ms, false when the deadline passes first. Its
+// timer is unref'd, so a pending deadline never holds a process open.
+async function within(ms: number, work: Promise<unknown>): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<false>((resolve) => {
+    timer = setTimeout(() => resolve(false), Math.min(Math.max(ms, 0), MAX_TIMER_MILLIS));
+    (timer as { unref?: () => void }).unref?.();
+  });
+  try {
+    return await Promise.race([work.then(() => true), expired]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -81,6 +101,11 @@ function dropped(signal: string, reason: string, cause?: unknown): DeliveryResul
  * before an entry with less than half its lease left, so a slow collector never lets another tab
  * claim an entry this one is about to send. The "online" event
  * on events triggers a drain. Timers are cleared by clear and shutdown.
+ *
+ * Every attempt carries an abort signal. `shutdown({ timeoutMillis })` waits for the drain and the
+ * deliveries in flight until that deadline, then aborts the attempts still in flight, releases the
+ * leases of the queued entries it holds (queue.reschedule to now), and reports the signals that
+ * were in flight. An attempt that settles after the deadline leaves the queue as shutdown left it.
  */
 export function createDelivery(opts: DeliveryOptions): Delivery {
   const { transport, queue, gate } = opts;
@@ -102,6 +127,17 @@ export function createDelivery(opts: DeliveryOptions): Delivery {
   let hasTimer = false;
   let draining: Promise<void> | undefined;
   let stopped = false;
+  // Set when shutdown's deadline passed: an attempt that settles later touches nothing.
+  let expired = false;
+  let shutdownPromise: Promise<DeliveryShutdownReport> | undefined;
+  // Aborts every attempt still in flight when shutdown's deadline passes.
+  const aborter = new AbortController();
+  // The signal of each attempt in flight.
+  const inFlight = new Map<symbol, OtlpSignal>();
+  // The queued entries this delivery holds a lease on and has not settled yet.
+  const leased = new Set<string>();
+  // The deliver calls that have not settled yet.
+  const delivering = new Set<Promise<DeliveryResult>>();
 
   function cancelTimer(): void {
     if (!hasTimer) return;
@@ -141,10 +177,19 @@ export function createDelivery(opts: DeliveryOptions): Delivery {
   }
 
   async function attempt(batch: OtlpBatch, m: SendMode): Promise<SendResult> {
+    const token = Symbol();
+    inFlight.set(token, batch.signal);
     try {
-      return await transport.send({ signal: batch.signal, body: batch.body, mode: m });
+      return await transport.send({
+        signal: batch.signal,
+        body: batch.body,
+        mode: m,
+        abortSignal: aborter.signal,
+      });
     } catch (err) {
       return { kind: "fatal", reason: `transport failed: ${message(err)}` };
+    } finally {
+      inFlight.delete(token);
     }
   }
 
@@ -180,7 +225,16 @@ export function createDelivery(opts: DeliveryOptions): Delivery {
       await arm();
       return QUEUED;
     }
-    const result = await attempt(batch, mode());
+    leased.add(entry.id);
+    let result: SendResult;
+    try {
+      result = await attempt(batch, mode());
+    } finally {
+      leased.delete(entry.id);
+    }
+    // Shutdown's deadline passed while it was on the wire: shutdown released the lease, and the
+    // entry stays for the next page or wake.
+    if (expired) return QUEUED;
     if (result.kind === "ok") {
       await queue.remove([entry.id]);
       return SENT;
@@ -203,6 +257,7 @@ export function createDelivery(opts: DeliveryOptions): Delivery {
     if (!isOnline()) return enqueue(batch, now(), "offline");
     const result = await attempt(batch, mode());
     if (result.kind === "ok") return SENT;
+    if (expired) return dropped(batch.signal, "the shutdown deadline passed while it was in flight");
     if (result.kind === "fatal") return dropped(batch.signal, result.reason);
     return enqueue(batch, now() + retryDelay(result, 1), result.reason);
   }
@@ -231,18 +286,27 @@ export function createDelivery(opts: DeliveryOptions): Delivery {
     while (more && canDrain()) {
       const entries = await queue.claim(now(), drainBatch, leaseMillis);
       if (entries.length === 0) break;
+      for (const entry of entries) leased.add(entry.id);
       let retried = false;
-      for (const entry of entries) {
-        // A claimed entry left unsent keeps its lease, which simply runs out.
-        if (!gate.recording() || stopped) return;
-        // The entries of a round are sent one after another, so a slow collector can use up the
-        // lease. Once less than half of it is left, another tab could claim the entry while this
-        // attempt is still on the wire and send it twice; leave the rest for when the lease ends.
-        if (entry.leaseUntil - now() < leaseMillis / 2) {
-          more = false;
-          break;
+      try {
+        for (const entry of entries) {
+          // A claimed entry left unsent keeps its lease, which simply runs out.
+          if (!gate.recording() || stopped) return;
+          // The entries of a round are sent one after another, so a slow collector can use up the
+          // lease. Once less than half of it is left, another tab could claim the entry while this
+          // attempt is still on the wire and send it twice; leave the rest for when the lease ends.
+          if (entry.leaseUntil - now() < leaseMillis / 2) {
+            more = false;
+            break;
+          }
+          const result = await attempt(entry, "normal");
+          // Shutdown's deadline passed while it was on the wire, and shutdown released the lease.
+          if (expired) return;
+          retried = (await settleEntry(entry, result)) || retried;
+          leased.delete(entry.id);
         }
-        retried = (await settleEntry(entry, await attempt(entry, "normal"))) || retried;
+      } finally {
+        if (!expired) for (const entry of entries) leased.delete(entry.id);
       }
       if (retried) more = false;
     }
@@ -289,14 +353,54 @@ export function createDelivery(opts: DeliveryOptions): Delivery {
     if (open) void drain();
   });
 
-  return {
-    async deliver(batch) {
-      if (!gate.recording()) return GATE_DROP;
+  async function deliverOnce(batch: OtlpBatch): Promise<DeliveryResult> {
+    if (!gate.recording()) return GATE_DROP;
+    try {
+      return persistFirst ? await deliverPersisted(batch) : await deliverDirect(batch);
+    } catch (err) {
+      return dropped(batch.signal, message(err), err);
+    }
+  }
+
+  // stop is shutdown. With a deadline, the drain and the deliveries in flight get until then; the
+  // attempts still in flight are aborted and their entries' leases released.
+  async function stop(timeoutMillis: number | undefined): Promise<DeliveryShutdownReport> {
+    stopped = true;
+    cancelTimer();
+    events?.removeEventListener("online", onOnline);
+    unsubscribe();
+    if (timeoutMillis === undefined) {
+      while (draining !== undefined) await draining;
+      cancelTimer();
+      return NOTHING_TIMED_OUT;
+    }
+    const settled = async (): Promise<void> => {
+      while (draining !== undefined || delivering.size > 0) await Promise.all([draining, ...delivering]);
+    };
+    const done = await within(timeoutMillis, settled());
+    cancelTimer();
+    if (done) return NOTHING_TIMED_OUT;
+    expired = true;
+    const timedOut = [...new Set(inFlight.values())];
+    aborter.abort();
+    for (const id of [...leased]) {
       try {
-        return persistFirst ? await deliverPersisted(batch) : await deliverDirect(batch);
+        // A failed attempt for the queue: the lease is released, and the entry is due now.
+        await queue?.reschedule(id, now());
       } catch (err) {
-        return dropped(batch.signal, message(err), err);
+        diag.warn(`libo11y: releasing a queue lease at shutdown failed: ${message(err)}`);
       }
+    }
+    leased.clear();
+    return { timedOut };
+  }
+
+  return {
+    deliver(batch) {
+      const run = deliverOnce(batch);
+      delivering.add(run);
+      void run.finally(() => delivering.delete(run));
+      return run;
     },
     drain,
     async clear() {
@@ -309,14 +413,9 @@ export function createDelivery(opts: DeliveryOptions): Delivery {
       }
       cancelTimer();
     },
-    async shutdown() {
-      if (stopped) return;
-      stopped = true;
-      cancelTimer();
-      events?.removeEventListener("online", onOnline);
-      unsubscribe();
-      while (draining !== undefined) await draining;
-      cancelTimer();
+    shutdown(opts) {
+      shutdownPromise ??= stop(opts?.timeoutMillis);
+      return shutdownPromise;
     },
   };
 }

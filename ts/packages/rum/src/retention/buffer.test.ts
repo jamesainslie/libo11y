@@ -15,7 +15,7 @@ function recordingDelivery(): Delivery & { readonly sent: OtlpBatch[] } {
     },
     drain: async () => {},
     clear: async () => {},
-    shutdown: async () => {},
+    shutdown: async () => ({ timedOut: [] }),
   };
 }
 

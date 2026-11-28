@@ -21,6 +21,7 @@ import {
   resolveEndpoints,
   type SignalEndpoints,
   setActiveConsent,
+  shutdownWithin,
   type Transport,
   type WebPlatformOptions,
   webPlatform,
@@ -76,10 +77,11 @@ export function defaultWorkerDeps(): WorkerDeps {
  * flight); the HTTP
  * transport with sendBeacon undefined; a delivery with persistFirst true, mode always "normal" and a
  * lease of three times transport.timeoutMillis when that is longer than the default;
- * webPlatform with name "webext" and WORKER_ENV_DEFAULTS; setupWith; serviceVersion defaulting to
- * the manifest version. Then: the runtime.onMessage listener for ExportMessages from this
- * extension's own contexts (sender.id === runtime.id), which puts each accepted batch in the queue,
- * replies, and drains; the worker's fetch instrumentation; and a drain of whatever the last wake
+ * webPlatform with name "webext" and WORKER_ENV_DEFAULTS, with the manifest version as a detected
+ * service.version (below OTEL_RESOURCE_ATTRIBUTES and the serviceVersion option); setupWith. A wake
+ * to a denied consent clears the queue before the delivery is built. Then: the runtime.onMessage
+ * listener for ExportMessages from this extension's own contexts (sender.id === runtime.id),
+ * which puts each accepted batch in the queue, replies, and drains; the worker's fetch instrumentation; and a drain of whatever the last wake
  * left. Rejects like setup on a bad configuration.
  *
  * The export listener is registered before the first await, so the message that woke the worker
@@ -112,6 +114,21 @@ export function setupWorker(options: WorkerSetupOptions = {}): Promise<WorkerTel
  */
 function leaseForTimeout(timeoutMillis: number): number {
   return Math.max(30_000, 3 * timeoutMillis);
+}
+
+/**
+ * platform with the manifest version as a detected service.version, so OTEL_RESOURCE_ATTRIBUTES and
+ * the serviceVersion option both beat it, as core merges the layers.
+ */
+function withManifestVersion(platform: Platform, version: string): Platform {
+  if (version.trim() === "") return platform;
+  return {
+    ...platform,
+    async detectResource(hermetic) {
+      const layers = await platform.detectResource(hermetic);
+      return { ...layers, detected: { ...layers.detected, "service.version": version } };
+    },
+  };
 }
 
 /** What the export listener needs once the telemetry is up. */
@@ -275,6 +292,8 @@ export async function setupWorkerWith(
   };
 
   const steps: (() => unknown)[] = [];
+  // Kept apart from steps: a working handle shuts the delivery down under its deadline itself.
+  let stopDelivery: (() => unknown) | undefined;
   let built: {
     controller: ConsentController;
     queue: PersistentQueue;
@@ -305,6 +324,16 @@ export async function setupWorkerWith(
     // cut off when it stopped an earlier wake mid-send. Released before the delivery exists, so no
     // send of this wake is in flight yet, and the first drain sends those entries at once.
     await queue.releaseLeases();
+    // A wake to a denied state (another context revoked while the worker was stopped, or a
+    // respected privacy signal refuses the stored grant) runs no revoke hook in this wake, so the
+    // earlier wake's batches are cleared here, before the delivery exists. A pending wake keeps them.
+    if (controller.consent.state() === "denied") {
+      try {
+        await queue.clear();
+      } catch (err) {
+        diag.warn("o11y: clearing the queue of a denied wake failed", err);
+      }
+    }
     const endpoints = deps.resolveEndpoints(options, options.hermetic === true);
     const t = options.transport ?? {};
     const transport = deps.createHttpTransport({
@@ -325,8 +354,8 @@ export async function setupWorkerWith(
       // A lease shorter than a send could let the next drain claim the entry mid-send and resend it.
       ...(t.timeoutMillis === undefined ? {} : { leaseMillis: leaseForTimeout(t.timeoutMillis) }),
     });
-    steps.unshift(() => delivery.shutdown());
-    const platform = deps.webPlatform({
+    stopDelivery = () => delivery.shutdown();
+    const web = deps.webPlatform({
       name: "webext",
       exportOptions: options,
       endpoints,
@@ -336,18 +365,15 @@ export async function setupWorkerWith(
       envDefaults: WORKER_ENV_DEFAULTS,
       ...(options.contextManager === undefined ? {} : { contextManager: options.contextManager }),
     });
-    const coreOptions: TelemetryOptions = {
-      ...options,
-      console: options.console ?? false,
-      serviceVersion: options.serviceVersion ?? chrome.runtime.getManifest().version,
-    };
+    const platform = withManifestVersion(web, chrome.runtime.getManifest().version);
+    const coreOptions: TelemetryOptions = { ...options, console: options.console ?? false };
     core = await setupWith(coreOptions, platform);
     built = { controller, queue, delivery, endpoints };
   } catch (err) {
     removeExportListener();
     releaseHeld();
     settle(undefined);
-    await cleanup(steps);
+    await cleanup([...(stopDelivery === undefined ? [] : [stopDelivery]), ...steps]);
     throw err;
   }
 
@@ -384,15 +410,21 @@ export async function setupWorkerWith(
     sendTabMessage: <R>(tabId: number, payload: unknown): Promise<R> =>
       sendTracedTabMessage<R>(chrome, telemetry.propagator, tabId, payload),
   });
+  // Shutdown removes every traced listener the handle added.
+  const removeTracedListeners = (): void => {
+    for (const listener of tracedListeners.splice(0)) chrome.runtime.onMessage.removeListener(listener);
+  };
   const coreShutdown = telemetry.shutdown.bind(telemetry);
   let shutdownPromise: Promise<SignalReport> | undefined;
   handle.shutdown = (opts) => {
     shutdownPromise ??= (async () => {
       removeExportListener();
       releaseHeld();
-      const report = await coreShutdown(opts);
+      // One deadline: core's providers, then the delivery's drain in what is left of it.
+      const report = await shutdownWithin(coreShutdown, delivery, opts);
       await cleanup([
         ...uninstalls,
+        removeTracedListeners,
         unregisterRevoke,
         () => {
           if (activeConsent() === controller.consent) setActiveConsent(undefined);

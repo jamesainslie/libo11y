@@ -12,7 +12,7 @@ import { LogRecordExporter } from '@opentelemetry/sdk-logs';
 import { PushMetricExporter } from '@opentelemetry/sdk-metrics';
 import type { ReadableLogRecord } from '@opentelemetry/sdk-logs';
 import type { ReadableSpan } from '@opentelemetry/sdk-trace';
-import type { RecordingGate } from '@libo11y/core';
+import { RecordingGate } from '@libo11y/core';
 import type { ResourceMetrics } from '@opentelemetry/sdk-metrics';
 import { ResourceMetricsWithExemplars } from '@libo11y/core';
 import type { SignalReport } from '@libo11y/core';
@@ -111,7 +111,7 @@ export function createLogExporter(delivery: Delivery, opts?: ExporterOptions): L
 export function createMemoryQueue(opts?: QueueOptions): PersistentQueue;
 
 // @public
-export function createMetricExporter(delivery: Delivery, temporality?: "cumulative" | "delta"): PushMetricExporter;
+export function createMetricExporter(delivery: Delivery, temporality?: "cumulative" | "delta", gate?: RecordingGate): PushMetricExporter;
 
 // @public
 export function createSpanExporter(delivery: Delivery, opts?: ExporterOptions): SpanExporter;
@@ -130,7 +130,7 @@ export interface Delivery {
     clear(): Promise<void>;
     deliver(batch: OtlpBatch): Promise<DeliveryResult>;
     drain(): Promise<void>;
-    shutdown(): Promise<void>;
+    shutdown(opts?: DeliveryShutdownOptions): Promise<DeliveryShutdownReport>;
 }
 
 // @public
@@ -175,6 +175,16 @@ export interface DeliveryResult {
 }
 
 // @public
+export interface DeliveryShutdownOptions {
+    readonly timeoutMillis?: number;
+}
+
+// @public
+export interface DeliveryShutdownReport {
+    readonly timedOut: readonly OtlpSignal[];
+}
+
+// @public
 export function dueAt(entry: Pick<QueueEntry, "notBefore" | "leaseUntil">): number;
 
 // @public
@@ -182,6 +192,7 @@ export function evictionPlan(existing: readonly QueueEntry[], incoming: QueueEnt
 
 // @public
 export interface ExporterOptions {
+    readonly gate?: RecordingGate;
     readonly metricTemporality?: "cumulative" | "delta";
     readonly mode?: () => SendMode;
 }
@@ -366,6 +377,7 @@ export type SendMode =
 
 // @public
 export interface SendRequest extends OtlpBatch {
+    readonly abortSignal?: AbortSignal;
     // (undocumented)
     readonly mode: SendMode;
 }
