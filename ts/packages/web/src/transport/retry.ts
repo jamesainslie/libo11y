@@ -1,5 +1,5 @@
 /**
- * WP1 (transport). Retry-After parsing and backoff.
+ * Retry-After parsing and backoff.
  */
 
 /** The HTTP statuses worth retrying, as the OTLP specification lists them. */

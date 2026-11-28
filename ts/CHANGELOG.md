@@ -40,6 +40,11 @@ adhere to [Semantic Versioning](https://semver.org/).
   `CompiledAppRegistryResult`. It checks a compiled registry with the
   rules that still apply to that form, with the rule IDs and messages of
   `validateAppRegistry`.
+- API reports cover the web `./internal` and `./portable` entry points
+  and the web extension `./internal` entry point.
+- `@libo11y/web` exports the `OtlpSignal` type used by the web extension
+  messaging protocol. `@libo11y/core/testing` exports the types used by its
+  test platform and exemplar store.
 
 ### Changed
 
@@ -58,6 +63,30 @@ adhere to [Semantic Versioning](https://semver.org/).
 - `make ts-size` bundles a delta row with its base entry's externals and
   export conditions, and its budgets and the Metro bundle budget cover
   `@libo11y/rum-react-native`.
+- `@libo11y/core`, `@libo11y/server`, `@libo11y/test`, `@libo11y/web` and
+  `@libo11y/webext` declare `@opentelemetry/api` as a peer dependency with
+  range `>=1.10.0 <1.11.0` so the library and application share an API
+  instance.
+- `@libo11y/server` gets `@opentelemetry/instrumentation` through its
+  runtime metrics dependency.
+- `@libo11y/core`: an injected `logProcessor` is a leg beside the log
+  exporter, as Go's `WithExtraLogHandler` is. It no longer turns off the
+  platform's OTLP log exporter, and it still gets every record with
+  `logExport: false` and in hermetic mode with no `logExporter`.
+  `OTEL_SDK_DISABLED=true` still turns it off. The logs exporter value of
+  the `o11y.config.*` attributes now describes the exporter route alone.
+- `@libo11y/core`: `OTEL_BSP_*`, `OTEL_BLRP_*` and `OTEL_METRIC_EXPORT_*`
+  integer variables now accept only an untrimmed decimal integer with an
+  optional sign, matching Go's `strconv.Atoi`. Values with surrounding
+  whitespace, fractional parts or suffixes such as `" 100 "`, `64.9` or
+  `10ms` now keep the default instead of parsing leading digits.
+- Browser, extension worker, and React Native OTLP endpoint resolution
+  now checks both explicit options before the environment. The
+  per-signal option takes precedence over `endpoint`.
+- Browser, extension worker, and React Native exporters default a
+  missing or blank `OTEL_EXPORTER_OTLP_PROTOCOL` to `http/json`.
+  An OTLP signal that resolves to another protocol fails setup with
+  `UNSUPPORTED_PROTOCOL`.
 - `@libo11y/server`'s `instrumentFetch` now replaces the values of the
   `AWSAccessKeyId`, `Signature`, `sig` and `X-Goog-Signature` query keys
   in `url.full` with `REDACTED`, as `@libo11y/web` already does. These are
@@ -124,6 +153,53 @@ adhere to [Semantic Versioning](https://semver.org/).
 - `@libo11y/webext`: the worker's `shutdown()` removes the traced
   listeners added through `onMessage`. In 0.4.0 they stayed registered and
   still received messages after a second `setupWorker`.
+- `@libo11y/core`: an `Error` logged under a key the sensitivity policy
+  drops or tokenizes, such as a `secret` or `pii` key, is no longer
+  expanded into `exception.type`, `exception.message` and
+  `exception.stacktrace`. It stays under its own key as a string, so the
+  policy drops or hashes it on the console and OTLP legs. An `Error` under
+  a key the policy keeps still expands.
+- `@libo11y/core`: an `attrReplacer` can no longer add a top-level
+  `trace_id` or `span_id` to a record, on either leg. A record captured
+  from the console keeps `o11y.log.source=console` whatever the replacer
+  does with it.
+- `@libo11y/core`: the `o11y.telemetry.dropped` event that `shutdown`
+  writes names the class of the error the signal failed with in
+  `error.type`, as the event for a background export failure does. It
+  said `Error` for every failure. A signal that missed the shutdown
+  deadline says `TimeoutError`.
+- `@libo11y/core`: `OTEL_SDK_DISABLED=true` now hands out a no-op tracer
+  provider and installs it globally in `setupWith`, so spans are
+  non-recording while propagation and inbound trace correlation on console
+  logs keep working. Discarded injected `metricReader`, `spanExporter`,
+  `spanProcessor`, `logExporter` and `logProcessor` instances are now shut
+  down once on the disabled SDK, failed build and `ALREADY_SETUP` paths
+  without stopping anything a live telemetry still owns. A value other
+  than `true`, `false` or empty now warns once through the telemetry's
+  error handler and leaves the SDK enabled.
+- `@libo11y/core`: a failed `setupWith` (rejected startup canary or
+  throwing global install) now abandons the pipeline without flushing
+  buffered records, without waiting on hung exporters and without emitting
+  `o11y.telemetry.dropped`, while still stopping providers and releasing
+  globals and the setup guard.
+- `@libo11y/web`: a telemetry failure no longer fails the application's
+  fetch or XHR request. A propagator, tracer or meter that threw rejected
+  the caller's `fetch` before the request was made, and made an XHR's
+  `send` throw. Now a span that cannot start sends the request
+  uninstrumented, a propagator that throws sends it without the injected
+  context, and a span that cannot end changes nothing the caller sees.
+  Each failure is reported to the telemetry handle's reporter, or to the
+  OpenTelemetry global error handler without one, as `@libo11y/server`
+  does. Headers that fetch rejects still fail the request as an
+  uninstrumented fetch would.
+- The shared OTLP HTTP transport sets the JSON and gzip headers
+  case-insensitively, so matching caller-supplied headers are replaced.
+- Browser and extension worker setup derives `service.instance.id` from
+  pod identity when `crypto.subtle` is unavailable.
+- The release version command keeps workspace versions in `bun.lock` in
+  sync with package manifests.
+- The release packer rejects declarations and source maps left by
+  removed source files.
 
 ## [0.4.0] - 2026-11-27
 

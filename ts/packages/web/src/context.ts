@@ -1,5 +1,5 @@
 /**
- * WP3 (web platform and setup). The default browser context manager.
+ * The default browser context manager.
  */
 import type { ContextManager } from "@opentelemetry/api";
 import { StackContextManager } from "@opentelemetry/sdk-trace";

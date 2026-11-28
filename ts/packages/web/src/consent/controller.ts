@@ -1,5 +1,5 @@
 /**
- * WP2 (queue and consent). The consent gate.
+ * The consent gate.
  */
 import { diag } from "@opentelemetry/api";
 import type {

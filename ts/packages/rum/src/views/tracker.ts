@@ -1,6 +1,6 @@
 /**
  * The view tracker: the initial (or prerender) view at begin, a bfcache_restore view on a
- * persisted pageshow, a soft view of the same name when the session changes (decision P14), and
+ * persisted pageshow, a soft view of the same name when the session changes, and
  * the soft views views() and the router adapters start. A platform whose views are all of one
  * kind, as React Native's screens, passes viewKind: the first begin's view is then the load view and
  * every view has that kind. Every view opens in the summary accumulator and closes when it ends.
@@ -123,7 +123,7 @@ export function createViewTracker(opts: ViewTrackerOptions): ViewTracker & { clo
       if (current !== undefined) return;
       // The initial view starts at time origin: a view covers getting into it from navigation start.
       // A later begin (consent granted again) is a new session on a page already loaded, so its
-      // view is soft and starts now (decision P14).
+      // view is soft and starts now.
       if (load === undefined) {
         const kind = opts.viewKind ?? (opts.prerendered() ? "prerender" : "initial");
         start({ kind, startTime: opts.initialStart?.() ?? 0 }, true);

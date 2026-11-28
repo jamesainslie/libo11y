@@ -1,5 +1,5 @@
 /**
- * setupRumCore: RUM over a platform binding (decision P1, R3f, R5a). In order: settings, the
+ * setupRumCore: RUM over a platform binding. In order: settings, the
  * retention buffer (opened lazily), the session manager, the bus, the summary accumulator, the
  * view tracker, the span processor, then the binding, which runs the platform's setup with RUM's
  * wrappers. After setup: consent wiring (collectors run only while granted), session events, hide
@@ -308,13 +308,13 @@ export async function setupRumCore<O extends RumPlatformOptions, T extends Telem
     now: deps.now,
   });
   const bus = createBus();
-  // The breadcrumb ring every error carries (decision P18): actions, view starts and requests.
+  // The breadcrumb ring every error carries: actions, view starts and requests.
   const crumbs = createBreadcrumbs();
   // A request that ends after a revoke must not leave a breadcrumb for the next grant.
   bus.subscribe((s) => {
     if (s.type === "breadcrumb" && controller?.recording() === true) crumbs.add(s.kind, s.label, s.at, s.key);
   });
-  /** The open action, so requests started meanwhile become its children (decision P10). */
+  /** The open action, so requests started meanwhile become its children. */
   let active: Span | undefined;
   const hooks = new Set<RequestStartHook>();
   let userId: string | undefined;
@@ -812,7 +812,7 @@ export async function setupRumCore<O extends RumPlatformOptions, T extends Telem
     await settled();
     if (delivery !== undefined && gate.recording()) await retention.flush(delivery, keep);
   };
-  // Session end (decision P13): when tabs rotate an expired session at the same moment, each ends
+  // Session end: when tabs rotate an expired session at the same moment, each ends
   // it and starts a session of its own, then all adopt the same newest one. The tab whose session
   // won emits o11y.rum.session.end, so it is emitted once: each tab waits SESSION_END_ELECTION_MILLIS
   // for the others' broadcasts and emits only if its successor is still the current session. An
@@ -997,7 +997,7 @@ export async function setupRumCore<O extends RumPlatformOptions, T extends Telem
     return shutdownPromise;
   };
 
-  // The bootstrap buffer (decision P9) is replayed only into the start setup makes with consent
+  // The bootstrap buffer is replayed only into the start setup makes with consent
   // granted. A page that starts pending discards it, even if consent is granted later. It is taken
   // before the collectors start, so an event is never both buffered and seen by a collector; one
   // that happens while the session loads, between the two, is not recorded.

@@ -1,7 +1,4 @@
 /**
- * Contract, frozen by the L4 scaffold. Changing it needs the architect's sign-off, because WP1, WP3,
- * WP4 and WP5 all read it, and it is the public API.
- *
  * The public options of @libo11y/web and the WebTelemetry handle.
  */
 import type { Telemetry, TelemetryOptions } from "@libo11y/core";
@@ -99,7 +96,7 @@ export interface HttpInstrumentationOptions {
   readonly ignoreUrls?: readonly UrlMatcher[];
   /**
    * Called with each client span right after it starts, before the request is sent, so a
-   * framework layer (the L5 RUM packages) can rename it or add attributes. A throw is reported
+   * framework layer (the RUM packages) can rename it or add attributes. A throw is reported
    * through diag and ignored.
    */
   readonly onStart?: (span: Span, request: HttpRequestInfo) => void;

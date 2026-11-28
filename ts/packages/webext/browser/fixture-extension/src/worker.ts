@@ -1,5 +1,5 @@
 /**
- * WP5. The test extension's service worker. It counts its wakes in IndexedDB (the harness spec
+ * The test extension's service worker. It counts its wakes in IndexedDB (the harness spec
  * checks that survives a stop) and runs setupWorker with the configuration a spec stored under
  * "fixture.config", on every wake, so a fresh worker after a stop picks up where the last left.
  *

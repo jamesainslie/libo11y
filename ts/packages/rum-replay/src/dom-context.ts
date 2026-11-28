@@ -1,6 +1,6 @@
 /**
  * The DOM-backed ScrubContext: what the scrubber needs to know about a node it cannot see in the
- * event itself, read from the live page through rrweb's mirror (R6b wires getNode to
+ * event itself, read from the live page through rrweb's mirror (getNode is wired to
  * record.mirror.getNode). The collector must scrub synchronously inside rrweb's emit callback,
  * while the DOM still matches the event: a node read later may have moved or been detached.
  *

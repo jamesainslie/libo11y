@@ -1,6 +1,4 @@
 /**
- * Contract, frozen by the L4 scaffold. Owned by WP5.
- *
  * The slice of the extension API libo11y uses, typed by hand so the package needs no @types/chrome
  * and tests can pass a fake. Chrome and Firefox both expose it as `chrome` in Manifest V3, with
  * promise-returning methods.

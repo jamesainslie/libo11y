@@ -1,7 +1,4 @@
 /**
- * Contract, frozen by the L4 scaffold. Changing it needs the architect's sign-off, because WP1, WP2,
- * WP3 and WP5 all build against it.
- *
  * One serialized OTLP/HTTP JSON export request: the unit the transport sends, the queue stores and
  * the webext messaging protocol carries.
  */

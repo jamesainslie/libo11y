@@ -1,5 +1,5 @@
 /**
- * Contract, frozen by the L4 scaffold. The public options and handles of @libo11y/webext.
+ * The public options and handles of @libo11y/webext.
  */
 import type {
   BrowserExportOptions,

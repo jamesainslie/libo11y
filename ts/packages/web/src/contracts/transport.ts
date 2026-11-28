@@ -1,10 +1,8 @@
 /**
- * Contract, frozen by the L4 scaffold. Changing it needs the architect's sign-off.
- *
- * Two layers. A Transport makes exactly one attempt to send one batch (WP1 builds the HTTP one; WP5
- * builds one over extension messaging). A Delivery owns everything around attempts: the consent
- * gate, persist-first, retry with backoff from the PersistentQueue, Retry-After, the online event
- * and revocation. The exporters (WP1) sit on a Delivery.
+ * Two layers. A Transport makes exactly one attempt to send one batch (HTTP or extension
+ * messaging). A Delivery owns everything around attempts: the consent gate, persist-first, retry
+ * with backoff from the PersistentQueue, Retry-After, the online event and revocation. The
+ * exporters sit on a Delivery.
  */
 import type { RecordingGate } from "@libo11y/core";
 import type { OtlpBatch, OtlpSignal } from "./otlp.ts";
@@ -62,7 +60,7 @@ export interface DeliveryResult {
   readonly error?: Error;
 }
 
-/** Options for createDelivery (WP1). */
+/** Options for createDelivery. */
 export interface DeliveryOptions {
   readonly transport: Transport;
   /** The retry queue. Without one a retryable failure is dropped. */

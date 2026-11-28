@@ -1,5 +1,5 @@
 /**
- * WP2 (queue and consent). Do Not Track and Global Privacy Control.
+ * Do Not Track and Global Privacy Control.
  */
 import type { ConsentOptions, PrivacySignalSource } from "../contracts/consent.ts";
 

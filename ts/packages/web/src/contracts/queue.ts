@@ -1,9 +1,6 @@
 /**
- * Contract, frozen by the L4 scaffold. Changing it needs the architect's sign-off. RUM R5 widened
- * PersistentQueue.kind with "storage", additively, with that sign-off.
- *
- * The persistent queue (WP2) that the delivery (WP1) uses for offline retry and the webext worker
- * (WP5) uses to persist every batch before it is sent. Every tab of an origin, and every wake of an
+ * The persistent queue that the delivery uses for offline retry and the webext worker uses to
+ * persist every batch before it is sent. Every tab of an origin, and every wake of an
  * extension service worker, shares one IndexedDB queue, so entries are claimed with a lease before
  * they are sent: a second claimant skips a leased entry until the lease runs out, and a context that
  * dies mid-send loses nothing, because its lease simply expires.

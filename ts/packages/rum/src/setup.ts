@@ -1,5 +1,5 @@
 /**
- * setupRum: @libo11y/web's setup with RUM wired in (decision P1). setupRumWith binds the RUM core
+ * setupRum: @libo11y/web's setup with RUM wired in. setupRumWith binds the RUM core
  * (core-setup.ts) to the web: web's setupWithDeps through webBinding, the page's lifecycle from
  * visibilitychange, pagehide and pageshow, remote configuration cached in localStorage, and the
  * bootstrap buffer replayed. The extension contexts pass their own binding and stores in deps.

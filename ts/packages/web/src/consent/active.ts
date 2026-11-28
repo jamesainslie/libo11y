@@ -1,6 +1,4 @@
 /**
- * Scaffold, implemented. Owned by WP3 (setup sets it); read by WP4 (instrumentation).
- *
  * The consent of the telemetry setup installed, for instrumentation built without an explicit
  * telemetry. Undefined when no web setup is active, and then instrumentation records as the
  * globals allow.

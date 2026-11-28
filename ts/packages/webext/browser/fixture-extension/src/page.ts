@@ -1,5 +1,5 @@
 /**
- * WP5. The test extension's page, which the harness opens for CDP sessions and wake messages. It
+ * The test extension's page, which the harness opens for CDP sessions and wake messages. It
  * sets nothing up by itself; a spec calls globalThis.__fixture in the page to run
  * setupContentScript here (an extension page) and to grant or revoke consent for the extension.
  */

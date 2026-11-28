@@ -1,6 +1,6 @@
 /**
- * WP4 (instrumentation). The documentLoad span. L5 RUM adds the app_load shape's attributes to it
- * through a span processor; L4 records only what the navigation entry says.
+ * The documentLoad span. RUM adds the app_load shape's attributes to it through a span
+ * processor; @libo11y/web records only what the navigation entry says.
  */
 import {
   type Attributes,

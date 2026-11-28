@@ -1,6 +1,6 @@
 /**
- * The vitals() collector: LCP, INP, CLS, FCP and TTFB from the web-vitals attribution build
- * (decision P6), attributed to the view that loaded the page (decision P7, orchestrator Q5).
+ * The vitals() collector: LCP, INP, CLS, FCP and TTFB from the web-vitals attribution build,
+ * attributed to the view that loaded the page.
  *
  * Rules. The web-vitals callbacks are registered once per page, on the first start, with
  * reportAllChanges true, and forward to the running collector: a revoked and granted page does not

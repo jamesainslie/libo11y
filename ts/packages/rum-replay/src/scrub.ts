@@ -1,6 +1,6 @@
 /**
  * The event scrubber: libo11y's own, authoritative pass over every rrweb event before it is
- * buffered (design decision P2). rrweb's options are a first line only; nothing here trusts them.
+ * buffered. rrweb's options are a first line only; nothing here trusts them.
  * Everything is an allow-list, so a field, attribute, event type or source rrweb adds later is
  * dropped rather than leaked. The gateway runs the same rules in Go from the shared vectors in
  * conformance/rum-replay.

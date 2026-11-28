@@ -1,5 +1,5 @@
 /**
- * The view name when no router adapter names the view (decision P17): the path, with every
+ * The view name when no router adapter names the view: the path, with every
  * segment that holds a digit or is longer than 24 characters replaced by $id. Query and fragment
  * are dropped, so a raw URL never becomes a view name.
  */

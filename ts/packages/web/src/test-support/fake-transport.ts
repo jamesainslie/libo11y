@@ -1,5 +1,5 @@
 /**
- * Scaffold, frozen. A scripted Transport for tests: each send records the request and answers with
+ * A scripted Transport for tests: each send records the request and answers with
  * the next scripted result, then { kind: "ok" }. Tests only; never built.
  */
 import type { SendRequest, SendResult, Transport } from "../contracts/transport.ts";

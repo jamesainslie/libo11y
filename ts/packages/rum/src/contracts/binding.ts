@@ -1,5 +1,5 @@
 /**
- * Contract, R3f extended by R5a. A platform binding: what setupRumCore hands the platform it runs
+ * A platform binding: what setupRumCore hands the platform it runs
  * on, and what the platform reports back. The web binding (bind.ts) runs @libo11y/web's setup, the
  * extension binding @libo11y/webext's content script setup. A binding runs nothing at module
  * evaluation and needs no browser global of its own, so a platform without a DOM can supply one.

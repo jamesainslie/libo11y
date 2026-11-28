@@ -1,6 +1,6 @@
 /**
- * WP5 (webext). The runtime messaging protocol between content scripts or extension pages and the
- * service worker. The types are a contract frozen by the L4 scaffold; the guards are WP5's.
+ * The runtime messaging protocol between content scripts or extension pages and the service
+ * worker.
  *
  * Every libo11y message is a plain JSON object with `libo11y: 1`, so it survives Chrome's JSON
  * serialization of runtime messages and other listeners can tell it apart.

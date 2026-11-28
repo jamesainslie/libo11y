@@ -1,5 +1,5 @@
 /**
- * The privacy policy of a recording (design decision P2). Code options are the ceiling: remote
+ * The privacy policy of a recording. Code options are the ceiling: remote
  * configuration can only add to the mask and block lists and remove from the unmask list
  * (clamp.ts). The fixed rules here apply whatever the options say.
  *

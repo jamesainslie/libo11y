@@ -1,5 +1,5 @@
 /**
- * WP4 (instrumentation). The propagation allow-list and the ignore list.
+ * The propagation allow-list and the ignore list.
  */
 import type { OriginMatcher, UrlMatcher } from "../options.ts";
 

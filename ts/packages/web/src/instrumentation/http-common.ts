@@ -1,5 +1,5 @@
 /**
- * WP4 (instrumentation). What the fetch and XHR spans share: method normalization (as the server's
+ * What the fetch and XHR spans share: method normalization (as the server's
  * http-common.ts, copied because @libo11y/server is not browser-safe), URL attributes, the duration
  * histogram, the Headers and XHR carriers, and resolving the tracer, meter, propagator and consent.
  */

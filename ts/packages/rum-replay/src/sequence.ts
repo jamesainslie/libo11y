@@ -1,5 +1,5 @@
 /**
- * Segment numbers shared by every tab of a session (design decision P6). o11y.rum.replay.segment is
+ * Segment numbers shared by every tab of a session. o11y.rum.replay.segment is
  * the index of a segment in its session, and tabs share a session, so the next index lives in
  * localStorage under SEQUENCE_KEY as { "session": "<id>", "next": <n> } and is read and written
  * inside a Web Lock (navigator.locks) of the same name, so two tabs never take the same index. A

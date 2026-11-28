@@ -1,5 +1,5 @@
 /**
- * The content script rules (decision P20). A content script shares the host page's document, so
+ * The content script rules. A content script shares the host page's document, so
  * RUM there records only what is the extension's own: actions inside the extension's UI root,
  * errors from the extension's own scripts, and one fixed view whose span names the host only by
  * url.domain.

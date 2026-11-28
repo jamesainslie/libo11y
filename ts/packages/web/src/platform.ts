@@ -1,5 +1,5 @@
 /**
- * WP3 (web platform and setup). The browser Platform, also used by @libo11y/webext.
+ * The browser Platform, also used by @libo11y/webext.
  */
 import { type Platform, type RecordingGate, sha1 } from "@libo11y/core";
 import type { ContextManager } from "@opentelemetry/api";

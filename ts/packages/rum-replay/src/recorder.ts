@@ -1,5 +1,5 @@
 /**
- * The only module that names rrweb (design decision P1), and it loads it lazily: replay() bundles
+ * The only module that names rrweb, and it loads it lazily: replay() bundles
  * no recorder. loadRecorder imports @rrweb/record the first time a session will actually record,
  * so a page that never records never downloads it. Until it has loaded nothing is recorded. A failed
  * import is kept, so replay stays off for the page rather than retrying.

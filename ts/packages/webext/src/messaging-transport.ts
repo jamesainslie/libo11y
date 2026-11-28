@@ -1,5 +1,5 @@
 /**
- * WP5 (webext). The Transport a content script or extension page uses: each batch goes to the
+ * The Transport a content script or extension page uses: each batch goes to the
  * worker as an ExportMessage.
  */
 import type { SendResult, Transport } from "@libo11y/web/internal";

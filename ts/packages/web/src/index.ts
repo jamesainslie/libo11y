@@ -2,9 +2,7 @@
  * The libo11y browser platform: setup over the OpenTelemetry JS providers with a pluggable context
  * manager, the browser resource, an OTLP/HTTP JSON transport with gzip, unload-time beacons and an
  * IndexedDB retry queue, the consent gate, and fetch, XHR and document-load spans with origin-scoped
- * propagation. No RUM features: those are @libo11y/rum (L5).
- *
- * Scaffold, frozen: the public API. Changing it needs the architect's sign-off.
+ * propagation. No RUM features: those are in @libo11y/rum.
  */
 
 export {

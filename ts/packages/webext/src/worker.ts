@@ -1,5 +1,5 @@
 /**
- * WP5 (webext). setupWorker for a Manifest V3 service worker.
+ * setupWorker for a Manifest V3 service worker.
  */
 import { type Platform, type SignalReport, setupWith, type TelemetryOptions } from "@libo11y/core";
 import type { BrowserExportOptions, HttpInstrumentationOptions } from "@libo11y/web";

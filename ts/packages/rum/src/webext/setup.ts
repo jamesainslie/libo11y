@@ -1,5 +1,5 @@
 /**
- * RUM in Manifest V3 extensions (decision P20). setupRumExtension runs in extension pages (popups,
+ * RUM in Manifest V3 extensions. setupRumExtension runs in extension pages (popups,
  * options pages, side panels) and content scripts; setupRumWorker runs in the service worker.
  *
  * Both contexts of setupRumExtension bind through @libo11y/webext's content script setup, so their

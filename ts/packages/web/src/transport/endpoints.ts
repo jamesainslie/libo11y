@@ -1,5 +1,5 @@
 /**
- * WP1 (transport). The OTLP URL of each signal.
+ * The OTLP URL of each signal.
  */
 import { diag } from "@opentelemetry/api";
 import { OTLP_SIGNALS, type OtlpSignal } from "../contracts/otlp.ts";

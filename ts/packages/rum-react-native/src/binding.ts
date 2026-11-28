@@ -1,5 +1,5 @@
 /**
- * The React Native binding of the RUM core (R5d): setupRumCore hands it the setup options with
+ * The React Native binding of the RUM core: setupRumCore hands it the setup options with
  * RUM's span processor, context manager and forwarding span exporter in place, and the wrappers;
  * it runs `@libo11y/react-native`'s setupReactNativeWith over deps with each wrapper applied. The
  * lifecycle is the app's AppState: background, and inactive on iOS, hide the app; active shows it.

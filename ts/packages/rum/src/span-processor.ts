@@ -6,7 +6,7 @@
  * the attribute the gateway keys on. Its documentFetch child also belongs to the load view, and it
  * is not a request of the view. It publishes client request starts and ends on the bus for
  * actions, summaries and errors, and a breadcrumb for each finished request: "fetch <METHOD> <host>
- * <status or failed>", or "rpc <method>" for a span with rpc.method, never a path (decision P18). It runs before the exporting processors, so they see the
+ * <status or failed>", or "rpc <method>" for a span with rpc.method, never a path. It runs before the exporting processors, so they see the
  * attributes. A span that starts while the session loads after a grant gets the same treatment,
  * and waits in pending for its session.id and view (R3f).
  */

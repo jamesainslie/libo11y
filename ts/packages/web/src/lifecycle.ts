@@ -1,5 +1,5 @@
 /**
- * WP3 (web platform and setup). Flushing when the page is hidden.
+ * Flushing when the page is hidden.
  */
 import { diag } from "@opentelemetry/api";
 

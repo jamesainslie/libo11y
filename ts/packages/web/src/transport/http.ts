@@ -1,5 +1,5 @@
 /**
- * WP1 (transport). The OTLP/HTTP JSON Transport over fetch, fetch keepalive and sendBeacon.
+ * The OTLP/HTTP JSON Transport over fetch, fetch keepalive and sendBeacon.
  */
 import type { SendRequest, SendResult, Transport } from "../contracts/transport.ts";
 import { canGzip, gzip } from "./compress.ts";

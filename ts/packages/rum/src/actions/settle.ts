@@ -1,5 +1,5 @@
 /**
- * The action settle rule (decision P10). An action ends at the time of its last activity (a
+ * The action settle rule. An action ends at the time of its last activity (a
  * request end or a DOM mutation it caused, or its start), detected once no request is pending and
  * idleMillis passed without activity, capped capMillis after it started. Its duration therefore
  * excludes the idle wait. end() settles at once, as when a new action starts.

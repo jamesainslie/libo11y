@@ -1,7 +1,7 @@
 /**
- * WP5. A ConsentController with the contract's semantics (subscribers on change only, in order;
- * revoke awaits the hooks in order), counting its grant and revoke calls, so webext tests run
- * before WP2's controller exists. Tests only; never built.
+ * A ConsentController with the contract's semantics (subscribers on change only, in order;
+ * revoke awaits the hooks in order), counting its grant and revoke calls, for webext tests.
+ * Tests only; never built.
  */
 import type { ConsentController, ConsentState } from "@libo11y/web/internal";
 

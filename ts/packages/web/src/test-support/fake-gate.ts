@@ -1,5 +1,5 @@
 /**
- * Scaffold, frozen. A settable RecordingGate for tests. Tests only; never built.
+ * A settable RecordingGate for tests. Tests only; never built.
  */
 import type { RecordingGate } from "@libo11y/core";
 
