@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `Detached::Carrier` writes and reads the URL-encoded text form of the other libo11y implementations (`baggage=...&traceparent=...&tracestate=...`), where 0.1.0 wrote JSON. A carrier that 0.1.0 serialized is not read. `Carrier` exposes `traceparent`, `tracestate`, `baggage`, `span_context` and `zero?` in place of `headers`. `start_linked` starts an `internal` span by default, as Go and Python do.
+- `Proc.child_env` takes an empty base environment by default and maps `TRACEPARENT` and `TRACESTATE` to `nil` when the active span does not set them, so `Process.spawn` removes a stale value from the child.
+
+### Fixed
+
+- `Detached.capture` returns the zero carrier outside a span, and drops the trace state and then the baggage to stay within 32 KiB. `Carrier.unmarshal_text` refuses text with no valid traceparent and keeps only the valid members of a baggage value.
+- `Detached.start_linked` merges the carrier's baggage into the caller's. It used to drop the caller's.
+- The baggage egress filter keeps the metadata of the members it lets through.
+
 ## [0.1.0] - 2026-11-28
 
 ### Added

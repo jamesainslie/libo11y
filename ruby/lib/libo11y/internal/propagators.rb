@@ -29,20 +29,17 @@ module Libo11y
       def filter_baggage(context)
         return context if @allow.nil?
 
-        values = OpenTelemetry::Baggage.values(context: context)
-        return context if values.nil? || values.empty?
+        entries = OpenTelemetry::Baggage.raw_entries(context: context)
+        return context if entries.nil? || entries.empty?
 
-        kept = {}
-        values.each do |k, v|
-          kept[k] = v if @allow.call(k)
-        end
-        return context if kept.size == values.size
+        kept = entries.select { |key, _entry| @allow.call(key) }
+        return context if kept.size == entries.size
 
-        filtered_ctx = OpenTelemetry::Baggage.clear(context: context)
-        kept.each do |k, v|
-          filtered_ctx = OpenTelemetry::Baggage.set_value(k, v, context: filtered_ctx)
+        filtered = OpenTelemetry::Baggage.clear(context: context)
+        kept.each do |key, entry|
+          filtered = OpenTelemetry::Baggage.set_value(key, entry.value, metadata: entry.metadata, context: filtered)
         end
-        filtered_ctx
+        filtered
       end
     end
 

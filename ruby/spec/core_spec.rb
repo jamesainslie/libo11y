@@ -309,8 +309,8 @@ RSpec.describe "Libo11y core" do
 
       wire = carrier.marshal_text
       restored = Libo11y::Detached::Carrier.unmarshal_text(wire)
-      expect(restored.headers["baggage"]).to include("tenant=acme")
-      expect(restored.headers["baggage"]).not_to include("secret_bag")
+      expect(restored.baggage).to include("tenant=acme")
+      expect(restored.baggage).not_to include("secret_bag")
 
       Libo11y::Detached.start_linked(restored, "job.run", telemetry: rec.telemetry) do
         expect(OpenTelemetry::Baggage.value("tenant")).to eq("acme")
