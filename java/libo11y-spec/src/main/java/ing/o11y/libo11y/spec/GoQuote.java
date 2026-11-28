@@ -1,6 +1,7 @@
 package ing.o11y.libo11y.spec;
 
 import ing.o11y.libo11y.spec.generated.GoPrintRanges;
+import java.util.Locale;
 
 /** Go strconv.Quote (%q) implementation backed by specgen's GoPrintRanges table. */
 public final class GoQuote {
@@ -43,11 +44,11 @@ public final class GoQuote {
                     case 0x0B -> sb.append("\\v");
                     default -> {
                         if (cp < 0x20 || cp == 0x7F) {
-                            sb.append(String.format("\\x%02x", cp));
+                            sb.append(String.format(Locale.ROOT, "\\x%02x", cp));
                         } else if (cp < 0x10000) {
-                            sb.append(String.format("\\u%04x", cp));
+                            sb.append(String.format(Locale.ROOT, "\\u%04x", cp));
                         } else {
-                            sb.append(String.format("\\U%08x", cp));
+                            sb.append(String.format(Locale.ROOT, "\\U%08x", cp));
                         }
                     }
                 }
