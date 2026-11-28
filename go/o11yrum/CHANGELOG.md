@@ -8,6 +8,16 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Remote configuration versions returned by a custom `ConfigProvider` are
+  now held to the 16 lowercase hexadecimal character wire format, matching
+  `docs/RUM.md` and `FileConfigProvider`.
+- Attribute policy now drops bare template keys (`o11y.label`,
+  `o11y.config`) rather than admitting them as string attributes.
+- `NewHandler` now ignores `nil` options, matching every other Go package
+  in libo11y.
+
 ## [0.2.0] - 2026-11-27
 
 Session replay: the gateway stores the segments `@libo11y/rum-replay`

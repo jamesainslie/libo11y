@@ -19,7 +19,9 @@ import (
 // RemoteConfig is one app's remote configuration. The gateway does not
 // read the document; the client SDK owns its keys.
 type RemoteConfig struct {
-	// Version identifies the document. It is sent as the ETag.
+	// Version identifies the document and is sent as the ETag. It must be
+	// 16 lowercase hexadecimal characters, matching the remote
+	// configuration wire contract.
 	Version string
 	// Document is a JSON object.
 	Document json.RawMessage
@@ -248,14 +250,15 @@ func (h *Handler) serveConfig(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(body)
 }
 
-// validVersion reports whether v can be an entity tag: not empty, and
-// only visible ASCII other than the double quote.
+// validVersion reports whether v matches the 16 lowercase hexadecimal
+// character wire format required for remote configuration versions and ETags.
 func validVersion(v string) bool {
-	if v == "" {
+	if len(v) != 16 {
 		return false
 	}
 	for i := range len(v) {
-		if c := v[i]; c <= ' ' || c == '"' || c > '~' {
+		c := v[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			return false
 		}
 	}
