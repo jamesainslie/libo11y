@@ -7,6 +7,14 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-28
+
+### Fixed
+
+- The gateway dashboard's Rejected share, and the overview's Errors per 100 views and Frustrations per 100 views, show 0 instead of "No data" over a range with nothing rejected, no errors or no frustration.
+- The web vitals dashboard's p75 by browser and p75 by country tables give the number of samples behind each p75 and sort by it, as the by-view table does, so a p75 from a handful of views no longer reads like one from thousands.
+- The errors and frustration dashboard and the session explorer pick apps from the apps that post RUM (`label_values(o11y_rum_views_total, service_name)`), and All selects exactly those apps. All used to be `.+`, and the explorer listed every Loki `service_name`, so a Loki panel with All read every log stream in Loki, not only RUM. The session explorer gains a Prometheus datasource variable for the picker; its panels still read only Loki and Tempo.
+
 ## [0.1.0] - 2026-11-27
 
 ### Added
@@ -32,5 +40,6 @@ and this module adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - An integration test, `make ops-integration`, that CI runs. It starts Loki, Tempo, Prometheus, Grafana and an OpenTelemetry Collector in Docker Compose behind the gateway built from the checkout. It sends three sessions of fixture traffic and runs every panel query through Grafana's query API, and it checks that the panels the fixture covers show data. It also checks that Prometheus loads every rule, that Loki never indexes `session_id` or `o11y_rum_view_id`, and, in headless Chrome, that the session explorer's view link and Loki app variable work.
 - The release archive `libo11y-ops-vX.Y.Z.tar.gz` with `SHA256SUMS`, attached to the GitHub Release for each `ops/vX.Y.Z` tag. `scripts/ops-release-check.sh` validates a release and builds the archive, and `make ops-release-check` runs it.
 
-[Unreleased]: https://github.com/jamesainslie/libo11y/compare/ops/v0.1.0...HEAD
+[Unreleased]: https://github.com/jamesainslie/libo11y/compare/ops/v0.1.1...HEAD
+[0.1.1]: https://github.com/jamesainslie/libo11y/compare/ops/v0.1.0...ops/v0.1.1
 [0.1.0]: https://github.com/jamesainslie/libo11y/releases/tag/ops/v0.1.0

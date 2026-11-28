@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Iterable, Iterator, Sequence
+import weakref
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
 from opentelemetry import metrics, trace
-from opentelemetry.metrics import CallbackOptions, Histogram, Observation
+from opentelemetry.metrics import CallbackOptions, Histogram, Meter, MeterProvider, Observation
 from opentelemetry.trace import SpanKind, StatusCode, Tracer
 
 from libo11y._internal.http_common import error_type_for_exception
@@ -63,6 +64,28 @@ def _infer_system(conn: Any) -> str:
     return _OTHER_SQL
 
 
+@runtime_checkable
+class _Composable(Protocol):
+    """A query object that renders itself, such as psycopg's ``sql.Composable``."""
+
+    def as_string(self, context: Any, /) -> str: ...
+
+
+def _query_text(query: object, context: object) -> str:
+    """Return the SQL text of query, rendering a composable in the driver's context."""
+    if isinstance(query, str):
+        return query
+    if isinstance(query, (bytes, bytearray)):
+        return bytes(query).decode("utf-8", errors="replace")
+    if isinstance(query, _Composable):
+        try:
+            return query.as_string(context)
+        except Exception:
+            # Instrumentation never fails a statement; the driver reports its own error.
+            return ""
+    return str(query)
+
+
 def _db_error_type(exc: BaseException) -> str:
     sqlstate = getattr(exc, "sqlstate", None)
     if isinstance(sqlstate, str) and sqlstate:
@@ -98,8 +121,13 @@ class _Instrumenter:
         self.dialect = dialect
         self.record_query_text = query_text and known
 
-    def describe_query(self, query: Any) -> tuple[str, dict[str, Any], str]:
-        raw = query.decode("utf-8", errors="replace") if isinstance(query, bytes) else str(query)
+    def describe_query(self, query: object, context: object) -> tuple[str, dict[str, Any], str]:
+        """Return the span name, attributes and query text for query.
+
+        context is the driver cursor or connection that will run query; a
+        psycopg composable is rendered in it before sanitizing.
+        """
+        raw = _query_text(query, context)
         sanitized = sanitize(raw, self.dialect)
         sanitized_utf8 = sanitized.encode("utf-8", errors="replace").decode("utf-8")
         operation, collection = summarize(sanitized_utf8)
@@ -179,34 +207,44 @@ class WrappedCursor:
         self._cursor = cursor
         self._ins = ins
 
+    def _keep_wrapped(self, result: Any) -> Any:
+        # sqlite3 and psycopg return the cursor itself, so chained calls such
+        # as cur.execute(a).fetchall() must stay on the wrapper.
+        return self if result is self._cursor else result
+
     def execute(self, operation: Any, *args: Any, **kwargs: Any) -> Any:
-        name, attrs, qtext = self._ins.describe_query(operation)
-        return self._ins.run(
+        """Run operation; return this wrapper for a driver cursor result."""
+        name, attrs, qtext = self._ins.describe_query(operation, self._cursor)
+        result = self._ins.run(
             name,
             attrs,
             qtext,
             lambda: self._cursor.execute(operation, *args, **kwargs),
         )
+        return self._keep_wrapped(result)
 
     def executemany(
         self, operation: Any, seq_of_parameters: Iterable[Any], *args: Any, **kwargs: Any
     ) -> Any:
-        name, attrs, qtext = self._ins.describe_query(operation)
-        return self._ins.run(
+        """Run operation per parameter set; return this wrapper for a driver cursor result."""
+        name, attrs, qtext = self._ins.describe_query(operation, self._cursor)
+        result = self._ins.run(
             name,
             attrs,
             qtext,
             lambda: self._cursor.executemany(operation, seq_of_parameters, *args, **kwargs),
         )
+        return self._keep_wrapped(result)
 
     def callproc(self, procname: str, *args: Any, **kwargs: Any) -> Any:
         name, attrs = self._ins.describe_named("CALL", procname)
-        return self._ins.run(
+        result = self._ins.run(
             name,
             attrs,
             "",
             lambda: self._cursor.callproc(procname, *args, **kwargs),
         )
+        return self._keep_wrapped(result)
 
     def fetchone(self) -> Any:
         return self._cursor.fetchone()
@@ -263,7 +301,7 @@ class WrappedConnection:
         return WrappedCursor(self._conn.cursor(*args, **kwargs), self._ins)
 
     def execute(self, operation: Any, *args: Any, **kwargs: Any) -> WrappedCursor:
-        name, attrs, qtext = self._ins.describe_query(operation)
+        name, attrs, qtext = self._ins.describe_query(operation, self._conn)
         res = self._ins.run(
             name,
             attrs,
@@ -275,7 +313,7 @@ class WrappedConnection:
     def executemany(
         self, operation: Any, seq_of_parameters: Iterable[Any], *args: Any, **kwargs: Any
     ) -> WrappedCursor:
-        name, attrs, qtext = self._ins.describe_query(operation)
+        name, attrs, qtext = self._ins.describe_query(operation, self._conn)
         res = self._ins.run(
             name,
             attrs,
@@ -336,15 +374,127 @@ def wrap(
     return WrappedConnection(conn, ins)
 
 
+class _StatsPool(Protocol):
+    """A pool reporting psycopg_pool's statistics, such as ``ConnectionPool``."""
+
+    def get_stats(self) -> Mapping[str, int]: ...
+
+
+class _PoolSource:
+    """One registered pool and the name its points carry."""
+
+    __slots__ = ("name", "pool")
+
+    def __init__(self, pool: _StatsPool, name: str) -> None:
+        self.pool = pool
+        self.name = name
+
+    def stats(self) -> Mapping[str, int] | None:
+        if getattr(self.pool, "closed", False):
+            return None
+        return self.pool.get_stats()
+
+
+class _PoolInstruments:
+    """The pool instruments of one meter provider and every pool they report.
+
+    The SDK returns the existing instrument, and drops the new callback, when
+    an instrument name is created twice on one meter. So each provider gets
+    the two instruments once, and their callbacks read every registered pool.
+    """
+
+    def __init__(self, meter: Meter) -> None:
+        self._lock = threading.Lock()
+        self._sources: list[_PoolSource] = []
+        meter.create_observable_up_down_counter(
+            "db.client.connection.count",
+            callbacks=[self._observe_count],
+            unit="{connection}",
+            description=(
+                "The number of connections that are currently in state described by "
+                "the `state` attribute."
+            ),
+        )
+        meter.create_observable_up_down_counter(
+            "db.client.connection.max",
+            callbacks=[self._observe_max],
+            unit="{connection}",
+            description="The maximum number of open connections allowed.",
+        )
+
+    def add(self, source: _PoolSource) -> None:
+        with self._lock:
+            self._sources.append(source)
+
+    def remove(self, source: _PoolSource) -> None:
+        with self._lock:
+            if source in self._sources:
+                self._sources.remove(source)
+
+    def _snapshot(self) -> list[_PoolSource]:
+        with self._lock:
+            return list(self._sources)
+
+    def _observe_count(self, _options: CallbackOptions) -> list[Observation]:
+        out: list[Observation] = []
+        for source in self._snapshot():
+            stats = source.stats()
+            if stats is None:
+                continue
+            size = int(stats.get("pool_size", 0))
+            available = int(stats.get("pool_available", 0))
+            out.append(Observation(available, _pool_attrs(source.name, "idle")))
+            out.append(Observation(max(0, size - available), _pool_attrs(source.name, "used")))
+        return out
+
+    def _observe_max(self, _options: CallbackOptions) -> list[Observation]:
+        out: list[Observation] = []
+        for source in self._snapshot():
+            stats = source.stats()
+            if stats is None:
+                continue
+            max_conns = int(stats.get("pool_max", 0))
+            if max_conns > 0:
+                out.append(Observation(max_conns, _pool_attrs(source.name)))
+        return out
+
+
+def _pool_attrs(name: str, state: str | None = None) -> dict[str, str]:
+    attrs = {"db.client.connection.pool.name": name}
+    if state is not None:
+        attrs["db.client.connection.state"] = state
+    return attrs
+
+
+# The pool instruments of each meter provider, created on first registration.
+# Weak keys let a provider, and the instruments only it uses, be collected.
+_POOL_INSTRUMENTS: Final[weakref.WeakKeyDictionary[MeterProvider, _PoolInstruments]] = (
+    weakref.WeakKeyDictionary()
+)
+_POOL_INSTRUMENTS_LOCK: Final[threading.Lock] = threading.Lock()
+
+
+def _pool_instruments(mp: MeterProvider) -> _PoolInstruments:
+    with _POOL_INSTRUMENTS_LOCK:
+        instruments = _POOL_INSTRUMENTS.get(mp)
+        if instruments is None:
+            instruments = _PoolInstruments(mp.get_meter(_SCOPE_NAME))
+            _POOL_INSTRUMENTS[mp] = instruments
+        return instruments
+
+
 class PoolMetricsRegistration:
     """Handle returned by register_pool_metrics; call unregister() when closing the pool."""
 
-    def __init__(self, stop_event: threading.Event) -> None:
-        self._stop = stop_event
+    def __init__(self, instruments: _PoolInstruments, source: _PoolSource) -> None:
+        self._instruments = instruments
+        self._source: _PoolSource | None = source
 
     def unregister(self) -> None:
-        """Stop reporting metrics for the registered pool."""
-        self._stop.set()
+        """Stop reporting metrics for the registered pool and release it. Idempotent."""
+        source, self._source = self._source, None
+        if source is not None:
+            self._instruments.remove(source)
 
     def __enter__(self) -> PoolMetricsRegistration:
         return self
@@ -360,69 +510,28 @@ class PoolMetricsRegistration:
 
 
 def register_pool_metrics(
-    pool: Any,
+    pool: _StatsPool,
     *,
     pool_name: str | None = None,
     system: str = "postgresql",
     telemetry: Telemetry | None = None,
 ) -> PoolMetricsRegistration:
-    """Register db.client.connection.count and db.client.connection.max for a psycopg_pool."""
+    """Report a psycopg_pool pool as db.client.connection.count and db.client.connection.max.
+
+    At every collection, db.client.connection.count reports the idle and used
+    connections by db.client.connection.state, and db.client.connection.max
+    the pool's maximum size (omitted while it is not positive), each with
+    db.client.connection.pool.name: pool_name, else the pool's ``name``,
+    else system. Several pools can be registered on one meter provider, and
+    each registration reports until unregister() is called, which also
+    releases the pool. A closed pool reports nothing.
+    """
     mp = telemetry.meter_provider if telemetry is not None else metrics.get_meter_provider()
-    meter = mp.get_meter(_SCOPE_NAME)
     name = pool_name or getattr(pool, "name", None) or system
-    stop = threading.Event()
-
-    def _observe_count(_options: CallbackOptions) -> list[Observation]:
-        if stop.is_set() or getattr(pool, "closed", False):
-            return []
-        stats = pool.get_stats()
-        size = int(stats.get("pool_size", 0))
-        available = int(stats.get("pool_available", 0))
-        used = max(0, size - available)
-        return [
-            Observation(
-                available,
-                {
-                    "db.client.connection.pool.name": str(name),
-                    "db.client.connection.state": "idle",
-                },
-            ),
-            Observation(
-                used,
-                {
-                    "db.client.connection.pool.name": str(name),
-                    "db.client.connection.state": "used",
-                },
-            ),
-        ]
-
-    def _observe_max(_options: CallbackOptions) -> list[Observation]:
-        if stop.is_set() or getattr(pool, "closed", False):
-            return []
-        stats = pool.get_stats()
-        max_conns = int(stats.get("pool_max", 0))
-        if max_conns <= 0:
-            return []
-        return [
-            Observation(
-                max_conns,
-                {"db.client.connection.pool.name": str(name)},
-            )
-        ]
-
-    meter.create_observable_up_down_counter(
-        "db.client.connection.count",
-        callbacks=[_observe_count],
-        unit="{connection}",
-        description="The number of connections currently in each state.",
-    )
-    meter.create_observable_up_down_counter(
-        "db.client.connection.max",
-        callbacks=[_observe_max],
-        unit="{connection}",
-        description="The maximum number of open connections allowed.",
-    )
-    return PoolMetricsRegistration(stop)
+    source = _PoolSource(pool, str(name))
+    instruments = _pool_instruments(mp)
+    instruments.add(source)
+    return PoolMetricsRegistration(instruments, source)
 
 
 __all__ = [

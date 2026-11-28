@@ -62,17 +62,31 @@ func vitals(t thresholds.Thresholds) dash.Dashboard {
 				},
 				{
 					Type: "table", Title: v.Label + " p75 by browser", W: 6, Datasource: &dash.Prometheus,
-					Targets:    []dash.Target{dash.PromInstant("A", p75Range("le, o11y_rum_browser_family"), "")},
-					Transforms: []any{hideTime()},
-					Overrides:  []any{withUnit(rename("Value", "p75"), v.Unit)},
-					Options:    sortedTable("p75"),
+					Description: "The 75th percentile and the number of samples for each browser over the time range. A p75 from a few samples is noise.",
+					Targets: []dash.Target{
+						dash.PromInstant("A", p75Range("le, o11y_rum_browser_family"), ""),
+						dash.PromInstant("B", `sum by (o11y_rum_browser_family) (increase(`+count+`[$__range]))`, ""),
+					},
+					Transforms: []any{map[string]any{"id": "merge", "options": map[string]any{}}, hideTime()},
+					Overrides: []any{
+						withUnit(rename("Value #A", "p75"), v.Unit),
+						rename("Value #B", "samples"),
+					},
+					Options: sortedTable("samples"),
 				},
 				{
 					Type: "table", Title: v.Label + " p75 by country", W: 6, Datasource: &dash.Prometheus,
-					Targets:    []dash.Target{dash.PromInstant("A", p75Range("le, geo_country_iso_code"), "")},
-					Transforms: []any{hideTime()},
-					Overrides:  []any{withUnit(rename("Value", "p75"), v.Unit)},
-					Options:    sortedTable("p75"),
+					Description: "The 75th percentile and the number of samples for each country over the time range. A p75 from a few samples is noise.",
+					Targets: []dash.Target{
+						dash.PromInstant("A", p75Range("le, geo_country_iso_code"), ""),
+						dash.PromInstant("B", `sum by (geo_country_iso_code) (increase(`+count+`[$__range]))`, ""),
+					},
+					Transforms: []any{map[string]any{"id": "merge", "options": map[string]any{}}, hideTime()},
+					Overrides: []any{
+						withUnit(rename("Value #A", "p75"), v.Unit),
+						rename("Value #B", "samples"),
+					},
+					Options: sortedTable("samples"),
 				},
 			},
 		)

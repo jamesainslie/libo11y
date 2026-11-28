@@ -74,6 +74,8 @@ if(NOT TARGET libo11y::o11y)
     endif()
 endif()
 
+# Both libo11y::o11ytest and libo11y::o11ytest_static resolve libo11ytest.a from
+# the same install prefix and exact package version as libo11y above.
 if(EXISTS "${_libo11ytest_candidate}")
     if(NOT TARGET libo11y::o11ytest)
         add_library(libo11y::o11ytest STATIC IMPORTED)

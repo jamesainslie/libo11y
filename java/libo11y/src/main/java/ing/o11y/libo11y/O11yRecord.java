@@ -4,6 +4,7 @@ import ing.o11y.libo11y.spec.generated.Spec;
 import io.opentelemetry.api.logs.Severity;
 import io.opentelemetry.context.Context;
 import io.opentelemetry.context.ContextKey;
+import io.opentelemetry.context.ImplicitContextKeyed;
 import io.opentelemetry.context.Scope;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -14,7 +15,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * Wide-event accumulator bound to the active OpenTelemetry {@link Context}.
  * Collects attributes across a request or unit of work and emits one canonical event on close.
  */
-public final class O11yRecord implements AutoCloseable {
+public final class O11yRecord implements AutoCloseable, ImplicitContextKeyed {
     private static final ContextKey<O11yRecord> RECORD_KEY = ContextKey.named("o11y.record");
 
     /** The record {@link #current()} returns outside any record scope: every operation does nothing. */
@@ -36,6 +37,26 @@ public final class O11yRecord implements AutoCloseable {
         O11yRecord rec = new O11yRecord(telemetry, eventName);
         rec.scope = Context.current().with(RECORD_KEY, rec).makeCurrent();
         return rec;
+    }
+
+    /**
+     * Creates a record without making it current on the calling thread. Bind it to a context with
+     * {@link Context#with(ImplicitContextKeyed)} and make that context current wherever the work
+     * runs, which may be several threads in turn, as in an asynchronous request. {@link #close()}
+     * then emits the event without changing any thread's current context.
+     */
+    public static O11yRecord create(Telemetry telemetry, String eventName) {
+        return new O11yRecord(telemetry, eventName);
+    }
+
+    /**
+     * Returns {@code context} with this record as its current record. The no-op record that
+     * {@link #current()} returns outside a record scope is never stored, so {@link
+     * #fromContext(Context)} keeps reporting that no record is active.
+     */
+    @Override
+    public Context storeInContext(Context context) {
+        return this == NOOP ? context : context.with(RECORD_KEY, this);
     }
 
     /**

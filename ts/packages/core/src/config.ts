@@ -103,9 +103,16 @@ function envString(env: Env, name: string): string {
   return (env[name] ?? "").trim();
 }
 
+const MAX_GO_INT = 9223372036854775807n;
+
+// envInt reads an integer variable as otel-go's IntEnvOr does with strconv.Atoi: the raw value,
+// untrimmed, must be an optional sign and decimal digits within Go's int range. Anything else is
+// the default, and so is a negative value.
 function envInt(env: Env, name: string, fallback: number): number {
-  const n = Number.parseInt(envString(env, name), 10);
-  return Number.isNaN(n) || n < 0 ? fallback : n;
+  const raw = env[name] ?? "";
+  if (!/^[+-]?[0-9]+$/.test(raw)) return fallback;
+  const big = BigInt(raw);
+  return big < 0n || big > MAX_GO_INT ? fallback : Number(big);
 }
 
 function batchFromEnv(env: Env, prefix: "OTEL_BSP" | "OTEL_BLRP", d: BatchOptions): BatchOptions {

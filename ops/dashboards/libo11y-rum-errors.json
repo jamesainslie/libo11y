@@ -519,7 +519,7 @@
         "type": "datasource"
       },
       {
-        "allValue": ".+",
+        "allValue": "",
         "current": {},
         "datasource": {
           "type": "prometheus",

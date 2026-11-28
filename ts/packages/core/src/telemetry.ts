@@ -25,12 +25,17 @@ import {
   type Context,
   context,
   createNoopLogger,
+  INVALID_SPAN_CONTEXT,
+  isSpanContextValid,
   logs,
   type MeterProvider,
   metrics,
   propagation,
   ROOT_CONTEXT,
+  type Span,
+  type SpanOptions,
   type TextMapPropagator,
+  type Tracer,
   trace,
 } from "@opentelemetry/api";
 import { loggingErrorHandler, setGlobalErrorHandler } from "@opentelemetry/core";
@@ -244,6 +249,176 @@ function bucketViews(buckets: Readonly<Record<string, readonly number[]>> | unde
 
 const NOOP_LOGGER_PROVIDER: ApiLoggerProvider = { getLogger: () => createNoopLogger() };
 
+// No-op tracer provider used while OTEL_SDK_DISABLED switches the SDK off (Go's tracenoop):
+// every span is non-recording, carries a valid parent's span context so propagation and log
+// correlation keep working, and gets invalid IDs when started as a root or with no valid parent.
+const NOOP_TRACER: Tracer = {
+  startSpan(_name: string, options?: SpanOptions, ctx: Context = context.active()): Span {
+    if (options?.root) return trace.wrapSpanContext(INVALID_SPAN_CONTEXT);
+    const parent = trace.getSpanContext(ctx);
+    return trace.wrapSpanContext(
+      parent !== undefined && isSpanContextValid(parent) ? parent : INVALID_SPAN_CONTEXT,
+    );
+  },
+  startActiveSpan<F extends (span: Span) => unknown>(
+    name: string,
+    arg2: F | SpanOptions,
+    arg3?: F | Context,
+    arg4?: F,
+  ): ReturnType<F> {
+    let opts: SpanOptions | undefined;
+    let ctx: Context | undefined;
+    let fn: F;
+    if (typeof arg2 === "function") {
+      fn = arg2;
+    } else if (typeof arg3 === "function") {
+      opts = arg2;
+      fn = arg3;
+    } else {
+      opts = arg2;
+      ctx = arg3;
+      fn = arg4 as F;
+    }
+    const parent = ctx ?? context.active();
+    const span = this.startSpan(name, opts, parent);
+    return context.with(trace.setSpan(parent, span), () => fn(span)) as ReturnType<F>;
+  },
+};
+
+const NOOP_TRACER_PROVIDER: ApiTracerProvider = { getTracer: () => NOOP_TRACER };
+
+// Tracks injected exporters, processors and metric readers (Go injectedPart): once a call receives
+// them, either a provider takes ownership (handed) or libo11y stops them itself, exactly once.
+// Live ownership is tracked across copies of core on globalThis so a rejected call such as
+// ALREADY_SETUP never shuts down a part a live telemetry still owns.
+interface InjectedPart {
+  readonly signal: Signal;
+  readonly target: object;
+  readonly shutdown: () => Promise<void>;
+  handed: boolean;
+  stopped: boolean;
+  claimed: boolean;
+}
+
+const OWNED_INJECTED: unique symbol = Symbol.for("libo11y.ownedInjected") as never;
+
+function ownedInjectedMap(): WeakMap<object, number> {
+  const g = globalThis as unknown as Record<symbol, WeakMap<object, number> | undefined>;
+  let map = g[OWNED_INJECTED];
+  if (map === undefined) {
+    map = new WeakMap();
+    g[OWNED_INJECTED] = map;
+  }
+  return map;
+}
+
+function claimPart(part: InjectedPart): void {
+  if (part.claimed) return;
+  const map = ownedInjectedMap();
+  map.set(part.target, (map.get(part.target) ?? 0) + 1);
+  part.claimed = true;
+}
+
+function releasePart(part: InjectedPart): void {
+  if (!part.claimed) return;
+  const map = ownedInjectedMap();
+  const next = (map.get(part.target) ?? 0) - 1;
+  if (next <= 0) map.delete(part.target);
+  else map.set(part.target, next);
+  part.claimed = false;
+}
+
+function isOwnedElsewhere(part: InjectedPart): boolean {
+  return (ownedInjectedMap().get(part.target) ?? 0) > (part.claimed ? 1 : 0);
+}
+
+function collectInjected(options: TelemetryOptions): InjectedPart[] {
+  const parts: InjectedPart[] = [];
+  const seen = new Set<object>();
+  const add = (signal: Signal, target: unknown): void => {
+    if (typeof target !== "object" || target === null || seen.has(target)) return;
+    const fn = (target as { shutdown?: unknown }).shutdown;
+    if (typeof fn !== "function") return;
+    seen.add(target);
+    parts.push({
+      signal,
+      target,
+      shutdown: async () => {
+        await (fn as () => unknown).call(target);
+      },
+      handed: false,
+      stopped: false,
+      claimed: false,
+    });
+  };
+  add("traces", options.spanProcessor);
+  add("traces", options.spanExporter);
+  add("logs", options.logProcessor);
+  add("logs", options.logExporter);
+  add("metrics", options.metricReader);
+  return parts;
+}
+
+function handOver(parts: readonly InjectedPart[], target: unknown): void {
+  if (typeof target !== "object" || target === null) return;
+  for (const part of parts) {
+    if (part.target === target) part.handed = true;
+  }
+}
+
+async function stopInjectedPart(part: InjectedPart): Promise<void> {
+  if (part.handed || part.stopped) return;
+  part.stopped = true;
+  const elsewhere = isOwnedElsewhere(part);
+  releasePart(part);
+  if (elsewhere) return;
+  await part.shutdown();
+}
+
+const ABANDON_TIMEOUT_MILLIS = 50;
+
+async function stopInjectedQuietly(parts: readonly InjectedPart[], signal?: Signal): Promise<void> {
+  const stops: Promise<unknown>[] = [];
+  for (const part of parts) {
+    if (signal !== undefined && part.signal !== signal) continue;
+    stops.push(stopInjectedPart(part));
+  }
+  if (stops.length === 0) return;
+  const timer = deadline(ABANDON_TIMEOUT_MILLIS);
+  try {
+    await Promise.race([Promise.allSettled(stops), timer.expired]);
+  } finally {
+    timer.cancel();
+  }
+}
+
+async function discardInjected(options: TelemetryOptions): Promise<void> {
+  await stopInjectedQuietly(collectInjected(options));
+}
+
+async function abandonProviders(
+  lp: LoggerProvider | undefined,
+  mp: SdkMeterProvider | undefined,
+  tp: TracerProvider | undefined,
+  injected: readonly InjectedPart[],
+): Promise<void> {
+  const quietly = (fn: () => Promise<void>): Promise<void> => Promise.resolve().then(fn);
+  const stops: Promise<unknown>[] = [];
+  if (lp !== undefined) stops.push(quietly(() => lp.shutdown()));
+  if (mp !== undefined) stops.push(quietly(() => mp.shutdown({ timeoutMillis: 0 })));
+  if (tp !== undefined) stops.push(quietly(() => tp.shutdown()));
+  for (const part of injected) {
+    if (part.handed) releasePart(part);
+    else stops.push(stopInjectedPart(part));
+  }
+  const timer = deadline(ABANDON_TIMEOUT_MILLIS);
+  try {
+    await Promise.race([Promise.allSettled(stops), timer.expired]);
+  } finally {
+    timer.cancel();
+  }
+}
+
 interface Parts {
   readonly config: ResolvedConfig;
   readonly platform: Platform;
@@ -252,7 +427,7 @@ interface Parts {
   readonly logger: CoreLogger;
   readonly sdkMeterProvider: SdkMeterProvider;
   readonly meterProvider: PolicyMeterProvider;
-  readonly tracerProvider: TracerProvider;
+  readonly tracerProvider: TracerProvider | undefined;
   readonly loggerProvider: LoggerProvider | undefined;
   readonly propagator: TextMapPropagator;
   readonly exemplars: ExemplarStore;
@@ -268,6 +443,8 @@ interface Parts {
   readonly watches: Readonly<Record<Signal, ExportWatch>>;
   /** Says a signal was dropped: to the console sink, or to the diagnostic stream when it is off. */
   readonly sayDropped: (signal: Signal, errorType: string) => void;
+  /** Every part options injected, so unowned ones are shut down once and live ones stay protected. */
+  readonly injected: readonly InjectedPart[];
 }
 
 /** One signal's part in a flush or a shutdown. */
@@ -305,7 +482,7 @@ class TelemetryHandle implements Telemetry {
     this.parts = parts;
     this[REPORT_KEY] = parts.instrumentationErrorHandler;
     this.logger = parts.logger;
-    this.tracerProvider = parts.tracerProvider;
+    this.tracerProvider = parts.tracerProvider ?? NOOP_TRACER_PROVIDER;
     this.meterProvider = parts.meterProvider;
     this.loggerProvider = parts.loggerProvider ?? NOOP_LOGGER_PROVIDER;
     this.propagator = parts.propagator;
@@ -321,21 +498,50 @@ class TelemetryHandle implements Telemetry {
   }
 
   private steps(): Step[] {
-    const { loggerProvider: lp, sdkMeterProvider: mp, tracerProvider: tp, watches } = this.parts;
+    const { loggerProvider: lp, sdkMeterProvider: mp, tracerProvider: tp, watches, injected } = this.parts;
+    const unowned = (signal: Signal): InjectedPart[] =>
+      injected.filter((p) => p.signal === signal && !p.handed && !p.stopped);
+    const stopUnowned = async (signal: Signal): Promise<void> => {
+      let first: unknown;
+      for (const part of unowned(signal)) {
+        try {
+          await stopInjectedPart(part);
+        } catch (err) {
+          first ??= err ?? new Error("unknown error");
+        }
+      }
+      if (first !== undefined) throw first;
+    };
     // A flush also waits for the exports the batch timer had started, which the provider does not.
     // It waits for those in flight when the signal's turn comes and no others, so the exports of a
     // flush that begins later never hold this one back. A log flush that overlaps another shares
     // one follow-up flush (CoalescingLogRecordProcessor), so it resolves with its own records sent.
     const step = (
       signal: Signal,
-      provider: { shutdown(): Promise<void>; forceFlush(): Promise<void> },
+      provider: { shutdown(): Promise<void>; forceFlush(): Promise<void> } | undefined,
     ): Step => {
       const watch = watches[signal];
       return {
         signal,
         watch,
-        shutdown: () => provider.shutdown(),
+        shutdown: async () => {
+          let first: unknown;
+          if (provider !== undefined) {
+            try {
+              await provider.shutdown();
+            } catch (err) {
+              first ??= err ?? new Error("unknown error");
+            }
+          }
+          try {
+            await stopUnowned(signal);
+          } catch (err) {
+            first ??= err ?? new Error("unknown error");
+          }
+          if (first !== undefined) throw first;
+        },
         flush: async () => {
+          if (provider === undefined) return;
           const inFlight = watch.inFlight();
           await provider.forceFlush();
           await inFlight;
@@ -343,8 +549,9 @@ class TelemetryHandle implements Telemetry {
       };
     };
     const steps: Step[] = [];
-    if (lp !== undefined) steps.push(step("logs", lp));
-    steps.push(step("metrics", mp), step("traces", tp));
+    if (lp !== undefined || unowned("logs").length > 0) steps.push(step("logs", lp));
+    steps.push(step("metrics", mp));
+    if (tp !== undefined || unowned("traces").length > 0) steps.push(step("traces", tp));
     return steps;
   }
 
@@ -442,6 +649,7 @@ class TelemetryHandle implements Telemetry {
       } catch {
         // Stopping runtime metrics is best effort.
       }
+      for (const part of this.parts.injected) releasePart(part);
     }
     const errors: { signal: Signal; error: unknown }[] = [];
     const errorTypes: string[] = [];
@@ -476,6 +684,45 @@ class TelemetryHandle implements Telemetry {
       }
     }
     return report(errors);
+  }
+
+  /**
+   * Stops a pipeline that setupWith is discarding because the canary or global install failed.
+   * Closes every watch first so nothing buffered is flushed and nothing is said dropped.
+   */
+  abandon(): Promise<void> {
+    if (this.shutdownPromise !== undefined) return this.shutdownPromise.then(() => undefined);
+    const work = this.runAbandon();
+    this.shutdownPromise = work.then(() => report([]));
+    return work;
+  }
+
+  private async runAbandon(): Promise<void> {
+    try {
+      this.stopDeferredCanary?.();
+    } catch {
+      // Unsubscribing from the gate is best effort.
+    }
+    this.stopDeferredCanary = undefined;
+    try {
+      this.parts.restoreConsole?.();
+    } catch {
+      // Restoring the console is best effort.
+    }
+    for (const watch of Object.values(this.parts.watches)) {
+      try {
+        watch.close();
+      } catch {
+        // Closing a watch during abandon is best effort.
+      }
+    }
+    try {
+      this.parts.runtime?.stop();
+    } catch {
+      // Stopping runtime metrics during abandon is best effort.
+    }
+    const { loggerProvider: lp, sdkMeterProvider: mp, tracerProvider: tp, injected } = this.parts;
+    await abandonProviders(lp, mp, tp, injected);
   }
 }
 
@@ -525,84 +772,92 @@ function handleFor(parts: Parts): TelemetryHandle {
 }
 
 async function build(options: TelemetryOptions, platform: Platform): Promise<Parts> {
-  // Before anything is built: a value outside an option's set fails here, typed, not later in
-  // silence, and so does a PII hash key that is not a Uint8Array, in every PII mode.
-  validateOptions(options);
-  const pii = options.piiMode ?? "drop";
-  // Null is "not given", as for the other options. validateOptions has shown the key is bytes.
-  const key = options.piiHashKey ?? undefined;
-  if (pii === "hash" && (key === undefined || key.length < MIN_PII_HASH_KEY_LENGTH)) throw piiHashKeyError();
-  let policy = SensitivityPolicy.create({
-    pii,
-    registries: compileRegistries(options.registry),
-    ...(key === undefined ? {} : { key }),
-    ...(platform.hmacSha256 === undefined ? {} : { hmac: platform.hmacSha256.bind(platform) }),
-  });
-
-  // Hermetic mode reads no OTEL_* variable at all.
-  const env = options.hermetic === true ? {} : platform.env();
-  const config = resolveConfig(options, env);
-  // Null is "not given", as for the other options.
-  const selected = resolvePropagator(options.propagators ?? undefined, env.OTEL_PROPAGATORS);
-  const layers = await platform.detectResource(config.hermetic);
-  const built = await buildResource(options, layers, policy, platform);
-  const resource = built.resource;
-
-  const propagator = new BaggageEgressPropagator(selected.propagator, seams.baggageEgress ?? (() => true));
-
-  // With metrics off nothing can read the store, so it samples nothing.
-  const exemplars = new ExemplarStore({
-    filter: config.metrics === "none" || config.sdkDisabled ? "always_off" : config.exemplarFilter,
-  });
-  // An export that fails while no flush or shutdown observes its watch is said here, once the log
-  // pipeline exists: o11y.telemetry.dropped to the console sink, as shutdown says it, or to the
-  // diagnostic stream when the console sink is off. Never to the OTLP leg, so a failing log export
-  // cannot feed itself.
-  let dropped: ((signal: Signal, error: unknown) => void) | undefined;
-  const watchFor = (signal: Signal, timeoutMillis: number): ExportWatch =>
-    new ExportWatch(timeoutMillis, (error) => dropped?.(signal, error));
-  const watches: Record<Signal, ExportWatch> = {
-    traces: watchFor("traces", config.batch.spans.exportTimeoutMillis),
-    metrics: watchFor(
-      "metrics",
-      Math.min(config.metricExport.timeoutMillis, config.metricExport.intervalMillis),
-    ),
-    logs: watchFor("logs", config.batch.logs.exportTimeoutMillis),
-  };
-  // A platform's metric reader holds its own exporter. exemplarMetricExporter puts the watch on it.
-  registerMetricWatch(exemplars, watches.metrics);
-  const needsPlatform = wants(config.traces) || wants(config.metrics) || wants(config.logs);
-  const exporters = selectExporters(
-    config,
-    options,
-    needsPlatform ? platform.buildExporters({ config, exemplars }) : {},
-  );
-
-  const readers: IMetricReader[] = exporters.metricReader === undefined ? [] : [exporters.metricReader];
-  const views = [...(options.views ?? []), ...bucketViews(options.histogramBuckets)];
-  // sdk-metrics refuses a view with a name whose instrumentName is missing or a wildcard, so every
-  // renaming view the store learns maps its stream back to one instrument.
-  const sdkMeterProvider = new SdkMeterProvider({ resource, readers, views });
-  registerExemplarViews(exemplars, views);
-  const violations = new ViolationRecorder(sdkMeterProvider);
-  policy = policy.withRecorder(violations);
-  for (const [rule, n] of built.violations) violations.add("resource", rule, n);
-  // One handler for everything instruments and instrumentation report: the handle carries it.
-  const instrumentationErrorHandler = rateLimitedErrorHandler(platform);
-  const meterProvider = new PolicyMeterProvider(
-    sdkMeterProvider,
-    policy,
-    exemplars,
-    instrumentationErrorHandler,
-    platform.gate,
-  );
-
-  const errorHandler = rateLimitedErrorHandler(platform);
+  const injected = collectInjected(options);
+  for (const part of injected) claimPart(part);
+  let watches: Record<Signal, ExportWatch> | undefined;
+  let sdkMeterProvider: SdkMeterProvider | undefined;
   let runtime: RuntimeMetrics | undefined;
   let tracerProvider: TracerProvider | undefined;
   let loggerProvider: LoggerProvider | undefined;
   let restoreConsole: (() => void) | undefined;
   try {
+    // Before anything is built: a value outside an option's set fails here, typed, not later in
+    // silence, and so does a PII hash key that is not a Uint8Array, in every PII mode.
+    validateOptions(options);
+    const pii = options.piiMode ?? "drop";
+    // Null is "not given", as for the other options. validateOptions has shown the key is bytes.
+    const key = options.piiHashKey ?? undefined;
+    if (pii === "hash" && (key === undefined || key.length < MIN_PII_HASH_KEY_LENGTH))
+      throw piiHashKeyError();
+    let policy = SensitivityPolicy.create({
+      pii,
+      registries: compileRegistries(options.registry),
+      ...(key === undefined ? {} : { key }),
+      ...(platform.hmacSha256 === undefined ? {} : { hmac: platform.hmacSha256.bind(platform) }),
+    });
+
+    // Hermetic mode reads no OTEL_* variable at all.
+    const env = options.hermetic === true ? {} : platform.env();
+    const config = resolveConfig(options, env);
+    // Null is "not given", as for the other options.
+    const selected = resolvePropagator(options.propagators ?? undefined, env.OTEL_PROPAGATORS);
+    const layers = await platform.detectResource(config.hermetic);
+    const built = await buildResource(options, layers, policy, platform);
+    const resource = built.resource;
+
+    const propagator = new BaggageEgressPropagator(selected.propagator, seams.baggageEgress ?? (() => true));
+
+    // With metrics off nothing can read the store, so it samples nothing.
+    const exemplars = new ExemplarStore({
+      filter: config.metrics === "none" || config.sdkDisabled ? "always_off" : config.exemplarFilter,
+    });
+    // An export that fails while no flush or shutdown observes its watch is said here, once the log
+    // pipeline exists: o11y.telemetry.dropped to the console sink, as shutdown says it, or to the
+    // diagnostic stream when the console sink is off. Never to the OTLP leg, so a failing log export
+    // cannot feed itself.
+    let dropped: ((signal: Signal, error: unknown) => void) | undefined;
+    const watchFor = (signal: Signal, timeoutMillis: number): ExportWatch =>
+      new ExportWatch(timeoutMillis, (error) => dropped?.(signal, error));
+    watches = {
+      traces: watchFor("traces", config.batch.spans.exportTimeoutMillis),
+      metrics: watchFor(
+        "metrics",
+        Math.min(config.metricExport.timeoutMillis, config.metricExport.intervalMillis),
+      ),
+      logs: watchFor("logs", config.batch.logs.exportTimeoutMillis),
+    };
+    // A platform's metric reader holds its own exporter. exemplarMetricExporter puts the watch on it.
+    registerMetricWatch(exemplars, watches.metrics);
+    const needsPlatform = wants(config.traces) || wants(config.metrics) || wants(config.logs);
+    const exporters = selectExporters(
+      config,
+      options,
+      needsPlatform ? platform.buildExporters({ config, exemplars }) : {},
+    );
+
+    const readers: IMetricReader[] = exporters.metricReader === undefined ? [] : [exporters.metricReader];
+    const views = [...(options.views ?? []), ...bucketViews(options.histogramBuckets)];
+    // sdk-metrics refuses a view with a name whose instrumentName is missing or a wildcard, so every
+    // renaming view the store learns maps its stream back to one instrument.
+    sdkMeterProvider = new SdkMeterProvider({ resource, readers, views });
+    registerExemplarViews(exemplars, views);
+    if (exporters.metricReader !== undefined) handOver(injected, exporters.metricReader);
+    else if (config.sdkDisabled) await stopInjectedQuietly(injected, "metrics");
+
+    const violations = new ViolationRecorder(sdkMeterProvider);
+    policy = policy.withRecorder(violations);
+    for (const [rule, n] of built.violations) violations.add("resource", rule, n);
+    // One handler for everything instruments and instrumentation report: the handle carries it.
+    const instrumentationErrorHandler = rateLimitedErrorHandler(platform);
+    const meterProvider = new PolicyMeterProvider(
+      sdkMeterProvider,
+      policy,
+      exemplars,
+      instrumentationErrorHandler,
+      platform.gate,
+    );
+
+    const errorHandler = rateLimitedErrorHandler(platform);
     if (config.runtimeMetrics && platform.startRuntimeMetrics !== undefined) {
       try {
         runtime = platform.startRuntimeMetrics(meterProvider);
@@ -611,33 +866,37 @@ async function build(options: TelemetryOptions, platform: Platform): Promise<Par
       }
     }
 
-    const spanProcessors: SpanProcessor[] = [];
-    if (exporters.spanProcessor !== undefined) {
-      const counting = exporters.spanExporter === undefined ? policy : policy.silent();
-      spanProcessors.push(redactingSpanProcessor(exporters.spanProcessor, counting));
+    if (!config.sdkDisabled) {
+      const spanProcessors: SpanProcessor[] = [];
+      if (exporters.spanProcessor !== undefined) {
+        const counting = exporters.spanExporter === undefined ? policy : policy.silent();
+        spanProcessors.push(redactingSpanProcessor(exporters.spanProcessor, counting));
+      }
+      if (exporters.spanExporter !== undefined) {
+        spanProcessors.push(
+          new BatchSpanProcessor({
+            exporter: watches.traces.watch(redactingSpanExporter(exporters.spanExporter, policy)),
+            ...config.batch.spans,
+          }),
+        );
+      }
+      // A gate wraps the configured sampler, so nothing is sampled while it is closed (the summary
+      // still names the configured sampler), and every span processor, so a span that ends after the
+      // gate closed is dropped rather than buffered.
+      const traceGate = platform.gate;
+      const sampler =
+        traceGate === undefined ? config.sampler.instance : gatedSampler(config.sampler.instance, traceGate);
+      tracerProvider = new TracerProvider({
+        resource,
+        sampler,
+        spanProcessors:
+          traceGate === undefined
+            ? spanProcessors
+            : spanProcessors.map((p) => gatedSpanProcessor(p, traceGate)),
+      });
+      handOver(injected, exporters.spanProcessor);
+      handOver(injected, exporters.spanExporter);
     }
-    if (exporters.spanExporter !== undefined) {
-      spanProcessors.push(
-        new BatchSpanProcessor({
-          exporter: watches.traces.watch(redactingSpanExporter(exporters.spanExporter, policy)),
-          ...config.batch.spans,
-        }),
-      );
-    }
-    // A gate wraps the configured sampler, so nothing is sampled while it is closed (the summary
-    // still names the configured sampler), and every span processor, so a span that ends after the
-    // gate closed is dropped rather than buffered.
-    const traceGate = platform.gate;
-    const sampler =
-      traceGate === undefined ? config.sampler.instance : gatedSampler(config.sampler.instance, traceGate);
-    tracerProvider = new TracerProvider({
-      resource,
-      sampler,
-      spanProcessors:
-        traceGate === undefined
-          ? spanProcessors
-          : spanProcessors.map((p) => gatedSpanProcessor(p, traceGate)),
-    });
 
     if (exporters.logExporter !== undefined || exporters.logProcessor !== undefined) {
       const processors: LogRecordProcessor[] = [new RedactingLogRecordProcessor(policy)];
@@ -661,6 +920,10 @@ async function build(options: TelemetryOptions, platform: Platform): Promise<Par
         resource,
         processors: gate === undefined ? processors : processors.map((p) => gatedLogRecordProcessor(p, gate)),
       });
+    }
+    if (loggerProvider !== undefined) {
+      handOver(injected, exporters.logProcessor);
+      handOver(injected, exporters.logExporter);
     }
     const pipeline = new LogPipeline({
       level: config.logLevel,
@@ -699,6 +962,16 @@ async function build(options: TelemetryOptions, platform: Platform): Promise<Par
       restoreConsole = captureConsole(platform.console, logger);
     }
 
+    const rawDisabled = env.OTEL_SDK_DISABLED ?? "";
+    const trimmedDisabled = rawDisabled.trim().toLowerCase();
+    if (trimmedDisabled !== "" && trimmedDisabled !== "true" && trimmedDisabled !== "false") {
+      errorHandler(
+        new Error(
+          `o11y: OTEL_SDK_DISABLED=${JSON.stringify(rawDisabled)} is neither true nor false; the SDK stays enabled`,
+        ),
+      );
+    }
+
     const summary = buildSummary(config, resource, {
       versionFallback: built.versionFallback,
       propagatorFields: selected.fields,
@@ -724,19 +997,29 @@ async function build(options: TelemetryOptions, platform: Platform): Promise<Par
       instrumentationErrorHandler,
       watches,
       sayDropped,
+      injected,
     };
   } catch (err) {
-    restoreConsole?.();
+    try {
+      restoreConsole?.();
+    } catch {
+      // Cleanup is best effort; the original error is the one to report.
+    }
+    if (watches !== undefined) {
+      for (const watch of Object.values(watches)) {
+        try {
+          watch.close();
+        } catch {
+          // Cleanup is best effort; the original error is the one to report.
+        }
+      }
+    }
     try {
       runtime?.stop();
     } catch {
       // Cleanup is best effort; the original error is the one to report.
     }
-    await Promise.allSettled([
-      sdkMeterProvider.shutdown(),
-      tracerProvider?.shutdown() ?? Promise.resolve(),
-      loggerProvider?.shutdown() ?? Promise.resolve(),
-    ]);
+    await abandonProviders(loggerProvider, sdkMeterProvider, tracerProvider, injected);
     throw err;
   }
 }
@@ -770,10 +1053,11 @@ function deferCanary(handle: TelemetryHandle): void {
   handle.stopDeferredCanary = unsubscribe;
 }
 
-function takeGuard(): void {
+function tryTakeGuard(): boolean {
   const g = globalThis as unknown as Record<symbol, unknown>;
-  if (g[GUARD] === true) throw alreadySetupError();
+  if (g[GUARD] === true) return false;
   g[GUARD] = true;
+  return true;
 }
 
 function releaseGuard(): void {
@@ -788,7 +1072,10 @@ function releaseGuard(): void {
  * installed; a sink that rejects it fails setup with CANARY_REJECTED.
  */
 export async function setupWith(options: TelemetryOptions, platform: Platform): Promise<Telemetry> {
-  takeGuard();
+  if (!tryTakeGuard()) {
+    await discardInjected(options);
+    throw alreadySetupError();
+  }
   let handle: TelemetryHandle;
   try {
     handle = handleFor(await build(options, platform));
@@ -803,8 +1090,11 @@ export async function setupWith(options: TelemetryOptions, platform: Platform): 
         strict: true,
       });
     } catch (err) {
-      await handle.shutdown();
-      releaseGuard();
+      try {
+        await handle.abandon();
+      } finally {
+        releaseGuard();
+      }
       throw canaryRejectedError(err);
     }
     deferCanary(handle);
@@ -826,7 +1116,7 @@ export async function setupWith(options: TelemetryOptions, platform: Platform): 
       contextManager.disable();
       refused.push("context manager");
     }
-    installed.tracer = trace.setGlobalTracerProvider(parts.tracerProvider);
+    installed.tracer = trace.setGlobalTracerProvider(handle.tracerProvider);
     if (!installed.tracer) refused.push("tracer provider");
     installed.meter = metrics.setGlobalMeterProvider(parts.meterProvider);
     if (!installed.meter) refused.push("meter provider");
@@ -842,8 +1132,11 @@ export async function setupWith(options: TelemetryOptions, platform: Platform): 
     try {
       uninstall(installed);
     } finally {
-      await handle.shutdown();
-      releaseGuard();
+      try {
+        await handle.abandon();
+      } finally {
+        releaseGuard();
+      }
     }
     throw err;
   }

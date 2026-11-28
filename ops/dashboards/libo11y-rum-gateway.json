@@ -131,7 +131,7 @@
             "type": "prometheus",
             "uid": "${prometheus}"
           },
-          "expr": "sum(increase(o11yrum_batches_total{job=~\"$gateway\", o11yrum_app=~\"$app\", o11yrum_outcome=\"rejected\"}[$__range])) / sum(increase(o11yrum_batches_total{job=~\"$gateway\", o11yrum_app=~\"$app\"}[$__range]))",
+          "expr": "(sum(increase(o11yrum_batches_total{job=~\"$gateway\", o11yrum_app=~\"$app\", o11yrum_outcome=\"rejected\"}[$__range])) or vector(0)) / sum(increase(o11yrum_batches_total{job=~\"$gateway\", o11yrum_app=~\"$app\"}[$__range]))",
           "format": "time_series",
           "instant": true,
           "legendFormat": "",

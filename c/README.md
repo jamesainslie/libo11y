@@ -217,8 +217,12 @@ There is no thread-local or global context.
 ## Testing with `libo11ytest`
 
 `libo11ytest.a` is a companion archive that exports only `o11y_test_*`, so it
-links cleanly with either `libo11y.a` (`-lo11ytest -lo11y`) or
-`libo11y.so`/`.dylib` with no duplicate symbols. Include `"o11y/test.h"`, or use
+links cleanly with either `libo11y.a` or `libo11y.so`/`.dylib` with no
+duplicate symbols. When linking static archives directly, list `libo11ytest.a`
+before `libo11y.a` (`-lo11ytest -lo11y`). `o11y_test_start` verifies that the
+linked `libo11y` library matches the same version and build mode (`libo11y`
+exports three `o11y__*` helper symbols reserved for `libo11ytest.a` to share
+signal refcounts and check ABI layout). Include `"o11y/test.h"`, or use
 `pkg-config --cflags --libs libo11ytest` or CMake's `libo11y::o11ytest` (or
 `libo11y::o11ytest_static` for static core linking).
 

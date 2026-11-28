@@ -1,6 +1,9 @@
 #include "o11y/test.h"
 #include "test_framework.h"
 
+static bool g_sticky_key_setter_ok = false;
+static bool g_sticky_val_setter_ok = false;
+
 static bool replacer_rename_and_drop(
     void *userdata,
     const char *const *groups,
@@ -55,6 +58,21 @@ static bool replacer_rename_and_drop(
     if (strcmp(key, "bad_replacement") == 0) {
         /* Setter failure (NULL value) must fail closed even if callback returns true. */
         (void)o11y_attr_replacement_set_value(out_replacement, NULL);
+        return true;
+    }
+    if (strcmp(key, "sticky_fail") == 0) {
+        /* Failed set_key must stay sticky even after a subsequent valid set_key. */
+        o11y_err_t e1 = o11y_attr_replacement_set_key(out_replacement, NULL);
+        o11y_err_t e2 = o11y_attr_replacement_set_key(out_replacement, "recovered_key");
+        g_sticky_key_setter_ok = (e1 == O11Y_ERR_INVALID_ARGUMENT && e2 == O11Y_OK);
+        return true;
+    }
+    if (strcmp(key, "sticky_val_fail") == 0) {
+        /* Failed set_value must stay sticky even after a subsequent valid set_value. */
+        o11y_err_t e1 = o11y_attr_replacement_set_value(out_replacement, NULL);
+        o11y_log_value_t iv = o11y_log_val_int(7);
+        o11y_err_t e2 = o11y_attr_replacement_set_value(out_replacement, &iv);
+        g_sticky_val_setter_ok = (e1 == O11Y_ERR_INVALID_ARGUMENT && e2 == O11Y_OK);
         return true;
     }
     return true;
@@ -157,6 +175,8 @@ static void test_logging_correlation_force_emit_and_console(void) {
 }
 
 static void test_attr_replacer_runs_before_sensitivity(void) {
+    g_sticky_key_setter_ok = false;
+    g_sticky_val_setter_ok = false;
     o11y_test_options_t topts = o11y_test_options_default();
     topts.attr_replacer_fn = replacer_rename_and_drop;
     o11y_test_recorder_t *rec = NULL;
@@ -169,15 +189,22 @@ static void test_attr_replacer_runs_before_sensitivity(void) {
         o11y_log_kv_str("rewrite_int", "raw"),
         o11y_log_kv_str("rewrite_composite", "orig"),
         o11y_log_kv_str("bad_replacement", "should-drop"),
+        o11y_log_kv_str("sticky_fail", "should-drop"),
+        o11y_log_kv_str("sticky_val_fail", "should-drop"),
     };
-    o11y_log_info(o11y_test_sdk(rec), NULL, "replaced", attrs, 6);
+    o11y_log_info(o11y_test_sdk(rec), NULL, "replaced", attrs, 8);
 
     const o11y_test_log_t *lr = o11y_test_find_log(rec, "replaced");
     ASSERT_NOT_NULL(lr);
+    ASSERT_TRUE(g_sticky_key_setter_ok);
+    ASSERT_TRUE(g_sticky_val_setter_ok);
     ASSERT_FALSE(o11y_test_log_has_attr(lr, "drop_me"));
     ASSERT_FALSE(o11y_test_log_has_attr(lr, "alias_secret"));
     ASSERT_FALSE(o11y_test_log_has_attr(lr, "http.request.header.authorization"));
     ASSERT_FALSE(o11y_test_log_has_attr(lr, "bad_replacement"));
+    ASSERT_FALSE(o11y_test_log_has_attr(lr, "sticky_fail"));
+    ASSERT_FALSE(o11y_test_log_has_attr(lr, "recovered_key"));
+    ASSERT_FALSE(o11y_test_log_has_attr(lr, "sticky_val_fail"));
     ASSERT_EQ_STR("rewritten", o11y_test_log_attr_str(lr, "rewrite_val"));
     int64_t replaced_int = 0;
     ASSERT_TRUE(o11y_test_log_attr_int(lr, "rewrite_int", &replaced_int));

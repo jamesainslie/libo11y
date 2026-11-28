@@ -1,6 +1,6 @@
 # libo11y RUM ops pack
 
-The current release is `ops/v0.1.0`. Its GitHub Release, `libo11y-ops v0.1.0`, attaches the pack as `libo11y-ops-v0.1.0.tar.gz` with `SHA256SUMS`. The changes are in [CHANGELOG.md](CHANGELOG.md).
+The current release is `ops/v0.1.1`. Its GitHub Release, `libo11y-ops v0.1.1`, attaches the pack as `libo11y-ops-v0.1.1.tar.gz` with `SHA256SUMS`. The changes are in [CHANGELOG.md](CHANGELOG.md).
 
 The ops pack is a generic Grafana and Prometheus pack for libo11y RUM. It holds dashboards for the metrics the `o11yrum-gateway` derives, error and frustration views, a session explorer over Tempo and Loki, a dashboard for the gateway's own telemetry, and Prometheus recording and alert rules.
 
@@ -20,7 +20,7 @@ The pack covers RUM. Dashboards for core services (RED by route and RPC, depende
 
 - **Grafana import.** Import each file in `dashboards/` (Dashboards, New, Import), and pick your Prometheus, Loki and Tempo datasources in the variables at the top.
 - **Grafana provisioning.** Point a file dashboard provider at a directory holding `dashboards/*.json`, and load the rule files in `alerts/*.rules.yaml` through Prometheus's `rule_files`.
-- **Kubernetes.** Apply the kustomization, which needs the Prometheus Operator and Grafana's dashboard sidecar (see [Kubernetes](#kubernetes)). Use the unpacked release archive or the remote base `https://github.com/jamesainslie/libo11y//ops?ref=ops/v0.1.0`.
+- **Kubernetes.** Apply the kustomization, which needs the Prometheus Operator and Grafana's dashboard sidecar (see [Kubernetes](#kubernetes)). Use the unpacked release archive or the remote base `https://github.com/jamesainslie/libo11y//ops?ref=ops/v0.1.1`.
 
 To check a downloaded archive, run `sha256sum -c SHA256SUMS` (or `shasum -a 256 -c SHA256SUMS`) next to it.
 
@@ -43,7 +43,7 @@ The Prometheus panels count every consented session, because the gateway derives
 ### Variables
 
 - `prometheus`, `loki` and `tempo` pick the datasources. No datasource UID is written into a dashboard.
-- `app` filters by `service_name` on every Prometheus and Loki panel. The derived metrics carry `service.name` as the `service_name` label, and Loki indexes it as its only stream label. The session explorer reads its app list from Loki, and its Tempo panels select by `session.id` alone.
+- `app` filters by `service_name` on every Prometheus and Loki panel. The derived metrics carry `service.name` as the `service_name` label, and Loki indexes it as its only stream label. On the errors dashboard and the session explorer, which read Loki, `app` lists the apps that post RUM (`o11y_rum_views_total`) and All selects exactly those, so a Loki panel never reads every stream in Loki. The list covers the dashboard's time range, so it needs the gateway's derived metrics in Prometheus for that range: with no views there, it is empty and the Loki panels show nothing. Keep Prometheus at least as long as Loki to explore old sessions. The session explorer's Tempo panels select by `session.id` alone.
 - `platform` filters by `o11y_rum_platform` on the overview and the errors dashboard. `view` filters by `o11y_rum_view_name` on the web vitals and errors dashboards. Both apply only to Prometheus panels whose metric carries the label. The overview's vitals and long animation frame panels ignore `platform` and say so in their descriptions. The errors dashboard's Loki panels ignore both.
 - The web vitals dashboard also has `device`, `browser`, `country` and `connection`.
 - `session_id` and `view_id` are text boxes on the session explorer. Its queries read them as Loki structured metadata after the stream selector, and as span attributes in Tempo.
@@ -147,7 +147,7 @@ Prometheus has failed to scrape a gateway for 5 minutes. The alert sees only gat
 `thresholds.yaml` holds every threshold, minimum traffic and the gateway selector the rules use. The vital bounds default to the specification's rating table. To use your own values, copy the file, change it, and generate the pack:
 
 ```sh
-go run github.com/jamesainslie/libo11y/ops/cmd/opsgen@ops/v0.1.0 -thresholds my-thresholds.yaml -out my-pack/
+go run github.com/jamesainslie/libo11y/ops/cmd/opsgen@ops/v0.1.1 -thresholds my-thresholds.yaml -out my-pack/
 ```
 
 `min_views_per_hour` sets two gates: the vital alerts need that many samples of the vital an hour, and the error rate alert needs a quarter of it in views over 15 minutes, never less than one view. `opsgen` parses every rule it generates and refuses thresholds that produce PromQL Prometheus would not load.
@@ -169,7 +169,7 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: monitoring
 resources:
-  - https://github.com/jamesainslie/libo11y//ops?ref=ops/v0.1.0
+  - https://github.com/jamesainslie/libo11y//ops?ref=ops/v0.1.1
 labels:
   - pairs:
       release: kube-prometheus-stack
@@ -185,7 +185,7 @@ labels:
 - A drift test fails when the committed artifacts differ from what the generator produces. Run `make ops-generate` from the repository root to regenerate them.
 - promtool 3.15.1 checks the rule files and runs the unit tests in `alerts/tests/`, which are written by hand and work out each expected p75 in a comment. `scripts/ops-promtool.sh` downloads promtool on first use and refuses a tarball whose SHA-256 differs from the pinned one. It has pins for Linux and macOS on amd64 and arm64, caches the binary under `${XDG_CACHE_HOME:-~/.cache}/libo11y/`, and takes `OPS_PROMTOOL_BASE_URL` for a mirror, whose tarball must still match the pin.
 - `kubectl kustomize ops` renders the kustomization.
-- `make ops-integration`, which CI runs in the `ops-integration` job, starts Loki 3.7.10, Tempo 3.1.1, Prometheus 3.15.1, Grafana 13.3.1 and an OpenTelemetry Collector in Docker Compose (`test/compose.yaml`), behind the gateway built from this checkout. Grafana provisions `datasources/example.yaml` and `dashboards/`, and Prometheus loads `alerts/`. The test sends three fixture sessions and runs every panel query through Grafana's query API. It requires data in the panels the fixture covers and checks that Loki never indexes `session_id` or `o11y_rum_view_id` and that Prometheus loads every rule with health `ok`. In headless Chrome it checks that the explorer's view link percent-encodes the view ID once and that its Loki app variable lists the app. It needs Docker and Chrome or Chromium, starts five containers with memory limits, and always tears them down.
+- `make ops-integration`, which CI runs in the `ops-integration` job, starts Loki 3.7.10, Tempo 3.1.1, Prometheus 3.15.1, Grafana 13.3.1 and an OpenTelemetry Collector in Docker Compose (`test/compose.yaml`), behind the gateway built from this checkout. Grafana provisions `datasources/example.yaml` and `dashboards/`, and Prometheus loads `alerts/`. The test sends three fixture sessions and runs every panel query through Grafana's query API. It requires data in the panels the fixture covers and checks that Loki never indexes `session_id` or `o11y_rum_view_id` and that Prometheus loads every rule with health `ok`. In headless Chrome it checks that the explorer's view link percent-encodes the view ID once and that its app variable lists the app. It needs Docker and Chrome or Chromium, starts five containers with memory limits, and always tears them down.
 
 Run every check with `make ops-check` from the repository root. It needs `kubectl`, and the first time it downloads promtool it needs network access, `curl`, `tar`, and `sha256sum` or `shasum`. `make ops-promtool-test` tests the promtool installer itself.
 

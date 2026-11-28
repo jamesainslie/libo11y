@@ -126,7 +126,7 @@
             "type": "prometheus",
             "uid": "${prometheus}"
           },
-          "expr": "100 * sum(increase(o11y_rum_errors_total{service_name=~\"$app\", o11y_rum_platform=~\"$platform\"}[$__range])) / sum(increase(o11y_rum_views_total{service_name=~\"$app\", o11y_rum_platform=~\"$platform\"}[$__range]))",
+          "expr": "100 * (sum(increase(o11y_rum_errors_total{service_name=~\"$app\", o11y_rum_platform=~\"$platform\"}[$__range])) or vector(0)) / sum(increase(o11y_rum_views_total{service_name=~\"$app\", o11y_rum_platform=~\"$platform\"}[$__range]))",
           "format": "time_series",
           "instant": true,
           "legendFormat": "",
@@ -176,7 +176,7 @@
             "type": "prometheus",
             "uid": "${prometheus}"
           },
-          "expr": "100 * sum(increase(o11y_rum_frustrations_total{service_name=~\"$app\", o11y_rum_platform=~\"$platform\"}[$__range])) / sum(increase(o11y_rum_views_total{service_name=~\"$app\", o11y_rum_platform=~\"$platform\"}[$__range]))",
+          "expr": "100 * (sum(increase(o11y_rum_frustrations_total{service_name=~\"$app\", o11y_rum_platform=~\"$platform\"}[$__range])) or vector(0)) / sum(increase(o11y_rum_views_total{service_name=~\"$app\", o11y_rum_platform=~\"$platform\"}[$__range]))",
           "format": "time_series",
           "instant": true,
           "legendFormat": "",

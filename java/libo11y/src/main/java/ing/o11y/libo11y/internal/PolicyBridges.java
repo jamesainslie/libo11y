@@ -3,6 +3,7 @@ package ing.o11y.libo11y.internal;
 import ing.o11y.libo11y.spec.generated.Spec;
 import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.api.common.Attributes;
+import io.opentelemetry.api.metrics.BatchCallback;
 import io.opentelemetry.api.metrics.DoubleCounter;
 import io.opentelemetry.api.metrics.DoubleCounterBuilder;
 import io.opentelemetry.api.metrics.DoubleGauge;
@@ -30,6 +31,7 @@ import io.opentelemetry.api.metrics.ObservableLongCounter;
 import io.opentelemetry.api.metrics.ObservableLongGauge;
 import io.opentelemetry.api.metrics.ObservableLongMeasurement;
 import io.opentelemetry.api.metrics.ObservableLongUpDownCounter;
+import io.opentelemetry.api.metrics.ObservableMeasurement;
 import io.opentelemetry.context.Context;
 import io.opentelemetry.context.ContextKey;
 import io.opentelemetry.sdk.common.CompletableResultCode;
@@ -43,6 +45,7 @@ import io.opentelemetry.sdk.trace.data.EventData;
 import io.opentelemetry.sdk.trace.data.LinkData;
 import io.opentelemetry.sdk.trace.data.SpanData;
 import io.opentelemetry.sdk.trace.export.SpanExporter;
+import com.sun.management.GarbageCollectionNotificationInfo;
 import java.lang.management.GarbageCollectorMXBean;
 import java.lang.management.ManagementFactory;
 import java.lang.management.MemoryPoolMXBean;
@@ -54,6 +57,9 @@ import java.util.Collection;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
+import javax.management.NotificationEmitter;
+import javax.management.NotificationListener;
+import javax.management.openmbean.CompositeData;
 
 /** Sensitivity-enforcing bridges for traces, logs, metrics, plus zero-dependency JVM runtime metrics. */
 public final class PolicyBridges {
@@ -322,6 +328,48 @@ public final class PolicyBridges {
         }
     }
 
+    /** An observer that classifies attributes before recording into the SDK's observer. */
+    private static final class PolicyLongObserver implements ObservableLongMeasurement {
+        private final ObservableLongMeasurement delegate;
+        private final SensitivityPolicy policy;
+
+        PolicyLongObserver(ObservableLongMeasurement delegate, SensitivityPolicy policy) {
+            this.delegate = delegate;
+            this.policy = policy;
+        }
+
+        @Override
+        public void record(long value) {
+            delegate.record(value);
+        }
+
+        @Override
+        public void record(long value, Attributes attributes) {
+            delegate.record(value, policy.classifyMetricAttributes(attributes));
+        }
+    }
+
+    /** An observer that classifies attributes before recording into the SDK's observer. */
+    private static final class PolicyDoubleObserver implements ObservableDoubleMeasurement {
+        private final ObservableDoubleMeasurement delegate;
+        private final SensitivityPolicy policy;
+
+        PolicyDoubleObserver(ObservableDoubleMeasurement delegate, SensitivityPolicy policy) {
+            this.delegate = delegate;
+            this.policy = policy;
+        }
+
+        @Override
+        public void record(double value) {
+            delegate.record(value);
+        }
+
+        @Override
+        public void record(double value, Attributes attributes) {
+            delegate.record(value, policy.classifyMetricAttributes(attributes));
+        }
+    }
+
     private static final class PolicyMeter implements Meter {
         private final Meter delegate;
         private final SensitivityPolicy policy;
@@ -332,31 +380,38 @@ public final class PolicyBridges {
         }
 
         private Consumer<ObservableLongMeasurement> wrapLongCallback(Consumer<ObservableLongMeasurement> cb) {
-            return measurement -> cb.accept(new ObservableLongMeasurement() {
-                @Override
-                public void record(long value) {
-                    measurement.record(value);
-                }
-
-                @Override
-                public void record(long value, Attributes attributes) {
-                    measurement.record(value, policy.classifyMetricAttributes(attributes));
-                }
-            });
+            return measurement -> cb.accept(new PolicyLongObserver(measurement, policy));
         }
 
         private Consumer<ObservableDoubleMeasurement> wrapDoubleCallback(Consumer<ObservableDoubleMeasurement> cb) {
-            return measurement -> cb.accept(new ObservableDoubleMeasurement() {
-                @Override
-                public void record(double value) {
-                    measurement.record(value);
-                }
+            return measurement -> cb.accept(new PolicyDoubleObserver(measurement, policy));
+        }
 
-                @Override
-                public void record(double value, Attributes attributes) {
-                    measurement.record(value, policy.classifyMetricAttributes(attributes));
-                }
-            });
+        /**
+         * Registers a callback that observes several instruments at once. The observers this meter's
+         * {@code buildObserver()} returns wrap the SDK's own, so they are unwrapped for the SDK, while
+         * the callback keeps recording through the wrappers and so through the policy.
+         */
+        @Override
+        public BatchCallback batchCallback(
+                Runnable callback,
+                ObservableMeasurement observableMeasurement,
+                ObservableMeasurement... additionalMeasurements) {
+            ObservableMeasurement[] rest = new ObservableMeasurement[additionalMeasurements.length];
+            for (int i = 0; i < rest.length; i++) {
+                rest[i] = unwrap(additionalMeasurements[i]);
+            }
+            return delegate.batchCallback(callback, unwrap(observableMeasurement), rest);
+        }
+
+        private static ObservableMeasurement unwrap(ObservableMeasurement m) {
+            if (m instanceof PolicyLongObserver o) {
+                return o.delegate;
+            }
+            if (m instanceof PolicyDoubleObserver o) {
+                return o.delegate;
+            }
+            return m;
         }
 
         @Override
@@ -419,18 +474,7 @@ public final class PolicyBridges {
 
                         @Override
                         public ObservableDoubleMeasurement buildObserver() {
-                            ObservableDoubleMeasurement m = db.buildObserver();
-                            return new ObservableDoubleMeasurement() {
-                                @Override
-                                public void record(double value) {
-                                    m.record(value);
-                                }
-
-                                @Override
-                                public void record(double value, Attributes attributes) {
-                                    m.record(value, policy.classifyMetricAttributes(attributes));
-                                }
-                            };
+                            return new PolicyDoubleObserver(db.buildObserver(), policy);
                         }
                     };
                 }
@@ -463,18 +507,7 @@ public final class PolicyBridges {
 
                 @Override
                 public ObservableLongMeasurement buildObserver() {
-                    ObservableLongMeasurement m = b.buildObserver();
-                    return new ObservableLongMeasurement() {
-                        @Override
-                        public void record(long value) {
-                            m.record(value);
-                        }
-
-                        @Override
-                        public void record(long value, Attributes attributes) {
-                            m.record(value, policy.classifyMetricAttributes(attributes));
-                        }
-                    };
+                    return new PolicyLongObserver(b.buildObserver(), policy);
                 }
             };
         }
@@ -539,18 +572,7 @@ public final class PolicyBridges {
 
                         @Override
                         public ObservableDoubleMeasurement buildObserver() {
-                            ObservableDoubleMeasurement m = db.buildObserver();
-                            return new ObservableDoubleMeasurement() {
-                                @Override
-                                public void record(double value) {
-                                    m.record(value);
-                                }
-
-                                @Override
-                                public void record(double value, Attributes attributes) {
-                                    m.record(value, policy.classifyMetricAttributes(attributes));
-                                }
-                            };
+                            return new PolicyDoubleObserver(db.buildObserver(), policy);
                         }
                     };
                 }
@@ -583,18 +605,7 @@ public final class PolicyBridges {
 
                 @Override
                 public ObservableLongMeasurement buildObserver() {
-                    ObservableLongMeasurement m = b.buildObserver();
-                    return new ObservableLongMeasurement() {
-                        @Override
-                        public void record(long value) {
-                            m.record(value);
-                        }
-
-                        @Override
-                        public void record(long value, Attributes attributes) {
-                            m.record(value, policy.classifyMetricAttributes(attributes));
-                        }
-                    };
+                    return new PolicyLongObserver(b.buildObserver(), policy);
                 }
             };
         }
@@ -749,18 +760,7 @@ public final class PolicyBridges {
 
                         @Override
                         public ObservableLongMeasurement buildObserver() {
-                            ObservableLongMeasurement m = lb.buildObserver();
-                            return new ObservableLongMeasurement() {
-                                @Override
-                                public void record(long value) {
-                                    m.record(value);
-                                }
-
-                                @Override
-                                public void record(long value, Attributes attributes) {
-                                    m.record(value, policy.classifyMetricAttributes(attributes));
-                                }
-                            };
+                            return new PolicyLongObserver(lb.buildObserver(), policy);
                         }
                     };
                 }
@@ -793,18 +793,7 @@ public final class PolicyBridges {
 
                 @Override
                 public ObservableDoubleMeasurement buildObserver() {
-                    ObservableDoubleMeasurement m = b.buildObserver();
-                    return new ObservableDoubleMeasurement() {
-                        @Override
-                        public void record(double value) {
-                            m.record(value);
-                        }
-
-                        @Override
-                        public void record(double value, Attributes attributes) {
-                            m.record(value, policy.classifyMetricAttributes(attributes));
-                        }
-                    };
+                    return new PolicyDoubleObserver(b.buildObserver(), policy);
                 }
             };
         }
@@ -812,10 +801,62 @@ public final class PolicyBridges {
 
     // ---------------- Zero-dependency JVM runtime metrics ----------------
 
+    /**
+     * Records {@code jvm.gc.duration} (semantic conventions 1.41.0): a histogram of the duration of
+     * each garbage collection, from the platform's GC notifications, with {@code jvm.gc.name} and
+     * {@code jvm.gc.action}. Kept apart so a runtime without {@code com.sun.management} never loads
+     * it.
+     */
+    private static final class GcNotifications {
+        private static final AttributeKey<String> GC_NAME = AttributeKey.stringKey("jvm.gc.name");
+        private static final AttributeKey<String> GC_ACTION = AttributeKey.stringKey("jvm.gc.action");
+        private static final List<Double> BUCKETS = List.of(0.01, 0.1, 1.0, 10.0);
+
+        private GcNotifications() {}
+
+        static boolean available() {
+            try {
+                Class.forName(
+                        "com.sun.management.GarbageCollectionNotificationInfo",
+                        false,
+                        GcNotifications.class.getClassLoader());
+                return true;
+            } catch (ClassNotFoundException ex) {
+                return false;
+            }
+        }
+
+        static List<AutoCloseable> register(Meter meter) {
+            DoubleHistogram duration = meter.histogramBuilder("jvm.gc.duration")
+                    .setDescription("Duration of JVM garbage collection actions.")
+                    .setUnit("s")
+                    .setExplicitBucketBoundariesAdvice(BUCKETS)
+                    .build();
+            List<AutoCloseable> registrations = new ArrayList<>();
+            for (GarbageCollectorMXBean gc : ManagementFactory.getGarbageCollectorMXBeans()) {
+                if (!(gc instanceof NotificationEmitter emitter)) {
+                    continue;
+                }
+                NotificationListener listener = (notification, handback) -> {
+                    if (!GarbageCollectionNotificationInfo.GARBAGE_COLLECTION_NOTIFICATION.equals(notification.getType())
+                            || !(notification.getUserData() instanceof CompositeData data)) {
+                        return;
+                    }
+                    GarbageCollectionNotificationInfo info = GarbageCollectionNotificationInfo.from(data);
+                    duration.record(
+                            info.getGcInfo().getDuration() / (double) TimeUnit.SECONDS.toMillis(1),
+                            Attributes.of(GC_NAME, info.getGcName(), GC_ACTION, info.getGcAction()));
+                };
+                emitter.addNotificationListener(listener, null, null);
+                registrations.add(() -> emitter.removeNotificationListener(listener));
+            }
+            return registrations;
+        }
+    }
+
     public static final class JvmRuntimeMetrics implements AutoCloseable {
         private static final AttributeKey<String> MEMORY_TYPE = AttributeKey.stringKey("jvm.memory.type");
         private static final AttributeKey<String> POOL_NAME = AttributeKey.stringKey("jvm.memory.pool.name");
-        private static final AttributeKey<String> GC_NAME = AttributeKey.stringKey("jvm.gc.name");
         private static final AttributeKey<Boolean> THREAD_DAEMON = AttributeKey.booleanKey("jvm.thread.daemon");
 
         private final List<AutoCloseable> registrations = new ArrayList<>();
@@ -861,19 +902,9 @@ public final class PolicyBridges {
                         m.record(nonDaemon, Attributes.of(THREAD_DAEMON, false));
                     }));
 
-            List<GarbageCollectorMXBean> gcs = ManagementFactory.getGarbageCollectorMXBeans();
-            metrics.registrations.add(meter.counterBuilder("jvm.gc.duration")
-                    .ofDoubles()
-                    .setDescription("Cumulative garbage collection time.")
-                    .setUnit("s")
-                    .buildWithCallback(m -> {
-                        for (GarbageCollectorMXBean gc : gcs) {
-                            long ms = gc.getCollectionTime();
-                            if (ms >= 0) {
-                                m.record(ms / (double) TimeUnit.SECONDS.toMillis(1), Attributes.of(GC_NAME, gc.getName()));
-                            }
-                        }
-                    }));
+            if (GcNotifications.available()) {
+                metrics.registrations.addAll(GcNotifications.register(meter));
+            }
 
             return metrics;
         }

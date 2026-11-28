@@ -254,6 +254,13 @@ func TestOverview(t *testing.T) {
 			t.Errorf("%s thresholds %+v, want the default vital thresholds", p.Title, p.Thresholds)
 		}
 	}
+	// A range with views but no errors has no error series; the stat is 0,
+	// not "No data".
+	for _, title := range []string{"Errors per 100 views", "Frustrations per 100 views"} {
+		if q := queryOf(panelByTitle(t, d, title).Targets[0]); !strings.Contains(q, "[$__range])) or vector(0)) / sum(increase(") {
+			t.Errorf("%s %q does not count a missing series as 0", title, q)
+		}
+	}
 	top := panelByTitle(t, d, "Top views by traffic")
 	if urls := linkURLs(top); len(urls) != 1 || !strings.HasPrefix(urls[0], "/d/libo11y-rum-vitals?") {
 		t.Errorf("Top views by traffic links %q, want one link to libo11y-rum-vitals", urls)
@@ -342,6 +349,18 @@ func TestVitals(t *testing.T) {
 		if p := section[2]; !stepsEqual(p.Thresholds, wantVitalSteps(t, v.Key)) || !drawsThresholdLines(p) {
 			t.Errorf("%s: thresholds %+v custom %v, want the vital thresholds drawn as lines", p.Title, p.Thresholds, p.Custom)
 		}
+		// Every p75 table says how many samples it rests on, and sorts by them.
+		for _, p := range section[4:7] {
+			if len(p.Targets) != 2 || !strings.Contains(queryOf(p.Targets[1]), v.Family+"_count") || len(p.Transforms) == 0 || fmt.Sprint(p.Transforms[0].(map[string]any)["id"]) != "merge" {
+				t.Errorf("%s: want a p75 and a sample count merged into one table", p.Title)
+			}
+			if sorted := fmt.Sprint(p.Options["sortBy"]); !strings.Contains(sorted, "samples") {
+				t.Errorf("%s: sorted by %s, want samples", p.Title, sorted)
+			}
+			if got := fmt.Sprint(p.Overrides); !strings.Contains(got, "Value #A") || !strings.Contains(got, "Value #B") || !strings.Contains(got, "p75") || !strings.Contains(got, "samples") || !strings.Contains(got, "unit") {
+				t.Errorf("%s: overrides %s, want Value #A renamed p75 with the vital's unit and Value #B renamed samples", p.Title, got)
+			}
+		}
 		byView := section[4]
 		if len(byView.Targets) != 2 || len(byView.Transforms) == 0 || fmt.Sprint(byView.Transforms[0].(map[string]any)["id"]) != "merge" {
 			t.Errorf("%s: %d targets and transforms %v, want two targets merged first", byView.Title, len(byView.Targets), byView.Transforms)
@@ -370,6 +389,7 @@ func TestErrors(t *testing.T) {
 	if got, want := variableNames(d), []string{"prometheus", "loki", "app", "platform", "view"}; !slices.Equal(got, want) {
 		t.Errorf("variables %q, want %q", got, want)
 	}
+	checkRUMApp(t, d)
 	want := []string{
 		"Errors per 100 views by source", "Frustrations per 100 views by type",
 		"Views with the most errors", "Views with the most frustration",
@@ -409,7 +429,7 @@ func TestExplorer(t *testing.T) {
 	if d.Title != "libo11y RUM: session explorer" || d.TimeFrom != "now-24h" {
 		t.Errorf("title %q, time from %q", d.Title, d.TimeFrom)
 	}
-	if got, want := variableNames(d), []string{"loki", "tempo", "app", "session_id", "view_id"}; !slices.Equal(got, want) {
+	if got, want := variableNames(d), []string{"prometheus", "loki", "tempo", "app", "session_id", "view_id"}; !slices.Equal(got, want) {
 		t.Errorf("variables %q, want %q", got, want)
 	}
 	for _, name := range []string{"session_id", "view_id"} {
@@ -417,9 +437,7 @@ func TestExplorer(t *testing.T) {
 			t.Errorf("variable %s is a %s, want a textbox", name, v.Type)
 		}
 	}
-	if v := variable(t, d, "app"); v.Datasource == nil || v.Datasource.Type != "loki" {
-		t.Errorf("the app variable reads %v, want Loki", v.Datasource)
-	}
+	checkRUMApp(t, d)
 	want := []string{
 		"How to use",
 		"Views in this session", "Traces in this session",
@@ -491,4 +509,19 @@ func TestDashboardsInUIDOrder(t *testing.T) {
 func drawsThresholdLines(p dash.Panel) bool {
 	style, _ := p.Custom["thresholdsStyle"].(map[string]any)
 	return style["mode"] == "line"
+}
+
+// checkRUMApp checks the app variable of a dashboard with Loki panels. It
+// lists the apps that post RUM (o11y_rum_views_total), and All selects
+// exactly those, never .+: a Loki stream selector of service_name=~".+"
+// would make every panel read every log stream in Loki, not only RUM.
+func checkRUMApp(t *testing.T, d dash.Dashboard) {
+	t.Helper()
+	v := variable(t, d, "app")
+	if v.Datasource == nil || v.Datasource.Type != "prometheus" || v.Query != "label_values(o11y_rum_views_total, service_name)" {
+		t.Errorf("the app variable reads %v %q, want Prometheus label_values(o11y_rum_views_total, service_name)", v.Datasource, v.Query)
+	}
+	if !v.IncludeAll || !v.Multi || v.AllValue != "" {
+		t.Errorf("the app variable: All %v, multi %v, All value %q; want All to select the listed apps", v.IncludeAll, v.Multi, v.AllValue)
+	}
 }

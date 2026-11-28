@@ -31,7 +31,7 @@ tests:
             exp_annotations:
               summary: 'LCP p75 is poor for shop-web'
               description: 'The LCP p75 over the last hour has been above 4 s for 30 minutes, with at least 200 samples an hour.'
-              runbook_url: 'https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumvitalpoor'
+              runbook_url: 'https://github.com/jamesainslie/libo11y/blob/ops/v0.1.1/ops/README.md#o11yrumvitalpoor'
               dashboard: '/d/libo11y-rum-vitals'
       # Poor is not a regression: there is no week-old data to compare.
       - eval_time: 2h
@@ -77,7 +77,7 @@ tests:
             exp_annotations:
               summary: 'CLS p75 is poor for shop-web'
               description: 'The CLS p75 over the last hour has been above 0.25 for 30 minutes, with at least 200 samples an hour.'
-              runbook_url: 'https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumvitalpoor'
+              runbook_url: 'https://github.com/jamesainslie/libo11y/blob/ops/v0.1.1/ops/README.md#o11yrumvitalpoor'
               dashboard: '/d/libo11y-rum-vitals'
 
   # INP regression. Every 5 minutes adds 30 samples, 360 an hour. For the
@@ -104,7 +104,7 @@ tests:
             exp_annotations:
               summary: 'INP p75 regressed for shop-web'
               description: 'The INP p75 over the last hour is more than 1.25 times the same hour a week ago and above the good bound of 0.2 s.'
-              runbook_url: 'https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumvitalregression'
+              runbook_url: 'https://github.com/jamesainslie/libo11y/blob/ops/v0.1.1/ops/README.md#o11yrumvitalregression'
               dashboard: '/d/libo11y-rum-vitals'
       - eval_time: 192h
         alertname: O11yRUMVitalPoor
@@ -152,7 +152,7 @@ tests:
             exp_annotations:
               summary: 'Error rate is high for shop-web'
               description: 'The app reported more than 0.1 errors per view over the last 15 minutes, with at least 50 views.'
-              runbook_url: 'https://github.com/jamesainslie/libo11y/blob/ops/v0.1.0/ops/README.md#o11yrumerrorratehigh'
+              runbook_url: 'https://github.com/jamesainslie/libo11y/blob/ops/v0.1.1/ops/README.md#o11yrumerrorratehigh'
               dashboard: '/d/libo11y-rum-errors'
 
   # The same error rate on 40 views in 15 minutes stays silent: under the
