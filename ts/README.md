@@ -26,7 +26,7 @@ each release.
 | [`@libo11y/rum-tanstack-router`](packages/rum-tanstack-router) | the TanStack Router adapter for `@libo11y/rum`: `instrumentTanStackRouter` names views by route template and times soft navigations                                                                              |
 | [`@libo11y/rum-connect`](packages/rum-connect)                 | the Connect adapter for `@libo11y/rum`: `connectRequestNaming` names the fetch spans of Connect RPCs by service and method                                                                                       |
 | [`@libo11y/rum-replay`](packages/rum-replay)                   | privacy-first session replay for `@libo11y/rum`: rrweb recording behind libo11y's own scrubber, with text masked by default and input values never recorded. In development. This version holds the privacy core |
-| [`@libo11y/react-native`](packages/react-native)               | the React Native platform: `setupReactNative`, the mobile resource, an OTLP/HTTP transport whose retry queue saves every batch on device storage before it is sent, AppState flushing, the consent gate, and `fetch` and XHR spans. In development |
+| [`@libo11y/react-native`](packages/react-native)               | the React Native platform: `setupReactNative`, the mobile resource, a retry queue that saves each batch on device storage before sending, AppState flushing, consent, and `fetch` and XHR spans. In development  |
 
 `@libo11y/web` and `@libo11y/webext` first ship in `ts/v0.2.1`.
 `@libo11y/rum`, `@libo11y/rum-react`, `@libo11y/rum-tanstack-router`,
