@@ -60,8 +60,12 @@ impl Dialect {
         }
     }
 
-    /// Reports whether this dialect's lexer is known to strip every literal
-    /// the database server accepts, making `db.query.text` safe to record.
+    /// Reports whether this dialect has a lexer that [`sanitize`] uses to
+    /// strip literals, so instrumentation records `db.query.text` for it.
+    ///
+    /// The lexer follows each server's default settings. Some server
+    /// settings change what counts as a literal, and under them part of a
+    /// value can be kept. See [`sanitize`] for the list.
     #[must_use]
     pub const fn supports_query_text(self) -> bool {
         matches!(
@@ -88,6 +92,29 @@ pub struct Summary {
 /// `IN (?, ?, ...)` placeholder lists to `IN (?)`.
 ///
 /// The output is never longer than `query` in bytes.
+///
+/// # Limits
+///
+/// Server settings that `sanitize` cannot see can change what counts as a
+/// literal, and under them part of a value can be kept:
+///
+/// - `PostgreSQL` with `standard_conforming_strings` off, and `MySQL` with
+///   `NO_BACKSLASH_ESCAPES`, read a backslash in `'...'` the other way.
+/// - `MySQL` with `ANSI_QUOTES` reads `"..."` as an identifier, in which a
+///   backslash is an ordinary character.
+/// - A `MySQL` connection in a multibyte character set such as GBK, SJIS, or
+///   Big5 can read a backslash byte as half of a character.
+/// - `MySQL` skips a `/*!NNNNN ... */` body when its own version is lower
+///   than `NNNNN`, and `MySQL`, unlike `MariaDB`, skips every `/*M! ... */`
+///   body. [`Dialect::Mysql`] and [`Dialect::Mariadb`] lex both bodies as
+///   SQL, as `MariaDB` does.
+/// - [`Dialect::Mysql`] and [`Dialect::Mariadb`] remove a `/*+ ... */`
+///   optimizer hint as a comment that ends at the first `*/`, even inside a
+///   quoted hint argument.
+///
+/// Turn `db.query.text` off with
+/// [`DbConfig::without_query_text`](crate::DbConfig::without_query_text)
+/// when a server runs with one of these settings.
 #[must_use]
 #[allow(
     clippy::too_many_lines,
@@ -209,7 +236,7 @@ fn collapse_in_lists(s: &str, dialect: Dialect) -> String {
     if bytes.len() < 7 {
         return s.to_owned();
     }
-    let pg = dialect == Dialect::Postgres;
+    let pg = matches!(dialect, Dialect::Postgres | Dialect::Other);
     let sqlite = dialect == Dialect::Sqlite;
     let mut out = String::with_capacity(s.len());
     let mut i = 0;

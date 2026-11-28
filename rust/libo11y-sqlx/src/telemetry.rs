@@ -72,6 +72,22 @@ impl KnownDatabase for sqlx::MySql {
 }
 
 /// Configuration for [`O11yPool`](crate::O11yPool) instrumentation.
+///
+/// Build one with [`DbConfig::new`] or [`DbConfig::for_database`] and the
+/// `with_*` and `without_*` setters. The fields are private so every value
+/// passes through the setters' normalization:
+///
+/// ```compile_fail,E0616
+/// let mut cfg = libo11y_sqlx::DbConfig::new("postgresql");
+/// cfg.db_system = String::new();
+/// ```
+///
+/// Query text is on by default and is turned off with
+/// [`DbConfig::without_query_text`]. There is no boolean setter:
+///
+/// ```compile_fail,E0599
+/// let _ = libo11y_sqlx::DbConfig::new("postgresql").with_query_text(false);
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DbConfig {
     /// OpenTelemetry `db.system.name` (for example `"postgresql"`, `"sqlite"`,
@@ -80,24 +96,23 @@ pub struct DbConfig {
     /// Also selects the lexical dialect used to sanitize `db.query.text`.
     /// `db.query.text` is only recorded for `postgresql`, `sqlite`, `mysql`,
     /// and `mariadb`.
-    pub db_system: String,
+    db_system: String,
     /// Optional `db.namespace` (database/schema name).
-    pub db_namespace: Option<String>,
+    db_namespace: Option<String>,
     /// Optional `db.client.connection.pool.name` on pool metrics. Defaults to
     /// `db_system` when unset or empty.
-    pub pool_name: Option<String>,
+    pool_name: Option<String>,
     /// Optional `server.address` (host name or IP).
-    pub server_address: Option<String>,
+    server_address: Option<String>,
     /// Optional `server.port`.
-    pub server_port: Option<u16>,
+    server_port: Option<u16>,
     /// Whether to record sanitized `db.query.text` on spans (default `true`).
-    /// Ignored for unknown dialects where literal stripping cannot be proven
-    /// safe.
-    pub include_query_text: bool,
+    /// Ignored for dialects the sanitizer has no lexer for.
+    include_query_text: bool,
     /// Whether to emit client spans when no valid parent span is active in the
     /// current context (default `false`, matching Go `o11ysql` so pool
     /// maintenance and background queries do not create stray root spans).
-    pub record_unparented_spans: bool,
+    record_unparented_spans: bool,
 }
 
 impl Default for DbConfig {
@@ -107,8 +122,15 @@ impl Default for DbConfig {
 }
 
 impl DbConfig {
-    /// Creates a `DbConfig` for `db_system` with `include_query_text = true`
-    /// and `record_unparented_spans = false`.
+    /// Creates a `DbConfig` for the OpenTelemetry `db.system.name`
+    /// `db_system`, for example `"postgresql"`, `"sqlite"`, `"mysql"`,
+    /// `"mariadb"`, or `"other_sql"`. An empty `db_system` becomes
+    /// [`OTHER_SQL`].
+    ///
+    /// `db_system` also selects the lexical dialect that sanitizes
+    /// `db.query.text`, which is recorded only for `postgresql`, `sqlite`,
+    /// `mysql`, and `mariadb`. Query text is on and unparented spans are off
+    /// by default.
     #[must_use]
     pub fn new(db_system: impl Into<String>) -> Self {
         let mut system = db_system.into();
@@ -132,7 +154,7 @@ impl DbConfig {
         Self::new(DB::DB_SYSTEM)
     }
 
-    /// Overrides `db.system.name`.
+    /// Overrides `db.system.name`. An empty value becomes [`OTHER_SQL`].
     #[must_use]
     pub fn with_db_system(mut self, db_system: impl Into<String>) -> Self {
         let system = db_system.into();
@@ -175,14 +197,10 @@ impl DbConfig {
         self
     }
 
-    /// Enables or disables recording sanitized `db.query.text` on spans.
-    #[must_use]
-    pub fn with_query_text(mut self, include: bool) -> Self {
-        self.include_query_text = include;
-        self
-    }
-
-    /// Disables recording `db.query.text` on spans.
+    /// Disables recording sanitized `db.query.text` on spans. It is recorded
+    /// by default. See the [`sanitize`](crate::sqltext::sanitize) docs for
+    /// the server settings under which the sanitizer can keep part of a
+    /// literal.
     #[must_use]
     pub fn without_query_text(mut self) -> Self {
         self.include_query_text = false;
@@ -203,6 +221,48 @@ impl DbConfig {
             .as_deref()
             .filter(|s| !s.is_empty())
             .unwrap_or(&self.db_system)
+    }
+
+    /// Returns the configured `db.system.name`.
+    #[must_use]
+    pub fn db_system(&self) -> &str {
+        &self.db_system
+    }
+
+    /// Returns the configured `db.namespace`, if any.
+    #[must_use]
+    pub fn db_namespace(&self) -> Option<&str> {
+        self.db_namespace.as_deref()
+    }
+
+    /// Returns the configured `db.client.connection.pool.name`, if explicitly set.
+    #[must_use]
+    pub fn pool_name(&self) -> Option<&str> {
+        self.pool_name.as_deref()
+    }
+
+    /// Returns the configured `server.address`, if any.
+    #[must_use]
+    pub fn server_address(&self) -> Option<&str> {
+        self.server_address.as_deref()
+    }
+
+    /// Returns the configured `server.port`, if any.
+    #[must_use]
+    pub const fn server_port(&self) -> Option<u16> {
+        self.server_port
+    }
+
+    /// Reports whether sanitized `db.query.text` recording is enabled.
+    #[must_use]
+    pub const fn include_query_text(&self) -> bool {
+        self.include_query_text
+    }
+
+    /// Reports whether client spans are created without an active parent span.
+    #[must_use]
+    pub const fn record_unparented_spans(&self) -> bool {
+        self.record_unparented_spans
     }
 }
 
@@ -364,17 +424,71 @@ impl Instrumenter {
         caller_cx: Context,
     ) -> InFlight {
         InFlight {
-            ins: Arc::clone(self),
-            statement,
-            caller_cx,
-            start_time: SystemTime::now(),
-            start_instant: Instant::now(),
+            call: Some(Call {
+                ins: Arc::clone(self),
+                statement,
+                caller_cx,
+                start_time: SystemTime::now(),
+                start_instant: Instant::now(),
+            }),
         }
     }
 }
 
+/// `error.type` recorded when a database call's future is dropped before it
+/// completes, for example under `tokio::time::timeout` or `tokio::select!`.
+const ERROR_TYPE_CANCELED: &str = "canceled";
+
+/// `error.type` recorded when a database call panics while it is polled.
+/// Matches the panic paths of the other libo11y Rust instrumentation crates.
+const ERROR_TYPE_PANIC: &str = "panic";
+
 /// One database call currently in flight.
+///
+/// [`InFlight::finish`] records the client span and the
+/// `db.client.operation.duration` measurement. If the `InFlight` is dropped
+/// unfinished, because the future that owns it was cancelled or panicked,
+/// `Drop` records them instead with an `error.type` of `canceled` or `panic`.
+/// Either way the call is recorded exactly once.
 pub(crate) struct InFlight {
+    call: Option<Call>,
+}
+
+impl InFlight {
+    pub(crate) fn finish(mut self, error: Option<&ErrorInfo>) {
+        if let Some(call) = self.call.take() {
+            call.record(error);
+        }
+    }
+
+    pub(crate) fn finish_panic(mut self) {
+        if let Some(call) = self.call.take() {
+            call.record(Some(&ErrorInfo {
+                error_type: ERROR_TYPE_PANIC,
+                status_code: None,
+            }));
+        }
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        if let Some(call) = self.call.take() {
+            let error_type = if std::thread::panicking() {
+                ERROR_TYPE_PANIC
+            } else {
+                ERROR_TYPE_CANCELED
+            };
+            call.record(Some(&ErrorInfo {
+                error_type,
+                status_code: None,
+            }));
+        }
+    }
+}
+
+/// The recorded state of one database call.
+struct Call {
     ins: Arc<Instrumenter>,
     statement: StatementInfo,
     caller_cx: Context,
@@ -382,8 +496,8 @@ pub(crate) struct InFlight {
     start_instant: Instant,
 }
 
-impl InFlight {
-    pub(crate) fn finish(self, error: Option<&ErrorInfo>) {
+impl Call {
+    fn record(self, error: Option<&ErrorInfo>) {
         let end_time = SystemTime::now();
         let elapsed_secs = self.start_instant.elapsed().as_secs_f64();
 
@@ -445,6 +559,15 @@ mod tests {
             assert_eq!(d, want_dialect, "{system}");
             assert_eq!(d.supports_query_text(), want_query_text, "{system}");
         }
+    }
+
+    #[test]
+    fn empty_db_system_becomes_other_sql() {
+        assert_eq!(DbConfig::new("").db_system, OTHER_SQL);
+        assert_eq!(
+            DbConfig::new("postgresql").with_db_system("").db_system,
+            OTHER_SQL
+        );
     }
 
     #[test]
