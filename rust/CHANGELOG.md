@@ -12,6 +12,77 @@ Workspace MSRV is Rust 1.88 (Rust 1.94 for `libo11y-sqlx`).
 
 ## [Unreleased]
 
+### Added
+
+- `libo11y`: `Builder::span_level(tracing::Level)` to configure the minimum
+  `tracing` span verbosity exported to OpenTelemetry (defaults to `INFO`).
+- `libo11y-http`: `ServerLayer::with_server_timing()` emitting W3C
+  `Server-Timing: traceparent;desc="..."` on HTML responses matching Go's
+  `o11yhttp.WithServerTiming`.
+- `libo11y-sqlx`: read-only getters on `DbConfig` (`record_unparented_spans`,
+  `query_text_enabled`, `server_address`, `server_port`, `namespace`).
+
+### Changed
+
+- `libo11y-spec`: spec 1.3.0. `SPEC_VERSION` is `1.3.0` and `SCHEMA_URL` is
+  `https://schemas.o11y.ing/libo11y/1.3.0`, so every resource carries the new
+  schema URL. The new constants cover the `o11y.rum.view.summary` event and its
+  attributes, the RUM span shape marker (`RumSpanShape`), the RUM detail
+  attributes and `o11y.rum.app.update_id`, and the sensitivity table classifies
+  `os.name` as public.
+- `libo11y`: **Breaking**: `Error::NoServiceName`, `Error::NoEnvironment`,
+  and `Error::PiiHashKey` display text now names Rust `Builder` methods
+  (`Builder::service_name`, `Builder::environment`, `PiiMode::Hash`,
+  `Builder::pii_hash_key`) instead of Go option names.
+- `libo11y`: the `tracing` span layer defaults to exporting `INFO` and higher
+  spans (filtering `DEBUG`/`TRACE` spans at callsite registration) and honors
+  `opentelemetry::Context::is_current_telemetry_suppressed()` on both spans and
+  logs.
+- `libo11y-http`: **Breaking**: `ServerService::Response` wraps the inner
+  response body in `ServerBody<B>` so server spans, `http.server.request.duration`,
+  and canonical `o11y.request.summary` lines finish when the response body ends
+  or drops instead of when headers are returned.
+- `libo11y-sqlx`: **Breaking**: `DbConfig` fields are now private behind its
+  builder methods and read-only getters, so `query_text_enabled` can only be
+  turned off via `DbConfig::without_query_text()`.
+- `libo11y-cli`: **Breaking**: `libo11y registry check` validates each input
+  file independently, matching Go's `go/cmd/libo11y` and TypeScript's
+  `@libo11y/spec` without rejecting repeated namespaces across files.
+
+### Removed
+
+- `libo11y-sqlx`: **Breaking**: removed `DbConfig::with_query_text(bool)` so
+  callers cannot force `db.query.text` on for dialects without a SQL sanitizer.
+
+### Fixed
+
+- `libo11y`: queue `Sdk::shutdown` behind an active `force_flush` under one
+  shared deadline so in-flight flushes cannot race shutdown, and bound
+  `o11y.telemetry.dropped` reporting within the remaining shutdown deadline.
+- `libo11y`: make libo11y-built OTLP headers authoritative over ambient
+  `OTEL_EXPORTER_OTLP_*HEADERS` on both HTTP and gRPC exporters (including
+  hermetic mode), validate malformed HTTP metrics endpoints at init with
+  sanitized error text, and surface OTLP HTTP/gRPC metrics partial-success
+  responses through the diagnostics handler.
+- `libo11y`: include instrumentation scope attributes in exemplar `ScopeKey`
+  so meters with distinct scope attributes do not collide.
+- `libo11y`: correlate `tracing` events with explicit `parent: &span` to the
+  named span's OpenTelemetry context and leave `parent: None` events
+  uncorrelated, re-strip reserved keys (`trace_id`, `span_id`, and `event.name`
+  for `Sdk::event`) after `AttrReplacer`, and preserve the carrier link at
+  index 0 in `start_linked_with` even when `configure` sets custom links.
+- `libo11y-http` and `libo11y-reqwest`: percent-decode query keys before
+  redaction and percent-decode request paths before `with_ignore_paths`
+  matching; record canceled server futures with `error.type="canceled"` and
+  canonical status `499`.
+- `libo11y-sqlx`: record canceled and panicking query futures and panicking
+  result streams as failed spans/metrics, handle `Dialect::Other` in
+  `collapse_in_lists`, and document SQL sanitizer limits and transaction usage.
+- Packaging and docs: replace `LICENSE` symlinks in `libo11y-spec`,
+  `libo11y-redact`, and `libo11y-macros` with regular files, remove stale
+  unpublished notices from crate READMEs, compile workspace README snippets as
+  doctests, and align `docs/PARITY.md` with the Rust implementation.
+
 ## [0.1.0] - 2026-11-27
 
 ### Added

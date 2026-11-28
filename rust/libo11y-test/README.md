@@ -16,6 +16,4 @@ HTTP and gRPC receivers for wire-level integration tests.
 - `OtlpHttpReceiver` and `OtlpGrpcReceiver` run loopback collectors on
   ephemeral ports for end-to-end OTLP wire testing.
 
-This crate is in progress and has not been published yet.
-
 Licensed under the Apache License, Version 2.0.

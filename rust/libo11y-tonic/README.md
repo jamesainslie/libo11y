@@ -14,6 +14,4 @@ clients, built on `libo11y` and following OpenTelemetry RPC semantic conventions
 - Supports `with_ignore_health_checks()`, `with_public_endpoint()`, and custom
   `with_filter(...)` predicates without touching process globals.
 
-This crate is in progress and has not been published yet.
-
 Licensed under the Apache License, Version 2.0.
