@@ -69,7 +69,8 @@ caused. A resource is a request the view made, and it carries
 RUM span and event carries `session.id`. Every span shape and the error,
 frustration and view summary events also carry `o11y.rum.view.id`, and the
 session start and end events do not. With those two attributes the gateway
-and the planned Grafana session explorer can rebuild the timeline of a session.
+([`go/o11yrum`](../go/o11yrum/README.md)) and the Grafana session explorer
+in the ops pack ([`ops`](../ops/README.md)) rebuild the timeline of a session.
 Metrics carry neither attribute, because both are unbounded. The registry
 defines span shapes for views, actions and app loads. It defines none for
 resources yet.
