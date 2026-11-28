@@ -41,6 +41,12 @@ apps:
     # sourcemaps:
     #   namespace: shop-mobile
     #   upload_token_file: /run/secrets/shop-mobile-sourcemaps
+    # Session replay needs an object store. The gateway masks all
+    # recorded text unless unmasked_text is set.
+    # replay:
+    #   enabled: true
+    #   namespace: shop-mobile
+    #   unmasked_text: false
 
 # Where uploaded source maps are kept. Set one of filesystem and s3.
 # object_store:
@@ -48,6 +54,10 @@ apps:
 #   s3: {bucket: shop-sourcemaps, prefix: o11yrum/, region: us-east-1}
 # sourcemaps:
 #   max_upload_bytes: 33554432
+# replay:
+#   max_body_bytes: 1048576
+#   max_decompressed_bytes: 16777216
+#   max_events: 20000
 # symbolication:
 #   cache_maps: 64
 #   cache_bytes: 268435456

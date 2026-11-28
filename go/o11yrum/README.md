@@ -196,6 +196,103 @@ counts frames by `o11yrum.result`: `hit`, `unmapped`, `miss`, `error` and
 `skipped`. `o11yrum.sourcemaps.uploads` counts uploads by outcome. A
 failing store is logged at most once a minute.
 
+## Session replay
+
+With an object store configured, the gateway stores session replay
+segments from `@libo11y/rum-replay`. Replay is off until an app enables
+it, and it needs a store that can list and delete objects. `FileStore` and
+the S3 store can. A third-party `ObjectStore` must also implement
+`ObjectLister` and `ObjectDeleter`, or `NewHandler` refuses the
+configuration.
+
+```yaml
+object_store:
+  filesystem: {root: /var/lib/o11yrum}
+replay:
+  max_body_bytes: 1048576          # one segment as sent (default 1 MiB)
+  max_decompressed_bytes: 16777216 # after gzip (default 16 MiB)
+  max_events: 20000                # rrweb events per segment (default 20000)
+  max_concurrent: 8                # segments handled at once (default 8)
+apps:
+  - service_name: shop-web
+    origins: ["https://shop.example"]
+    replay:
+      enabled: true
+      # namespace: shop-web  # the object key segment; default service_name
+      # unmasked_text: false # see below
+```
+
+`POST /_o11y/v1/replay?service=&session=&segment=&sent_at=[&client_token=]`
+takes one segment envelope as JSON, optionally gzipped, and answers 204.
+`session` must be a lowercase UUID and `segment` a number from 0 to
+999999. The request passes the same edge checks as the OTLP endpoints: the
+client address, the rate limit, the app's origins and client token. An app
+without `replay.enabled` answers 403. A body over the caps answers 413, as
+does a segment with more than `max_events` events. A malformed envelope
+answers 400. A failing store answers 503 with `Retry-After: 5`. A
+decoded segment takes many times its size in memory, up to about 30 times
+for a body of small events, so `max_concurrent` bounds how many the
+gateway inflates and decodes at once. The body as sent is read before a
+slot is taken, so a slow upload holds none. A segment past it answers 503 with
+`Retry-After: 1`. The
+gateway keeps no session state, so it cannot tell a kept session from
+another. The collector uploads only for kept sessions and only with
+consent.
+
+The gateway scrubs every segment again before it stores it, with the
+collector's rules ported to Go. Both implementations run the shared
+vectors in `conformance/rum-replay`. Input values, input events, canvas,
+font and console events, and every attribute off the allow-list are
+removed. URLs keep their path and only the app's `query_allow_list`
+parameters. Text is handled in one of two modes:
+
+- By default the gateway masks all text, whatever the client sent. Only
+  the text of a `style` element and the inlined stylesheet of a `style` or
+  `link` element are kept, with their URLs stripped. So an app's code-level
+  unmask list has no effect until the operator agrees to it.
+- With `replay.unmasked_text: true` the gateway keeps the text the client
+  recorded. Text under `input`, `textarea`, `select`, `option`, a
+  contenteditable element or `data-o11y-mask`, as the segment's own tree
+  shows it, is still masked.
+
+The gateway has no DOM. It reads each node's parent and the masks above
+it from the segment, which always starts with a full snapshot: the
+snapshot's tree, the nodes later mutations add, and the mask, block and
+contenteditable attributes later mutations set. A mask, once seen, stays,
+and a node moved to a new parent keeps the masks of the old one. A node
+the segment serializes twice with a different tag or parent allows no
+text, and neither do its children. A chain of more than 1000 ancestors,
+a parent cycle, or a segment that makes the model walk too far in total
+is answered as masked and blocked. In both modes a hostile client can
+still put text in the attributes the allow-list keeps as they are, such
+as `class` and `id`, and in stylesheets. The scrubber protects against
+a client that records too much, not one that lies.
+
+Each segment is stored under the app's namespace and the session as two
+objects:
+
+- `replay/<namespace>/<session.id>/<segment, 6 digits>.json.gz` holds the
+  scrubbed envelope, gzipped, with `service`, `session`, `segment`,
+  `stored_at` (Unix milliseconds) and `clock_offset_ms` added.
+- `replay/<namespace>/<session.id>/<segment>.meta.json` holds the same
+  without `events`, plus `event_count` and `bytes`, the size of the stored
+  segment.
+
+A retried upload overwrites both. When the client's `sent_at` differs from
+the gateway's clock by `edge.clock_skew_threshold` or more, every event
+timestamp, the envelope's `start` and `end` and each view's and request's
+`at` are shifted by the difference, which `clock_offset_ms` records. On
+S3, grant the gateway's role `s3:DeleteObject` as well, for erasure and
+retention.
+
+The gateway's own metrics: `o11yrum.replay.segments` counts uploads by
+app, `o11yrum.outcome` (`accepted` or `rejected`) and `o11yrum.reason`.
+`o11yrum.replay.bytes` counts the bytes stored by app.
+`o11yrum.replay.events.dropped` counts the events scrubbing removed by app
+and reason: `input`, `canvas`, `font`, `log`, `type`, `source` (another
+incremental source) and `invalid`. `o11yrum.replay.store.duration` times
+each store write by `o11yrum.operation` and `o11yrum.outcome`.
+
 ## Deploying
 
 ### The container

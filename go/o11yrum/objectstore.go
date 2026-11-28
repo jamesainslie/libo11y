@@ -12,13 +12,17 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
+	"syscall"
+	"time"
 )
 
 // ErrNotFound is what ObjectStore.Get returns for a key it does not hold.
 var ErrNotFound = errors.New("o11yrum: object not found")
 
-// ObjectStore holds the gateway's objects, which are source maps. Keys are
+// ObjectStore holds the gateway's objects: source maps and session replay
+// segments. Keys are
 // slash-separated relative paths built by the gateway. Implementations
 // must be safe for concurrent use.
 type ObjectStore interface {
@@ -26,6 +30,33 @@ type ObjectStore interface {
 	Put(ctx context.Context, key string, data []byte) error
 	// Get returns the object under key, or ErrNotFound when there is none.
 	Get(ctx context.Context, key string) ([]byte, error)
+}
+
+// ObjectInfo describes one stored object.
+type ObjectInfo struct {
+	// Key is the object's key, as Put was given it.
+	Key string
+	// Size is the object's length in bytes.
+	Size int64
+	// Modified is when the object was last written.
+	Modified time.Time
+}
+
+// ObjectLister is an ObjectStore that can list its objects. Session
+// replay needs it, for the read API and retention. Implementations must
+// be safe for concurrent use.
+type ObjectLister interface {
+	// List calls fn for every object whose key starts with prefix, in key
+	// order. An error from fn stops the listing and is returned.
+	List(ctx context.Context, prefix string, fn func(ObjectInfo) error) error
+}
+
+// ObjectDeleter is an ObjectStore that can delete objects. Session replay
+// needs it, for erasure and retention. Implementations must be safe for
+// concurrent use.
+type ObjectDeleter interface {
+	// Delete removes key. A missing key is not an error.
+	Delete(ctx context.Context, key string) error
 }
 
 // segmentPattern is what one caller-chosen key segment may hold: a
@@ -145,4 +176,107 @@ func (s *FileStore) Get(_ context.Context, key string) ([]byte, error) {
 		return nil, fmt.Errorf("o11yrum: file store: %w", err)
 	}
 	return b, nil
+}
+
+// tempPrefix starts the name of the temporary file Put writes beside an
+// object. List skips such files: they are not objects yet.
+const tempPrefix = ".put-"
+
+// List calls fn for every object whose key starts with prefix, in key
+// order. prefix follows the key rules of Put, except that it may be empty
+// or end with a slash, and may end part way through a key segment.
+// Symbolic links under the root are not listed.
+func (s *FileStore) List(ctx context.Context, prefix string, fn func(ObjectInfo) error) error {
+	dir := ""
+	if prefix != "" {
+		trimmed := strings.TrimSuffix(prefix, "/")
+		if !fs.ValidPath(trimmed) || trimmed == "." || strings.Contains(prefix, `\`) {
+			return fmt.Errorf("o11yrum: file store: invalid prefix %q", prefix)
+		}
+		dir = trimmed
+		if !strings.HasSuffix(prefix, "/") {
+			if dir = path.Dir(trimmed); dir == "." {
+				dir = ""
+			}
+		}
+	}
+	if err := s.walk(ctx, dir, prefix, fn); !errors.Is(err, errDirGone) {
+		return err
+	}
+	return nil // no directory, so no objects
+}
+
+// errDirGone is what walk returns for a directory that does not exist,
+// which holds no objects.
+var errDirGone = errors.New("directory does not exist")
+
+// walk lists the objects under the directory of key dir ("" for the root)
+// whose keys start with prefix. Entries are visited in key order: a
+// directory sorts as its name followed by "/", which is not the order
+// os.ReadDir returns.
+func (s *FileStore) walk(ctx context.Context, dir, prefix string, fn func(ObjectInfo) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(filepath.Join(s.root, filepath.FromSlash(dir)))
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
+			return errDirGone
+		}
+		return fmt.Errorf("o11yrum: file store: %w", err)
+	}
+	type entry struct {
+		key   string
+		isDir bool
+		e     fs.DirEntry
+	}
+	list := make([]entry, 0, len(entries))
+	for _, e := range entries {
+		key := e.Name()
+		if dir != "" {
+			key = dir + "/" + key
+		}
+		switch {
+		case e.IsDir():
+			// Descend only where keys under the directory can match.
+			if d := key + "/"; strings.HasPrefix(d, prefix) || strings.HasPrefix(prefix, d) {
+				list = append(list, entry{key: d, isDir: true, e: e})
+			}
+		case e.Type().IsRegular() && !strings.HasPrefix(e.Name(), tempPrefix) && strings.HasPrefix(key, prefix):
+			list = append(list, entry{key: key, e: e})
+		}
+	}
+	slices.SortFunc(list, func(a, b entry) int { return strings.Compare(a.key, b.key) })
+	for _, en := range list {
+		if en.isDir {
+			if err := s.walk(ctx, strings.TrimSuffix(en.key, "/"), prefix, fn); err != nil && !errors.Is(err, errDirGone) {
+				return err
+			}
+			continue
+		}
+		info, err := en.e.Info()
+		if errors.Is(err, fs.ErrNotExist) {
+			continue // deleted since the directory was read
+		}
+		if err != nil {
+			return fmt.Errorf("o11yrum: file store: %w", err)
+		}
+		if err := fn(ObjectInfo{Key: en.key, Size: info.Size(), Modified: info.ModTime()}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Delete removes the object under key. A missing key is not an error.
+// Directories the deletion leaves empty stay: Put recreates them anyway.
+func (s *FileStore) Delete(_ context.Context, key string) error {
+	p, err := s.path(key)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("o11yrum: file store: %w", err)
+	}
+	return nil
 }

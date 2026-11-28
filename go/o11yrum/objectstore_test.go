@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -103,5 +104,118 @@ func TestFileStore(t *testing.T) {
 func TestNewFileStoreRefusesEmptyRoot(t *testing.T) {
 	if _, err := NewFileStore(""); err == nil {
 		t.Fatal("empty root accepted")
+	}
+}
+
+func TestFileStoreListDelete(t *testing.T) {
+	s, err := NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for _, k := range []string{"replay/a/s1/000001.json.gz", "replay/a/s1/000000.json.gz", "replay/a/s2/000000.json.gz", "replay/a/s10/000000.json.gz", "sourcemaps/a/1/_/x.map"} {
+		if err := s.Put(ctx, k, []byte("x")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A temporary file a concurrent Put leaves behind is not an object.
+	if err := os.WriteFile(filepath.Join(s.root, "replay", "a", "s1", ".put-123"), []byte("partial"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	if err := s.List(ctx, "replay/a/s1/", func(o ObjectInfo) error {
+		got = append(got, o.Key)
+		if o.Size != 1 || o.Modified.IsZero() {
+			t.Errorf("%s: size %d modified %v", o.Key, o.Size, o.Modified)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"replay/a/s1/000000.json.gz", "replay/a/s1/000001.json.gz"}; !slices.Equal(got, want) {
+		t.Fatalf("list %v, want %v", got, want)
+	}
+	got = nil
+	if err := s.List(ctx, "replay/a/s", func(o ObjectInfo) error {
+		got = append(got, o.Key)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"replay/a/s1/000000.json.gz", "replay/a/s1/000001.json.gz", "replay/a/s10/000000.json.gz", "replay/a/s2/000000.json.gz"}; !slices.Equal(got, want) {
+		t.Fatalf("list of a partial segment %v, want %v (key order)", got, want)
+	}
+	got = nil
+	if err := s.List(ctx, "", func(o ObjectInfo) error {
+		got = append(got, o.Key)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 5 || !slices.IsSorted(got) {
+		t.Fatalf("list of everything %v", got)
+	}
+	if err := s.Delete(ctx, "replay/a/s1/000000.json.gz"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Delete(ctx, "replay/a/s1/000000.json.gz"); err != nil {
+		t.Fatalf("deleting a missing key: %v", err)
+	}
+	if _, err := s.Get(ctx, "replay/a/s1/000000.json.gz"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("after delete: %v", err)
+	}
+	for _, bad := range []string{"../", "/abs/", "a/../../x", `a\b`, "a//"} {
+		if err := s.List(ctx, bad, func(ObjectInfo) error { return nil }); err == nil {
+			t.Errorf("List prefix %q accepted", bad)
+		}
+	}
+	for _, bad := range []string{"../x", "/abs", "", "a/./b", `a\b`} {
+		if err := s.Delete(ctx, bad); err == nil {
+			t.Errorf("Delete key %q accepted", bad)
+		}
+	}
+	var _ ObjectLister = s
+	var _ ObjectDeleter = s
+}
+
+func TestFileStoreListEdges(t *testing.T) {
+	s, err := NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	calls := 0
+	if err := s.List(ctx, "replay/none/", func(ObjectInfo) error { calls++; return nil }); err != nil || calls != 0 {
+		t.Fatalf("empty prefix: %d calls, %v", calls, err)
+	}
+	for _, k := range []string{"replay/a/1", "replay/a/2", "replay/a/3"} {
+		if err := s.Put(ctx, k, []byte("x")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stop := errors.New("stop")
+	calls = 0
+	if err := s.List(ctx, "replay/", func(ObjectInfo) error { calls++; return stop }); !errors.Is(err, stop) || calls != 1 {
+		t.Fatalf("fn error: %d calls, %v", calls, err)
+	}
+	cctx, cancel := context.WithCancel(ctx)
+	cancel()
+	if err := s.List(cctx, "replay/", func(ObjectInfo) error { return nil }); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled context: %v", err)
+	}
+}
+
+func TestFileStoreListThroughAFile(t *testing.T) {
+	s, err := NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := s.Put(ctx, "replay/ns/a.json", []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	if err := s.List(ctx, "replay/ns/a.json/", func(ObjectInfo) error { calls++; return nil }); err != nil || calls != 0 {
+		t.Fatalf("%d calls, %v", calls, err)
 	}
 }
