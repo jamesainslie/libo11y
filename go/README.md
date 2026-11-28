@@ -95,7 +95,8 @@ migration and tests. `service.version` falls back to `0.0.0-unknown`, with
 `o11y.config.service_version_fallback=true` on the startup event, when no
 option, variable, or build info supplies it. `service.instance.id` is
 derived when absent: a UUIDv5 over the Kubernetes pod identity from the
-Downward API attributes, otherwise a random UUIDv4 per process.
+Downward API attributes, otherwise a random UUIDv4 per process. Every SDK
+a process builds shares that one random ID.
 
 ## What Setup gives you
 
@@ -187,10 +188,14 @@ Downward API attributes, otherwise a random UUIDv4 per process.
   a hung exporter on one signal cannot starve the others, and reports
   per-signal failures via `errors.Join`. It is idempotent: the first call
   runs the shutdown and every later call returns its result; a concurrent
-  caller stops waiting when its own context ends. A signal that fails to
-  flush emits an `o11y.telemetry.dropped` event to the surviving sinks
-  (console and extra handlers). The library never panics and never calls
-  `os.Exit`.
+  caller stops waiting when its own context ends. `Shutdown` never waits
+  past the deadline: a signal still running when the context ends is
+  reported as `did not finish`, wrapping the context's error, even when an
+  injected processor, reader, or exporter ignores its context. A signal
+  that fails to flush emits an `o11y.telemetry.dropped` event to the
+  surviving sinks (console and extra handlers), with the signal and the
+  type of the error in `error.type`. The library never panics and never
+  calls `os.Exit`.
 
 ## Options
 
@@ -785,8 +790,8 @@ with empty values.
   guard and never mutates globals.
 - Semantic conventions are pinned per release (currently v1.41.0), and
   every resource carries the spec schema URL
-  `https://schemas.o11y.ing/libo11y/1.1.0` (`spec.SchemaURL`). The
+  `https://schemas.o11y.ing/libo11y/1.3.0` (`spec.SchemaURL`). The
   repository holds one schema file per spec version under `spec/schemas`,
-  and `spec/schemas/1.1.0` is the current one.
+  and `spec/schemas/1.3.0` is the current one.
 
 See the runnable example in [`examples/httpserver`](examples/httpserver).

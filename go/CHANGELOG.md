@@ -8,6 +8,13 @@ adhere to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- The derived `service.instance.id` outside Kubernetes is one random
+  UUIDv4 per process, as the specification says. It was drawn again for
+  every SDK, so two SDKs in one process reported two instances. An
+  explicit ID and the Kubernetes derivation are unchanged.
+
 ### Fixed
 
 - A slog group whose own key is classified is now judged whole, as a map
@@ -39,6 +46,30 @@ adhere to [Semantic Versioning](https://semver.org/).
   SQLite `[bracket]` table identifiers.
 - `o11ysql`: `Wrap(nil)` panics immediately with an explicit message and
   its doc comment now says so.
+- `Shutdown` no longer waits past its deadline for a part that ignores its
+  context. An injected span processor, metric reader, or exporter whose
+  own shutdown blocked held the first caller until it returned, and
+  `Shutdown` could then report success. A signal that is still running
+  when the context ends is now reported as `did not finish`, wrapping the
+  context's error, and every later call returns that result. The signals
+  stop under a deadline a little ahead of the caller's (a tenth of the
+  time left, at most 100 ms), so a signal that only runs out of time still
+  reports its own error. The result is published before the
+  `o11y.telemetry.dropped` events are written, so a slow log sink no
+  longer holds other callers.
+- The `o11y.telemetry.dropped` event is written on a context that cannot
+  end. It was written on the shutdown context, which has usually ended
+  when a signal misses the deadline, so a log sink that refuses a record
+  on an ended context dropped the event.
+- `error.type` on `o11y.telemetry.dropped` names the error that failed the
+  signal, such as `context.deadlineExceededError`. It was always
+  `*fmt.wrapError`, the type of the wrapper the SDK added.
+- `Setup` installs its logger provider as the OpenTelemetry global even
+  when it exports no logs, as a no-op provider. With `WithoutLogExport` or
+  `OTEL_SDK_DISABLED=true` it left the global alone, so a provider an
+  earlier SDK or another library had installed kept receiving records.
+- The README named spec 1.1.0 as the schema URL every resource carries.
+  It is spec 1.3.0, as `spec.SchemaURL` says.
 
 ## [0.4.0] - 2026-11-27
 

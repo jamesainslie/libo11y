@@ -51,7 +51,6 @@ import (
 	"log/slog"
 	"os"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -588,6 +587,23 @@ func (s *SDK) Logger() *slog.Logger {
 // telemetry may have been dropped, never that the host application is
 // broken.
 //
+// Shutdown does not wait past the deadline. The signals stop under a
+// deadline a little ahead of it (a tenth of the time left, at most 100 ms),
+// so a signal that runs out of time reports its own error, with the
+// exports that failed. A signal that still has not returned when ctx ends
+// is reported as "did not finish", wrapping the context's error, and that
+// is the result every later call returns. This covers an injected
+// processor, reader, or exporter that ignores its context: its own
+// shutdown keeps running on a goroutine of its own until it returns, so do
+// not hand that same instance to another SDK while it does. A ctx that is
+// cancelled, or already past its deadline, can end the wait while a signal
+// is still reporting, and that signal is then reported as unfinished.
+//
+// The first caller writes an o11y.telemetry.dropped event for each failed
+// signal before it returns, synchronously, as any log call on the console
+// and extra sinks is. A concurrent caller gets the result as soon as it is
+// known and can return before those events are written.
+//
 // The error covers every span and log export that fails while the call
 // runs, including a batch the processors export on their own goroutines
 // that the call did not start, as well as the final flush. Two overlapping
@@ -618,11 +634,16 @@ func (s *SDK) Shutdown(ctx context.Context) error {
 }
 
 // runShutdown performs the one shutdown, records its result in shutdownErr,
-// and closes shutdownDone so waiting callers observe it.
+// and closes shutdownDone so waiting callers observe it. It returns when
+// every signal has stopped or ctx ends, whichever comes first.
 func (s *SDK) runShutdown(ctx context.Context) {
-	defer close(s.shutdownDone)
 	ctx, cancel := ensureDeadline(ctx)
 	defer cancel()
+	// The signals stop under a deadline a little ahead of the caller's
+	// (see shutdownReserve), so one that runs out of time reports its own
+	// error, with the exports that failed, before this call stops waiting.
+	stepCtx, cancelSteps := withReserve(ctx)
+	defer cancelSteps()
 
 	type step struct {
 		signal   string
@@ -645,27 +666,87 @@ func (s *SDK) runShutdown(ctx context.Context) {
 			return errors.Join(s.spanFailures.during(ctx, s.tracerProvider.Shutdown), s.stopInjected(ctx, "traces"))
 		}},
 	}
-	errs := make([]error, len(steps))
-	var wg sync.WaitGroup
-	for i, st := range steps {
-		wg.Go(func() {
-			if err := st.shutdown(ctx); err != nil {
-				errs[i] = fmt.Errorf("o11y: shutdown %s: %w", st.signal, err)
-			}
-		})
+	// Each step reports on a channel with room for every result, so a step
+	// that outlives the wait below still finishes and its goroutine ends.
+	type result struct {
+		step int
+		err  error
 	}
-	wg.Wait()
-	// The OTLP log leg is already down here, so dropped events reach the
-	// console and extra sinks only; delivery is best effort by design.
+	results := make(chan result, len(steps))
 	for i, st := range steps {
-		if errs[i] != nil {
-			s.emitDropped(ctx, st.signal, errs[i])
+		go func() { results <- result{step: i, err: st.shutdown(stepCtx)} }()
+	}
+	causes := make([]error, len(steps)) // what each signal reported, unwrapped
+	finished := make([]bool, len(steps))
+	record := func(r result) { finished[r.step], causes[r.step] = true, r.err }
+wait:
+	for range steps {
+		select {
+		case r := <-results:
+			record(r)
+		case <-ctx.Done():
+			break wait
 		}
 	}
+	// The caller's context ended with steps still running. Take the
+	// results that are already in (this goroutine is the only receiver, so
+	// len is exact), and report every other step as unfinished. Its
+	// goroutine keeps running until the part it is stopping returns, which
+	// a part that ignores its context decides, not the SDK.
+	for len(results) > 0 {
+		record(<-results)
+	}
+	errs := make([]error, len(steps))
+	for i, st := range steps {
+		if !finished[i] {
+			causes[i] = fmt.Errorf("did not finish: %w", ctx.Err())
+		}
+		if causes[i] != nil {
+			errs[i] = fmt.Errorf("o11y: shutdown %s: %w", st.signal, causes[i])
+		}
+	}
+	// Publish the result before the dropped events go out, so a slow log
+	// sink holds no other caller. Release the Setup guard before closing
+	// shutdownDone so a concurrent caller that wakes up can call Setup
+	// immediately without racing ErrAlreadySetup.
 	s.shutdownErr = errors.Join(errs...)
 	if s.global {
 		releaseSetupGuard()
 	}
+	close(s.shutdownDone)
+	// The OTLP log leg is down here, or still stopping, so dropped events
+	// reach the console and extra sinks only; delivery is best effort by
+	// design. It is synchronous, like every log call on those sinks, so the
+	// event is written before a host that exits after Shutdown is gone. The
+	// context may have ended by now, and a sink that checks it must still
+	// take the event, so the event goes out on one that cannot end.
+	emitCtx := context.WithoutCancel(ctx)
+	for i, st := range steps {
+		if causes[i] != nil {
+			s.emitDropped(emitCtx, st.signal, causes[i])
+		}
+	}
+}
+
+// shutdownReserve is the most [SDK.Shutdown] keeps back from the signals'
+// deadline: a tenth of the time left, up to this much.
+const shutdownReserve = 100 * time.Millisecond
+
+// withReserve returns a context that ends shortly before ctx does, by a
+// tenth of the time ctx has left and at most shutdownReserve. A signal
+// stopped under it that runs out of time returns while the caller of
+// Shutdown is still waiting, so its own error is the one reported. ctx must
+// carry a deadline. With none left to share, withReserve returns ctx.
+func withReserve(ctx context.Context) (context.Context, context.CancelFunc) {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return ctx, func() {}
+	}
+	reserve := min(time.Until(deadline)/10, shutdownReserve)
+	if reserve <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithDeadline(ctx, deadline.Add(-reserve))
 }
 
 // ForceFlush exports all buffered telemetry without stopping the pipelines.

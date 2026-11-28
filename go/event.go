@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"slices"
 	"time"
 
@@ -107,9 +108,40 @@ func (s *SDK) emitDropped(ctx context.Context, signal string, cause error) {
 	)
 }
 
+// errorType is the error.type of an event: the Go type of the error that
+// failed. fmt.Errorf and errors.Join wrap that error in types of their own,
+// which say nothing about the failure, so errorType looks through each one
+// that holds exactly one error. A wrapper holding several stays as it is,
+// and so does a wrapper type from any other package, such as *url.Error,
+// which is itself the type of the failure.
 func errorType(err error) string {
-	if err == nil {
-		return ""
+	for err != nil {
+		inner := soleWrapped(err)
+		if inner == nil {
+			return fmt.Sprintf("%T", err)
+		}
+		err = inner
 	}
-	return fmt.Sprintf("%T", err)
+	return ""
+}
+
+// soleWrapped returns the one error err wraps when err is a wrapper made by
+// the fmt or errors package, and nil otherwise.
+func soleWrapped(err error) error {
+	t := reflect.TypeOf(err)
+	if t.Kind() == reflect.Pointer {
+		t = t.Elem() // a pointer type has no package of its own
+	}
+	if pkg := t.PkgPath(); pkg != "fmt" && pkg != "errors" {
+		return nil
+	}
+	switch w := err.(type) { //nolint:errorlint // the walk visits each level of the tree itself
+	case interface{ Unwrap() error }:
+		return w.Unwrap()
+	case interface{ Unwrap() []error }:
+		if inner := w.Unwrap(); len(inner) == 1 {
+			return inner[0]
+		}
+	}
+	return nil
 }

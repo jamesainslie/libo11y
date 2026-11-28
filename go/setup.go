@@ -78,9 +78,9 @@ func Setup(ctx context.Context, opts ...Option) (*SDK, error) {
 
 	otel.SetTracerProvider(sdk.TracerProvider())
 	otel.SetMeterProvider(sdk.meterProvider)
-	if sdk.loggerProvider != nil {
-		otel.SetLoggerProvider(sdk.loggerProvider)
-	}
+	// Always installed, as a no-op provider when the SDK exports no logs,
+	// so a provider installed earlier does not go on receiving records.
+	otel.SetLoggerProvider(sdk.LoggerProvider())
 	otel.SetTextMapPropagator(sdk.propagator)
 	otel.SetErrorHandler(otel.ErrorHandlerFunc(sdk.errorHandler))
 	if s.installSlogDefault {
