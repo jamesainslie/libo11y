@@ -488,7 +488,8 @@ jobs:
           distribution: temurin
           java-version: "21"
           cache: maven
-      - run: make java-check
+          cache-dependency-path: java/**/pom.xml
+      - run: make java-check java-central-publish-test
 
   vuln:
     runs-on: ubuntu-latest
@@ -562,4 +563,11 @@ jobs:
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.4"
+      # The Java half builds the release artifacts and runs a consumer against them.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+          cache-dependency-path: java/**/pom.xml
       - run: make release-check ZIG_BUILD_J=4

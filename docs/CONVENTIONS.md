@@ -227,11 +227,42 @@ The Ruby gem in `ruby/` targets Ruby 3.3 and 3.4 on OpenTelemetry Ruby
 - **Prose and commits.** Never use the em dash character anywhere in Ruby
   sources, docs, or commit messages. Commits use
   `ruby: <type>: <description>` and release tags use `ruby/vX.Y.Z`.
+## Java toolchain
+
+The Java reactor in `java/` targets Java 21 and builds with Maven 3.9. Its
+parent POM imports `spring-boot-dependencies` 4.2.0, which manages
+OpenTelemetry Java 1.68.0, Micrometer 1.18.0 and Micrometer Tracing 1.8.0.
+The seven artifacts under the `ing.o11y` group share one version:
+`libo11y-bom`, `libo11y-spec`, `libo11y`, `libo11y-micrometer`,
+`libo11y-spring-boot-starter`, `libo11y-test` and `libo11y-cli`. On NixOS
+development machines the toolchain comes from `nix-shell -p jdk21 maven`.
+CI installs Temurin 21 with `actions/setup-java` and runs `make java-check`
+on Linux and macOS.
+
+- **Compiler.** `javac --release 21` with `-Xlint:all,-processing,-serial,-try`
+  and `-Werror`, so a lint warning fails the build.
+- **Tests.** `make java-check` runs `mvn -B test` over the reactor: JUnit 5
+  unit tests, the shared `conformance/` cases and vectors, the Micrometer and
+  Spring Boot suites, the CLI test, and an OTLP/HTTP wire test against an
+  in-process receiver.
+- **Hygiene gate.** `scripts/java-hygiene.sh` rejects `System.out` and
+  `System.err` printing and `printStackTrace` outside tests, the CLI and
+  generated code.
+- **Packaging.** The `release` Maven profile attaches the sources and
+  javadoc jars. Javadoc runs with `doclint` on, apart from the
+  missing-comment check, so a malformed doc comment fails the release
+  build. `project.build.outputTimestamp` fixes the timestamp of every jar
+  entry. `libo11y-bom` has no parent POM, so importing it brings in only the
+  libo11y versions.
+- **Prose and commits.** Never use the em dash character anywhere in Java
+  sources, docs, or commit messages. Commits use
+  `java: <type>: <description>` and release tags use `java/vX.Y.Z`.
+
 ## Versioning and releases
 
 - Independent per-language versioning, path-prefixed tags: `go/v0.1.0`,
   `ts/v0.1.1`, `zig/v0.1.0`, `python/v0.1.0`, `c/v0.1.0`, `rust/v0.1.0`,
-  `dotnet/v0.1.0`, `ruby/vX.Y.Z`.
+  `dotnet/v0.1.0`, `ruby/vX.Y.Z`, `java/vX.Y.Z`.
   The o11yrum gateway module has its own line: `go/o11yrum/v0.1.0`.
 - Semantic versioning per language ecosystem norms.
 - No lockstep releases across languages. A change to shared docs never
@@ -558,6 +589,73 @@ The Ruby gem in `ruby/` targets Ruby 3.3 and 3.4 on OpenTelemetry Ruby
   to the account ID shown on that page. The next `ruby/` tag, or a rerun
   of the release workflow for the current one, then makes the first push
   itself. After either, every later release pushes without anyone's login.
+- Java releases are lockstep. Every `ing.o11y` artifact carries one version
+  and releases from a `java/vX.Y.Z` tag. Every POM under `java/`,
+  `JAVA_RELEASE_VERSION` in the `Makefile` and the default in
+  `scripts/java-release-check.sh` move together only in a release commit.
+  The POMs therefore carry the last released version between releases, not a
+  `-SNAPSHOT` version, as the other languages' manifests do. Never run
+  `mvn install` on the reactor outside a release check, because it would
+  put unreleased code into the local Maven repository under a released
+  version. To release Java version `X.Y.Z`:
+  1. Move `java/CHANGELOG.md` entries into a `## [X.Y.Z] - date` section and
+     update the link references.
+  2. Set the version in every POM (`mvn -f java/pom.xml versions:set
+     -DnewVersion=X.Y.Z -DprocessAllModules -DgenerateBackupPoms=false`
+     covers the reactor, and `java/libo11y-bom/pom.xml` is edited by hand
+     because it has no parent). Set `project.build.outputTimestamp` in
+     `java/pom.xml` to the release date, and `JAVA_RELEASE_VERSION` in the
+     `Makefile` and the default in `scripts/java-release-check.sh` to
+     `vX.Y.Z`.
+  3. Run `make java-check` and `make java-release-check` (or `make
+     release-check`), then merge the release PR.
+  4. Tag `java/vX.Y.Z` on the merge commit and push that tag.
+  5. The release workflow (`scripts/release-tag.sh` routing `kind=java`,
+     `module=libo11y-java`) checks `java/CHANGELOG.md`, runs `make
+     java-check` and `scripts/java-release-check.sh`, and publishes the
+     GitHub Release titled `libo11y-java vX.Y.Z` (never marked Latest, so Go
+     keeps Latest). The release carries the six jars,
+     `libo11y-java-vX.Y.Z-maven-repository.tar.gz` and `SHA256SUMS`, after
+     the artifacts reach Maven Central (see below). The
+     archive holds every artifact with its POM, sources and javadoc in Maven
+     repository layout, so Maven and Gradle read the unpacked directory as a
+     `file://` repository.
+- `scripts/java-release-check.sh` builds the artifacts with the `release`
+  profile into a Maven repository layout in a temporary directory. It checks
+  that every jar has its sources and javadoc jars, an
+  `Implementation-Version` manifest entry and no `conformance/` fixtures,
+  and that the parent and BOM POMs carry the metadata Maven Central
+  requires. It then builds a throwaway consumer that imports `libo11y-bom`
+  and resolves the artifacts only from that layout. The consumer exports
+  traces, metrics and logs to an in-process OTLP/HTTP receiver, and runs
+  `libo11y registry check` on a valid and an invalid registry. Each Maven
+  run uses a fresh local repository, so the script writes nothing into
+  `~/.m2`.
+- The Java artifacts publish to Maven Central under the `ing.o11y`
+  namespace, which the owner verified once at central.sonatype.com with a
+  DNS TXT record on `o11y.ing`. Maven Central takes only signed files and
+  has no trusted publishing, so the repository stores four secrets:
+  `MAVEN_CENTRAL_USERNAME` and `MAVEN_CENTRAL_PASSWORD` (a Central Portal
+  user token), and `MAVEN_GPG_PRIVATE_KEY` with `MAVEN_GPG_PASSPHRASE` (the
+  ASCII-armored OpenPGP release signing key, whose public half is on
+  keys.openpgp.org and keyserver.ubuntu.com). The workflow signs every
+  file in the repository layout, and uploads those files to the Central
+  Publisher Portal with `scripts/java-central-publish.sh`, which asks for
+  automatic publishing and waits until the deployment is published. Only
+  then does it create the GitHub Release, with the same signed files in the
+  archive. Maven Central never replaces or removes a version, so a
+  published version is permanent, and rerunning a release is safe: the
+  script skips a version Central already serves. The Portal limits how
+  much an account publishes each month, so a failed release is diagnosed
+  before it is rerun. `scripts/java-central-publish.sh --validate-only`
+  checks a bundle against the Portal's rules without publishing: it uploads
+  for manual publishing, waits for the validation result, and drops the
+  deployment. Run it after a change to the packaging, with the token and
+  the signing key in the environment. `make java-central-publish-test`
+  tests the script against a fake `curl`. In a fork without the secrets the workflow prints
+  a warning, releases on GitHub alone, and adds the install instructions
+  for the archive to the release notes. A set with one or two of the three
+  required secrets fails the release.
 - The RUM ops pack (`ops/`) releases on its own line from an `ops/vX.Y.Z`
   tag. `ops/internal/version/version.go`, which the generator writes into
   every alert's `runbook_url`, and `OPS_RELEASE_VERSION` in the `Makefile`
@@ -641,7 +739,7 @@ install that version locally. Keep the two in step when adding a gate.
 | `make ts-browser-bundle-test` | `scripts/ts-browser-bundle-check.sh` against fixture packages (needs bun). CI runs it in the `ts` job after `make ts-check` |
 | `make o11yrum-image` | `scripts/o11yrum-image-check.sh`: builds the `o11yrum-gateway` image from `go/o11yrum` for the local platform only, and checks the version it reports, the 40 MiB size budget, the numeric non-root user (65532), `-check-config` on the example configuration, and `/healthz` and `/readyz` from a read-only root filesystem with every capability dropped, then a clean exit on SIGTERM. It removes its container and image. CI runs it in the `o11yrum-image` job |
 | `make o11yrum-release-check` | `scripts/o11yrum-release-check.sh` at `O11YRUM_RELEASE_VERSION` against a throwaway local remote: `go.mod` has no replace directive and the parent version it requires has a `go/` tag, the module is tidy and builds, vets and tests against that release, `go install` of the command at the tag reports the version, and an external consumer builds (needs a clean tree) |
-| `make release-check` | the Go release sequence, the o11yrum release check, packing and a consumer smoke test of the TypeScript packages (including the browser bundle check), the Zig consumer tarball smoke test, the Python wheel/sdist build and consumer smoke test, the Rust, C, .NET and Ruby release checks, and the ops release check (needs a clean tree) |
+| `make release-check` | the Go release sequence, the o11yrum release check, packing and a consumer smoke test of the TypeScript packages (including the browser bundle check), the Zig consumer tarball smoke test, the Python wheel/sdist build and consumer smoke test, the Rust, C, .NET, Ruby and Java release checks, and the ops release check (needs a clean tree) |
 | `make release-notes-test`, `make release-tag-test` | the release workflow's scripts: changelog sections become release notes, and each release tag routes to its kind, module, version, version line and changelog |
 | `make schema-published-test` | the schema URL check against a loopback HTTP server |
 | `make zig-check` | the Zig package: `zig fmt --check`, the tests through the root shim in Debug and ReleaseSafe (`ZIG_BUILD_J` caps the job count), and the hygiene check. CI runs it in the `zig` job on Linux and macOS |
@@ -657,6 +755,9 @@ install that version locally. Keep the two in step when adding a gate.
 | `make dotnet-release-check` | validates `dotnet/Directory.Build.props` and `dotnet/CHANGELOG.md` at `DOTNET_RELEASE_VERSION`, packs every `Libo11y.*` package, restores a throwaway consumer from them that exports a span, a metric and a log record to an in-process OTLP/HTTP receiver, and installs the `Libo11y.Cli` tool and runs `libo11y registry check`. It needs the .NET 10 SDK, and nuget.org for the third-party dependencies |
 | `make ruby-check` | the Ruby gem: the locked bundle, RSpec (unit, shared conformance, integration and OTLP/HTTP wire suites), RuboCop, and the hygiene check. CI runs it in the `ruby` job on Linux and macOS across Ruby 3.3 and 3.4 |
 | `make ruby-release-check` | `scripts/ruby-release-check.sh` at `RUBY_RELEASE_VERSION`: `version.rb` and the changelog section, a strict gem build, the gem's file list, an install into a throwaway gem home, and a consumer smoke test against the recorder, an in-process OTLP/HTTP receiver and the installed CLI. It installs the gem's dependencies from RubyGems.org. `make release-check` runs it |
+| `make java-check` | the Java reactor: `mvn -B test` with `-Xlint` warnings as errors (unit, shared conformance, Micrometer, Spring Boot, CLI and OTLP/HTTP wire suites) and the hygiene check. CI runs it in the `java` job on Linux and macOS |
+| `make java-release-check` | `scripts/java-release-check.sh` at `JAVA_RELEASE_VERSION`: every POM and the changelog, the jars with sources and javadoc in a Maven repository layout, and a throwaway consumer that resolves them from that layout, exports all three signals to an in-process OTLP/HTTP receiver and runs the CLI. Needs JDK 21 and Maven 3.9 |
+| `make java-central-publish-test` | `scripts/java-central-publish.sh` against a fake `curl`: the skip for a version Maven Central already serves, the upload and the wait for the deployment, the validate-only mode, and each failure. CI runs it in the `java` job |
 | `make ruby-gem-plan-test` | `scripts/ruby-gem-plan.sh`, which decides in the release workflow whether a gem version pushes to RubyGems.org, against a fake curl (needs jq). CI runs it in the `spec` job |
 | `make vuln` | `govulncheck` on every Go module; runs last because it depends on the advisory database and the toolchain's patch level |
 
@@ -665,7 +766,9 @@ install that version locally. Keep the two in step when adding a gate.
   1.26 or 1.27 line, or `make vuln` reports them. This document names no
   patch version, because each new advisory moves it.
 - Rust (planned): clippy pedantic, `unsafe_code = "forbid"`, cargo-deny.
-- Java (planned): errorprone, spotless.
+- Java: JDK 21 and Maven 3.9. CI runs `make java-check` on Linux and macOS:
+  `mvn -B test` with `-Xlint` warnings as errors, and
+  `scripts/java-hygiene.sh`. Error Prone and Spotless are planned.
 - Zig: Zig 0.17.1. On NixOS development machines it comes from
   home-manager with mitchellh/zig-overlay. mise does not manage Zig on
   any machine. CI installs it with `mlugg/setup-zig`, pinned by commit,

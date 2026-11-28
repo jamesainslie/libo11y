@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-27
+
+The first release. It implements spec 1.3.0.
+
 ### Added
 
 - Multi-module Maven reactor targeting Java 21+ aligned on Spring Boot 4.2.0, OpenTelemetry Java SDK 1.68.0, Micrometer 1.18.0, and Micrometer Tracing 1.8.0 (spec 1.3.0).
@@ -15,3 +19,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `libo11y-micrometer`: single-pipeline `O11yMeterRegistry` with `SensitivityMeterFilter` and trace-based exemplars, `O11yMicrometerTracing` with exemplar-preserving observation handler, and `O11yObservationHandler`.
 - `libo11y-spring-boot-starter`: Spring Boot 4 `@AutoConfiguration`, `@ConfigurationProperties("libo11y")`, `SmartLifecycle` graceful shutdown, `O11yFailureAnalyzer`, `O11yServletFilter`, `O11yRestClientInterceptor`, and `O11yDataSourceBeanPostProcessor`.
 - `libo11y-test` and `libo11y-cli`: hermetic `O11yRecorder`, JUnit 5 `O11yExtension`, in-process `OtlpHttpReceiver`, and `libo11y registry check` CLI.
+
+[Unreleased]: https://github.com/jamesainslie/libo11y/compare/java/v0.1.0...HEAD
+[0.1.0]: https://github.com/jamesainslie/libo11y/releases/tag/java/v0.1.0

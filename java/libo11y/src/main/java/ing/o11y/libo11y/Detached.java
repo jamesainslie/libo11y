@@ -37,7 +37,7 @@ public final class Detached {
             return headers.isEmpty();
         }
 
-        /** Serializes the carrier as newline-delimited {@code key=value} text (<= 32 KiB). */
+        /** Serializes the carrier as newline-delimited {@code key=value} text (at most 32 KiB). */
         public String marshal() {
             StringBuilder sb = new StringBuilder();
             for (Map.Entry<String, String> e : headers.entrySet()) {

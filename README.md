@@ -610,9 +610,13 @@ documentation.
 <dependency>
     <groupId>ing.o11y</groupId>
     <artifactId>libo11y-spring-boot-starter</artifactId>
-    <version>0.1.0-SNAPSHOT</version>
+    <version>0.1.0</version>
 </dependency>
 ```
+
+The artifacts are on Maven Central. Each `java/` release on GitHub also
+carries them as a Maven repository archive, which
+[`java/README.md`](java/README.md#installing-from-a-github-release) describes.
 
 Requires Java 21+ and aligns on Spring Boot 4.2.0, OpenTelemetry Java SDK 1.68.0,
 Micrometer 1.18.0, and Micrometer Tracing 1.8.0. Seven Maven artifacts ship

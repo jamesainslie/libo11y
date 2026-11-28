@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Tests for release-tag.sh: it routes each Go, TypeScript, Zig, Python,
-# Rust, C, .NET, Ruby and ops release tag to its family, directory, module, version,
+# Rust, C, .NET, Ruby, Java and ops release tag to its family, directory, module, version,
 # version line and changelog, and it refuses any other tag.
 set -euo pipefail
 
@@ -270,6 +270,30 @@ lockstep=false
 changelog=ruby/CHANGELOG.md
 EOF
 )" ruby/v0.2.0-rc.1
+expect_route "routes the java reactor" "$(
+	cat <<'EOF'
+kind=java
+dir=java
+module=libo11y-java
+version=0.1.0
+prerelease=false
+lockstep=false
+changelog=java/CHANGELOG.md
+EOF
+)" java/v0.1.0
+
+expect_route "marks a java prerelease" "$(
+	cat <<'EOF'
+kind=java
+dir=java
+module=libo11y-java
+version=0.2.0-rc.1
+prerelease=true
+lockstep=false
+changelog=java/CHANGELOG.md
+EOF
+)" java/v0.2.0-rc.1
+
 expect_route "routes the ops pack" "$(
 	cat <<'EOF'
 kind=ops
@@ -340,6 +364,9 @@ expect_failure "refuses a two-part c version" 1 "1.2 is not a semantic version" 
 expect_failure "refuses a ruby tag without the v" 1 "is not a release tag" ruby/0.1.0
 expect_failure "refuses a nested ruby path" 1 "is not a release tag" ruby/foo/v0.1.0
 expect_failure "refuses a two-part ruby version" 1 "1.2 is not a semantic version" ruby/v1.2
+expect_failure "refuses a java tag without the v" 1 "is not a release tag" java/0.1.0
+expect_failure "refuses a nested java path" 1 "is not a release tag" java/libo11y/v0.1.0
+expect_failure "refuses a two-part java version" 1 "1.2 is not a semantic version" java/v1.2
 expect_failure "refuses an ops tag without the v" 1 "ops/vX.Y.Z" ops/0.1.0
 expect_failure "refuses a nested ops path" 1 "is not a release tag" ops/dashboards/v0.1.0
 expect_failure "refuses a two-part ops version" 1 "1.2 is not a semantic version" ops/v1.2
