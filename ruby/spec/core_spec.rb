@@ -249,13 +249,13 @@ RSpec.describe "Libo11y core" do
       rec.shutdown
     end
 
-    it "handles cycles and depth bounds on log attributes" do
+    it "drops a cyclic member of a log attribute on the console and on OTLP" do
       rec = Libo11y::Testing::Recorder.new
-      cyclic = {}
+      cyclic = { "name" => "a" }
       cyclic["self"] = cyclic
       rec.telemetry.logger.info("cycle", { "nested" => cyclic })
-      expect(rec.console_records.first["nested"]["self"]).to eq("truncated")
-      expect(rec.logs.first.attributes["nested.self"]).to eq("truncated")
+      expect(rec.console_records.first["nested"]).to eq("name" => "a")
+      expect(rec.logs.first.attributes).to eq("nested.name" => "a")
       rec.shutdown
     end
   end

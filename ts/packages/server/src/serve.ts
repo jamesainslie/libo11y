@@ -72,7 +72,8 @@ export interface ServeOptions {
   readonly ignorePaths?: readonly string[];
   /**
    * Adds `Server-Timing: traceparent;desc="00-<trace>-<span>-<flags>"` to text/html responses, so
-   * the page can join the server's trace. It works whether or not the body is watched (see
+   * the page can join the server's trace. A span without a valid span context, as from a no-op or
+   * disabled tracer provider, adds no entry. It works whether or not the body is watched (see
    * watchBody); the headers of an unwatched response are changed in place when they are mutable.
    */
   readonly serverTiming?: boolean;
@@ -438,8 +439,11 @@ function watchesByDefault(res: Response): boolean {
   return type === "text/html" || type === "text/event-stream";
 }
 
-function serverTiming(span: Span): string {
+/** The Server-Timing traceparent entry for span, or undefined when its span context is not valid. */
+function serverTiming(span: Span): string | undefined {
   const sc = span.spanContext();
+  // A no-op or disabled provider hands out the all-zero span context, which joins no trace.
+  if (!isSpanContextValid(sc)) return undefined;
   const flags = (sc.traceFlags & 0xff).toString(16).padStart(2, "0");
   return `traceparent;desc="00-${sc.traceId}-${sc.spanId}-${flags}"`;
 }

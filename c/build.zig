@@ -3,7 +3,7 @@
 //! `zig build` installs:
 //!   - `lib/libo11y.a`             the static SDK library
 //!   - `lib/libo11y.so`/`.dylib`   the shared SDK library, versioned
-//!   - `lib/libo11ytest.a`         the test harness and OTLP receivers
+//!   - `lib/libo11ytest.a`         companion test harness and OTLP receivers (`o11y_test_*`)
 //!   - `bin/libo11y`               the application registry validator
 //!   - `include/o11y/*.h`          the public headers (spec.h, o11y.h, test.h)
 //!   - `lib/pkgconfig/libo11y.pc` and `libo11ytest.pc`
@@ -44,6 +44,12 @@ pub fn build(b: *std.Build) !void {
     const is_windows = target.result.os.tag == .windows;
     const is_elf = !is_darwin and !is_windows;
     const use_llvm_linux: ?bool = if (is_linux) true else null;
+    const base_ver = b.fmt("{d}.{d}.{d}", .{ version.major, version.minor, version.patch });
+    const numeric_version: std.SemanticVersion = .{
+        .major = version.major,
+        .minor = version.minor,
+        .patch = version.patch,
+    };
     const abi_ver = if (version.major == 0)
         b.fmt("0.{d}", .{version.minor})
     else
@@ -106,7 +112,7 @@ pub fn build(b: *std.Build) !void {
             \\};
             \\
         );
-        const so_name = b.fmt("libo11y.so.{s}", .{version_text});
+        const so_name = b.fmt("libo11y.so.{s}", .{base_ver});
         const so_abi_name = b.fmt("libo11y.so.{s}", .{abi_ver});
         const link_shared = b.addRunFile(.zig_exe);
         link_shared.addArg("cc");
@@ -116,7 +122,7 @@ pub fn build(b: *std.Build) !void {
         link_shared.addArg("-shared");
         link_shared.addArg(b.fmt("-Wl,-soname,{s}", .{so_abi_name}));
         link_shared.addPrefixedFileArg("-Wl,--version-script=", ver_script);
-        link_shared.addArgs(&.{ "-Wl,-z,noexecstack", "-Wl,-z,relro", "-Wl,--whole-archive" });
+        link_shared.addArgs(&.{ "-Wl,-z,noexecstack", "-Wl,-z,relro", "-Wl,-z,nodelete", "-Wl,--whole-archive" });
         link_shared.addArtifactArg(libo11y_pic);
         link_shared.addArgs(&.{ "-Wl,--no-whole-archive", "-lpthread", "-lm", "-o" });
         const shared_out = link_shared.addOutputFileArg(so_name);
@@ -135,15 +141,19 @@ pub fn build(b: *std.Build) !void {
         ln_plain.step.dependOn(&ln_abi.step);
         b.getInstallStep().dependOn(&ln_plain.step);
     } else {
+        // Zig's Mach-O dynamic library build keeps internal Zig and compiler-rt
+        // symbols private, exporting only `_o11y_*` (plus Mach-O's synthetic
+        // `__mh_dylib_header` and `___dso_handle`), which `Makefile` and
+        // `scripts/c-release-check.sh` enforce via `nm -gU`.
         const libo11y_shared = b.addLibrary(.{
             .name = "o11y",
             .linkage = .dynamic,
             .root_module = core_shared_mod,
-            .version = version,
+            .version = numeric_version,
         });
         libo11y_shared.bundle_ubsan_rt = false;
         if (is_darwin) {
-            const dylib_name = b.fmt("libo11y.{s}.dylib", .{version_text});
+            const dylib_name = b.fmt("libo11y.{s}.dylib", .{base_ver});
             const dylib_abi_name = b.fmt("libo11y.{s}.dylib", .{abi_ver});
             libo11y_shared.install_name = b.fmt("@rpath/{s}", .{dylib_abi_name});
             const install_dylib = b.addInstallArtifact(libo11y_shared, .{ .dylib_symlinks = false });
@@ -164,9 +174,9 @@ pub fn build(b: *std.Build) !void {
         }
     }
 
-    // Self-contained test harness library: libo11ytest.a
+    // Companion test harness library: libo11ytest.a (exports only o11y_test_*).
     const test_lib_mod = b.createModule(.{
-        .root_source_file = b.path("src/lib_test_root.zig"),
+        .root_source_file = b.path("src/test_abi.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -224,6 +234,7 @@ pub fn build(b: *std.Build) !void {
         .description = "libo11y test harness and in-process OTLP receivers for C11",
         .version = version_text,
         .lib = "o11ytest",
+        .requires = "libo11y",
         .system_libs = system_libs,
         .static_only_system_libs = false,
     }));
@@ -361,6 +372,7 @@ pub fn build(b: *std.Build) !void {
             .flags = c_flags,
         });
         mod.linkLibrary(libo11ytest);
+        mod.linkLibrary(libo11y_static);
         const exe = b.addExecutable(.{
             .name = suite.name,
             .root_module = mod,
@@ -383,6 +395,7 @@ const PkgConfig = struct {
     description: []const u8,
     version: []const u8,
     lib: []const u8,
+    requires: []const u8 = "",
     system_libs: []const u8,
     static_only_system_libs: bool,
 };
@@ -400,13 +413,14 @@ fn pkgConfig(b: *std.Build, pc: PkgConfig) []const u8 {
         \\Description: {s}
         \\Version: {s}
         \\URL: https://github.com/jamesainslie/libo11y
-        \\Libs: -L${{libdir}} -l{s}{s}
+        \\{s}Libs: -L${{libdir}} -l{s}{s}
         \\Cflags: -I${{includedir}}
         \\
     , .{
         pc.name,
         pc.description,
         pc.version,
+        if (pc.requires.len == 0) "" else b.fmt("Requires: {s}\n", .{pc.requires}),
         pc.lib,
         if (pc.system_libs.len == 0)
             ""

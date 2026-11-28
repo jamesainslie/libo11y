@@ -31,13 +31,13 @@ Without `--prefix` the files go to `c/zig-out/`.
 |---|---|
 | `lib/libo11y.a` | The static SDK library |
 | `lib/libo11y.so.X.Y.Z` (`libo11y.X.Y.Z.dylib` on macOS) | The shared SDK library, with pre-1.0 minor `SONAME`/`install_name` (`0.Y`), major from `1.0` onward, and relative symlinks (`libo11y.so.0.Y`, `libo11y.so`) |
-| `lib/libo11ytest.a` | The test harness and in-process OTLP receivers. It contains the SDK too, so a test binary links it alone |
+| `lib/libo11ytest.a` | Companion test harness and in-process OTLP receivers exporting only `o11y_test_*`, linked alongside `libo11y` |
 | `bin/libo11y` | The application registry validator, `libo11y registry check FILE...` |
 | `include/o11y/o11y.h` | The SDK |
 | `include/o11y/spec.h` | Generated constants: attribute keys, closed value sets, event and metric names, the schema URL |
 | `include/o11y/test.h` | The test harness |
 | `lib/pkgconfig/libo11y.pc`, `libo11ytest.pc` | `pkg-config` metadata, relative to where the tree is unpacked |
-| `lib/cmake/libo11y/` | `find_package(libo11y)` files with `libo11y::o11y`, `libo11y::o11y_shared`, `libo11y::o11y_static`, and `libo11y::o11ytest` |
+| `lib/cmake/libo11y/` | `find_package(libo11y)` files with `libo11y::o11y`, `libo11y::o11y_shared`, `libo11y::o11y_static`, `libo11y::o11ytest`, and `libo11y::o11ytest_static` |
 
 Link directly:
 
@@ -59,7 +59,7 @@ includes `Libs.private` (`-lpthread -lm`).
 With CMake (`libo11y::o11y` prefers shared on Unix, or choose `libo11y::o11y_shared` / `libo11y::o11y_static`):
 
 ```cmake
-find_package(libo11y 0.1 REQUIRED)
+find_package(libo11y 0.2 REQUIRED)
 target_link_libraries(my_app PRIVATE libo11y::o11y)
 ```
 
@@ -216,7 +216,11 @@ There is no thread-local or global context.
 
 ## Testing with `libo11ytest`
 
-Link a test binary against `libo11ytest.a` alone and include `"o11y/test.h"`.
+`libo11ytest.a` is a companion archive that exports only `o11y_test_*`, so it
+links cleanly with either `libo11y.a` (`-lo11ytest -lo11y`) or
+`libo11y.so`/`.dylib` with no duplicate symbols. Include `"o11y/test.h"`, or use
+`pkg-config --cflags --libs libo11ytest` or CMake's `libo11y::o11ytest` (or
+`libo11y::o11ytest_static` for static core linking).
 
 - `o11y_test_start` creates a hermetic recorder. It reads no environment
   variable and touches no global, so recorders run in parallel.
@@ -316,8 +320,8 @@ structs (`struct_size` checks the layout at runtime), so the shared library
 SONAME/install_name includes the minor version (`libo11y.so.0.Y` /
 `@rpath/libo11y.0.Y.dylib`). Rebuild against the new headers when the minor
 version changes. A patch release changes neither. The CMake version file
-follows the same rule (`find_package(libo11y 0.1)` accepts any 0.1.x and
-refuses 0.2.0; from 1.0 onward it uses `SameMajorVersion`) and checks
+follows the same rule (`find_package(libo11y 0.2)` accepts any 0.2.x and
+refuses 0.1.0 or 0.3.0; from 1.0 onward it uses `SameMajorVersion`) and checks
 `CMAKE_SIZEOF_VOID_P` for pointer-width compatibility.
 
 ## Running the test suite
@@ -330,15 +334,15 @@ From the repository root, this checks formatting and hygiene on the Zig
 sources of the ABI layer, builds the libraries, runs the C11 unit,
 concurrency, conformance, wire and CLI suites in `Debug` and `ReleaseSafe`,
 checks ELF `SONAME`/`GNU_STACK`/exported `o11y_*` symbols (or Mach-O
-`install_name`), and compiles and runs the quickstart statically, dynamically,
+`install_name` and exported `_o11y_*` symbols), and compiles and runs the quickstart statically, dynamically,
 and as C++17. The conformance suite reads `conformance/vectors/` and
 `conformance/appregistry/`. The run also includes:
 
 - the ABI layout test, which translates the headers and compares every
   struct and enum with its mirror in `src/c_types.zig`;
 - the C11 suites and quickstart compiled by the host C compiler with
-  `-fsanitize=address,undefined` against the `Debug` static archive
-  `libo11ytest.a` (`make c-sanitize` runs this part alone). The libraries
+  `-fsanitize=address,undefined` against the `Debug` archives `libo11ytest.a`
+  and `libo11y.a` (`make c-sanitize` runs this part alone). The libraries
   allocate with `malloc`, so leaks, double frees, and C header/caller UB fail
-  the run (the Zig engine inside `libo11ytest.a` is checked by Zig's Debug
-  safety checks rather than host compiler sanitizer instrumentation).
+  the run (the Zig engine inside the archives is checked by Zig's Debug safety
+  checks rather than host compiler sanitizer instrumentation).
