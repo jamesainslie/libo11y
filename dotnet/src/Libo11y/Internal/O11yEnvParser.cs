@@ -36,7 +36,13 @@ internal static class O11yEnvParser
     public static Dictionary<string, string> ParsePairs(string? raw)
     {
         var result = new Dictionary<string, string>(StringComparer.Ordinal);
-        if (string.IsNullOrWhiteSpace(raw)) return result;
+        ParsePairs(raw, result, decodeValues: true);
+        return result;
+    }
+
+    private static void ParsePairs(string? raw, Dictionary<string, string> result, bool decodeValues)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return;
         foreach (string part in raw.Split(','))
         {
             int eq = part.IndexOf('=');
@@ -44,10 +50,8 @@ internal static class O11yEnvParser
             string k = part[..eq].Trim();
             string v = part[(eq + 1)..].Trim();
             if (k.Length == 0) continue;
-            try { v = Uri.UnescapeDataString(v); } catch { /* leave as-is */ }
-            result[k] = v;
+            result[k] = decodeValues ? Uri.UnescapeDataString(v) : v;
         }
-        return result;
     }
 
     public static string ParseExporterChoice(IReadOnlyDictionary<string, string> env, string varName, string defaultValue)
@@ -81,30 +85,45 @@ internal static class O11yEnvParser
         };
     }
 
-    public static string SignalEndpoint(IReadOnlyDictionary<string, string> env, string signalVar, OtlpExportProtocol proto, string httpSuffix)
+    public static Uri SignalEndpoint(IReadOnlyDictionary<string, string> env, string signal, OtlpExportProtocol proto)
     {
-        if (env.TryGetValue(signalVar, out string? specific) && !string.IsNullOrWhiteSpace(specific))
+        const string prefix = "OTEL_EXPORTER_OTLP";
+        string signalPrefix = $"{prefix}_{signal}";
+        string signalVar = $"{signalPrefix}_ENDPOINT";
+        const string generalVar = $"{prefix}_ENDPOINT";
+        string? specific = NonBlankSetting(env, signalVar);
+        string raw = specific ?? NonBlankSetting(env, generalVar) ??
+            (proto == OtlpExportProtocol.Grpc ? "http://localhost:4317" : "http://localhost:4318");
+
+        if (proto == OtlpExportProtocol.Grpc && !raw.Contains("://", StringComparison.Ordinal))
         {
-            return specific.Trim();
+            string? insecure = NonBlankSetting(env, $"{signalPrefix}_INSECURE") ?? NonBlankSetting(env, $"{prefix}_INSECURE");
+            raw = (string.Equals(insecure, "true", StringComparison.OrdinalIgnoreCase) ? "http://" : "https://") + raw;
         }
-        string baseUrl = env.TryGetValue("OTEL_EXPORTER_OTLP_ENDPOINT", out string? b) && !string.IsNullOrWhiteSpace(b)
-            ? b.Trim()
-            : proto == OtlpExportProtocol.Grpc ? "http://localhost:4317" : "http://localhost:4318";
-        if (proto == OtlpExportProtocol.Grpc)
+
+        if (!Uri.TryCreate(raw, UriKind.Absolute, out Uri? endpoint) ||
+            endpoint.Scheme is not ("http" or "https") || endpoint.Host.Length == 0)
         {
-            return baseUrl;
+            string variable = specific is null ? generalVar : signalVar;
+            throw new InvalidOptionException($"o11y: {variable} must specify a valid OTLP endpoint");
         }
-        return baseUrl.TrimEnd('/') + httpSuffix;
+
+        if (specific is not null || proto == OtlpExportProtocol.Grpc) return endpoint;
+
+        string path = endpoint.AbsolutePath;
+        if (!path.EndsWith('/')) path += "/";
+        return new UriBuilder(endpoint) { Path = $"{path}v1/{signal.ToLowerInvariant()}" }.Uri;
     }
 
-    public static string? SignalHeaders(IReadOnlyDictionary<string, string> env, string signalVar)
+    private static string? NonBlankSetting(IReadOnlyDictionary<string, string> env, string key) =>
+        env.TryGetValue(key, out string? value) && !string.IsNullOrWhiteSpace(value) ? value.Trim() : null;
+
+    public static string SignalHeaders(IReadOnlyDictionary<string, string> env, string signalVar)
     {
-        var merged = ParsePairs(env.TryGetValue("OTEL_EXPORTER_OTLP_HEADERS", out string? gh) ? gh : null);
-        if (env.TryGetValue(signalVar, out string? sh))
-        {
-            foreach (var (k, v) in ParsePairs(sh)) merged[k] = v;
-        }
-        if (merged.Count == 0) return null;
+        var merged = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        // The exporter decodes values after it splits the header list.
+        ParsePairs(env.GetValueOrDefault("OTEL_EXPORTER_OTLP_HEADERS"), merged, decodeValues: false);
+        ParsePairs(env.GetValueOrDefault(signalVar), merged, decodeValues: false);
         return string.Join(",", merged.Select(kv => $"{kv.Key}={kv.Value}"));
     }
 
