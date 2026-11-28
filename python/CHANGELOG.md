@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `service.version` falls back to `0.0.0-unknown` when no version resolves, and the startup summary carries `o11y.config.service_version_fallback=true`, as in Go. Version 0.1.0 left the attribute off, or used the VCS revision from the build info file as the version.
+- With `strict_identity=False`, `o11y.schema.violations` counts the rules `identity_service_name`, `identity_environment` and `identity_environment_invalid` that the specification names. Version 0.1.0 counted `missing_service_name`, `missing_environment` and `invalid_environment`.
+- A blank `service_name`, `service_namespace`, `environment` or `version` option sets nothing, so the environment value applies. Version 0.1.0 let a blank option hide it.
+- A service name is refused only when it is blank, `unknown_service`, or starts with `unknown_service:`. Version 0.1.0 refused every name that starts with `unknown_service`.
+- The `InvalidEnvironment` message quotes the value the way Go does.
+
+### Removed
+
+- The resource no longer carries `process.pid`, `host.arch` or `os.type`. The parity matrix lists the telemetry SDK, `process.runtime.*` and `host.name` as the detected attributes, and names the pid as one the library never records.
+
 ## [0.1.0] - 2026-11-27
 
 ### Added

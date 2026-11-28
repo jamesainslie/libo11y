@@ -109,8 +109,8 @@ def test_identity_validation_and_strict_toggle() -> None:
     )
     pts = _metric_points(reader, METRIC_SCHEMA_VIOLATIONS)
     rules = {p["attributes"].get("o11y.rule") for p in pts}
-    assert "missing_service_name" in rules
-    assert "missing_environment" in rules
+    assert "identity_service_name" in rules
+    assert "identity_environment" in rules
     assert tel2.shutdown().ok
 
 
@@ -136,7 +136,7 @@ def test_build_info_and_distribution_version(tmp_path: Path) -> None:
         assert tel.resource.attributes[ATTR_VCS_REF_HEAD_REVISION] == "deadbeef1234"
         assert tel.resource.attributes[ATTR_BUILD_TIME] == "2026-11-27T00:00:00Z"
         assert tel.resource.attributes[ATTR_BUILD_MODIFIED] is True
-        assert tel.resource.attributes["service.version"] == "deadbeef1234"
+        assert tel.resource.attributes["service.version"] == "0.0.0-unknown"
         assert "o11y.config.service_version_fallback=true" in tel.effective_config()
 
     with libo11y.init(

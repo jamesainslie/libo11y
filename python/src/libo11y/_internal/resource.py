@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import importlib.metadata
-import os
 import platform
 import re
 import socket
@@ -23,13 +22,10 @@ from libo11y.spec import (
     ATTR_BUILD_MODIFIED,
     ATTR_BUILD_TIME,
     ATTR_CONTAINER_ID,
-    ATTR_HOST_ARCH,
     ATTR_HOST_NAME,
     ATTR_K8S_NAMESPACE_NAME,
     ATTR_K8S_POD_NAME,
     ATTR_K8S_POD_UID,
-    ATTR_OS_TYPE,
-    ATTR_PROCESS_PID,
     ATTR_PROCESS_RUNTIME_NAME,
     ATTR_PROCESS_RUNTIME_VERSION,
     ATTR_VCS_REF_HEAD_REVISION,
@@ -37,8 +33,21 @@ from libo11y.spec import (
     SCHEMA_URL,
     Signal,
 )
+from libo11y.spec._goquote import go_quote
 
 _CONTAINER_ID_RE = re.compile(r"[0-9a-fA-F]{64}")
+
+# Recorded, with a flag in the startup summary, when no version resolves. A
+# missing version degrades telemetry and never blocks startup.
+SERVICE_VERSION_FALLBACK = "0.0.0-unknown"
+
+# Rules counted on o11y.schema.violations (signal "resource") when strict
+# identity is off and the tier-0 identity contract is not met.
+RULE_IDENTITY_SERVICE_NAME = "identity_service_name"
+RULE_IDENTITY_ENVIRONMENT = "identity_environment"
+RULE_IDENTITY_ENVIRONMENT_INVALID = "identity_environment_invalid"
+
+_UNKNOWN_SERVICE = "unknown_service"
 
 
 def _detect_container_id() -> str | None:
@@ -53,17 +62,6 @@ def _detect_container_id() -> str | None:
         if m is not None:
             return m.group(0).lower()
     return None
-
-
-def _os_type() -> str:
-    sys_name = platform.system().lower()
-    if sys_name == "darwin":
-        return "darwin"
-    if sys_name == "windows":
-        return "windows"
-    if sys_name == "linux":
-        return "linux"
-    return sys_name or "unknown"
 
 
 def _detect_sdk_version() -> str:
@@ -88,6 +86,49 @@ def _allowed_environments(opts: Options) -> frozenset[str]:
     return ENVIRONMENT_VALUES | frozenset(opts.extra_environments)
 
 
+def _text(attrs: dict[str, Any], key: str) -> str:
+    value = attrs.get(key)
+    return "" if value is None else str(value)
+
+
+def _has_service_name(attrs: dict[str, Any]) -> bool:
+    """Report whether attrs carry a usable service identity.
+
+    A usable name is not blank after trimming and is not the SDK's
+    unknown_service fallback, whichever channel supplied it.
+    """
+    name = _text(attrs, "service.name").strip()
+    return bool(name) and name != _UNKNOWN_SERVICE and not name.startswith(f"{_UNKNOWN_SERVICE}:")
+
+
+def _enforce_identity(attrs: dict[str, Any], opts: Options) -> list[str]:
+    """Apply the tier-0 identity contract.
+
+    Under strict identity a violation raises. Otherwise each violation is
+    returned as a rule name, to be counted on o11y.schema.violations.
+    """
+    problems: list[str] = []
+    if not _has_service_name(attrs):
+        if opts.strict_identity:
+            raise NoServiceName()
+        problems.append(RULE_IDENTITY_SERVICE_NAME)
+
+    environment = _text(attrs, "deployment.environment.name")
+    allowed = _allowed_environments(opts)
+    if not environment:
+        if opts.strict_identity:
+            raise NoEnvironment()
+        problems.append(RULE_IDENTITY_ENVIRONMENT)
+    elif environment not in allowed:
+        if opts.strict_identity:
+            raise InvalidEnvironment(
+                "o11y: deployment environment not in the allowed set: "
+                f"{go_quote(environment)} (allowed: {', '.join(sorted(allowed))})"
+            )
+        problems.append(RULE_IDENTITY_ENVIRONMENT_INVALID)
+    return problems
+
+
 def build_resource(
     opts: Options,
     env: EnvView,
@@ -96,6 +137,10 @@ def build_resource(
 ) -> tuple[Resource, bool]:
     """Compose, validate, and classify the SDK Resource.
 
+    Precedence, lowest to highest: detected attributes and build info, then
+    the environment (OTEL_RESOURCE_ATTRIBUTES, OTEL_SERVICE_NAME), then
+    explicit options. A blank option sets nothing.
+
     Returns (resource, version_fallback_used).
     """
     attrs: dict[str, Any] = {
@@ -103,9 +148,6 @@ def build_resource(
         "telemetry.sdk.language": "python",
         "telemetry.sdk.version": _detect_sdk_version(),
         ATTR_HOST_NAME: socket.gethostname(),
-        ATTR_HOST_ARCH: platform.machine(),
-        ATTR_OS_TYPE: _os_type(),
-        ATTR_PROCESS_PID: os.getpid(),
         ATTR_PROCESS_RUNTIME_NAME: platform.python_implementation().lower(),
         ATTR_PROCESS_RUNTIME_VERSION: platform.python_version(),
     }
@@ -127,69 +169,43 @@ def build_resource(
         attrs[ATTR_BUILD_MODIFIED] = bi.modified
 
     # Environment resource attributes (OTEL_RESOURCE_ATTRIBUTES + OTEL_SERVICE_NAME).
-    env_attrs = parse_resource_attributes(env)
-    attrs.update(env_attrs)
+    attrs.update(parse_resource_attributes(env))
     if env_svc := env.get_opt("OTEL_SERVICE_NAME"):
         attrs["service.name"] = env_svc
 
-    # Explicit resource attributes override environment.
-    for k, v in opts.resource_attributes.items():
-        attrs[k] = v
+    # Explicit options take the highest precedence.
+    attrs.update(opts.resource_attributes)
+    for key, option in (
+        ("service.name", opts.service_name),
+        ("service.namespace", opts.service_namespace),
+        ("deployment.environment.name", opts.environment),
+        ("service.version", opts.version),
+    ):
+        if option is not None and (value := option.strip()):
+            attrs[key] = value
 
-    # Explicit top-level identity options take highest precedence.
-    if opts.service_name is not None:
-        attrs["service.name"] = opts.service_name
-    if opts.service_namespace is not None:
-        attrs["service.namespace"] = opts.service_namespace
-    if opts.environment is not None:
-        attrs["deployment.environment.name"] = opts.environment
+    if not _text(attrs, "service.version") and (
+        dist_version := _detect_distribution_version(opts.distribution)
+    ):
+        attrs["service.version"] = dist_version
 
-    version_fallback = False
-    if opts.version is not None:
-        attrs["service.version"] = opts.version
-    elif "service.version" not in attrs:
-        dist_ver = _detect_distribution_version(opts.distribution)
-        if dist_ver:
-            attrs["service.version"] = dist_ver
-        elif opts.build_info is not None and attrs.get(ATTR_VCS_REF_HEAD_REVISION):
-            attrs["service.version"] = str(attrs[ATTR_VCS_REF_HEAD_REVISION])
-            version_fallback = True
+    for rule in _enforce_identity(attrs, opts):
+        recorder.record(Signal.RESOURCE, rule)
 
-    # Validate service.name (Tier 0).
-    svc_name = str(attrs.get("service.name", "")).strip()
-    if not svc_name or svc_name.startswith("unknown_service"):
-        if opts.strict_identity:
-            raise NoServiceName()
-        recorder.record(Signal.RESOURCE, "missing_service_name")
-        if not svc_name:
-            attrs["service.name"] = "unknown_service:python"
-    else:
-        attrs["service.name"] = svc_name
+    # The OpenTelemetry default, so a lenient SDK still names its resource.
+    if not _text(attrs, "service.name").strip():
+        attrs["service.name"] = f"{_UNKNOWN_SERVICE}:python"
 
-    # Validate deployment.environment.name (Tier 0).
-    dep_env = str(attrs.get("deployment.environment.name", "")).strip()
-    allowed = _allowed_environments(opts)
-    if not dep_env:
-        if opts.strict_identity:
-            raise NoEnvironment()
-        recorder.record(Signal.RESOURCE, "missing_environment")
-    elif dep_env not in allowed:
-        if opts.strict_identity:
-            allowed_list = ", ".join(sorted(allowed))
-            raise InvalidEnvironment(
-                f"o11y: deployment environment not in the allowed set: "
-                f"{dep_env!r} (allowed: {allowed_list})"
-            )
-        recorder.record(Signal.RESOURCE, "invalid_environment")
-    else:
-        attrs["deployment.environment.name"] = dep_env
+    version_fallback = not _text(attrs, "service.version")
+    if version_fallback:
+        attrs["service.version"] = SERVICE_VERSION_FALLBACK
 
     # Derive service.instance.id when absent.
-    if not str(attrs.get("service.instance.id", "")).strip():
+    if not _text(attrs, "service.instance.id").strip():
         derived = derive_instance_id(
-            pod_uid=str(attrs.get(ATTR_K8S_POD_UID, "")),
-            pod_name=str(attrs.get(ATTR_K8S_POD_NAME, "")),
-            namespace=str(attrs.get(ATTR_K8S_NAMESPACE_NAME, "")),
+            pod_uid=_text(attrs, ATTR_K8S_POD_UID),
+            pod_name=_text(attrs, ATTR_K8S_POD_NAME),
+            namespace=_text(attrs, ATTR_K8S_NAMESPACE_NAME),
         )
         attrs["service.instance.id"] = derived if derived is not None else random_instance_id()
 
