@@ -58,6 +58,7 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.function.UnaryOperator;
+import javax.management.ListenerNotFoundException;
 import javax.management.NotificationEmitter;
 import javax.management.NotificationListener;
 import javax.management.openmbean.CompositeData;
@@ -830,13 +831,13 @@ public final class PolicyBridges {
             }
         }
 
-        static List<AutoCloseable> register(Meter meter) {
+        static List<Registration> register(Meter meter) {
             DoubleHistogram duration = meter.histogramBuilder("jvm.gc.duration")
                     .setDescription("Duration of JVM garbage collection actions.")
                     .setUnit("s")
                     .setExplicitBucketBoundariesAdvice(BUCKETS)
                     .build();
-            List<AutoCloseable> registrations = new ArrayList<>();
+            List<Registration> registrations = new ArrayList<>();
             for (GarbageCollectorMXBean gc : ManagementFactory.getGarbageCollectorMXBeans()) {
                 if (!(gc instanceof NotificationEmitter emitter)) {
                     continue;
@@ -858,12 +859,18 @@ public final class PolicyBridges {
         }
     }
 
+    /** One thing the runtime metrics registered; only removing a GC listener declares a checked exception. */
+    @FunctionalInterface
+    private interface Registration {
+        void close() throws ListenerNotFoundException;
+    }
+
     public static final class JvmRuntimeMetrics implements AutoCloseable {
         private static final AttributeKey<String> MEMORY_TYPE = AttributeKey.stringKey("jvm.memory.type");
         private static final AttributeKey<String> POOL_NAME = AttributeKey.stringKey("jvm.memory.pool.name");
         private static final AttributeKey<Boolean> THREAD_DAEMON = AttributeKey.booleanKey("jvm.thread.daemon");
 
-        private final List<AutoCloseable> registrations = new ArrayList<>();
+        private final List<Registration> registrations = new ArrayList<>();
 
         public static JvmRuntimeMetrics register(Meter meter) {
             JvmRuntimeMetrics metrics = new JvmRuntimeMetrics();
@@ -880,7 +887,7 @@ public final class PolicyBridges {
                                 m.record(usage.getUsed(), Attributes.of(MEMORY_TYPE, type, POOL_NAME, pool.getName()));
                             }
                         }
-                    }));
+                    })::close);
 
             metrics.registrations.add(meter.upDownCounterBuilder("jvm.memory.committed")
                     .setDescription("Measure of memory committed.")
@@ -893,7 +900,7 @@ public final class PolicyBridges {
                                 m.record(usage.getCommitted(), Attributes.of(MEMORY_TYPE, type, POOL_NAME, pool.getName()));
                             }
                         }
-                    }));
+                    })::close);
 
             ThreadMXBean threads = ManagementFactory.getThreadMXBean();
             metrics.registrations.add(meter.upDownCounterBuilder("jvm.thread.count")
@@ -904,7 +911,7 @@ public final class PolicyBridges {
                         int nonDaemon = Math.max(0, threads.getThreadCount() - daemon);
                         m.record(daemon, Attributes.of(THREAD_DAEMON, true));
                         m.record(nonDaemon, Attributes.of(THREAD_DAEMON, false));
-                    }));
+                    })::close);
 
             if (GcNotifications.available()) {
                 metrics.registrations.addAll(GcNotifications.register(meter));
@@ -913,16 +920,33 @@ public final class PolicyBridges {
             return metrics;
         }
 
+        /**
+         * Closes every registration, even after one fails, then throws the first failure with the
+         * others suppressed onto it, so the shutdown report carries it on the metrics signal.
+         */
         @Override
         public void close() {
-            for (AutoCloseable reg : registrations) {
+            RuntimeException failure = null;
+            for (Registration reg : registrations) {
+                RuntimeException failed;
                 try {
                     reg.close();
-                } catch (Exception ignored) {
-                    // best effort
+                    continue;
+                } catch (ListenerNotFoundException ex) {
+                    failed = new IllegalStateException("libo11y could not remove a JVM GC notification listener", ex);
+                } catch (RuntimeException ex) {
+                    failed = ex;
+                }
+                if (failure == null) {
+                    failure = failed;
+                } else if (failed != failure) {
+                    failure.addSuppressed(failed);
                 }
             }
             registrations.clear();
+            if (failure != null) {
+                throw failure;
+            }
         }
     }
 }
