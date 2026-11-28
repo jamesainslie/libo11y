@@ -292,3 +292,14 @@ func TestIngestConcurrent(t *testing.T) {
 		t.Fatal("no request got through")
 	}
 }
+
+func TestNewHandlerIgnoresNilOption(t *testing.T) {
+	cfg := &Config{Apps: []AppConfig{{ServiceName: "shop-web", Origins: []string{"https://shop.example"}}}}
+	h, err := NewHandler(nil, WithConfig(cfg), nil)
+	if err != nil {
+		t.Fatalf("NewHandler with nil options: %v", err)
+	}
+	if err := h.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}

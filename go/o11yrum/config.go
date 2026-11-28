@@ -514,6 +514,8 @@ func validateAppMetricLabels(a AppConfig) error {
 			return fmt.Errorf("%s is classified PII by the specification and is always dropped", k)
 		case card == rumspec.Unbounded:
 			return fmt.Errorf("%s is unbounded by the specification and is always dropped", k)
+		case isBareTemplate(k):
+			return fmt.Errorf("%s is a template attribute prefix and requires a suffix", k)
 		case strings.HasPrefix(k, "o11y.") && rumspec.Types[k] == "" && !isTemplateKey(k):
 			return fmt.Errorf("%s is not defined by the specification, which alone mints o11y.* keys", k)
 		}

@@ -61,13 +61,15 @@ type app struct {
 	replayNS string
 }
 
-// NewHandler builds a gateway handler. WithConfig is required. Without
-// WithSDK the gateway logs to slog.Default. Without any sink, traces and
-// logs are dropped after processing.
+// NewHandler builds a gateway handler. WithConfig is required; nil options
+// are ignored. Without WithSDK the gateway logs to slog.Default. Without
+// any sink, traces and logs are dropped after processing.
 func NewHandler(opts ...Option) (*Handler, error) {
 	s := settings{now: time.Now}
 	for _, o := range opts {
-		o(&s)
+		if o != nil {
+			o(&s)
+		}
 	}
 	if s.cfg == nil {
 		return nil, errors.New("o11yrum: NewHandler needs WithConfig")

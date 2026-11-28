@@ -199,7 +199,9 @@ func typeOK(k, typ string, v pcommon.Value) bool {
 		return v.Type() == pcommon.ValueTypeBool
 	case typ == "enum":
 		return v.Type() == pcommon.ValueTypeStr && slices.Contains(rumspec.Enums[k], v.Str())
-	case typ == "string" || strings.HasPrefix(typ, "template"):
+	case strings.HasPrefix(typ, "template"):
+		return false // bare template keys (such as o11y.label) are not valid attributes
+	case typ == "string":
 		return v.Type() == pcommon.ValueTypeStr
 	}
 	return true
@@ -215,6 +217,13 @@ func nonNegative(v pcommon.Value) bool {
 		return v.Double() >= 0
 	}
 	return true
+}
+
+// isBareTemplate reports whether k is the bare name of a registry template
+// attribute (such as o11y.label or o11y.config) rather than an instantiated
+// <template>.<name> key.
+func isBareTemplate(k string) bool {
+	return strings.HasPrefix(rumspec.Types[k], "template")
 }
 
 // isTemplateKey reports whether k is <template>.<name> for a registry
@@ -312,6 +321,9 @@ func removeUserinfo(s string) string {
 // unbounded are never kept, whatever the app's pii mode, because a label
 // is copied into every series the gateway exports.
 func (p attrPolicy) metricLabel(k string) bool {
+	if isBareTemplate(k) {
+		return false
+	}
 	sens, card := specClasses(k)
 	switch {
 	case sens == rumspec.PII || sens == rumspec.Secret || card == rumspec.Unbounded:

@@ -26,6 +26,8 @@ func TestAttrPolicy(t *testing.T) {
 		"template key kept":             {drop, func(m pcommon.Map) { m.PutStr("o11y.label.team", "web") }, map[string]any{"o11y.label.team": "web"}, 0},
 		"template value must be string": {drop, func(m pcommon.Map) { m.PutInt("o11y.label.team", 1) }, map[string]any{}, 1},
 		"bare template prefix dropped":  {drop, func(m pcommon.Map) { m.PutStr("o11y.label.", "x") }, map[string]any{}, 1},
+		"bare o11y.label dropped":       {drop, func(m pcommon.Map) { m.PutStr("o11y.label", "x") }, map[string]any{}, 1},
+		"bare o11y.config dropped":      {drop, func(m pcommon.Map) { m.PutStr("o11y.config", "x") }, map[string]any{}, 1},
 		"app key kept":                  {drop, func(m pcommon.Map) { m.PutStr("shop.cart.size", "3") }, map[string]any{"shop.cart.size": "3"}, 0},
 		"enum member kept":              {drop, func(m pcommon.Map) { m.PutStr("o11y.rum.platform", "web") }, map[string]any{"o11y.rum.platform": "web"}, 0},
 		"enum non-member dropped":       {drop, func(m pcommon.Map) { m.PutStr("o11y.rum.platform", "desktop") }, map[string]any{}, 1},
@@ -88,6 +90,16 @@ func TestAttrPolicyCountCap(t *testing.T) {
 	}
 	if _, ok := m.Get("a.three"); ok {
 		t.Fatal("the cap must keep the first attributes in order")
+	}
+}
+
+func TestBareTemplateRejectedAsMetricLabel(t *testing.T) {
+	p := newAttrPolicy(AppConfig{PII: "drop", AppMetricLabels: []string{"o11y.config"}}, defaultLimits())
+	if p.metricLabel("o11y.config") || p.metricLabel("o11y.label") {
+		t.Error("metricLabel admitted a bare template key")
+	}
+	if err := validateAppMetricLabels(AppConfig{AppMetricLabels: []string{"o11y.config"}}); err == nil {
+		t.Error("validateAppMetricLabels accepted bare o11y.config")
 	}
 }
 

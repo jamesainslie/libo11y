@@ -377,7 +377,19 @@ type fixedProvider struct{ rc RemoteConfig }
 func (p fixedProvider) RemoteConfig(context.Context, string) (RemoteConfig, error) { return p.rc, nil }
 
 func TestServeConfigRefusesBadProviderVersion(t *testing.T) {
-	for name, version := range map[string]string{"empty": "", "quote": `a"b`, "control": "a\nb", "space": "a b"} {
+	bad := map[string]string{
+		"empty":         "",
+		"quote":         `a"b`,
+		"control":       "a\nb",
+		"space":         "a b",
+		"non-hex":       "v1.2-x",
+		"short hex":     "0123456789abcde",
+		"long hex":      "0123456789abcdef0",
+		"uppercase":     "0123456789ABCDEF",
+		"16-byte quote": `0123456789abcd"f`,
+		"16-byte g":     "0123456789abcdeg",
+	}
+	for name, version := range bad {
 		t.Run(name, func(t *testing.T) {
 			h := newConfigHandler(t, WithConfigProvider(fixedProvider{RemoteConfig{Version: version, Document: json.RawMessage(`{}`)}}))
 			if w := getConfig(h, "?service=shop-web", "https://shop.example", "203.0.113.70:1"); w.Code != 503 {
@@ -385,8 +397,9 @@ func TestServeConfigRefusesBadProviderVersion(t *testing.T) {
 			}
 		})
 	}
-	h := newConfigHandler(t, WithConfigProvider(fixedProvider{RemoteConfig{Version: "v1.2-x", Document: json.RawMessage(`{}`)}}))
-	if w := getConfig(h, "?service=shop-web", "https://shop.example", "203.0.113.71:1"); w.Code != 200 || w.Header().Get("ETag") != `"v1.2-x"` {
+	const good = "0123456789abcdef"
+	h := newConfigHandler(t, WithConfigProvider(fixedProvider{RemoteConfig{Version: good, Document: json.RawMessage(`{}`)}}))
+	if w := getConfig(h, "?service=shop-web", "https://shop.example", "203.0.113.71:1"); w.Code != 200 || w.Header().Get("ETag") != `"`+good+`"` {
 		t.Fatalf("status %d ETag %q", w.Code, w.Header().Get("ETag"))
 	}
 }
