@@ -57,8 +57,11 @@ int main(void) {
 
     /* Wide-event canonical request summary. */
     o11y_record_t *rec = o11y_record_create();
+    o11y_record_set(rec, o11y_log_kv_str("http.request.method", "POST"));
+    o11y_record_set(rec, o11y_log_kv_int("http.response.status_code", 200));
+    o11y_record_set(rec, o11y_log_kv_double(O11Y_ATTR_DURATION, 0.012));
     o11y_record_set(rec, o11y_log_kv_str(O11Y_ATTR_OUTCOME, O11Y_OUTCOME_SUCCESS));
-    o11y_record_add(rec, "db.queries", 2);
+    o11y_record_add(rec, "checkout.db_queries", 2);
     o11y_record_emit_event(rec, ctx, sdk, O11Y_EVENT_REQUEST_SUMMARY, NULL, 0);
     o11y_record_destroy(rec);
 
