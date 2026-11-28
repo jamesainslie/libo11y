@@ -103,7 +103,13 @@ func NewHandler(opts ...Option) (*Handler, error) {
 		return nil, err
 	}
 	if h.store != nil {
-		h.symbols = newSymbolicator(h.store, cfg.Symbolication, cfg.Limits.MaxValueLength, h.tel, s.now)
+		h.symbols = newSymbolicator(h.store, cfg.Symbolication, symbolicatorDeps{
+			maxValueLen: cfg.Limits.MaxValueLength,
+			maxMapBytes: cfg.Sourcemaps.MaxUploadBytes,
+			tel:         h.tel,
+			log:         h.log,
+			now:         s.now,
+		})
 	}
 	for _, ac := range cfg.Apps {
 		a := &app{cfg: ac, origins: map[string]bool{}, policy: newAttrPolicy(ac, cfg.Limits), namespace: ac.namespace()}

@@ -86,7 +86,11 @@ apps:
 The S3 store authenticates with the AWS SDK's default credential chain,
 so on EKS Pod Identity or IRSA supplies the credentials and no static key
 is configured. `endpoint` and `use_path_style` point it at an
-S3-compatible store instead. The library builds the filesystem store from
+S3-compatible store instead. Grant the gateway's role `s3:GetObject`,
+`s3:PutObject` and `s3:ListBucket` on the bucket: without `s3:ListBucket`,
+S3 answers a missing map with 403 rather than 404, and every frame of a
+release without maps counts as `error` rather than `miss`. The library
+builds the filesystem store from
 the configuration. An S3 store comes from the `s3store` package through
 `WithObjectStore`, which the command does for you.
 
@@ -111,12 +115,22 @@ its caller's call site. A stack is rewritten only when a frame resolved.
 Every symbolicated record gets `o11y.rum.error.fingerprint`, 32 hex
 digits over the exception type and the script path and function of the
 first five frames with a URL, or over the message with digits folded when
-there are none. A fingerprint a client sent is removed.
+there are none. A fingerprint a client sent is removed. The fingerprint is
+taken after symbolication, so an error that arrives before its release's
+maps are uploaded, or while the store is failing, groups apart from the
+same error once its frames resolve. Upload maps before the release
+serves traffic.
 
 The `symbolication` section bounds the work: `cache_maps` (default 64) and
 `cache_bytes` (default 256 MiB) bound the parsed maps held in memory,
-`negative_ttl` (default 60s) is how long a missing or broken map is not
-looked up again, and `max_frames` (default 50) caps the frames kept per
-stack. One stack loads at most 8 distinct maps. `o11yrum.symbolication.frames`
+`cache_ttl` (default 10m) is how long a parsed map is used before the
+store is read again, `negative_ttl` (default 60s) is how long a missing or
+broken map is not looked up again, and `max_frames` (default 50) caps the
+frames kept per stack. An upload clears the cache entry on the replica
+that took it at once; other replicas pick up a replaced map within
+`cache_ttl`. One batch reads at most 16 maps from the store and starts no
+read after 2 seconds, so a batch naming many scripts cannot hold a
+request. Frames past that budget count as `skipped`. `o11yrum.symbolication.frames`
 counts frames by `o11yrum.result`: `hit`, `unmapped`, `miss`, `error` and
-`skipped`. `o11yrum.sourcemaps.uploads` counts uploads by outcome.
+`skipped`. `o11yrum.sourcemaps.uploads` counts uploads by outcome. A
+failing store is logged at most once a minute.

@@ -48,6 +48,7 @@ apps:
 # symbolication:
 #   cache_maps: 64
 #   cache_bytes: 268435456
+#   cache_ttl: 10m
 #   negative_ttl: 60s
 #   max_frames: 50
 

@@ -12,6 +12,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jamesainslie/libo11y/go/o11yrum/internal/sourcemap"
 )
@@ -28,6 +29,10 @@ const (
 
 // storeRetryAfter is the Retry-After sent when the object store fails.
 const storeRetryAfter = "5"
+
+// uploadReadTimeout is how long an authenticated upload may take to
+// arrive.
+const uploadReadTimeout = 5 * time.Minute
 
 // serveUpload stores one source map. The map is checked by parsing it,
 // stored under the key symbolication looks it up by, and never served
@@ -58,6 +63,9 @@ func (h *Handler) serveUpload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "version, url and optional update_id are required; version and update_id are [A-Za-z0-9._+-], up to 128 characters", http.StatusBadRequest)
 		return
 	}
+	// The server's read timeout suits beacons, not a 32 MiB map from a
+	// slow build runner, so an authenticated upload gets longer.
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(uploadReadTimeout))
 	limit := h.cfg.Sourcemaps.MaxUploadBytes
 	body, err := readCapped(r.Body, r.Header.Get("Content-Encoding"), limit, limit)
 	if err != nil {
@@ -103,14 +111,20 @@ func (h *Handler) refuseUpload(w http.ResponseWriter, r *http.Request, a *app) {
 	if a != nil {
 		label = a.cfg.ServiceName
 	}
-	if key, _, ok := h.clientKey(r); ok {
-		if allowed, wait := h.limit.allow(key); !allowed {
-			h.tel.upload(r.Context(), label, uploadRateLimited)
-			secs := max(1, int64(math.Ceil(wait.Seconds())))
-			w.Header().Set("Retry-After", strconv.FormatInt(secs, 10))
-			http.Error(w, http.StatusText(http.StatusTooManyRequests), http.StatusTooManyRequests)
-			return
-		}
+	key, _, ok := h.clientKey(r)
+	if !ok {
+		// Without a key the attempt cannot be charged, so it is refused
+		// before the token is judged, as ingest refuses such a client.
+		h.tel.upload(r.Context(), label, uploadBadRequest)
+		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+		return
+	}
+	if allowed, wait := h.limit.allow(key); !allowed {
+		h.tel.upload(r.Context(), label, uploadRateLimited)
+		secs := max(1, int64(math.Ceil(wait.Seconds())))
+		w.Header().Set("Retry-After", strconv.FormatInt(secs, 10))
+		http.Error(w, http.StatusText(http.StatusTooManyRequests), http.StatusTooManyRequests)
+		return
 	}
 	h.tel.upload(r.Context(), label, uploadUnauthorized)
 	w.Header().Set("WWW-Authenticate", "Bearer")
@@ -119,10 +133,11 @@ func (h *Handler) refuseUpload(w http.ResponseWriter, r *http.Request, a *app) {
 
 // bearerMatches compares the presented bearer token with the configured
 // one in constant time, over their SHA-256 sums so the comparison does
-// not leak the token's length either.
+// not leak the token's length either. The scheme is case-insensitive, as
+// RFC 9110 has it.
 func bearerMatches(header string, want *[32]byte) bool {
-	token, ok := strings.CutPrefix(header, "Bearer ")
-	if !ok {
+	scheme, token, ok := strings.Cut(header, " ")
+	if !ok || !strings.EqualFold(scheme, "Bearer") {
 		return false
 	}
 	got := sha256.Sum256([]byte(strings.TrimSpace(token)))

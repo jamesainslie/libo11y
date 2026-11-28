@@ -386,3 +386,25 @@ func TestNewHandlerS3NeedsStoreOption(t *testing.T) {
 	}
 	_ = h.Close()
 }
+
+func TestUploadBearerSchemeIsCaseInsensitive(t *testing.T) {
+	h, _ := newUploadHandler(t)
+	if w := upload(h, http.MethodPost, validUpload, "bearer secret-1", "", fixtureMap(t)); w.Code != http.StatusCreated {
+		t.Fatalf("status %d", w.Code)
+	}
+}
+
+// TestUploadUnknownClientFailsClosed checks a failed authentication from
+// a client the rate limiter cannot key is refused without the 401 that
+// would let it guess tokens without limit.
+func TestUploadUnknownClientFailsClosed(t *testing.T) {
+	h, _ := newUploadHandler(t)
+	r := httptest.NewRequest(http.MethodPost, "/_o11y/v1/sourcemaps"+validUpload, nil)
+	r.Header.Set("Authorization", "Bearer wrong")
+	r.RemoteAddr = "not-an-address"
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status %d", w.Code)
+	}
+}

@@ -67,7 +67,8 @@ adheres to [Semantic Versioning](https://semver.org/).
   client's rate limit.
 - Symbolication of JavaScript stacks in `o11y.rum.error` records, records
   with `exception.stacktrace` and span `exception` events, through an LRU
-  cache of parsed maps with a negative cache (`symbolication`), before
+  cache of parsed maps with a time to live and a negative cache
+  (`symbolication`), and a store read budget per batch, before
   export and metric derivation. Every such record gets
   `o11y.rum.error.fingerprint` from its resolved frames. V8, Gecko and
   WebKit stack formats are parsed.

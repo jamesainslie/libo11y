@@ -8,9 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/collector/pdata/pcommon"
@@ -32,6 +34,10 @@ type SymbolicationConfig struct {
 	// CacheBytes caps the memory parsed maps may hold. Default 268435456
 	// (256 MiB). A map larger than this is used but not kept.
 	CacheBytes int64 `yaml:"cache_bytes"`
+	// CacheTTL is how long a parsed map is used before the store is read
+	// again. Default 10m. It bounds how long a gateway replica that did
+	// not receive an upload keeps using the map the upload replaced.
+	CacheTTL time.Duration `yaml:"cache_ttl"`
 	// NegativeTTL is how long a map found missing, invalid or unreadable
 	// is not looked up again. Default 60s. A new upload of the map ends
 	// the wait at once.
@@ -44,6 +50,9 @@ type SymbolicationConfig struct {
 func (c *SymbolicationConfig) applyDefaults() {
 	setDefault(&c.CacheMaps, 64)
 	setDefault(&c.CacheBytes, 256<<20)
+	if c.CacheTTL == 0 {
+		c.CacheTTL = 10 * time.Minute
+	}
 	if c.NegativeTTL == 0 {
 		c.NegativeTTL = time.Minute
 	}
@@ -56,6 +65,8 @@ func (c SymbolicationConfig) validate() error {
 		return errors.New("symbolication.cache_maps must be positive")
 	case c.CacheBytes <= 0:
 		return errors.New("symbolication.cache_bytes must be positive")
+	case c.CacheTTL < 0:
+		return errors.New("symbolication.cache_ttl must not be negative")
 	case c.NegativeTTL < 0:
 		return errors.New("symbolication.negative_ttl must not be negative")
 	case c.MaxFrames <= 0:
@@ -79,15 +90,18 @@ const (
 	frameUnmapped = "unmapped" // the map has no mapping at the position
 	frameMiss     = "miss"     // no map for the script
 	frameError    = "error"    // the map could not be read or parsed
-	frameSkipped  = "skipped"  // no usable version, no position, or over the per-stack map budget
+	frameSkipped  = "skipped"  // no usable version, no position, or over the batch's load budget
 )
 
-// maxMapsPerStack bounds the distinct maps one stack may load, so a stack
-// naming many scripts cannot turn one record into many store reads.
-const maxMapsPerStack = 8
-
-// storeReadTimeout bounds one object store read on the ingest path.
-const storeReadTimeout = 5 * time.Second
+// The load budget of one batch. Script URLs come from clients, so without
+// it one batch of many records naming many scripts could turn into
+// thousands of store reads on the request's goroutine. Maps already in
+// memory cost nothing against it.
+const (
+	maxLoadsPerBatch   = 16              // distinct maps one batch may read from the store
+	defaultBatchBudget = 2 * time.Second // after this, no new read starts
+	storeReadTimeout   = 2 * time.Second // bounds one read
+)
 
 // symbolicator resolves minified stack frames through uploaded source
 // maps and fingerprints errors. A nil symbolicator does nothing.
@@ -96,20 +110,64 @@ type symbolicator struct {
 	tel         *telemetry
 	maxFrames   int
 	maxValueLen int
+	batchBudget time.Duration
 }
 
-// newSymbolicator reads maps from store. maxValueLen caps a rewritten
-// stack, as the attribute policy caps every string value. tel may be nil.
-func newSymbolicator(store ObjectStore, cfg SymbolicationConfig, maxValueLen int, tel *telemetry, now func() time.Time) *symbolicator {
-	if tel == nil {
-		tel = newTelemetry(nil, nil)
+// symbolicatorDeps are what a symbolicator needs besides its store and
+// configuration. Zero fields take a working default.
+type symbolicatorDeps struct {
+	// maxValueLen caps a rewritten stack, as the attribute policy caps
+	// every string value. Zero leaves it uncapped.
+	maxValueLen int
+	// maxMapBytes caps an object read from the store. Zero leaves it
+	// uncapped.
+	maxMapBytes int64
+	tel         *telemetry
+	log         *slog.Logger
+	now         func() time.Time
+}
+
+// newSymbolicator reads maps from store.
+func newSymbolicator(store ObjectStore, cfg SymbolicationConfig, d symbolicatorDeps) *symbolicator {
+	if d.tel == nil {
+		d.tel = newTelemetry(nil, nil)
 	}
+	if d.now == nil {
+		d.now = time.Now
+	}
+	c := newMapCache(store, cfg, d.maxMapBytes, d.now)
+	c.log = d.log
 	return &symbolicator{
-		cache:       newMapCache(store, cfg, now),
-		tel:         tel,
+		cache:       c,
+		tel:         d.tel,
 		maxFrames:   cfg.MaxFrames,
-		maxValueLen: maxValueLen,
+		maxValueLen: d.maxValueLen,
+		batchBudget: defaultBatchBudget,
 	}
+}
+
+// loadBudget is one batch's allowance of store reads.
+type loadBudget struct {
+	loaded   map[string]bool
+	deadline time.Time
+}
+
+func (s *symbolicator) newBudget() *loadBudget {
+	// Wall time, not the handler's clock: the budget bounds real latency.
+	return &loadBudget{loaded: map[string]bool{}, deadline: time.Now().Add(s.batchBudget)}
+}
+
+// allow reports whether key may be read from the store. A key the batch
+// already read is always allowed, because the cache now answers it.
+func (b *loadBudget) allow(key string) bool {
+	if b.loaded[key] {
+		return true
+	}
+	if len(b.loaded) >= maxLoadsPerBatch || !time.Now().Before(b.deadline) {
+		return false
+	}
+	b.loaded[key] = true
+	return true
 }
 
 // invalidate forgets what the cache holds for key, so a new upload is
@@ -160,7 +218,7 @@ func (s *symbolicator) logs(ctx context.Context, app, namespace string, ld plog.
 	if s == nil {
 		return
 	}
-	tally := frameTally{}
+	tally, budget := frameTally{}, s.newBudget()
 	for i := range ld.ResourceLogs().Len() {
 		rl := ld.ResourceLogs().At(i)
 		rel := releaseOf(namespace, rl.Resource())
@@ -170,7 +228,7 @@ func (s *symbolicator) logs(ctx context.Context, app, namespace string, ld plog.
 				lr := records.At(k)
 				_, hasStack := lr.Attributes().Get(keyExcStacktrace)
 				if hasStack || eventName(lr) == eventRUMError {
-					s.resolve(ctx, rel.withRecord(lr.Attributes()), lr.Attributes(), tally)
+					s.resolve(ctx, rel.withRecord(lr.Attributes()), lr.Attributes(), tally, budget)
 				}
 			}
 		}
@@ -183,7 +241,7 @@ func (s *symbolicator) traces(ctx context.Context, app, namespace string, td ptr
 	if s == nil {
 		return
 	}
-	tally := frameTally{}
+	tally, budget := frameTally{}, s.newBudget()
 	for i := range td.ResourceSpans().Len() {
 		rs := td.ResourceSpans().At(i)
 		rel := releaseOf(namespace, rs.Resource())
@@ -195,7 +253,7 @@ func (s *symbolicator) traces(ctx context.Context, app, namespace string, td ptr
 				for e := range span.Events().Len() {
 					ev := span.Events().At(e)
 					if ev.Name() == eventException {
-						s.resolve(ctx, spanRel.withRecord(ev.Attributes()), ev.Attributes(), tally)
+						s.resolve(ctx, spanRel.withRecord(ev.Attributes()), ev.Attributes(), tally, budget)
 					}
 				}
 			}
@@ -218,11 +276,11 @@ func (s *symbolicator) record(ctx context.Context, app string, tally frameTally)
 // one, and sets o11y.rum.error.fingerprint. The stack is rewritten only
 // when at least one frame resolved, so an unresolved stack keeps its
 // original shape.
-func (s *symbolicator) resolve(ctx context.Context, rel release, attrs pcommon.Map, tally frameTally) {
+func (s *symbolicator) resolve(ctx context.Context, rel release, attrs pcommon.Map, tally frameTally, budget *loadBudget) {
 	var frames []stacktrace.Frame
 	if v, ok := attrs.Get(keyExcStacktrace); ok && v.Type() == pcommon.ValueTypeStr {
 		tr := stacktrace.Parse(v.Str(), s.maxFrames)
-		if s.symbolicate(ctx, rel, &tr, tally) {
+		if s.symbolicate(ctx, rel, &tr, tally, budget) {
 			v.SetStr(truncateLines(tr.String(), s.maxValueLen))
 		}
 		frames = tr.Frames
@@ -232,14 +290,13 @@ func (s *symbolicator) resolve(ctx context.Context, rel release, attrs pcommon.M
 
 // symbolicate resolves tr's frames in place and reports whether any
 // resolved.
-func (s *symbolicator) symbolicate(ctx context.Context, rel release, tr *stacktrace.Trace, tally frameTally) bool {
+func (s *symbolicator) symbolicate(ctx context.Context, rel release, tr *stacktrace.Trace, tally frameTally, budget *loadBudget) bool {
 	if !validSegment(rel.version) || (rel.updateID != "" && !validSegment(rel.updateID)) || rel.namespace == "" {
 		tally[frameSkipped] += int64(len(tr.Frames))
 		return false
 	}
 	resolved := make([]bool, len(tr.Frames))
 	names := make([]string, len(tr.Frames)) // the name mapped at each frame's own position
-	loaded := map[string]bool{}
 	anyResolved := false
 	for i, f := range tr.Frames {
 		if f.URL == "" || f.Line == 0 || f.Column == 0 {
@@ -247,12 +304,14 @@ func (s *symbolicator) symbolicate(ctx context.Context, rel release, tr *stacktr
 			continue
 		}
 		key := sourcemapKey(rel.namespace, rel.version, rel.updateID, normalizeScriptPath(f.URL))
-		if !loaded[key] && len(loaded) == maxMapsPerStack {
-			tally[frameSkipped]++
-			continue
+		m, err, cached := s.cache.lookup(key)
+		if !cached {
+			if !budget.allow(key) {
+				tally[frameSkipped]++
+				continue
+			}
+			m, err = s.cache.get(ctx, key)
 		}
-		loaded[key] = true
-		m, err := s.cache.get(ctx, key)
 		switch {
 		case err != nil:
 			tally[frameError]++
@@ -337,12 +396,18 @@ func maxNegativeEntries(cacheMaps int) int { return max(1024, 16*cacheMaps) }
 // count and bytes, and remembers missing or broken maps for a while.
 // Concurrent loads of one key share one store read.
 type mapCache struct {
-	store  ObjectStore
-	now    func() time.Time
-	ttl    time.Duration
-	maxN   int
-	maxB   int64
-	maxNeg int
+	store    ObjectStore
+	now      func() time.Time
+	ttl      time.Duration // of negative entries
+	posTTL   time.Duration // of parsed maps
+	maxN     int
+	maxB     int64
+	maxNeg   int
+	maxBytes int64        // of one object; 0 for no cap
+	log      *slog.Logger // nil discards store errors
+	// lastLogged is when a store error was last logged, in Unix
+	// nanoseconds, so a failing store logs once a minute.
+	lastLogged atomic.Int64
 
 	mu      sync.Mutex
 	lru     *list.List // of *cacheEntry, most recent first
@@ -357,9 +422,10 @@ type mapCache struct {
 }
 
 type cacheEntry struct {
-	key  string
-	m    *sourcemap.Map
-	size int64
+	key   string
+	m     *sourcemap.Map
+	size  int64
+	until time.Time
 }
 
 type negativeEntry struct {
@@ -371,18 +437,25 @@ type negativeEntry struct {
 // errBrokenMap is returned for a key remembered as unreadable or invalid.
 var errBrokenMap = errors.New("o11yrum: source map unreadable or invalid")
 
-func newMapCache(store ObjectStore, cfg SymbolicationConfig, now func() time.Time) *mapCache {
+// storeErrorLogInterval spaces the warnings a failing store logs.
+const storeErrorLogInterval = time.Minute
+
+// newMapCache reads from store. maxBytes caps one object read; 0 leaves
+// it uncapped.
+func newMapCache(store ObjectStore, cfg SymbolicationConfig, maxBytes int64, now func() time.Time) *mapCache {
 	return &mapCache{
-		store:   store,
-		now:     now,
-		ttl:     cfg.NegativeTTL,
-		maxN:    cfg.CacheMaps,
-		maxB:    cfg.CacheBytes,
-		maxNeg:  maxNegativeEntries(cfg.CacheMaps),
-		lru:     list.New(),
-		entries: map[string]*list.Element{},
-		missing: map[string]negativeEntry{},
-		negLRU:  list.New(),
+		store:    store,
+		now:      now,
+		ttl:      cfg.NegativeTTL,
+		posTTL:   cfg.CacheTTL,
+		maxN:     cfg.CacheMaps,
+		maxB:     cfg.CacheBytes,
+		maxNeg:   maxNegativeEntries(cfg.CacheMaps),
+		maxBytes: maxBytes,
+		lru:      list.New(),
+		entries:  map[string]*list.Element{},
+		missing:  map[string]negativeEntry{},
+		negLRU:   list.New(),
 	}
 }
 
@@ -407,8 +480,12 @@ func (c *mapCache) lookup(key string) (*sourcemap.Map, error, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if el, ok := c.entries[key]; ok {
-		c.lru.MoveToFront(el)
-		return el.Value.(*cacheEntry).m, nil, true
+		e := el.Value.(*cacheEntry)
+		if c.posTTL <= 0 || c.now().Before(e.until) {
+			c.lru.MoveToFront(el)
+			return e.m, nil, true
+		}
+		c.evict(el)
 	}
 	if neg, ok := c.missing[key]; ok {
 		if c.now().Before(neg.until) {
@@ -437,7 +514,11 @@ func (c *mapCache) load(ctx context.Context, key string) (*sourcemap.Map, error)
 		return nil, nil
 	case err != nil:
 		c.remember(key, gen, nil, true)
+		c.logStoreError(err)
 		return nil, fmt.Errorf("o11yrum: reading source map: %w", err)
+	case c.maxBytes > 0 && int64(len(raw)) > c.maxBytes:
+		c.remember(key, gen, nil, true)
+		return nil, fmt.Errorf("o11yrum: source map %s is larger than %d bytes", key, c.maxBytes)
 	}
 	m, err := sourcemap.Parse(raw, sourcemap.Limits{})
 	if err != nil {
@@ -457,9 +538,6 @@ func (c *mapCache) remember(key string, gen uint64, m *sourcemap.Map, broken boo
 		return
 	}
 	if m == nil {
-		if c.ttl <= 0 {
-			return
-		}
 		c.forgetNegative(key)
 		for len(c.missing) >= c.maxNeg {
 			c.forgetNegative(c.negLRU.Back().Value.(string))
@@ -471,11 +549,25 @@ func (c *mapCache) remember(key string, gen uint64, m *sourcemap.Map, broken boo
 	if size > c.maxB {
 		return
 	}
-	c.entries[key] = c.lru.PushFront(&cacheEntry{key: key, m: m, size: size})
+	c.entries[key] = c.lru.PushFront(&cacheEntry{key: key, m: m, size: size, until: c.now().Add(c.posTTL)})
 	c.bytes += size
 	for c.lru.Len() > c.maxN || c.bytes > c.maxB {
 		c.evict(c.lru.Back())
 	}
+}
+
+// logStoreError warns about a failing store at most once a minute, so an
+// outage is visible without a line per frame.
+func (c *mapCache) logStoreError(err error) {
+	if c.log == nil {
+		return
+	}
+	now := time.Now().UnixNano()
+	last := c.lastLogged.Load()
+	if now-last < int64(storeErrorLogInterval) || !c.lastLogged.CompareAndSwap(last, now) {
+		return
+	}
+	c.log.Warn("o11yrum: reading a source map from the object store failed", slog.Any("error", err))
 }
 
 func (c *mapCache) evict(el *list.Element) {

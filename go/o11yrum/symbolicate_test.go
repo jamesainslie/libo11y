@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -20,7 +21,7 @@ import (
 
 const fixtureScript = "https://shop.example/assets/app.js"
 
-var testSymCfg = SymbolicationConfig{CacheMaps: 4, CacheBytes: 1 << 26, NegativeTTL: time.Minute, MaxFrames: 50}
+var testSymCfg = SymbolicationConfig{CacheMaps: 4, CacheBytes: 1 << 26, CacheTTL: time.Hour, NegativeTTL: time.Minute, MaxFrames: 50}
 
 // uploadFixture returns a store holding the Bun-built fixture map for
 // /assets/app.js of shop-web 1.4.2, and the column of the throw in the
@@ -39,7 +40,7 @@ func uploadFixture(t *testing.T, updateID string) (*memStore, int) {
 }
 
 func newTestSymbolicator(store ObjectStore, clock func() time.Time) *symbolicator {
-	return newSymbolicator(store, testSymCfg, 4096, nil, clock)
+	return newSymbolicator(store, testSymCfg, symbolicatorDeps{maxValueLen: 4096, now: clock})
 }
 
 // errorLogs builds one o11y.rum.error record of shop-web 1.4.2.
@@ -248,7 +249,7 @@ func TestSymbolicateSpanExceptionEvents(t *testing.T) {
 
 func TestSymbolicateBounds(t *testing.T) {
 	store, col := uploadFixture(t, "")
-	s := newSymbolicator(store, SymbolicationConfig{CacheMaps: 4, CacheBytes: 1 << 26, NegativeTTL: time.Minute, MaxFrames: 50}, 120, nil, time.Now)
+	s := newSymbolicator(store, testSymCfg, symbolicatorDeps{maxValueLen: 120})
 	var b strings.Builder
 	b.WriteString("Error: x")
 	for range 10 {
@@ -260,7 +261,7 @@ func TestSymbolicateBounds(t *testing.T) {
 	if len(st) > 120 || !strings.Contains(st, "app.ts") || strings.HasSuffix(st, "(") {
 		t.Fatalf("%d bytes: %q", len(st), st)
 	}
-	// Stacks naming many scripts load a bounded number of maps.
+	// A stack naming many scripts loads a bounded number of maps.
 	b.Reset()
 	b.WriteString("Error: x")
 	for i := range 20 {
@@ -274,7 +275,7 @@ func TestSymbolicateBounds(t *testing.T) {
 		reads += n
 	}
 	store.mu.Unlock()
-	if reads > maxMapsPerStack+1 { // +1 for the fixture read above
+	if reads > maxLoadsPerBatch+1 { // +1 for the fixture read above
 		t.Fatalf("%d store reads for one stack", reads)
 	}
 }
@@ -299,7 +300,7 @@ func TestCacheEvicts(t *testing.T) {
 	keyA, keyB := "sourcemaps/a/1/_/a.map", "sourcemaps/a/1/_/b.map"
 	_ = store.Put(context.Background(), keyA, raw)
 	_ = store.Put(context.Background(), keyB, raw)
-	c := newMapCache(store, SymbolicationConfig{CacheMaps: 1, CacheBytes: 1 << 26, NegativeTTL: time.Minute}, time.Now)
+	c := newMapCache(store, SymbolicationConfig{CacheMaps: 1, CacheBytes: 1 << 26, CacheTTL: time.Hour, NegativeTTL: time.Minute}, 0, time.Now)
 	ctx := context.Background()
 	load := func(k string) {
 		if m, err := c.get(ctx, k); err != nil || m == nil {
@@ -322,7 +323,7 @@ func TestCacheEvicts(t *testing.T) {
 		t.Fatalf("%d reads of A after invalidate", n)
 	}
 	// A byte budget smaller than one map keeps nothing cached.
-	tiny := newMapCache(store, SymbolicationConfig{CacheMaps: 8, CacheBytes: 1, NegativeTTL: time.Minute}, time.Now)
+	tiny := newMapCache(store, SymbolicationConfig{CacheMaps: 8, CacheBytes: 1, CacheTTL: time.Hour, NegativeTTL: time.Minute}, 0, time.Now)
 	for range 2 {
 		if m, _ := tiny.get(ctx, keyB); m == nil {
 			t.Fatal("an uncacheable map was not returned")
@@ -334,7 +335,7 @@ func TestCacheEvicts(t *testing.T) {
 }
 
 func TestCacheNegativeEntriesAreBounded(t *testing.T) {
-	c := newMapCache(newMemStore(), SymbolicationConfig{CacheMaps: 1, CacheBytes: 1 << 20, NegativeTTL: time.Hour}, time.Now)
+	c := newMapCache(newMemStore(), SymbolicationConfig{CacheMaps: 1, CacheBytes: 1 << 20, CacheTTL: time.Hour, NegativeTTL: time.Hour}, 0, time.Now)
 	for i := range 10 * maxNegativeEntries(1) {
 		_, _ = c.get(context.Background(), fmt.Sprintf("k%d", i))
 	}
@@ -349,7 +350,7 @@ func TestCacheNegativeEntriesAreBounded(t *testing.T) {
 func TestCacheInvalidMapCountsAsErrorAndIsNotRefetched(t *testing.T) {
 	store := newMemStore()
 	_ = store.Put(context.Background(), "k", []byte("nope"))
-	c := newMapCache(store, testSymCfg, time.Now)
+	c := newMapCache(store, testSymCfg, 0, time.Now)
 	for range 3 {
 		if _, err := c.get(context.Background(), "k"); err == nil {
 			t.Fatal("an invalid map loaded")
@@ -363,7 +364,7 @@ func TestCacheInvalidMapCountsAsErrorAndIsNotRefetched(t *testing.T) {
 func TestCacheConcurrentLoadsShareOneRead(t *testing.T) {
 	store := newMemStore()
 	_ = store.Put(context.Background(), "k", fixtureMap(t))
-	c := newMapCache(store, testSymCfg, time.Now)
+	c := newMapCache(store, testSymCfg, 0, time.Now)
 	var wg sync.WaitGroup
 	for range 16 {
 		wg.Go(func() {
@@ -413,5 +414,136 @@ func TestIngestSymbolicates(t *testing.T) {
 	frames := sumPoints(t, metricByName(t, rec.Metrics(), "o11yrum.symbolication.frames"))
 	if n := frames[set(telApp, "shop-web", telResult, "hit")]; n != 1 {
 		t.Fatalf("hits %d: %v", n, frames)
+	}
+}
+
+// stackOf builds a stack whose frames name n scripts no map exists for.
+func stackOf(prefix string, n int) string {
+	var b strings.Builder
+	b.WriteString("Error: x")
+	for i := range n {
+		fmt.Fprintf(&b, "\n    at u (https://shop.example/assets/%s-%d.js:1:1)", prefix, i)
+	}
+	return b.String()
+}
+
+func totalReads(store *memStore) int {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	n := 0
+	for _, c := range store.gets {
+		n += c
+	}
+	return n
+}
+
+// TestSymbolicateBatchBudget checks one batch, however many records it
+// holds, reads a bounded number of maps from the store.
+func TestSymbolicateBatchBudget(t *testing.T) {
+	store := newMemStore()
+	s := newTestSymbolicator(store, time.Now)
+	ld := plog.NewLogs()
+	rl := ld.ResourceLogs().AppendEmpty()
+	rl.Resource().Attributes().PutStr("service.version", "1.4.2")
+	records := rl.ScopeLogs().AppendEmpty().LogRecords()
+	for i := range 50 {
+		lr := records.AppendEmpty()
+		lr.Attributes().PutStr("event.name", "o11y.rum.error")
+		lr.Attributes().PutStr("exception.stacktrace", stackOf(fmt.Sprintf("r%d", i), 8))
+	}
+	s.logs(context.Background(), "shop-web", "shop-web", ld)
+	if n := totalReads(store); n > maxLoadsPerBatch {
+		t.Fatalf("%d store reads for one batch", n)
+	}
+	for i := range records.Len() {
+		if _, ok := records.At(i).Attributes().Get(keyErrorFingerprint); !ok {
+			t.Fatalf("record %d has no fingerprint", i)
+		}
+	}
+}
+
+// slowStore answers every read after a delay.
+type slowStore struct {
+	*memStore
+	delay time.Duration
+}
+
+func (s slowStore) Get(ctx context.Context, key string) ([]byte, error) {
+	time.Sleep(s.delay)
+	return s.memStore.Get(ctx, key)
+}
+
+// TestSymbolicateBatchDeadline checks a slow store cannot hold a batch
+// for long: once the batch's time budget is spent, no new read starts.
+func TestSymbolicateBatchDeadline(t *testing.T) {
+	store := newMemStore()
+	s := newTestSymbolicator(slowStore{memStore: store, delay: 40 * time.Millisecond}, time.Now)
+	s.batchBudget = 100 * time.Millisecond
+	ld, _ := errorLogs("Error", "x", stackOf("slow", 10))
+	start := time.Now()
+	s.logs(context.Background(), "shop-web", "shop-web", ld)
+	if n := totalReads(store); n > 4 {
+		t.Fatalf("%d reads past a 100ms budget of 40ms reads", n)
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Fatalf("the batch took %v", d)
+	}
+}
+
+func TestCachePositiveTTL(t *testing.T) {
+	store := newMemStore()
+	_ = store.Put(context.Background(), "k", fixtureMap(t))
+	clock := newTestClock()
+	c := newMapCache(store, SymbolicationConfig{CacheMaps: 4, CacheBytes: 1 << 26, CacheTTL: 10 * time.Minute, NegativeTTL: time.Minute}, 0, clock.Now)
+	for range 2 {
+		if m, err := c.get(context.Background(), "k"); err != nil || m == nil {
+			t.Fatal(err)
+		}
+	}
+	clock.advance(11 * time.Minute)
+	if m, err := c.get(context.Background(), "k"); err != nil || m == nil {
+		t.Fatal(err)
+	}
+	if n := store.getCount("k"); n != 2 {
+		t.Fatalf("%d reads: a map replaced on another replica must be read again after cache_ttl", n)
+	}
+}
+
+func TestCacheRefusesOversizedObject(t *testing.T) {
+	store := newMemStore()
+	raw := fixtureMap(t)
+	_ = store.Put(context.Background(), "k", raw)
+	c := newMapCache(store, testSymCfg, int64(len(raw)-1), time.Now)
+	if _, err := c.get(context.Background(), "k"); err == nil {
+		t.Fatal("an object over the size cap was parsed")
+	}
+}
+
+func TestSymbolicateLogsStoreErrors(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+	s := newSymbolicator(failingStore{}, testSymCfg, symbolicatorDeps{log: log})
+	for i := range 3 {
+		ld, _ := errorLogs("Error", "x", stackOf(fmt.Sprintf("e%d", i), 1))
+		s.logs(context.Background(), "shop-web", "shop-web", ld)
+	}
+	if n := strings.Count(buf.String(), "disk full"); n != 1 {
+		t.Fatalf("%d store error log lines, want 1 per minute:\n%s", n, buf.String())
+	}
+}
+
+func TestSymbolicationConfigDefaults(t *testing.T) {
+	cfg, err := ParseConfig([]byte("apps:\n  - {service_name: a, origins: [\"https://a\"]}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := SymbolicationConfig{CacheMaps: 64, CacheBytes: 256 << 20, CacheTTL: 10 * time.Minute, NegativeTTL: time.Minute, MaxFrames: 50}
+	if cfg.Symbolication != want {
+		t.Fatalf("%+v", cfg.Symbolication)
+	}
+	for _, bad := range []string{"cache_maps: -1", "cache_bytes: -1", "cache_ttl: -1s", "negative_ttl: -1s", "max_frames: -1"} {
+		if _, err := ParseConfig([]byte("symbolication: {" + bad + "}\napps:\n  - {service_name: a, origins: [\"https://a\"]}\n")); err == nil {
+			t.Errorf("%s accepted", bad)
+		}
 	}
 }

@@ -101,6 +101,9 @@ func Parse(data []byte, lim Limits) (*Map, error) {
 	if err := m.decodeMappings(raw.Mappings, lim.MaxSegments); err != nil {
 		return nil, err
 	}
+	// Growth leaves spare capacity that Size would not count.
+	m.segs = slices.Clip(m.segs)
+	m.lines = slices.Clip(m.lines)
 	for i, s := range raw.Sources {
 		m.sources[i] = joinRoot(raw.SourceRoot, s)
 	}
