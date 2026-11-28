@@ -11,12 +11,13 @@ from pathlib import Path
 from typing import Any
 
 from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.version import __version__ as _otel_sdk_version
 
 from libo11y._internal.env import EnvView, parse_resource_attributes
 from libo11y._internal.identity import derive_instance_id, random_instance_id
 from libo11y._internal.policy import SensitivityPolicy, ViolationRecorder
 from libo11y.buildinfo import read_build_info
-from libo11y.errors import InvalidEnvironment, NoEnvironment, NoServiceName, O11yError
+from libo11y.errors import InvalidEnvironment, InvalidOption, NoEnvironment, NoServiceName
 from libo11y.options import Options
 from libo11y.spec import (
     ATTR_BUILD_MODIFIED,
@@ -35,7 +36,11 @@ from libo11y.spec import (
 )
 from libo11y.spec._goquote import go_quote
 
-_CONTAINER_ID_RE = re.compile(r"[0-9a-fA-F]{64}")
+_CONTAINER_ID_RE = re.compile(r"[0-9a-f]{64}")
+
+# What telemetry.sdk.name means: the SDK that produced the telemetry, which
+# is OpenTelemetry's, as the Go and TypeScript implementations report it.
+_TELEMETRY_SDK_NAME = "opentelemetry"
 
 # Recorded, with a flag in the startup summary, when no version resolves. A
 # missing version degrades telemetry and never blocks startup.
@@ -50,25 +55,70 @@ RULE_IDENTITY_ENVIRONMENT_INVALID = "identity_environment_invalid"
 _UNKNOWN_SERVICE = "unknown_service"
 
 
-def _detect_container_id() -> str | None:
-    if not sys.platform.startswith("linux"):
-        return None
-    for path in ("/proc/self/mountinfo", "/proc/self/cgroup"):
-        try:
-            text = Path(path).read_text(encoding="utf-8", errors="ignore")
-        except OSError:
+def _container_id_in_segment(segment: str) -> str | None:
+    """Return the container ID a cgroup path segment names, if it names one.
+
+    Recognised forms are the bare ID, a runtime prefix joined by a dash or a
+    colon (docker-<id>, crio-<id>, libpod-<id>, cri-containerd-<id>,
+    cri-containerd:<id>), each with an optional systemd .scope suffix.
+    """
+    candidate = segment.removesuffix(".scope")
+    cut = max(candidate.rfind("-"), candidate.rfind(":"))
+    candidate = candidate[cut + 1 :]
+    return candidate if _CONTAINER_ID_RE.fullmatch(candidate) else None
+
+
+def container_id_from_cgroup(text: str) -> str | None:
+    """Find the container ID in the text of /proc/self/cgroup.
+
+    Each line is hierarchy:controllers:path, for cgroup v1 and v2 alike. The
+    ID is the innermost path segment that names one, on the first line that
+    has one. A 64-digit run inside a longer segment is not an ID.
+    """
+    for line in text.splitlines():
+        parts = line.split(":", 2)
+        if len(parts) != 3:
             continue
-        m = _CONTAINER_ID_RE.search(text)
-        if m is not None:
-            return m.group(0).lower()
+        for segment in reversed(parts[2].strip().split("/")):
+            found = _container_id_in_segment(segment)
+            if found is not None:
+                return found
     return None
 
 
-def _detect_sdk_version() -> str:
+def container_id_from_mountinfo(text: str) -> str | None:
+    """Find the container ID in the text of /proc/self/mountinfo.
+
+    Container runtimes bind-mount /etc/hostname from a directory named after
+    the container, and that mount is visible under cgroup v2, where the
+    cgroup file shows only the namespaced root. Only that mount is read:
+    overlay layers and volumes carry 64-digit IDs of their own.
+    """
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) < 5 or fields[4] != "/etc/hostname":
+            continue
+        for segment in fields[3].split("/"):
+            if _CONTAINER_ID_RE.fullmatch(segment):
+                return segment
+    return None
+
+
+def _read_proc(path: str) -> str | None:
     try:
-        return importlib.metadata.version("libo11y")
-    except importlib.metadata.PackageNotFoundError:
-        return "0.0.0"
+        return Path(path).read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return None
+
+
+def _detect_container_id() -> str | None:
+    if not sys.platform.startswith("linux"):
+        return None
+    cgroup = _read_proc("/proc/self/cgroup")
+    if cgroup is not None and (found := container_id_from_cgroup(cgroup)) is not None:
+        return found
+    mountinfo = _read_proc("/proc/self/mountinfo")
+    return container_id_from_mountinfo(mountinfo) if mountinfo is not None else None
 
 
 def _detect_distribution_version(dist_name: str | None) -> str | None:
@@ -87,8 +137,9 @@ def _allowed_environments(opts: Options) -> frozenset[str]:
 
 
 def _text(attrs: dict[str, Any], key: str) -> str:
+    """Read a string attribute. A value of any other type reads as absent, as in Go."""
     value = attrs.get(key)
-    return "" if value is None else str(value)
+    return value if isinstance(value, str) else ""
 
 
 def _has_service_name(attrs: dict[str, Any]) -> bool:
@@ -144,9 +195,9 @@ def build_resource(
     Returns (resource, version_fallback_used).
     """
     attrs: dict[str, Any] = {
-        "telemetry.sdk.name": "libo11y",
+        "telemetry.sdk.name": _TELEMETRY_SDK_NAME,
         "telemetry.sdk.language": "python",
-        "telemetry.sdk.version": _detect_sdk_version(),
+        "telemetry.sdk.version": _otel_sdk_version,
         ATTR_HOST_NAME: socket.gethostname(),
         ATTR_PROCESS_RUNTIME_NAME: platform.python_implementation().lower(),
         ATTR_PROCESS_RUNTIME_VERSION: platform.python_version(),
@@ -161,7 +212,7 @@ def build_resource(
         try:
             bi = read_build_info(opts.build_info)
         except (OSError, ValueError) as exc:
-            raise O11yError(f"o11y: failed to read build_info {opts.build_info}: {exc}") from exc
+            raise InvalidOption("build_info", f"cannot read {opts.build_info}: {exc}") from exc
         if bi.revision:
             attrs[ATTR_VCS_REF_HEAD_REVISION] = bi.revision
         if bi.build_time:

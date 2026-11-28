@@ -691,20 +691,38 @@ def global_setup() -> Generator[Callable[[], tuple[InMemorySpanExporter, InMemor
         tel.shutdown()
 
 
+def _duration_count(reader: InMemoryMetricReader) -> int:
+    data = reader.get_metrics_data()
+    if data is None:
+        return 0
+    total = 0
+    for rm in data.resource_metrics:
+        for sm in rm.scope_metrics:
+            for metric in sm.metrics:
+                if metric.name == "http.server.request.duration":
+                    for point in metric.data.data_points:
+                        total += int(getattr(point, "count", 0))
+    return total
+
+
 def test_wsgi_without_telemetry_follows_the_global_providers(
     global_setup: Callable[[], tuple[InMemorySpanExporter, InMemoryMetricReader]],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     mw = o11y_wsgi.WSGIMiddleware(_wsgi_app([b"x"]))
-    first, _ = global_setup()
+    first, first_reader = global_setup()
     list(mw(_environ(), _StartResponse()))
-    second, _ = global_setup()
+    second, second_reader = global_setup()
     meters = _CallCounter(metrics.get_meter_provider(), "get_meter", monkeypatch)
     for _ in range(3):
         list(mw(_environ(), _StartResponse()))
     assert len(first.get_finished_spans()) == 1
     assert len(second.get_finished_spans()) == 3
-    assert meters.calls == 1
+    assert _duration_count(first_reader) == 1
+    assert _duration_count(second_reader) == 3
+    # setup() installs delegating global providers once and rebinds them in place,
+    # so the middleware reuses its cached instruments across requests and setups.
+    assert meters.calls == 0
 
 
 async def test_asgi_without_telemetry_follows_the_global_providers(
@@ -712,14 +730,16 @@ async def test_asgi_without_telemetry_follows_the_global_providers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     mw = o11y_asgi.ASGIMiddleware(_asgi_app())
-    first, _ = global_setup()
+    first, first_reader = global_setup()
     await _asgi_get(mw, "/a")
-    second, _ = global_setup()
+    second, second_reader = global_setup()
     meters = _CallCounter(metrics.get_meter_provider(), "get_meter", monkeypatch)
     await _asgi_get(mw, "/a", "/b", "/c")
     assert len(first.get_finished_spans()) == 1
     assert len(second.get_finished_spans()) == 3
-    assert meters.calls == 1
+    assert _duration_count(first_reader) == 1
+    assert _duration_count(second_reader) == 3
+    assert meters.calls == 0
 
 
 # ---------------------------------------------------------------- 7. canonical_line needs telemetry

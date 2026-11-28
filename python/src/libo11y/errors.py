@@ -64,6 +64,37 @@ class InvalidAppRegistry(O11yError):
         super().__init__(message)
 
 
+class InvalidOption(O11yError):
+    """Raised by init() and setup() when an option carries a value that cannot be used.
+
+    The message names the option and says what is wrong with the value.
+    """
+
+    def __init__(self, option: str, problem: str) -> None:
+        super().__init__(f"o11y: invalid option {option}: {problem}")
+        self.option = option
+
+
+class ForeignProvider(O11yError):
+    """Raised by setup() when the host already installed its own OpenTelemetry provider.
+
+    OpenTelemetry allows each global provider to be set once per process, so
+    setup() cannot install its providers next to the host's. Nothing global
+    is changed. Use init() for a handle that touches no process global.
+    """
+
+    def __init__(self, signal: str) -> None:
+        super().__init__(
+            f"o11y: a foreign OpenTelemetry {signal} provider is already installed: "
+            "use init() and pass the handle's providers explicitly"
+        )
+        self.signal = signal
+
+
+class UnknownPropagator(O11yError):
+    """Raised when OTEL_PROPAGATORS names a propagator that cannot be resolved."""
+
+
 class CanaryRejected(O11yError):
     """Raised by setup() when a log sink rejects the startup canary event."""
 
@@ -74,6 +105,20 @@ class UnsupportedProtocol(O11yError):
 
 class ExporterError(O11yError):
     """Raised when constructing or configuring an exporter fails."""
+
+
+class ExportFailed(O11yError):
+    """An exporter did not accept a batch.
+
+    It is never raised. Telemetry.shutdown() and Telemetry.force_flush()
+    report it in ShutdownReport.errors when an exporter answers an export
+    with a failure result while they run. An exception an exporter raises
+    is reported as that exception.
+    """
+
+    def __init__(self, signal: str, message: str | None = None) -> None:
+        super().__init__(message or f"o11y: the {signal} exporter did not accept a batch")
+        self.signal = signal
 
 
 class InvalidCarrier(O11yError):
