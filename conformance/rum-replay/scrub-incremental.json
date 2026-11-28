@@ -3,6 +3,7 @@
   "query_allow_list": [],
   "text_allowed_ids": [],
   "editable_ids": [],
+  "blocked_ids": [],
   "parent_tags": {},
   "secrets": ["Jane"],
   "allowed_texts": [],

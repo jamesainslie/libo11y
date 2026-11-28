@@ -48,6 +48,10 @@ One case per file. Each file has these fields:
   allows them, so CSS survives.
 - `editable_ids` lists the node IDs the DOM context reports as editable
   content (inside a textarea or a contenteditable element).
+- `blocked_ids` lists the node IDs the DOM context reports as under a block
+  selector from code or remote configuration. A blocked element keeps only
+  `class`, `rr_width` and `rr_height` and no children. Text changes on a
+  blocked node and nodes added under a blocked parent are dropped.
 - `parent_tags` maps a node ID to the lowercase tag of its parent element,
   for nodes whose parent is not in the event itself: text mutations and the
   root of an added node.
@@ -68,7 +72,7 @@ Each scrub case runs in two modes:
   `allowed_texts` entry may appear in the output. The gateway runs this mode
   by default, so it masks all text whatever the client sent.
 
-The scrubber's context answers three questions about a node ID:
-`textAllowed`, `parentTag` and `editable`. The vectors answer them from the
-three fields above. Anything not listed is not allowed, has no known parent
+The scrubber's context answers four questions about a node ID:
+`textAllowed`, `parentTag`, `editable` and `blocked`. The vectors answer them
+from the four fields above. Anything not listed is not allowed, has no known parent
 tag and is not editable.

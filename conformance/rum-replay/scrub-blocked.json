@@ -1,0 +1,81 @@
+{
+  "description": "Elements under a code or remote block selector (blocked_ids) are placeholders: they keep only class and rrweb's size, lose their children, take no added nodes or text changes, and their attribute changes keep only the placeholder attributes.",
+  "query_allow_list": [],
+  "text_allowed_ids": [],
+  "editable_ids": [],
+  "blocked_ids": [10, 11, 12, 13, 15],
+  "parent_tags": {},
+  "secrets": ["jane", "Jane", "1234-5678", "acct-99812", "xray", "statement", "diagnosis"],
+  "allowed_texts": [],
+  "events": [
+    {
+      "type": 2,
+      "timestamp": 1,
+      "data": {
+        "node": { "type": 2, "id": 1, "tagName": "main", "attributes": {}, "childNodes": [
+          { "type": 2, "id": 10, "tagName": "div", "attributes": { "class": "chat-widget", "id": "chat-jane.doe", "rr_width": "300px", "rr_height": "200px" }, "childNodes": [
+            { "type": 2, "id": 11, "tagName": "img", "attributes": { "src": "https://cdn.example/users/jane.doe@corp.example/avatar.png", "alt": "Jane" }, "childNodes": [] },
+            { "type": 2, "id": 12, "tagName": "a", "attributes": { "href": "https://bank.example/accounts/1234-5678/statement" }, "childNodes": [
+              { "type": 3, "id": 13, "textContent": "Statement" }
+            ] }
+          ] },
+          { "type": 2, "id": 2, "tagName": "p", "attributes": {}, "childNodes": [
+            { "type": 3, "id": 3, "textContent": "Hello" }
+          ] }
+        ] },
+        "initialOffset": { "top": 0, "left": 0 }
+      }
+    },
+    {
+      "type": 3,
+      "timestamp": 2,
+      "data": {
+        "source": 0,
+        "texts": [{ "id": 13, "value": "Jane statement" }],
+        "attributes": [
+          { "id": 10, "attributes": { "style": "background:url(/users/jane.doe/photo.jpg)", "id": "acct-99812", "class": "chat-widget open", "href": "/u/jane" } },
+          { "id": 11, "attributes": { "alt": "Jane Doe" } },
+          { "id": 2, "attributes": { "class": "lead" } }
+        ],
+        "removes": [{ "parentId": 10, "id": 11 }],
+        "adds": [
+          { "parentId": 10, "nextId": null, "node": { "type": 2, "id": 14, "tagName": "img", "attributes": { "src": "https://cdn.example/patients/jane-doe/xray.png", "class": "diagnosis" }, "childNodes": [] } },
+          { "parentId": 1, "nextId": null, "node": { "type": 2, "id": 15, "tagName": "div", "attributes": { "class": "promo", "id": "promo-jane" }, "childNodes": [
+            { "type": 3, "id": 16, "textContent": "Jane" }
+          ] } }
+        ]
+      }
+    }
+  ],
+  "expected": [
+    {
+      "type": 2,
+      "timestamp": 1,
+      "data": {
+        "node": { "type": 2, "id": 1, "tagName": "main", "attributes": {}, "childNodes": [
+          { "type": 2, "id": 10, "tagName": "div", "attributes": { "class": "chat-widget", "rr_width": "300px", "rr_height": "200px" }, "childNodes": [] },
+          { "type": 2, "id": 2, "tagName": "p", "attributes": {}, "childNodes": [
+            { "type": 3, "id": 3, "textContent": "*****" }
+          ] }
+        ] },
+        "initialOffset": { "top": 0, "left": 0 }
+      }
+    },
+    {
+      "type": 3,
+      "timestamp": 2,
+      "data": {
+        "source": 0,
+        "texts": [],
+        "attributes": [
+          { "id": 10, "attributes": { "class": "chat-widget open" } },
+          { "id": 2, "attributes": { "class": "lead" } }
+        ],
+        "removes": [{ "parentId": 10, "id": 11 }],
+        "adds": [
+          { "parentId": 1, "nextId": null, "node": { "type": 2, "id": 15, "tagName": "div", "attributes": { "class": "promo" }, "childNodes": [] } }
+        ]
+      }
+    }
+  ]
+}

@@ -3,6 +3,7 @@
   "query_allow_list": ["page"],
   "text_allowed_ids": [5, 6],
   "editable_ids": [],
+  "blocked_ids": [],
   "parent_tags": {},
   "secrets": ["Jane", "jane", "hunter2", "SECRET", "diary", "Welcome", "Public title", "Password", "Inbox", "track("],
   "allowed_texts": [],

@@ -3,6 +3,7 @@
   "query_allow_list": ["page"],
   "text_allowed_ids": [23, 30],
   "editable_ids": [24],
+  "blocked_ids": [],
   "parent_tags": { "20": "p", "21": "textarea", "22": "script", "23": "style", "24": "div", "30": "p" },
   "secrets": ["Jane", "jane", "SECRET", "steal", "typed"],
   "allowed_texts": ["Public news", "Allowed title"],

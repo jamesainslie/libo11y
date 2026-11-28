@@ -1,0 +1,72 @@
+{
+  "description": "Editable content is user content: its text is dropped, its URL and CSS attributes are dropped, its text attributes are masked whatever the context allows, and selection ranges inside it are dropped.",
+  "query_allow_list": [],
+  "text_allowed_ids": [1, 2, 3, 4],
+  "editable_ids": [7],
+  "blocked_ids": [],
+  "parent_tags": { "7": "p" },
+  "secrets": ["Jane", "jane", "GB29", "mybank", "color:red"],
+  "allowed_texts": [],
+  "events": [
+    {
+      "type": 2,
+      "timestamp": 1,
+      "data": {
+        "node": { "type": 2, "id": 1, "tagName": "div", "attributes": { "contenteditable": "true", "class": "editor", "style": "min-height:10px" }, "childNodes": [
+          { "type": 2, "id": 2, "tagName": "a", "attributes": { "href": "https://mybank.example/transfer/GB29NWBK60161331926819", "title": "Transfer to Jane" }, "childNodes": [
+            { "type": 3, "id": 3, "textContent": "pay Jane" }
+          ] },
+          { "type": 2, "id": 4, "tagName": "img", "attributes": { "src": "https://files.example/jane-passport-scan.jpg", "srcset": "/jane.png 1x", "width": "20" }, "childNodes": [] }
+        ] },
+        "initialOffset": { "top": 0, "left": 0 }
+      }
+    },
+    {
+      "type": 3,
+      "timestamp": 2,
+      "data": {
+        "source": 0,
+        "texts": [{ "id": 7, "value": "typed Jane" }],
+        "attributes": [{ "id": 7, "attributes": { "href": "https://x.example/jane", "style": "color:red", "class": "link" } }],
+        "removes": [],
+        "adds": []
+      }
+    },
+    {
+      "type": 3,
+      "timestamp": 3,
+      "data": { "source": 14, "ranges": [{ "start": 7, "startOffset": 3, "end": 7, "endOffset": 3 }, { "start": 20, "startOffset": 0, "end": 21, "endOffset": 2 }] }
+    }
+  ],
+  "expected": [
+    {
+      "type": 2,
+      "timestamp": 1,
+      "data": {
+        "node": { "type": 2, "id": 1, "tagName": "div", "attributes": { "class": "editor" }, "childNodes": [
+          { "type": 2, "id": 2, "tagName": "a", "attributes": { "title": "******** ** ****" }, "childNodes": [
+            { "type": 3, "id": 3, "textContent": "" }
+          ] },
+          { "type": 2, "id": 4, "tagName": "img", "attributes": { "width": "20" }, "childNodes": [] }
+        ] },
+        "initialOffset": { "top": 0, "left": 0 }
+      }
+    },
+    {
+      "type": 3,
+      "timestamp": 2,
+      "data": {
+        "source": 0,
+        "texts": [{ "id": 7, "value": "" }],
+        "attributes": [{ "id": 7, "attributes": { "class": "link" } }],
+        "removes": [],
+        "adds": []
+      }
+    },
+    {
+      "type": 3,
+      "timestamp": 3,
+      "data": { "source": 14, "ranges": [{ "start": 20, "startOffset": 0, "end": 21, "endOffset": 2 }] }
+    }
+  ]
+}
