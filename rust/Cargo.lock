@@ -1378,6 +1378,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "http",
+ "http-body",
  "http-body-util",
  "libo11y",
  "libo11y-spec",
