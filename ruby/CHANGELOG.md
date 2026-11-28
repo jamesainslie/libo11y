@@ -7,21 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-
-- `Rack::Middleware` adds the `Server-Timing` entry to HTML responses only, as the Go middleware does, and raises `ArgumentError` for `canonical_line: true` without `telemetry:`, where it used to emit nothing.
-
-### Fixed
-
-- The Rack middleware and `HttpClient` record a request method outside the standard set as `_OTHER`, with the method as given in `http.request.method_original`, so a caller cannot grow the metric's series. `HttpClient` sends such a method, where it used to raise.
-- A raised error is recorded on the span once, and the span status carries no error message. A 5xx response sets `error.type` on the span, the metric and the canonical line.
-- The Rack middleware keeps an existing `Server-Timing` value in the form the application set it, a list included, and does not add a second header under another case.
-- A request the middleware ignores no longer clears the route an enclosing middleware set. Ignore patterns match a leading dot, as Go's `path.Match` does.
-- `HttpClient` replaces a propagation header the caller passed in another case.
-- Threads that share a middleware or a client create its histogram once.
-- `Recorder#assert_triangle!` passed when the log record and the exemplar were on different traces. It requires one trace with a span, a log record and an exemplar, and takes a metric name to look at one metric's exemplars.
-- `Recorder#assert_conforms!` passed after the code under test emitted a secret, because the secret had been redacted. It now fails on any counted redaction of a secret, as Go's `AssertConforms` does, looks at metric data points too, and lists every problem it finds.
-
 ## [0.2.0] - 2026-11-28
 
 This release fixes most of what the first review of 0.1.0 found. It changes an option name, a return type and the text form of a carrier, so read the "Changed" list before upgrading.
@@ -36,6 +21,7 @@ This release fixes most of what the first review of 0.1.0 found. It changes an o
 - Explicit options and `resource_attributes` beat `OTEL_SERVICE_NAME` and `OTEL_RESOURCE_ATTRIBUTES`. In 0.1.0 the environment beat `service.name` and `deployment.environment.name` given in `resource_attributes`.
 - An injected span processor owns the export path, as an injected exporter does, so no exporter is built from the environment beside it.
 - `Libo11y::InvalidEnvironment` names the value and the allowed set, and `Libo11y::CanaryRejected` says "rejected by log pipeline", as Go's errors do.
+- `Rack::Middleware` adds the `Server-Timing` entry to HTML responses only, as the Go middleware does, and raises `ArgumentError` for `canonical_line: true` without `telemetry:`, where it used to emit nothing.
 
 ### Fixed
 
@@ -51,6 +37,14 @@ This release fixes most of what the first review of 0.1.0 found. It changes an o
 - `Detached.capture` returns the zero carrier outside a span and drops the trace state and then the baggage to stay within 32 KiB. `Carrier.unmarshal_text` refuses text with no valid traceparent.
 - `Detached.start_linked` dropped the caller's baggage. It merges the carrier's baggage into it.
 - The baggage egress filter dropped the metadata of the members it let through.
+- The Rack middleware and `HttpClient` record a request method outside the standard set as `_OTHER`, with the method as given in `http.request.method_original`, so a caller cannot grow the metric's series. `HttpClient` sends such a method, where it used to raise.
+- A raised error is recorded on the span once, and the span status carries no error message. A 5xx response sets `error.type` on the span, the metric and the canonical line.
+- The Rack middleware keeps an existing `Server-Timing` value in the form the application set it, a list included, and does not add a second header under another case.
+- A request the middleware ignores no longer clears the route an enclosing middleware set. Ignore patterns match a leading dot, as Go's `path.Match` does.
+- `HttpClient` replaces a propagation header the caller passed in another case.
+- Threads that share a middleware or a client create its histogram once.
+- `Recorder#assert_triangle!` passed when the log record and the exemplar were on different traces. It requires one trace with a span, a log record and an exemplar, and takes a metric name to look at one metric's exemplars.
+- `Recorder#assert_conforms!` passed after the code under test emitted a secret, because the secret had been redacted. It now fails on any counted redaction of a secret, as Go's `AssertConforms` does, looks at metric data points too, and lists every problem it finds.
 
 ## [0.1.0] - 2026-11-28
 
