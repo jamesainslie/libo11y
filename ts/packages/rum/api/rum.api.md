@@ -267,6 +267,7 @@ export type RumSignal = {
     readonly kind: string;
     readonly label: string;
     readonly at: number;
+    readonly key?: string;
 }
 /** An event the bootstrap buffered before RUM loaded, replayed once the collectors started (R3d). */
 | {
@@ -368,6 +369,7 @@ export type ViewEvent = {
     readonly view: ViewState;
     readonly previous?: ViewState;
     readonly cause?: SpanContext;
+    readonly rendered?: true;
 } | {
     readonly type: "rename";
     readonly view: ViewState;
@@ -376,6 +378,7 @@ export type ViewEvent = {
 | {
     readonly type: "rendered";
     readonly view: ViewState;
+    readonly at?: number;
 } | {
     readonly type: "end";
     readonly view: ViewState;
@@ -395,6 +398,7 @@ export interface ViewStartOptions {
     // (undocumented)
     readonly kind: RUMViewKind;
     readonly name?: string;
+    readonly rendered?: boolean;
     readonly startTime?: number;
 }
 
@@ -423,7 +427,7 @@ export interface ViewTracker {
     loadView(): ViewState | undefined;
     // (undocumented)
     rename(name: string): void;
-    rendered(): void;
+    rendered(at?: number): void;
     start(opts: ViewStartOptions): ViewState;
     // (undocumented)
     subscribe(listener: (event: ViewEvent) => void): () => void;
