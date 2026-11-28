@@ -511,6 +511,48 @@ func stripSrcset(raw string, allow map[string]bool) string {
 	return strings.Join(out, ", ")
 }
 
+// stripContent strips a kept content attribute (meta og:url, og:image,
+// twitter:image, a refresh), as the collector's stripContent does. A
+// refresh value (digits, then ";" or ",") keeps only its delay. Otherwise
+// a value that, read as stripURL reads it, starts with a URL scheme, "/"
+// or "\" is stripped by stripURL. Any other value is text and kept.
+func stripContent(raw string, allow map[string]bool) string {
+	t := cleanURL(raw)
+	if delay, ok := refreshDelay(t); ok {
+		return delay
+	}
+	if isBareURL(t) {
+		return stripURL(raw, allow)
+	}
+	return raw
+}
+
+// refreshDelay returns the delay of a meta refresh value, matching the
+// collector's /^(\d+(?:\.\d*)?)\s*[;,]/: ASCII digits, an optional "."
+// and more digits, optional JavaScript white space, then ";" or ",".
+func refreshDelay(t string) (string, bool) {
+	i := 0
+	for i < len(t) && isASCIIDigit(t[i]) {
+		i++
+	}
+	if i == 0 {
+		return "", false
+	}
+	if i < len(t) && t[i] == '.' {
+		i++
+		for i < len(t) && isASCIIDigit(t[i]) {
+			i++
+		}
+	}
+	rest := strings.TrimLeftFunc(t[i:], jsSpace)
+	if rest == "" || rest[0] != ';' && rest[0] != ',' {
+		return "", false
+	}
+	return t[:i], true
+}
+
+func isASCIIDigit(c byte) bool { return c >= '0' && c <= '9' }
+
 // CSS URL stripping: style attributes, inlined stylesheets and CSSOM
 // rule edits. A small scanner, following CSS Syntax closely enough that
 // escapes cannot hide a URL from it, exactly as the collector's
@@ -525,6 +567,17 @@ func stripSrcset(raw string, allow map[string]bool) string {
 //     holds "?" or "#", or starts with "/" and holds no white space. A URL
 //     string is stripped by stripURL and written back in double quotes.
 //     Any other string is kept exactly as written.
+//   - A bare URL in a declaration value, as in a custom property
+//     (--bg: https://x/a.png?token=1), is stripped too. A declaration
+//     value starts after a ":" whose statement so far (since the start,
+//     "{", "}" or ";") is one name, and ends at ";", "{" or "}". In it, a
+//     run starts at the start of the value or after ASCII white space,
+//     ",", "(" or a comment, and runs, escapes decoded, up to ASCII white
+//     space, a quote, ")", "{", "}", a comment, "!important", or ";" and
+//     "," except in a run that starts with "data:". A run that starts
+//     with a URL scheme, "/" or "\" is a URL: it is kept as written when
+//     stripURL leaves it unchanged, and otherwise written back as the
+//     stripped URL in double quotes.
 //   - Everything else is copied unchanged.
 
 // cssAt returns css[i], or 0 past the end. The scanner never treats NUL
@@ -540,9 +593,9 @@ func isHex(c byte) bool { return c >= '0' && c <= '9' || c >= 'a' && c <= 'f' ||
 
 func isCSSSpace(c byte) bool { return isURLSpace(c) }
 
-// cssCodePoint is the code point of a hex escape: U+FFFD for zero, a
+// cssRune is the code point of a hex escape: U+FFFD for zero, a
 // surrogate or one past U+10FFFF.
-func cssCodePoint(hex string) string {
+func cssRune(hex string) rune {
 	n := 0
 	for i := range len(hex) {
 		c := hex[i]
@@ -556,17 +609,39 @@ func cssCodePoint(hex string) string {
 		}
 	}
 	if n == 0 || n >= 0xd800 && n <= 0xdfff || n > 0x10ffff {
-		return "�"
+		return utf8.RuneError
 	}
-	return string(rune(n))
+	return rune(n)
 }
 
 // readCSSEscape decodes the escape whose backslash is at css[i]. It
 // returns the text and the index after it.
 func readCSSEscape(css string, i int) (string, int) {
+	r, text, next := scanCSSEscape(css, i)
+	if text == "" {
+		text = string(r)
+	}
+	return text, next
+}
+
+// appendCSSEscape appends the text of the escape whose backslash is at
+// css[i] to p, as readCSSEscape decodes it, without allocating. It
+// returns p and the index after the escape.
+func appendCSSEscape(p []byte, css string, i int) ([]byte, int) {
+	r, text, next := scanCSSEscape(css, i)
+	if text == "" {
+		return utf8.AppendRune(p, r), next
+	}
+	return append(p, text...), next
+}
+
+// scanCSSEscape reads the escape whose backslash is at css[i]: a hex
+// escape as its code point r with text empty, any other as the text it
+// stands for. It returns the index after the escape too.
+func scanCSSEscape(css string, i int) (r rune, text string, next int) {
 	j := i + 1
 	if j >= len(css) {
-		return "�", j
+		return 0, "\ufffd", j
 	}
 	if isHex(css[j]) {
 		start := j
@@ -579,10 +654,10 @@ func readCSSEscape(css string, i int) (string, int) {
 		} else if isCSSSpace(cssAt(css, j)) {
 			j++
 		}
-		return cssCodePoint(hex), j
+		return cssRune(hex), "", j
 	}
 	_, size := utf8.DecodeRuneInString(css[j:])
-	return css[j : j+size], j + size
+	return 0, css[j : j+size], j + size
 }
 
 // isCSSEscape reports whether css[i] starts a valid escape: a backslash
@@ -700,25 +775,45 @@ func strconvHex(n int) string {
 	return digits[n>>4:n>>4+1] + digits[n&15:n&15+1]
 }
 
-// cssURLScheme reports whether t starts with one of the schemes that make
-// a quoted CSS string a URL even when it holds white space, ASCII case
-// folded.
-func cssURLScheme(t string) bool {
-	scheme, _, ok := urlScheme(t)
-	if !ok {
-		return false
-	}
-	switch asciiLower(scheme) {
-	case "http", "https", "data", "blob", "javascript", "file", "ftp", "ws", "wss", "mailto", "tel":
-		return true
+// hasURLScheme reports whether t starts with one of the schemes that make
+// a text value a URL (the collector's URL_SCHEMES), ASCII case folded:
+// the ones a page links or loads with, and those stripURL empties.
+func hasURLScheme[T string | []byte](t T) bool {
+	for _, scheme := range urlSchemes {
+		if hasASCIIPrefixFold(t, scheme) {
+			return true
+		}
 	}
 	return false
+}
+
+// urlSchemes are the schemes hasURLScheme looks for, with their ":".
+var urlSchemes = [...]string{"http:", "https:", "data:", "blob:", "javascript:", "file:", "ftp:", "ws:", "wss:", "mailto:", "tel:"}
+
+// hasASCIIPrefixFold reports whether s starts with prefix, which is
+// lowercase ASCII, folding ASCII letters only, as a JavaScript regular
+// expression without the u flag does. strings.EqualFold would also fold
+// U+017F to "s" and U+212A to "k".
+func hasASCIIPrefixFold[T string | []byte](s T, prefix string) bool {
+	if len(s) < len(prefix) {
+		return false
+	}
+	for i := range len(prefix) {
+		c := s[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		if c != prefix[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // readsAsURL reports whether a decoded CSS string is a URL.
 func readsAsURL(value string) bool {
 	t := jsTrim(strings.NewReplacer("\t", "", "\n", "", "\r", "").Replace(value))
-	if cssURLScheme(t) || strings.ContainsAny(t, "?#") {
+	if hasURLScheme(t) || strings.ContainsAny(t, "?#") {
 		return true
 	}
 	return !strings.ContainsFunc(t, jsSpace) && strings.HasPrefix(t, "/")
@@ -732,12 +827,136 @@ func followsImport(out string) bool {
 	return len(t) >= len(kw) && asciiLower(t[len(t)-len(kw):]) == kw
 }
 
+// isCSSProperty reports whether s, a statement so far, is one property
+// name, matching the collector's
+// /^[\t\n\f\r ]*[-A-Za-z0-9_\u0080-\uffff]+[\t\n\f\r ]*$/. Every byte of
+// a non-ASCII character is 0x80 or above, as every UTF-16 code unit of
+// one is.
+func isCSSProperty(s string) bool {
+	i := 0
+	for i < len(s) && isCSSSpace(s[i]) {
+		i++
+	}
+	start := i
+	for i < len(s) && isCSSNameChar(s[i]) {
+		i++
+	}
+	if i == start {
+		return false
+	}
+	for i < len(s) && isCSSSpace(s[i]) {
+		i++
+	}
+	return i == len(s)
+}
+
+// followedByImportant reports whether s, what follows a "!", is
+// "important" after optional ASCII white space, ASCII case folded.
+func followedByImportant(s string) bool {
+	i := 0
+	for i < len(s) && isCSSSpace(s[i]) {
+		i++
+	}
+	return hasASCIIPrefixFold(s[i:], "important")
+}
+
+// bareRunEnds reports whether a bare run whose decoded value so far is
+// value ends at css[j], as the collector's readBareRun does (see the
+// comment above cssAt).
+func bareRunEnds[T string | []byte](css string, j int, value T) bool {
+	switch css[j] {
+	case '\\':
+		return !isCSSEscape(css, j)
+	case '\t', '\n', '\f', '\r', ' ', '"', '\'', ')', '{', '}':
+		return true
+	case '/':
+		return cssAt(css, j+1) == '*'
+	case '!':
+		return followedByImportant(css[j+1:])
+	case ';', ',':
+		return !hasASCIIPrefixFold(value, "data:")
+	}
+	return false
+}
+
+// readCSSBareRun reads a run of text that may be a bare URL from css[i],
+// escapes decoded. It returns the value and the index after it.
+func readCSSBareRun(css string, i int) (string, int) {
+	var value strings.Builder
+	j := i
+	for j < len(css) && !bareRunEnds(css, j, value.String()) {
+		if css[j] == '\\' {
+			text, n := readCSSEscape(css, j)
+			value.WriteString(text)
+			j = n
+		} else {
+			value.WriteByte(css[j])
+			j++
+		}
+	}
+	return value.String(), j
+}
+
+// bareRunPrefix is enough of a decoded run to tell whether it is a URL:
+// the longest scheme that makes one, "javascript:", is 11 bytes.
+const bareRunPrefix = len("javascript:")
+
+// bareRunIsURL reports whether the bare run at css[i] is a URL. That
+// depends on its first bareRunPrefix decoded bytes only, so a long run
+// that is not a URL is never read whole: reading it whole at every
+// boundary in it would be quadratic. The prefix is decoded into a buffer
+// on the stack, since this runs at every boundary of every value. One
+// escape adds at most utf8.UTFMax bytes past the limit.
+func bareRunIsURL(css string, i int) bool {
+	var buf [bareRunPrefix + utf8.UTFMax]byte
+	p := buf[:0]
+	j := i
+	for j < len(css) && len(p) < bareRunPrefix && !bareRunEnds(css, j, p) {
+		if css[j] == '\\' {
+			p, j = appendCSSEscape(p, css, j)
+		} else {
+			p = append(p, css[j])
+			j++
+		}
+	}
+	return isBareURL(p)
+}
+
+// isBareURL reports whether a decoded run is a URL: it starts with a URL
+// scheme, "/" or "\".
+func isBareURL[T string | []byte](value T) bool {
+	return (len(value) > 0 && (value[0] == '/' || value[0] == '\\')) || hasURLScheme(value)
+}
+
 // stripCSSURLs returns css with every URL stripped by stripURL and its
 // comments removed.
 func stripCSSURLs(css string, allow map[string]bool) string {
+	return stripCSS(css, allow, false)
+}
+
+// stripCSSValue strips one declaration value with no property name
+// before it, as in an rrweb style attribute change or a CSSOM
+// setProperty, as stripCSSURLs strips the value after "property:", so a
+// bare URL at its start is a URL. It is the collector's stripCssValue.
+func stripCSSValue(value string, allow map[string]bool) string {
+	return stripCSS(value, allow, true)
+}
+
+// stripCSS is stripCSSURLs, starting inside a declaration value when
+// value is true.
+func stripCSS(css string, allow map[string]bool, value bool) string {
 	var out strings.Builder
 	out.Grow(len(css))
 	i := 0
+	// statement is where the current statement starts in out: after the
+	// start, "{", "}" or ";". colon records that a ":" outside a value was
+	// already seen in it. That ":" is in out[statement:] whether or not it
+	// started a value, so isCSSProperty cannot hold again until the next
+	// statement, and the check is skipped. That keeps the scan linear.
+	statement, colon := 0, false
+	// inValue is inside a declaration value. boundary is at the start of
+	// the value or after white space, ",", "(" or a comment in it.
+	inValue, boundary := value, value
 	for i < len(css) {
 		c := css[i]
 		if c == '/' && cssAt(css, i+1) == '*' {
@@ -747,6 +966,22 @@ func stripCSSURLs(css string, allow map[string]bool) string {
 			} else {
 				i += 2 + end + 2
 			}
+			boundary = inValue
+			continue
+		}
+		// The collector reads a run here when c is "/", a name character
+		// or an escape. A digit, "-", "_" or non-ASCII byte would be the
+		// run's first decoded byte, and a URL starts with "/", "\" or an
+		// ASCII letter, so only those, and an escape, can start one.
+		if inValue && boundary && (c == '/' || isASCIILetter(c) || isCSSEscape(css, i)) && bareRunIsURL(css, i) {
+			run, next := readCSSBareRun(css, i)
+			if stripped := stripURL(run, allow); stripped == run {
+				out.WriteString(css[i:next])
+			} else {
+				out.WriteString(cssQuote(stripped))
+			}
+			i = next
+			boundary = false
 			continue
 		}
 		if c == '"' || c == '\'' {
@@ -757,6 +992,7 @@ func stripCSSURLs(css string, allow map[string]bool) string {
 				out.WriteString(css[i:next])
 			}
 			i = next
+			boundary = false
 			continue
 		}
 		if isCSSNameChar(c) || isCSSEscape(css, i) {
@@ -782,14 +1018,33 @@ func stripCSSURLs(css string, allow map[string]bool) string {
 				out.WriteString(cssQuote(stripURL(value, allow)))
 				out.WriteString(")")
 				i = next
+				boundary = false
 				continue
 			}
 			out.WriteString(css[i:j])
 			i = j
+			boundary = false
 			continue
+		}
+		switch {
+		case c == ';' || c == '{' || c == '}':
+			out.WriteByte(c)
+			i++
+			statement, colon = out.Len(), false
+			inValue, boundary = false, false
+			continue
+		case c == ':' && !inValue && !colon:
+			colon = true
+			if isCSSProperty(out.String()[statement:]) {
+				out.WriteByte(c)
+				i++
+				inValue, boundary = true, true
+				continue
+			}
 		}
 		out.WriteByte(c)
 		i++
+		boundary = inValue && (isCSSSpace(c) || c == ',' || c == '(')
 	}
 	return out.String()
 }

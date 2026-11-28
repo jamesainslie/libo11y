@@ -5,7 +5,8 @@
  *   GET  /health                         200 "ok"
  *   GET  /page/<name>[?serverTiming=tp]  an HTML page loading /bundles/<name>.js; with serverTiming,
  *                                        the response carries Server-Timing: traceparent;desc="tp";
- *                                        with csp=1, Content-Security-Policy: img-src 'self'
+ *                                        with csp=1, Content-Security-Policy: img-src 'self'; with
+ *                                        csp=strict, a strict policy (STRICT_CSP) with Trusted Types
  *   GET  /page/<name>/<path...>          the same page, for history navigations that were reloaded
  *   GET  /bundles/<file>                 dist/bundles/<file>
  *   ANY  /echo[?delay=ms]                JSON of the request method, headers and body text (CORS open),
@@ -15,6 +16,7 @@
  *                                        delay milliseconds (at most 5000); with serverTiming,
  *                                        Server-Timing: traceparent;desc="tp", db;dur=12
  *   POST /sink/<id>/v1/<signal>          records an OTLP request (gzip decoded), answers from the script
+ *   POST /sink/<id>/v1/replay            records a session replay upload the same way, with its query
  *   POST /sink/<id>/script               body {"responses":[{"status":429,"retryAfter":"1"}, ...]}:
  *                                        the next requests get these answers in order, then 200
  *   POST /sink/<id>/offline              body {"offline":true|false}: while true, sink requests are
@@ -44,6 +46,8 @@ export interface SinkRequest {
   readonly bytes: number;
   /** The Origin request header. Whether a request was keepalive or a beacon is not visible here; the page reports that. */
   readonly origin: string | null;
+  /** The request's query parameters, such as a replay upload's service, session and segment. */
+  readonly query: Record<string, string>;
   readonly body: unknown;
 }
 
@@ -94,7 +98,7 @@ function json(req: Request, value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), { status, headers });
 }
 
-async function recordOtlp(req: Request, sink: Sink, signal: string): Promise<Response> {
+async function recordOtlp(req: Request, url: URL, sink: Sink, signal: string): Promise<Response> {
   const raw = new Uint8Array(await req.arrayBuffer());
   const encoding = req.headers.get("Content-Encoding");
   let body: unknown;
@@ -110,6 +114,7 @@ async function recordOtlp(req: Request, sink: Sink, signal: string): Promise<Res
     encoding,
     bytes: raw.byteLength,
     origin: req.headers.get("Origin"),
+    query: Object.fromEntries(url.searchParams),
     body,
   });
   const next = sink.script.shift();
@@ -145,10 +150,15 @@ async function asset(url: URL): Promise<Response> {
   return new Response(kind.body, { headers });
 }
 
-function page(name: string, serverTiming: string | null, csp: boolean): Response {
+/** The csp=strict policy: same-origin only, no inline script, no workers, Trusted Types for script sinks. */
+const STRICT_CSP =
+  "default-src 'self'; script-src 'self'; worker-src 'none'; require-trusted-types-for 'script'";
+
+function page(name: string, serverTiming: string | null, csp: string | null): Response {
   const headers = new Headers({ "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
   if (serverTiming !== null) headers.set("Server-Timing", `traceparent;desc="${serverTiming}"`);
-  if (csp) headers.set("Content-Security-Policy", "img-src 'self'");
+  if (csp === "1") headers.set("Content-Security-Policy", "img-src 'self'");
+  if (csp === "strict") headers.set("Content-Security-Policy", STRICT_CSP);
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>${name}</title></head><body><script type="module" src="/bundles/${name}.js"></script></body></html>`;
   return new Response(html, { headers });
 }
@@ -162,7 +172,7 @@ const server = Bun.serve({
     if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: cors(req) });
     if (url.pathname === "/health") return new Response("ok");
     if (parts[0] === "page" && parts.length >= 2 && parts[1] !== undefined) {
-      return page(parts[1], url.searchParams.get("serverTiming"), url.searchParams.get("csp") === "1");
+      return page(parts[1], url.searchParams.get("serverTiming"), url.searchParams.get("csp"));
     }
     if (parts[0] === "bundles" && parts.length >= 2) {
       const file = normalize(join(bundles, ...parts.slice(1)));
@@ -213,13 +223,13 @@ const server = Bun.serve({
         sink.offline = ((await req.json()) as { offline: boolean }).offline;
         return json(req, { ok: true });
       }
-      const signal = /^v1\/(traces|metrics|logs)$/.exec(rest)?.[1];
+      const signal = /^v1\/(traces|metrics|logs|replay)$/.exec(rest)?.[1];
       if (signal !== undefined && req.method === "POST") {
         if (sink.offline) {
           srv.timeout(req, 1);
           return new Promise<Response>(() => {});
         }
-        return recordOtlp(req, sink, signal);
+        return recordOtlp(req, url, sink, signal);
       }
     }
     return new Response("not found", { status: 404 });

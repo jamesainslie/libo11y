@@ -1,0 +1,66 @@
+{
+  "description": "A kept content attribute that holds a URL (og:url, og:image, twitter:image, a refresh) is stripped like any URL, in a snapshot and in an attribute change. Text content is kept as text.",
+  "query_allow_list": ["page"],
+  "text_allowed_ids": [1, 2, 3, 4, 5, 6, 7],
+  "editable_ids": [],
+  "blocked_ids": [],
+  "parent_tags": {},
+  "secrets": ["tok-og-url", "frag-og-url", "sig-og-image", "sig-tw-image", "tok-refresh", "tok-mutated", "b64-og-video"],
+  "allowed_texts": ["Spring sale"],
+  "events": [
+    {
+      "type": 2,
+      "timestamp": 1,
+      "data": {
+        "node": { "type": 2, "id": 1, "tagName": "head", "attributes": {}, "childNodes": [
+          { "type": 2, "id": 2, "tagName": "meta", "attributes": { "property": "og:url", "content": "https://shop.example/p/1?token=tok-og-url&page=2#frag-og-url" }, "childNodes": [] },
+          { "type": 2, "id": 3, "tagName": "meta", "attributes": { "property": "og:image", "content": "//cdn.example/i.png?sig=sig-og-image" }, "childNodes": [] },
+          { "type": 2, "id": 4, "tagName": "meta", "attributes": { "name": "twitter:image", "content": "/i.png?sig=sig-tw-image" }, "childNodes": [] },
+          { "type": 2, "id": 5, "tagName": "meta", "attributes": { "http-equiv": "refresh", "content": "5; url=https://shop.example/?token=tok-refresh" }, "childNodes": [] },
+          { "type": 2, "id": 6, "tagName": "meta", "attributes": { "property": "og:video", "content": "data:video/mp4;base64,b64-og-video" }, "childNodes": [] },
+          { "type": 2, "id": 7, "tagName": "meta", "attributes": { "property": "og:title", "content": "Spring sale" }, "childNodes": [] }
+        ] },
+        "initialOffset": { "top": 0, "left": 0 }
+      }
+    },
+    {
+      "type": 3,
+      "timestamp": 2,
+      "data": {
+        "source": 0,
+        "texts": [],
+        "attributes": [{ "id": 2, "attributes": { "content": "https://shop.example/p/2?token=tok-mutated&page=3" } }],
+        "removes": [],
+        "adds": []
+      }
+    }
+  ],
+  "expected": [
+    {
+      "type": 2,
+      "timestamp": 1,
+      "data": {
+        "node": { "type": 2, "id": 1, "tagName": "head", "attributes": {}, "childNodes": [
+          { "type": 2, "id": 2, "tagName": "meta", "attributes": { "content": "https://shop.example/p/1?page=2" }, "childNodes": [] },
+          { "type": 2, "id": 3, "tagName": "meta", "attributes": { "content": "//cdn.example/i.png" }, "childNodes": [] },
+          { "type": 2, "id": 4, "tagName": "meta", "attributes": { "name": "twitter:image", "content": "/i.png" }, "childNodes": [] },
+          { "type": 2, "id": 5, "tagName": "meta", "attributes": { "http-equiv": "refresh", "content": "5" }, "childNodes": [] },
+          { "type": 2, "id": 6, "tagName": "meta", "attributes": { "content": "" }, "childNodes": [] },
+          { "type": 2, "id": 7, "tagName": "meta", "attributes": { "content": "Spring sale" }, "childNodes": [] }
+        ] },
+        "initialOffset": { "top": 0, "left": 0 }
+      }
+    },
+    {
+      "type": 3,
+      "timestamp": 2,
+      "data": {
+        "source": 0,
+        "texts": [],
+        "attributes": [{ "id": 2, "attributes": { "content": "https://shop.example/p/2?page=3" } }],
+        "removes": [],
+        "adds": []
+      }
+    }
+  ]
+}

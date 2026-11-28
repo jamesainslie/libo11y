@@ -11,11 +11,13 @@
  * when its parent is a shadow root.
  *
  * - blocked(id): under a block selector (FIXED_BLOCK, code, remote).
- * - textAllowed(id), in this order: false when blocked, false under a mask selector, true for a
- *   style or link element (so stylesheets survive; the scrubber still masks their text
- *   attributes and strips their URLs), true under an unmask selector when the code's unmask list
- *   is not empty, false otherwise. Markup never unmasks: data-o11y-unmask counts only when the
- *   code lists it.
+ * - textAllowed(id), in this order: false when blocked, false under a mask selector, false for a
+ *   style or link element itself (its text attributes, and a text change aimed at its own ID, are
+ *   masked), true for a text node in a style element (so CSS survives; the scrubber strips its
+ *   URLs), true under an unmask selector when the code's unmask list is not empty, false
+ *   otherwise. Markup never unmasks: data-o11y-unmask counts only when the code lists it.
+ * - stylesheetAllowed(id): true for a style or link element under no block or mask selector, so
+ *   its inlined stylesheet survives, URLs stripped. False for every other node.
  * - editable(id): isContentEditable, a document in designMode, or under a textarea or a
  *   contenteditable element.
  *
@@ -89,11 +91,31 @@ export function domScrubContext(policy: ReplayPolicy, getNode: (id: number) => N
       return el !== null && walk(el, block) !== "none";
     },
     textAllowed(id: number): boolean {
+      let node: Node | null;
+      try {
+        node = getNode(id);
+      } catch {
+        return false;
+      }
       const el = element(id);
-      if (el === null) return false;
+      if (node === null || el === null) return false;
       if (walk(el, block) !== "none" || walk(el, mask) !== "none") return false;
-      if (STYLESHEET_TAGS.has(lower(el.tagName))) return true;
+      const tag = lower(el.tagName);
+      if (node.nodeType === 1 && STYLESHEET_TAGS.has(tag)) return false;
+      if (node.nodeType === 3 && tag === "style" && node.parentElement === el) return true;
       return walk(el, unmask) === "match";
+    },
+    stylesheetAllowed(id: number): boolean {
+      let node: Node | null;
+      try {
+        node = getNode(id);
+      } catch {
+        return false;
+      }
+      if (node === null || node.nodeType !== 1) return false;
+      const el = node as Element;
+      if (!STYLESHEET_TAGS.has(lower(el.tagName))) return false;
+      return walk(el, block) === "none" && walk(el, mask) === "none";
     },
     parentTag(id: number): string | undefined {
       try {

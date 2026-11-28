@@ -25,8 +25,9 @@
  *   selectors) keeps only class, rr_width and rr_height, and no children.
  * - Comments and CDATA have their text emptied.
  * - Attributes follow the allow-list in policy.ts. Masked attributes follow their element's text
- *   rule, and are always masked on style and link elements. The inlined stylesheet (_cssText) is
- *   kept, URLs stripped, only when its element's text is allowed. On editable content every URL
+ *   rule, and are always masked on style and link elements. A kept content attribute that holds a
+ *   URL (og:url, og:image, a refresh) is stripped by stripContent. The inlined stylesheet (_cssText) is
+ *   kept, URLs stripped, only when the context allows its element's stylesheet. On editable content every URL
  *   and CSS attribute is dropped, since links, images and styles there are user content.
  * - Trees deeper than MAX_DEPTH lose the children past it.
  *
@@ -41,7 +42,7 @@
  *
  * The scrubber never mutates its input. It returns new objects.
  */
-import { stripCssUrls } from "./css.ts";
+import { stripCssUrls, stripCssValue } from "./css.ts";
 import { maskText } from "./mask.ts";
 import {
   CSS_ATTRIBUTES,
@@ -50,15 +51,21 @@ import {
   type ReplayPolicy,
   URL_ATTRIBUTES,
 } from "./policy.ts";
-import { stripSrcset, stripUrl } from "./urls.ts";
+import { stripContent, stripSrcset, stripUrl } from "./urls.ts";
 
 /** An rrweb event: eventWithTime from @rrweb/types, read structurally. */
 export type RrwebEvent = { readonly type: number; readonly timestamp: number; readonly data?: unknown };
 
 /** What the scrubber needs to know about the live page. The DOM-backed context is dom-context.ts. */
 export interface ScrubContext {
-  /** True when the text and masked attributes of node id may be kept: under the unmask list, not under a mask or block selector. */
+  /**
+   * True when the text and masked attributes of node id may be kept: under the unmask list, not
+   * under a mask or block selector. For a style or link element itself it is false, so a text
+   * attribute on one, or a text change aimed at its own ID, is masked.
+   */
   textAllowed(id: number): boolean;
+  /** True when the inlined stylesheet (_cssText) of node id, a style or link element under no mask or block, may be kept. */
+  stylesheetAllowed(id: number): boolean;
   /** The lowercase tag name of the parent element of node id, or undefined. */
   parentTag(id: number): string | undefined;
   /** True when node id is user-editable content (in a textarea or a contenteditable element), whose text is never recorded. */
@@ -120,10 +127,10 @@ function textValue(value: string, rule: TextRule, policy: ReplayPolicy): string 
 function styleDiff(diff: Json, policy: ReplayPolicy): Mutable {
   const out: Mutable = {};
   for (const [prop, v] of Object.entries(diff)) {
-    if (typeof v === "string") out[prop] = stripCssUrls(v, policy.queryAllowList);
+    if (typeof v === "string") out[prop] = stripCssValue(v, policy.queryAllowList);
     else if (v === false) out[prop] = false;
     else if (Array.isArray(v) && typeof v[0] === "string") {
-      out[prop] = [stripCssUrls(v[0], policy.queryAllowList), typeof v[1] === "string" ? v[1] : ""];
+      out[prop] = [stripCssValue(v[0], policy.queryAllowList), typeof v[1] === "string" ? v[1] : ""];
     }
   }
   return out;
@@ -160,7 +167,9 @@ function attributes(
       continue;
     }
     if (MASKED_ATTRIBUTES.has(key)) {
-      if (typeof value === "string") out[name] = textAllowed ? value : maskText(value);
+      if (typeof value !== "string") continue;
+      if (!textAllowed) out[name] = maskText(value);
+      else out[name] = key === "content" ? stripContent(value, allow) : value;
     } else if (URL_ATTRIBUTES.has(key)) {
       if (typeof value === "string")
         out[name] = key === "srcset" ? stripSrcset(value, allow) : stripUrl(value, allow);
@@ -232,10 +241,11 @@ function node(n: unknown, state: TreeState, policy: ReplayPolicy, ctx: ScrubCont
       const masked =
         state.masked || editable || FIXED_MASK_TAGS.has(tag) || attr(attrs, "data-o11y-mask") !== undefined;
       const allowed = !masked && ctx.textAllowed(id);
+      const cssAllowed = !masked && ctx.stylesheetAllowed(id);
       const editableHere = editable || ctx.editable(id);
       const textAttrs = allowed && !editableHere && !STYLESHEET_TAGS.has(tag);
       const blocked = attr(attrs, "data-o11y-block") !== undefined || ctx.blocked(id);
-      const kept = attributes(attrs, textAttrs, allowed, editableHere, false, policy);
+      const kept = attributes(attrs, textAttrs, cssAllowed, editableHere, false, policy);
       out.tagName = n.tagName;
       out.attributes = blocked ? placeholder(kept) : kept;
       out.childNodes = blocked
@@ -303,7 +313,14 @@ function mutationData(data: Json, policy: ReplayPolicy, ctx: ScrubContext): Muta
       if (!isObj(a) || !isNum(a.id) || !isObj(a.attributes)) return undefined;
       const allowed = ctx.textAllowed(a.id);
       const editable = ctx.editable(a.id);
-      const all = attributes(a.attributes, allowed && !editable, allowed, editable, true, policy);
+      const all = attributes(
+        a.attributes,
+        allowed && !editable,
+        ctx.stylesheetAllowed(a.id),
+        editable,
+        true,
+        policy,
+      );
       const kept = ctx.blocked(a.id) ? placeholder(all) : all;
       return Object.keys(kept).length > 0 ? { id: a.id, attributes: kept } : undefined;
     }),
@@ -369,6 +386,7 @@ function incremental(data: Json, policy: ReplayPolicy, ctx: ScrubContext): Mutab
         ...booleans(data, ["muted", "loop"]),
       };
     case 8: {
+      if (isNum(data.id) && !ctx.stylesheetAllowed(data.id)) return undefined;
       const out: Mutable = { source, ...numbers(data, ["id", "styleId"]) };
       if (Array.isArray(data.adds)) out.adds = defined(data.adds.map((r) => rule(r, allow)));
       if (Array.isArray(data.removes)) {
@@ -385,13 +403,14 @@ function incremental(data: Json, policy: ReplayPolicy, ctx: ScrubContext): Mutab
       return out;
     }
     case 13: {
+      if (isNum(data.id) && !ctx.stylesheetAllowed(data.id)) return undefined;
       const out: Mutable = { source, ...numbers(data, ["id", "styleId"]) };
       out.index = list(data.index).filter(isNum);
       if (isObj(data.set) && typeof data.set.property === "string") {
         const v = data.set.value;
         out.set = {
           property: data.set.property,
-          value: typeof v === "string" ? stripCssUrls(v, allow) : null,
+          value: typeof v === "string" ? stripCssValue(v, allow) : null,
           ...(data.set.priority === "important" || data.set.priority === ""
             ? { priority: data.set.priority }
             : {}),

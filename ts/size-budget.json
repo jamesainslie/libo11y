@@ -45,6 +45,11 @@
     "@libo11y/rum/bootstrap": {
       "code": "import { afterLoad, installRumBootstrap } from \"@libo11y/rum/bootstrap\"; (globalThis as Record<string, unknown>).__x = [afterLoad, installRumBootstrap];\n",
       "budget": 1536
+    },
+    "@libo11y/rum-replay recorder chunk (lazy)": {
+      "code": "import { setupRum } from \"@libo11y/rum\"; import { replay } from \"@libo11y/rum-replay\"; (globalThis as Record<string, unknown>).__x = [setupRum, replay()];\n",
+      "chunks": "lazy",
+      "budget": 26368
     }
   },
   "deltas": {
@@ -82,6 +87,12 @@
       "base": "@libo11y/rum setupRum",
       "code": "import { remoteConfig, setupRum } from \"@libo11y/rum\"; (globalThis as Record<string, unknown>).__x = [setupRum, remoteConfig()];\n",
       "budget": 1536
+    },
+    "@libo11y/rum-replay replay()": {
+      "base": "@libo11y/rum setupRum",
+      "code": "import { setupRum } from \"@libo11y/rum\"; import { replay } from \"@libo11y/rum-replay\"; (globalThis as Record<string, unknown>).__x = [setupRum, replay()];\n",
+      "chunks": "initial",
+      "budget": 11264
     }
   }
 }

@@ -353,9 +353,15 @@ export async function setupWorkerWith(
 
   const { controller, queue, delivery, endpoints } = built;
   const telemetry = core;
+  // The queue is emptied first, whatever the flush does: a flush waits for exports in flight, up to
+  // its deadline, and a worker stopped in that time would otherwise keep the queue for a later grant.
   const unregisterRevoke = controller.onRevoke(async () => {
-    await telemetry.forceFlush();
-    await delivery.clear();
+    const cleared = delivery.clear();
+    try {
+      await telemetry.forceFlush();
+    } finally {
+      await cleared;
+    }
   });
   const messaging = createTracedMessaging(chrome, telemetry.propagator);
   const uninstalls: (() => void)[] = [];

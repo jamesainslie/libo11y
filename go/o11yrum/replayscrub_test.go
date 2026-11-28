@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -500,6 +501,101 @@ func TestScrubSegmentStrictNeverKeepsTextAttributes(t *testing.T) {
 	out, _ := scrubSegment(in, scrubStrict, nil)
 	if got := marshal(t, out); strings.Contains(got, "Jane") {
 		t.Fatalf("leak: %s", got)
+	}
+}
+
+func TestAttributesStripContentURLs(t *testing.T) {
+	allow := map[string]bool{"page": true}
+	for _, c := range []struct {
+		name        string
+		attrs       obj
+		textAllowed bool
+		want        obj
+	}{
+		{"content URL, text allowed", obj{"content": "https://a.example/p?token=SECRET&page=2#SECRET"}, true, obj{"content": "https://a.example/p?page=2"}},
+		{"refresh, text allowed", obj{"content": "5; url=/next?token=SECRET"}, true, obj{"content": "5"}},
+		{"content text, text allowed", obj{"content": "Spring sale"}, true, obj{"content": "Spring sale"}},
+		{"content name in any case", obj{"Content": "/a?token=SECRET"}, true, obj{"Content": "/a"}},
+		{"content URL, text masked", obj{"content": "/a?t=1"}, false, obj{"content": "******"}},
+		// Only content is read as a URL. Other text attributes are text.
+		{"title, text allowed", obj{"title": "/a?token=1"}, true, obj{"title": "/a?token=1"}},
+		// A text attribute that is not a string is dropped.
+		{"content number, text allowed", obj{"content": float64(5)}, true, obj{}},
+	} {
+		got := attributes(c.attrs, c.textAllowed, false, false, false, allow)
+		if !reflect.DeepEqual(got, c.want) {
+			t.Errorf("%s: %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestStyleDiffStripsBareValues(t *testing.T) {
+	got := styleDiff(obj{
+		"--bg":       "/a?token=SECRET",
+		"background": []any{"https://x.example/a.png?token=SECRET", "important"},
+		"color":      false,
+		"margin":     "0 auto",
+	}, map[string]bool{"page": true})
+	want := obj{
+		"--bg":       `"/a"`,
+		"background": []any{`"https://x.example/a.png"`, "important"},
+		"color":      false,
+		"margin":     "0 auto",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("%v, want %v", got, want)
+	}
+}
+
+// TestScrubSegmentCSSOMEditsFollowTheStylesheet checks the gateway's own
+// segment model: a CSSOM edit aimed at a style element is kept only when
+// its stylesheet is, so an edit to a masked style element is dropped and
+// one to an unmasked style element is kept with its URLs stripped. An
+// edit to a constructed stylesheet, named by styleId alone, is kept.
+func TestScrubSegmentCSSOMEditsFollowTheStylesheet(t *testing.T) {
+	in := `[` + snapshot(`{"type":0,"id":1,"childNodes":[
+	  {"type":2,"id":2,"tagName":"div","attributes":{"data-o11y-mask":""},"childNodes":[
+	    {"type":2,"id":10,"tagName":"style","attributes":{},"childNodes":[]}]},
+	  {"type":2,"id":20,"tagName":"style","attributes":{},"childNodes":[]}]}`) + `,
+	  {"type":3,"timestamp":2,"data":{"source":8,"id":10,"adds":[{"rule":".who::after{content:\"JaneMasked\"}","index":0}]}},
+	  {"type":3,"timestamp":3,"data":{"source":13,"id":10,"index":[0],"set":{"property":"--n","value":"\"JaneMasked\"","priority":""}}},
+	  {"type":3,"timestamp":4,"data":{"source":8,"id":20,"adds":[{"rule":"a{background:url(/a.png?token=SECRET)}","index":0}]}},
+	  {"type":3,"timestamp":5,"data":{"source":13,"id":20,"index":[0],"set":{"property":"--bg","value":"/b.png?token=SECRET","priority":""}}},
+	  {"type":3,"timestamp":6,"data":{"source":8,"styleId":4,"replaceSync":"b{background:url(/c?token=SECRET)}"}},
+	  {"type":3,"timestamp":7,"data":{"source":13,"id":99,"index":[0],"remove":{"property":"color"}}}]`
+	for _, c := range []struct {
+		mode    scrubMode
+		kept    []float64
+		dropped int64
+	}{
+		// Strict mode keeps the stylesheet of a style element it knows.
+		{scrubStrict, []float64{1, 4, 5, 6}, 3},
+		// Trust mode keeps what the client sent unless the segment's tree
+		// masks the node.
+		{scrubTrust, []float64{1, 4, 5, 6, 7}, 2},
+	} {
+		out, stats := scrubSegment(events(t, in), c.mode, map[string]bool{"page": true})
+		var kept []float64
+		for _, e := range out {
+			kept = append(kept, e.(obj)["timestamp"].(float64))
+		}
+		if !reflect.DeepEqual(kept, c.kept) {
+			t.Errorf("mode %d: kept %v, want %v", c.mode, kept, c.kept)
+		}
+		if stats[dropStylesheet] != c.dropped {
+			t.Errorf("mode %d: stats %v", c.mode, stats)
+		}
+		got := marshal(t, out)
+		for _, leak := range []string{"Jane", "SECRET"} {
+			if strings.Contains(got, leak) {
+				t.Errorf("mode %d: kept %q: %s", c.mode, leak, got)
+			}
+		}
+		for _, want := range []string{`a{background:url(\"/a.png\")}`, `"value":"\"/b.png\""`, `b{background:url(\"/c\")}`} {
+			if !strings.Contains(got, want) {
+				t.Errorf("mode %d: missing %s in %s", c.mode, want, got)
+			}
+		}
 	}
 }
 

@@ -90,3 +90,27 @@ test("parseRemoteConfig refuses a body without a string version or an object con
   assert.equal(parseRemoteConfig(null), undefined);
   assert.equal(parseRemoteConfig("v"), undefined);
 });
+
+test("the replay object is kept for @libo11y/rum-replay to clamp, and only an object", () => {
+  assert.deepEqual(parseRemoteConfig({ version: "v", config: { replay: { mask: [".x"] } } })?.replay, {
+    mask: [".x"],
+  });
+  assert.equal(parseRemoteConfig({ version: "v", config: { replay: [1] } })?.replay, undefined);
+  assert.equal(parseRemoteConfig({ version: "v", config: { replay: null } })?.replay, undefined);
+  const doc = parseRemoteConfig({ version: "v", config: { replay: { enabled: false } } });
+  assert.deepEqual(doc?.replay, { enabled: false });
+});
+
+test("remote configuration can switch the replay collector off, never on", () => {
+  const withReplay = resolveSettings({ collectors: [{ name: "replay", start: noop }] });
+  const doc = parseRemoteConfig({ version: "v", config: { collectors: { replay: false } } });
+  assert.deepEqual(doc?.collectors, { replay: false });
+  const off = clampConfig(withReplay, doc, resolveLimits(1, undefined));
+  assert.equal(off.enabled.has("replay"), false);
+  const on = clampConfig(
+    code,
+    parseRemoteConfig({ version: "v", config: { collectors: { replay: true } } }),
+    resolveLimits(0.2, undefined),
+  );
+  assert.equal(on.enabled.has("replay"), false);
+});

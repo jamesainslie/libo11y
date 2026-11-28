@@ -6,7 +6,15 @@ import type { LogAttributes } from "@libo11y/core";
 import type { Context, Span, SpanContext } from "@opentelemetry/api";
 import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
 import { createBus } from "../bus.ts";
-import type { EventBody, RumRuntime, RumScope, RumSettings, RumSignal } from "../contracts/runtime.ts";
+import type { RemoteConfigDocument } from "../config/clamp.ts";
+import type {
+  EventBody,
+  RequestStartHook,
+  RumRuntime,
+  RumScope,
+  RumSettings,
+  RumSignal,
+} from "../contracts/runtime.ts";
 import type { SessionEvent, SessionManager, SessionState } from "../contracts/session.ts";
 import type { SummaryAccumulator, SummaryCountKey } from "../contracts/summary.ts";
 import type { ViewState, ViewTracker } from "../contracts/views.ts";
@@ -235,6 +243,20 @@ export interface FakeRuntime extends RumRuntime {
   hide(): void;
   /** Replaces the current session with one of this ID, as a revoke and grant would. */
   setSession(id: string): void;
+  /** The document remoteDocument returns. Default undefined. */
+  document: RemoteConfigDocument | undefined;
+  /** The settings settings() returns, replaceable by a test. */
+  rumSettings: RumSettings;
+  /** The URLs ignoreUrl added and not yet removed. */
+  readonly ignoredUrls: Set<string>;
+  /** The onRequestStart hooks added and not yet removed. */
+  readonly requestHooks: Set<RequestStartHook>;
+  /** Makes the session kept or not. */
+  setKept(kept: boolean): void;
+  /** Replaces the current session state. */
+  setSessionState(state: SessionState): void;
+  /** Calls every session listener with event. */
+  sessionEvent(event: SessionEvent): void;
   fakeEnv(): FakeEnv;
   flushSpans(): Promise<void>;
 }
@@ -333,6 +355,9 @@ export function fakeRuntime(opts: { readonly realViews?: boolean } = {}): FakeRu
     enabled: new Set(),
     viewName: defaultViewName,
   };
+  const decorators = new Set<{ names: ReadonlySet<string>; attrs: () => LogAttributes | undefined }>();
+  const ignoredUrls = new Set<string>();
+  const requestHooks = new Set<RequestStartHook>();
   const rt: FakeRuntime = {
     platform: "web",
     telemetry: {} as RumRuntime["telemetry"],
@@ -342,25 +367,50 @@ export function fakeRuntime(opts: { readonly realViews?: boolean } = {}): FakeRu
     views,
     summary,
     bus,
-    settings: () => settings,
+    settings: () => rt.rumSettings,
+    rumSettings: settings,
     now: () => clock.now(),
     timeOrigin: performance.timeOrigin,
     emit(name, attrs = {}, ctx, body) {
       if (!gate.open) return;
+      let decorated: LogAttributes = {};
+      for (const d of decorators) if (d.names.has(name)) decorated = { ...decorated, ...d.attrs() };
       events.push({
         name,
-        attrs,
+        attrs: { ...decorated, ...attrs },
         ...(ctx === undefined ? {} : { ctx }),
         ...(body === undefined ? {} : { body }),
       });
     },
-    onRequestStart: () => () => {},
+    onRequestStart(hook) {
+      requestHooks.add(hook);
+      return () => requestHooks.delete(hook);
+    },
     activeAction: () => active,
     setActiveAction(s) {
       active = s;
     },
     breadcrumbs: () => crumbs,
-    ignored: () => false,
+    ignored: (url) => ignoredUrls.has(url),
+    remoteDocument: () => rt.document,
+    document: undefined,
+    addEventAttributes(names, attrs) {
+      const d = { names: new Set(names), attrs };
+      decorators.add(d);
+      return () => decorators.delete(d);
+    },
+    ignoreUrl(url) {
+      ignoredUrls.add(url);
+      return () => ignoredUrls.delete(url);
+    },
+    ignoredUrls,
+    requestHooks,
+    setKept(k) {
+      kept = k;
+    },
+    sessionEvent(e) {
+      for (const l of [...sessionListeners]) l(e);
+    },
     onHide(hook) {
       hideHooks.add(hook);
       return () => hideHooks.delete(hook);
@@ -385,6 +435,9 @@ export function fakeRuntime(opts: { readonly realViews?: boolean } = {}): FakeRu
     },
     setSession(id) {
       sessionState = { ...sessionState, id };
+    },
+    setSessionState(state) {
+      sessionState = state;
     },
     fakeEnv: () => env,
     flushSpans: () => provider.forceFlush(),

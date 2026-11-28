@@ -843,7 +843,7 @@ jobs:
           (cd "$consumer" && npm install --no-audit --no-fund --ignore-scripts "${specs[@]}")
           scripts/ts-browser-bundle-check.sh "$consumer" @libo11y/web=setup @libo11y/webext @libo11y/rum=setupRum \
             @libo11y/rum-react=RumErrorBoundary @libo11y/rum-tanstack-router=instrumentTanStackRouter \
-            @libo11y/rum-connect=connectRequestNaming @libo11y/rum-replay=VERSION
+            @libo11y/rum-connect=connectRequestNaming @libo11y/rum-replay=replay,VERSION
       # The React Native packages run on Hermes, which has no Node builtins.
       # Bundle each entry point with the react-native condition, React
       # Native and Expo left external, as scripts/ts-release-check.sh does.

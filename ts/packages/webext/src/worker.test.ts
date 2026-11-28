@@ -414,6 +414,42 @@ test("revoke flushes into the closed gate, then clears the delivery and its queu
   });
 });
 
+test("revoke empties the queue at once while the flush stalls", async () => {
+  const r = rig({ stored: "granted" });
+  await withWorker(r, BASE, async (h) => {
+    await r.content.chrome.runtime.sendMessage(exportMessage());
+    const queue = r.queue as ReturnType<typeof createFakeQueue>;
+    assert.equal(queue.entries.size, 1);
+    let release = (): void => {};
+    const stalled = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const flush = h.forceFlush.bind(h);
+    h.forceFlush = async (opts) => {
+      await stalled;
+      return flush(opts);
+    };
+    const revoked = h.consent.revoke();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(queue.entries.size, 0, "emptied while the flush is still pending");
+    release();
+    await revoked;
+  });
+});
+
+test("revoke empties the queue even when the flush rejects", async () => {
+  const r = rig({ stored: "granted" });
+  await withWorker(r, BASE, async (h) => {
+    await r.content.chrome.runtime.sendMessage(exportMessage());
+    const queue = r.queue as ReturnType<typeof createFakeQueue>;
+    assert.equal(queue.entries.size, 1);
+    // Core's own forceFlush never rejects; the revoke must not depend on that.
+    h.forceFlush = () => Promise.reject(new Error("collector unreachable"));
+    await h.consent.revoke();
+    assert.equal(queue.entries.size, 0);
+  });
+});
+
 test("a revoke from another context clears the worker's queue", async () => {
   const r = rig({ stored: "granted" });
   await withWorker(r, BASE, async () => {

@@ -3,6 +3,7 @@ package o11yrum
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // The cases below mirror ts/packages/rum-replay/src/mask.test.ts,
@@ -138,8 +139,11 @@ func TestStripCSSURLs(t *testing.T) {
 		"a{content:'\ufeff/x?token=1'}":    "a{content:\"\ufeff/x\"}",
 		"a{content:'\u0085/x'}":            "a{content:'\u0085/x'}",
 		"a{content:'java\u017fcript:x y'}": "a{content:'java\u017fcript:x y'}",
-		// A function named U+FFFD "url" is not a url() token.
-		`a{background:\0 url(/x?token=1)}`: `a{background:\0 url(/x?token=1)}`,
+		// A function named U+FFFD "url" is not a url() token. Outside a
+		// declaration value its argument is kept; in one, a bare URL after
+		// "(" is stripped as a bare URL.
+		`a{\0 url(/x?token=1)}`:            `a{\0 url(/x?token=1)}`,
+		`a{background:\0 url(/x?token=1)}`: `a{background:\0 url("/x")}`,
 		// A string that is not a URL is kept exactly as written.
 		"a{content:\"\x01\x7f\\\"\\\\\"}": "a{content:\"\x01\x7f\\\"\\\\\"}",
 		// Control characters in a stripped URL are written back escaped.
@@ -152,6 +156,197 @@ func TestStripCSSURLs(t *testing.T) {
 	css := `a::before{content:"\201C Hello";font-family:"Helvetica Neue",sans-serif;color:#fff}.x>y{margin:0 auto}`
 	if got := stripCSSURLs(css, testAllow); got != css {
 		t.Errorf("plain CSS changed: %q", got)
+	}
+}
+
+func TestStripCSSURLsBareValues(t *testing.T) {
+	for in, want := range map[string]string{
+		// U+017F does not fold to "s": both stay text, as in the collector.
+		"--u:java\u017fcript:x?t=1": "--u:java\u017fcript:x?t=1",
+		`--u:java\17f cript:x?t=1`:  `--u:java\17f cript:x?t=1`,
+		// The collector's css.test.ts cases.
+		"--bg: https://cdn.example/a.png?token=SECRET1&page=2;color:red": `--bg: "https://cdn.example/a.png?page=2";color:red`,
+		":root{--api:/v1/me?session=SECRET2}":                            `:root{--api:"/v1/me"}`,
+		`a{--u:\68ttps://x.example/?t=SECRET3 }`:                         `a{--u:"https://x.example/" }`,
+		"--list: //a.example/x?k=SECRET4, /b?k=SECRET5 !important":       `--list: "//a.example/x", "/b" !important`,
+		"--img: data:image/png;base64,SECRET6":                           `--img: ""`,
+		"--js:javascript:alert(SECRET7)":                                 `--js:"")`,
+		"--f: var(--x, /a?k=SECRET8)":                                    `--f: var(--x, "/a")`,
+		"@media (min-width:10px){a{--u:/x?t=SECRET}}":                    `@media (min-width:10px){a{--u:"/x"}}`,
+		// Runs end at a comment, !important (any case, after white
+		// space), a quote, ")" and white space. A comment also starts one.
+		"--c:/*x*/https://a.example/?k=SECRET":  `--c:"https://a.example/"`,
+		"--u: /x?t=1/*c*/;":                     `--u: "/x";`,
+		"--u: /a?k=1!important":                 `--u: "/a"!important`,
+		"--u: /a?k=1! IMPORTANT":                `--u: "/a"! IMPORTANT`,
+		"--u:(/x?t=1)":                          `--u:("/x")`,
+		"--u:/x?t=1\n":                          "--u:\"/x\"\n",
+		"--u:/x?t=1'a'":                         `--u:"/x"'a'`,
+		"--u:/x?t=1;--v:https://a.example/?t=2": `--u:"/x";--v:"https://a.example/"`,
+		"x{} --u: /a?t=1":                       `x{} --u: "/a"`,
+		"--u:a /x?t=1":                          `--u:a "/x"`,
+		"a{--u:data:x;b,c}":                     `a{--u:""}`,
+		"--u:\\/x?t=1":                          `--u:"/x"`,
+		"--u:\\5c\\5c h.example/x?t=1":          `--u:"//h.example/x"`,
+		"--u:url(/a?t=1)":                       `--u:url("/a")`,
+		"--u:/a\\1 b?t=1&page=1":                `--u:"/a\1 b?page=1"`,
+		"\u00e9:/x?t=1":                         "\u00e9:\"/x\"",
+		"\U0001F600:/x?t=1":                     "\U0001F600" + `:"/x"`,
+		"--u:FILE:/etc/passwd":                  `--u:""`,
+		"--u:tel:+15550100":                     `--u:""`,
+		"--u: /a?t=1, data:x,y;z ,/b?t=2":       `--u: "/a", "" ,"/b"`,
+		"--u:'x' /a?t=1":                        `--u:'x' "/a"`,
+		// A URL that strips to itself is kept exactly as written.
+		`--u:\2f x`:      `--u:\2f x`,
+		"--u: /a!x":      "--u: /a!x",
+		"--u:/x?page=1":  "--u:/x?page=1",
+		"--u:'/x'/y?t=1": `--u:"/x"/y?t=1`,
+		// Not a value: a selector, a statement of more than one name, a
+		// run that does not start at a boundary, a non-ASCII space.
+		".tel:hover,data:hover{grid-row:1 / 3;font:12px/1.5 a;--p:/v1/me;--h:https://a.example/x}a::before{content:x}": ".tel:hover,data:hover{grid-row:1 / 3;font:12px/1.5 a;--p:/v1/me;--h:https://a.example/x}a::before{content:x}",
+		"a b: /x?t=1":               "a b: /x?t=1",
+		"--u:a/x?t=1":               "--u:a/x?t=1",
+		"--u:\u00a0/x?t=1":          "--u:\u00a0/x?t=1",
+		"--u:\u00e9/x?t=1":          "--u:\u00e9/x?t=1",
+		"--u:x:/y?t=1":              "--u:x:/y?t=1",
+		"a:b{/x?t=1}":               "a:b{/x?t=1}",
+		"--u:\\":                    "--u:\\",
+		"--u:\\\n/x?t=1":            "--u:\\\n\"/x\"",
+		"--u:about:blank?t=1":       "--u:about:blank?t=1",
+		"--u:https\\3a //a/?t=1 x":  `--u:"https://a/" x`,
+		"--u:datA:x,y;z!important ": `--u:""!important `,
+		// At the edge of the 11-byte prefix that decides whether a run is
+		// a URL, with escapes decoded.
+		`--u:javascrip\74:x`:  `--u:""`,
+		`--u:\6a avascript:x`: `--u:""`,
+		// A run whose first byte is a digit, "-", "_" or non-ASCII is not
+		// a URL, whatever follows.
+		"--u:-/x?t=1":                "--u:-/x?t=1",
+		"--u:1/x?t=1":                "--u:1/x?t=1",
+		"--u:_https://x/?t=1":        "--u:_https://x/?t=1",
+		"--u:\u00e9https://x/?t=1":   "--u:\u00e9https://x/?t=1",
+		"--u:DATA:x;y,z ,/b?page=1":  `--u:"" ,/b?page=1`,
+		"--u: /a?t=1!\tImPoRtAnT":    "--u: \"/a\"!\tImPoRtAnT",
+		"--u: /a?t=1!importan":       `--u: "/a"`,
+		"--u: data:x,y!important;/b": `--u: ""!important;/b`,
+	} {
+		if got := stripCSSURLs(in, testAllow); got != want {
+			t.Errorf("stripCSSURLs(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestStripCSSValue(t *testing.T) {
+	for in, want := range map[string]string{
+		// The value is read as if it followed "property:".
+		"/api/avatar?sig=SECRET":                 `"/api/avatar"`,
+		"  /x?t=1":                               `  "/x"`,
+		"x https://cdn.example/a?sig=SECRET":     `x "https://cdn.example/a"`,
+		"url(/a.png?token=SECRET&page=2) repeat": `url("/a.png?page=2") repeat`,
+		"\"/x?t=1\"":                             `"/x"`,
+		"/*c*//x?t=1":                            `"/x"`,
+		"/v1/me":                                 "/v1/me",
+		"red":                                    "red",
+		"x/y?t=1":                                "x/y?t=1",
+		"":                                       "",
+		// After ";" the scanner is outside a value again, as in a
+		// declaration list.
+		"/x?t=1;/y?t=1":   `"/x";/y?t=1`,
+		"a;b:/x?t=1":      `a;b:"/x"`,
+		"a{b}/x?t=1":      "a{b}/x?t=1",
+		"/x?t=1{c:/y?t=1": `"/x"{c:"/y"`,
+	} {
+		if got := stripCSSValue(in, testAllow); got != want {
+			t.Errorf("stripCSSValue(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestBareRunIsURLDoesNotAllocate checks the prefix read at every value
+// boundary stays on the stack.
+func TestBareRunIsURLDoesNotAllocate(t *testing.T) {
+	for _, c := range []struct {
+		css  string
+		want bool
+	}{
+		{"javascript:alert(1)", true},
+		{"JavaScript:x", true},
+		{"DATA:x;y,z", true},
+		{"/a?t=1", true},
+		{"abc def", false},
+		{"important!important", false},
+		{"a;b", false},
+		{"verylongnamewithnocolon", false},
+		{`javascrip\74:x`, true},
+	} {
+		var got bool
+		if allocs := testing.AllocsPerRun(100, func() { got = bareRunIsURL(c.css, 0) }); allocs != 0 {
+			t.Errorf("bareRunIsURL(%q): %v allocations", c.css, allocs)
+		}
+		if got != c.want {
+			t.Errorf("bareRunIsURL(%q) = %v, want %v", c.css, got, c.want)
+		}
+	}
+}
+
+// TestStripCSSURLsLongValuesAreCheap guards the two places where reading
+// as the collector does would be quadratic on the gateway: a long run that
+// is not a URL, read again from every boundary in it, and a long
+// statement checked again at every ":" in it. The limit is loose, for the
+// race detector on a loaded host; the quadratic cost took tens of seconds.
+func TestStripCSSURLsLongValuesAreCheap(t *testing.T) {
+	const n = 200000
+	for name, css := range map[string]string{
+		"boundaries in one run": "--u:" + strings.Repeat("a(", n),
+		"colons in a statement": strings.Repeat("a", n) + "(" + strings.Repeat(":", n),
+	} {
+		start := time.Now()
+		got := stripCSSURLs(css, testAllow)
+		// Linear takes milliseconds and the quadratic scan minutes; the
+		// slack covers -race -cover on a loaded machine.
+		if d := time.Since(start); d > 10*time.Second {
+			t.Errorf("%s: took %v", name, d)
+		}
+		if got != css {
+			t.Errorf("%s: changed", name)
+		}
+	}
+}
+
+func TestStripContent(t *testing.T) {
+	for in, want := range map[string]string{
+		"https://shop.example/p/1?token=SECRET&page=2#SECRET": "https://shop.example/p/1?page=2",
+		"//cdn.example/i.png?sig=SECRET":                      "//cdn.example/i.png",
+		"/i.png?sig=SECRET":                                   "/i.png",
+		`\\cdn.example/i.png?sig=SECRET`:                      "//cdn.example/i.png",
+		" /i.png?sig=SECRET ":                                 "/i.png",
+		"HTTPS://a.example/?t=1":                              "https://a.example/",
+		"javascript:alert('SECRET')":                          "",
+		"java\tscript:alert('SECRET')":                        "",
+		" data:image/png;base64,SECRET":                       "",
+		"mailto:jane@x.test":                                  "",
+		"Tel:+15550100":                                       "",
+		// A refresh keeps only its delay, whatever follows, and wins
+		// over everything else.
+		"5; url=https://x.example/?token=SECRET": "5",
+		"0,https://x.example/?token=SECRET":      "0",
+		"1.5 ;x":                                 "1.5",
+		"1.;x":                                   "1.",
+		"\t 12;x":                                "12",
+		"5\u00a0\u2028\ufeff;x":                  "5",
+		// Text is kept as written.
+		"Shoes: 20% off? Ask us / today": "Shoes: 20% off? Ask us / today",
+		"5 url=x":                        "5 url=x",
+		".5;x":                           ".5;x",
+		"\u0663;x":                       "\u0663;x",
+		"about:blank?t=1":                "about:blank?t=1",
+		"\u00a0/x?t=1":                   "\u00a0/x?t=1",
+		"http+x:/y?t=1":                  "http+x:/y?t=1",
+		"":                               "",
+	} {
+		if got := stripContent(in, testAllow); got != want {
+			t.Errorf("stripContent(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 
