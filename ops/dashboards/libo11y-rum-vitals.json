@@ -330,13 +330,14 @@
         "type": "prometheus",
         "uid": "${prometheus}"
       },
+      "description": "The 75th percentile and the number of samples for each browser over the time range. A p75 from a few samples is noise.",
       "fieldConfig": {
         "defaults": {},
         "overrides": [
           {
             "matcher": {
               "id": "byName",
-              "options": "Value"
+              "options": "Value #A"
             },
             "properties": [
               {
@@ -346,6 +347,18 @@
               {
                 "id": "unit",
                 "value": "s"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value #B"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "samples"
               }
             ]
           }
@@ -363,7 +376,7 @@
         "sortBy": [
           {
             "desc": true,
-            "displayName": "p75"
+            "displayName": "samples"
           }
         ]
       },
@@ -379,10 +392,26 @@
           "legendFormat": "",
           "range": false,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${prometheus}"
+          },
+          "expr": "sum by (o11y_rum_browser_family) (increase(o11y_rum_vital_lcp_seconds_count{service_name=~\"$app\", o11y_rum_view_name=~\"$view\", o11y_rum_device_class=~\"$device\", o11y_rum_browser_family=~\"$browser\", geo_country_iso_code=~\"$country\", o11y_rum_connection_effective=~\"$connection\"}[$__range]))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "B"
         }
       ],
       "title": "LCP p75 by browser",
       "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
         {
           "id": "organize",
           "options": {
@@ -399,13 +428,14 @@
         "type": "prometheus",
         "uid": "${prometheus}"
       },
+      "description": "The 75th percentile and the number of samples for each country over the time range. A p75 from a few samples is noise.",
       "fieldConfig": {
         "defaults": {},
         "overrides": [
           {
             "matcher": {
               "id": "byName",
-              "options": "Value"
+              "options": "Value #A"
             },
             "properties": [
               {
@@ -415,6 +445,18 @@
               {
                 "id": "unit",
                 "value": "s"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value #B"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "samples"
               }
             ]
           }
@@ -432,7 +474,7 @@
         "sortBy": [
           {
             "desc": true,
-            "displayName": "p75"
+            "displayName": "samples"
           }
         ]
       },
@@ -448,10 +490,26 @@
           "legendFormat": "",
           "range": false,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${prometheus}"
+          },
+          "expr": "sum by (geo_country_iso_code) (increase(o11y_rum_vital_lcp_seconds_count{service_name=~\"$app\", o11y_rum_view_name=~\"$view\", o11y_rum_device_class=~\"$device\", o11y_rum_browser_family=~\"$browser\", geo_country_iso_code=~\"$country\", o11y_rum_connection_effective=~\"$connection\"}[$__range]))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "B"
         }
       ],
       "title": "LCP p75 by country",
       "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
         {
           "id": "organize",
           "options": {
@@ -760,13 +818,14 @@
         "type": "prometheus",
         "uid": "${prometheus}"
       },
+      "description": "The 75th percentile and the number of samples for each browser over the time range. A p75 from a few samples is noise.",
       "fieldConfig": {
         "defaults": {},
         "overrides": [
           {
             "matcher": {
               "id": "byName",
-              "options": "Value"
+              "options": "Value #A"
             },
             "properties": [
               {
@@ -776,6 +835,18 @@
               {
                 "id": "unit",
                 "value": "s"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value #B"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "samples"
               }
             ]
           }
@@ -793,7 +864,7 @@
         "sortBy": [
           {
             "desc": true,
-            "displayName": "p75"
+            "displayName": "samples"
           }
         ]
       },
@@ -809,10 +880,26 @@
           "legendFormat": "",
           "range": false,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${prometheus}"
+          },
+          "expr": "sum by (o11y_rum_browser_family) (increase(o11y_rum_vital_inp_seconds_count{service_name=~\"$app\", o11y_rum_view_name=~\"$view\", o11y_rum_device_class=~\"$device\", o11y_rum_browser_family=~\"$browser\", geo_country_iso_code=~\"$country\", o11y_rum_connection_effective=~\"$connection\"}[$__range]))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "B"
         }
       ],
       "title": "INP p75 by browser",
       "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
         {
           "id": "organize",
           "options": {
@@ -829,13 +916,14 @@
         "type": "prometheus",
         "uid": "${prometheus}"
       },
+      "description": "The 75th percentile and the number of samples for each country over the time range. A p75 from a few samples is noise.",
       "fieldConfig": {
         "defaults": {},
         "overrides": [
           {
             "matcher": {
               "id": "byName",
-              "options": "Value"
+              "options": "Value #A"
             },
             "properties": [
               {
@@ -845,6 +933,18 @@
               {
                 "id": "unit",
                 "value": "s"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value #B"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "samples"
               }
             ]
           }
@@ -862,7 +962,7 @@
         "sortBy": [
           {
             "desc": true,
-            "displayName": "p75"
+            "displayName": "samples"
           }
         ]
       },
@@ -878,10 +978,26 @@
           "legendFormat": "",
           "range": false,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${prometheus}"
+          },
+          "expr": "sum by (geo_country_iso_code) (increase(o11y_rum_vital_inp_seconds_count{service_name=~\"$app\", o11y_rum_view_name=~\"$view\", o11y_rum_device_class=~\"$device\", o11y_rum_browser_family=~\"$browser\", geo_country_iso_code=~\"$country\", o11y_rum_connection_effective=~\"$connection\"}[$__range]))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "B"
         }
       ],
       "title": "INP p75 by country",
       "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
         {
           "id": "organize",
           "options": {
@@ -1190,13 +1306,14 @@
         "type": "prometheus",
         "uid": "${prometheus}"
       },
+      "description": "The 75th percentile and the number of samples for each browser over the time range. A p75 from a few samples is noise.",
       "fieldConfig": {
         "defaults": {},
         "overrides": [
           {
             "matcher": {
               "id": "byName",
-              "options": "Value"
+              "options": "Value #A"
             },
             "properties": [
               {
@@ -1206,6 +1323,18 @@
               {
                 "id": "unit",
                 "value": "none"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value #B"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "samples"
               }
             ]
           }
@@ -1223,7 +1352,7 @@
         "sortBy": [
           {
             "desc": true,
-            "displayName": "p75"
+            "displayName": "samples"
           }
         ]
       },
@@ -1239,10 +1368,26 @@
           "legendFormat": "",
           "range": false,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${prometheus}"
+          },
+          "expr": "sum by (o11y_rum_browser_family) (increase(o11y_rum_vital_cls_count{service_name=~\"$app\", o11y_rum_view_name=~\"$view\", o11y_rum_device_class=~\"$device\", o11y_rum_browser_family=~\"$browser\", geo_country_iso_code=~\"$country\", o11y_rum_connection_effective=~\"$connection\"}[$__range]))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "B"
         }
       ],
       "title": "CLS p75 by browser",
       "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
         {
           "id": "organize",
           "options": {
@@ -1259,13 +1404,14 @@
         "type": "prometheus",
         "uid": "${prometheus}"
       },
+      "description": "The 75th percentile and the number of samples for each country over the time range. A p75 from a few samples is noise.",
       "fieldConfig": {
         "defaults": {},
         "overrides": [
           {
             "matcher": {
               "id": "byName",
-              "options": "Value"
+              "options": "Value #A"
             },
             "properties": [
               {
@@ -1275,6 +1421,18 @@
               {
                 "id": "unit",
                 "value": "none"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value #B"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "samples"
               }
             ]
           }
@@ -1292,7 +1450,7 @@
         "sortBy": [
           {
             "desc": true,
-            "displayName": "p75"
+            "displayName": "samples"
           }
         ]
       },
@@ -1308,10 +1466,26 @@
           "legendFormat": "",
           "range": false,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${prometheus}"
+          },
+          "expr": "sum by (geo_country_iso_code) (increase(o11y_rum_vital_cls_count{service_name=~\"$app\", o11y_rum_view_name=~\"$view\", o11y_rum_device_class=~\"$device\", o11y_rum_browser_family=~\"$browser\", geo_country_iso_code=~\"$country\", o11y_rum_connection_effective=~\"$connection\"}[$__range]))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "B"
         }
       ],
       "title": "CLS p75 by country",
       "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
         {
           "id": "organize",
           "options": {
@@ -1620,13 +1794,14 @@
         "type": "prometheus",
         "uid": "${prometheus}"
       },
+      "description": "The 75th percentile and the number of samples for each browser over the time range. A p75 from a few samples is noise.",
       "fieldConfig": {
         "defaults": {},
         "overrides": [
           {
             "matcher": {
               "id": "byName",
-              "options": "Value"
+              "options": "Value #A"
             },
             "properties": [
               {
@@ -1636,6 +1811,18 @@
               {
                 "id": "unit",
                 "value": "s"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value #B"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "samples"
               }
             ]
           }
@@ -1653,7 +1840,7 @@
         "sortBy": [
           {
             "desc": true,
-            "displayName": "p75"
+            "displayName": "samples"
           }
         ]
       },
@@ -1669,10 +1856,26 @@
           "legendFormat": "",
           "range": false,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${prometheus}"
+          },
+          "expr": "sum by (o11y_rum_browser_family) (increase(o11y_rum_vital_fcp_seconds_count{service_name=~\"$app\", o11y_rum_view_name=~\"$view\", o11y_rum_device_class=~\"$device\", o11y_rum_browser_family=~\"$browser\", geo_country_iso_code=~\"$country\", o11y_rum_connection_effective=~\"$connection\"}[$__range]))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "B"
         }
       ],
       "title": "FCP p75 by browser",
       "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
         {
           "id": "organize",
           "options": {
@@ -1689,13 +1892,14 @@
         "type": "prometheus",
         "uid": "${prometheus}"
       },
+      "description": "The 75th percentile and the number of samples for each country over the time range. A p75 from a few samples is noise.",
       "fieldConfig": {
         "defaults": {},
         "overrides": [
           {
             "matcher": {
               "id": "byName",
-              "options": "Value"
+              "options": "Value #A"
             },
             "properties": [
               {
@@ -1705,6 +1909,18 @@
               {
                 "id": "unit",
                 "value": "s"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value #B"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "samples"
               }
             ]
           }
@@ -1722,7 +1938,7 @@
         "sortBy": [
           {
             "desc": true,
-            "displayName": "p75"
+            "displayName": "samples"
           }
         ]
       },
@@ -1738,10 +1954,26 @@
           "legendFormat": "",
           "range": false,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${prometheus}"
+          },
+          "expr": "sum by (geo_country_iso_code) (increase(o11y_rum_vital_fcp_seconds_count{service_name=~\"$app\", o11y_rum_view_name=~\"$view\", o11y_rum_device_class=~\"$device\", o11y_rum_browser_family=~\"$browser\", geo_country_iso_code=~\"$country\", o11y_rum_connection_effective=~\"$connection\"}[$__range]))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "B"
         }
       ],
       "title": "FCP p75 by country",
       "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
         {
           "id": "organize",
           "options": {
@@ -2050,13 +2282,14 @@
         "type": "prometheus",
         "uid": "${prometheus}"
       },
+      "description": "The 75th percentile and the number of samples for each browser over the time range. A p75 from a few samples is noise.",
       "fieldConfig": {
         "defaults": {},
         "overrides": [
           {
             "matcher": {
               "id": "byName",
-              "options": "Value"
+              "options": "Value #A"
             },
             "properties": [
               {
@@ -2066,6 +2299,18 @@
               {
                 "id": "unit",
                 "value": "s"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value #B"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "samples"
               }
             ]
           }
@@ -2083,7 +2328,7 @@
         "sortBy": [
           {
             "desc": true,
-            "displayName": "p75"
+            "displayName": "samples"
           }
         ]
       },
@@ -2099,10 +2344,26 @@
           "legendFormat": "",
           "range": false,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${prometheus}"
+          },
+          "expr": "sum by (o11y_rum_browser_family) (increase(o11y_rum_vital_ttfb_seconds_count{service_name=~\"$app\", o11y_rum_view_name=~\"$view\", o11y_rum_device_class=~\"$device\", o11y_rum_browser_family=~\"$browser\", geo_country_iso_code=~\"$country\", o11y_rum_connection_effective=~\"$connection\"}[$__range]))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "B"
         }
       ],
       "title": "TTFB p75 by browser",
       "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
         {
           "id": "organize",
           "options": {
@@ -2119,13 +2380,14 @@
         "type": "prometheus",
         "uid": "${prometheus}"
       },
+      "description": "The 75th percentile and the number of samples for each country over the time range. A p75 from a few samples is noise.",
       "fieldConfig": {
         "defaults": {},
         "overrides": [
           {
             "matcher": {
               "id": "byName",
-              "options": "Value"
+              "options": "Value #A"
             },
             "properties": [
               {
@@ -2135,6 +2397,18 @@
               {
                 "id": "unit",
                 "value": "s"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value #B"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "samples"
               }
             ]
           }
@@ -2152,7 +2426,7 @@
         "sortBy": [
           {
             "desc": true,
-            "displayName": "p75"
+            "displayName": "samples"
           }
         ]
       },
@@ -2168,10 +2442,26 @@
           "legendFormat": "",
           "range": false,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${prometheus}"
+          },
+          "expr": "sum by (geo_country_iso_code) (increase(o11y_rum_vital_ttfb_seconds_count{service_name=~\"$app\", o11y_rum_view_name=~\"$view\", o11y_rum_device_class=~\"$device\", o11y_rum_browser_family=~\"$browser\", geo_country_iso_code=~\"$country\", o11y_rum_connection_effective=~\"$connection\"}[$__range]))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "B"
         }
       ],
       "title": "TTFB p75 by country",
       "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
         {
           "id": "organize",
           "options": {

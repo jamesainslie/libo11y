@@ -37,13 +37,17 @@ func vitalLabelVar(name, label, l string) dash.Variable {
 	return promVar(name, label, `label_values(`+vitalDefs[0].Family+`_count{service_name=~"$app"}, `+l+`)`, ".*")
 }
 
-// The session explorer's variables. Its app list comes from Loki, because
-// the explorer reads only Loki and Tempo.
+// varRUMApp is the app picker of the dashboards that read Loki: the apps
+// that post RUM, from the gateway's derived views. Its All selects exactly
+// those apps, never .+: a Loki stream selector of service_name=~".+" makes
+// every panel read every log stream in Loki, not only the RUM apps'.
+var varRUMApp = dash.Variable{
+	Name: "app", Label: "App", Type: "query", Datasource: &dash.Prometheus, Query: `label_values(o11y_rum_views_total, service_name)`,
+	Multi: true, IncludeAll: true,
+}
+
+// The session explorer's own variables.
 var (
-	varLokiApp = dash.Variable{
-		Name: "app", Label: "App", Type: "query", Datasource: &dash.Loki, Query: "label_values(service_name)",
-		Multi: true, IncludeAll: true, AllValue: ".+",
-	}
 	varSession = dash.Variable{Name: "session_id", Label: "session.id", Type: "textbox"}
 	varViewID  = dash.Variable{Name: "view_id", Label: "o11y.rum.view.id", Type: "textbox"}
 )

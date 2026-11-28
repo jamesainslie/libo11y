@@ -14,7 +14,7 @@ func overview(t thresholds.Thresholds) dash.Dashboard {
 	errs := `o11y_rum_errors_total{` + selApp + `, ` + selPlatform + `}`
 	frus := `o11y_rum_frustrations_total{` + selApp + `, ` + selPlatform + `}`
 	per100 := func(series string) string {
-		return `100 * sum(increase(` + series + `[$__range])) / sum(increase(` + views + `[$__range]))`
+		return `100 * (sum(increase(` + series + `[$__range])) or vector(0)) / sum(increase(` + views + `[$__range]))`
 	}
 	byRate := func(by, series string) string {
 		return `sum by (` + by + `) (rate(` + series + `[$__rate_interval]))`

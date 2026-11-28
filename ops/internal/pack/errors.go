@@ -28,7 +28,7 @@ func errorsDashboard() dash.Dashboard {
 		Title:       "libo11y RUM: errors and frustration",
 		Description: "Error and frustration rates for every consented session, and the events of kept sessions from Loki.",
 		Tags:        []string{"rum"},
-		Variables:   []dash.Variable{varProm, varLoki, varApp, varPlatform, varView},
+		Variables:   []dash.Variable{varProm, varLoki, varRUMApp, varPlatform, varView},
 		Links: []dash.Link{
 			{Title: "Overview", URL: "/d/libo11y-rum-overview?${app:queryparam}&${platform:queryparam}&${__url_time_range}"},
 			{Title: "Session explorer", URL: "/d/libo11y-rum-session-explorer?${app:queryparam}&${__url_time_range}"},

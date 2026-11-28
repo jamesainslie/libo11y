@@ -109,7 +109,7 @@ var mustHaveData = map[string][]string{
 // dashboard, every panel query answers through Grafana's query API, the
 // panels the fixture covers show data, and Prometheus loads every rule.
 // The browser subtest checks what only Grafana's frontend does: the
-// explorer's data link and its Loki app variable.
+// explorer's data link and its app variable.
 //
 // It needs the compose environment; run it with make ops-integration.
 func TestIntegration(t *testing.T) {
