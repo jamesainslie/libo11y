@@ -20,10 +20,12 @@ export type {
 import type { RemoteConfig, RemoteConfigOptions, RumCollector } from "@libo11y/rum";
 import { remoteConfig as portableRemoteConfig } from "@libo11y/rum/core";
 import { defaultRumEnv, defaultRumReactNativeDeps } from "./env.ts";
+import { errorsWith, type RnErrorsOptions } from "./errors/collector.ts";
 import type { ReactNativeRumTelemetry, RumReactNativeSetupOptions } from "./options.ts";
 import { screensWith } from "./screens.ts";
 import { setupRumReactNativeWith } from "./setup.ts";
 
+export type { RnErrorsOptions } from "./errors/collector.ts";
 export type {
   ReactNativeRumTelemetry,
   RumReactNativeOptions,
@@ -55,6 +57,22 @@ export function setupRumReactNative(
  */
 export function screens(): RumCollector {
   return screensWith(defaultRumEnv());
+}
+
+/**
+ * The errors collector. Every error React Native's global handler sees (ErrorUtils) is recorded
+ * with source uncaught, then handed to the handler installed before; a fatal one first sends the
+ * view summaries and flushes the telemetry for up to opts.fatalFlushMillis (default 2000), because
+ * React Native's handler ends the app in release. Unhandled promise rejections are recorded with
+ * source unhandled_rejection from Hermes's tracker, in release builds only unless
+ * opts.unhandledRejections says otherwise. Requests that end without a status are network errors,
+ * and with opts.console, console.error calls are console errors. Every stack is rewritten so the
+ * gateway can symbolicate it. Errors carry the breadcrumbs and count in the screen's summary.
+ * React render errors come from `@libo11y/rum-react`'s RumErrorBoundary. Pass it in
+ * rum.collectors.
+ */
+export function errors(opts: RnErrorsOptions = {}): RumCollector {
+  return errorsWith(defaultRumEnv(), opts);
 }
 
 /**

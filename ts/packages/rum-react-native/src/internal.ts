@@ -14,7 +14,15 @@ export {
   rumLifecycle,
 } from "./binding.ts";
 export { preloadedStorage } from "./config-cache.ts";
-export type { RumReactNativeEnv, StartupTimingLike } from "./contracts/env.ts";
+export type { ConsoleLike, RumReactNativeEnv, StartupTimingLike } from "./contracts/env.ts";
+export {
+  errorsWith,
+  FATAL_FLUSH_MILLIS,
+  type RnErrorsEnv,
+  type RnErrorsOptions,
+} from "./errors/collector.ts";
+export { BUNDLE_URLS, bundleUrlOf, mapHermesStack } from "./errors/hermes-stack.ts";
+export { installRejectionTracker } from "./errors/rejections.ts";
 export { screensWith } from "./screens.ts";
 export { storageSessionStore } from "./session-store.ts";
 export { APP_LOCATION, type RumReactNativeDeps, setupRumReactNativeWith } from "./setup.ts";
