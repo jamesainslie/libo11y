@@ -21,6 +21,14 @@ test("rpcOf reads package-qualified service paths, under any base path", () => {
   assert.equal(rpcOf("/a.B/"), undefined);
   assert.equal(rpcOf("/a..B/Method"), undefined);
   assert.equal(rpcOf("/1a.B/Method"), undefined);
+  // REST paths with dotted segments: the service and method names are PascalCase in Connect.
+  assert.equal(rpcOf("/api/users/jane.doe/follow"), undefined);
+  assert.equal(rpcOf("/files/report.pdf/Download"), undefined);
+  assert.equal(rpcOf("/lor.signing.v1.SigningService/signDocument"), undefined);
+  assert.deepEqual(rpcOf("/grpc.health.v1.Health/Check"), {
+    service: "grpc.health.v1.Health",
+    method: "Check",
+  });
 });
 
 /** A Rum whose onRequestStart records its hook, and a tracer whose ended spans are exported. */

@@ -12,8 +12,9 @@ npm install @libo11y/rum @libo11y/rum-tanstack-router
 
 It reads only router-core's lifecycle events and route matches, so it
 works with a router from `@tanstack/react-router` or any other TanStack
-Router framework adapter at 1.120 or later. It has no runtime dependency
-on TanStack Router.
+Router framework adapter. It has no runtime dependency on TanStack Router.
+Its tests run against `@tanstack/router-core` 1.171 and
+`@tanstack/react-router` 1.170, and its peer range starts at 1.170.
 
 ## Status
 
@@ -57,8 +58,20 @@ instrumentTanStackRouter(router, telemetry.rum);
   names the view, and `onRendered` marks it rendered, so its view span
   ends at the next paint.
 - A navigation that changes only the search or the hash starts no view.
-- A navigation that a newer one replaces before it resolved still counts
-  as a view. The newer navigation's view starts next.
+- A redirect, or a newer navigation, before a navigation resolved starts
+  no second view. The view takes the name of the location that resolved.
+- A location no route matches, or whose route threw `notFound()`, is the
+  view `$notFound` (`NOT_FOUND_VIEW_NAME`), never the parent route's name.
+
+A soft view starts under RUM's default name, the path with ID-like
+segments as `$id`, and takes its route template when the navigation
+resolved. A breadcrumb recorded at the view's start keeps the default
+name.
+
+Nothing is recorded while consent is not granted. When consent is granted
+after the router rendered, the view RUM starts then keeps its default name
+and its view span ends at its 10 second cap. The next navigation is named
+and timed as usual.
 
 ## View names
 

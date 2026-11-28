@@ -4,6 +4,7 @@
  */
 export {
   instrumentTanStackRouter,
+  NOT_FOUND_VIEW_NAME,
   type RouteMatchLike,
   type RouterNavigationEvent,
   routeTemplate,

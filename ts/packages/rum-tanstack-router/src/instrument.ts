@@ -3,9 +3,12 @@
  *
  * A navigation that changes the path starts a soft view on onBeforeNavigate, so the view's start
  * is the navigation's start and an open action becomes its cause. onResolved names the view after
- * the route template of its deepest match, never the URL. onRendered marks the view rendered, so
- * its view span ends at the next paint. The initial load starts no view: it names and completes
- * the initial view RUM already started. A change of search or hash alone starts no view.
+ * the route template of its deepest match, never the URL, or NOT_FOUND_VIEW_NAME when no route
+ * matched. onRendered marks the view rendered, so its view span ends at the next paint. The
+ * initial load starts no view: it names and completes the initial view RUM already started. A
+ * change of search or hash alone starts no view. A redirect, or a newer navigation, before a
+ * navigation resolved starts no second view: the view takes the name of the location that
+ * resolved.
  *
  * The adapter needs only the structural TanStackRouterLike below, which a router-core 1.x
  * RouterCore satisfies, whichever framework adapter (React, Solid, Vue) created it.
@@ -26,7 +29,16 @@ export interface RouteMatchLike {
   readonly routeId: string;
   /** The route's full path, such as /documents/$docId. */
   readonly fullPath?: string;
+  /** notFound when the route threw notFound(). */
+  readonly status?: string;
+  /** Set by router-core 1.x on the match that renders a global not-found. */
+  readonly _notFound?: boolean;
+  /** The same flag under its earlier router-core name. */
+  readonly globalNotFound?: boolean;
 }
+
+/** The view name of a location no route matched, or whose route threw notFound(). */
+export const NOT_FOUND_VIEW_NAME = "$notFound";
 
 /** The parts of a TanStack Router instance the adapter uses (router-core 1.x). */
 export interface TanStackRouterLike {
@@ -80,21 +92,30 @@ export function routeTemplate(matches: readonly RouteMatchLike[]): string | unde
  */
 export function instrumentTanStackRouter(router: TanStackRouterLike, rum: Rum): () => void {
   const name = (): void => {
-    const template = routeTemplate(router.state.matches);
+    const matches = router.state.matches;
+    const notFound = matches.some(
+      (m) => m.status === "notFound" || m._notFound === true || m.globalNotFound === true,
+    );
+    const template = notFound ? NOT_FOUND_VIEW_NAME : routeTemplate(matches);
     if (template !== undefined) rum.setViewName(template);
   };
   // The current view has not rendered yet: the initial view at install, and each soft view.
   let awaitingRender = true;
+  // A soft view the adapter started waits for its navigation to resolve.
+  let pending = false;
   const offs = [
     router.subscribe("onBeforeNavigate", (e) => {
-      if (!e.pathChanged || e.fromLocation === undefined) return;
+      if (!e.pathChanged || e.fromLocation === undefined || pending) return;
       rum.startView();
+      pending = true;
       awaitingRender = true;
     }),
     router.subscribe("onResolved", (e) => {
-      if (e.pathChanged) name();
+      if (e.pathChanged || pending) name();
+      pending = false;
     }),
     router.subscribe("onRendered", () => {
+      pending = false;
       if (!awaitingRender) return;
       awaitingRender = false;
       rum.viewRendered();

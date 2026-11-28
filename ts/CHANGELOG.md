@@ -48,12 +48,15 @@ adhere to [Semantic Versioning](https://semver.org/).
   its peers. `@libo11y/rum-tanstack-router` has `instrumentTanStackRouter`,
   which names views by route template, never by URL, starts a soft view
   when a navigation changes the path, and ends the view span at the first
-  paint after the new route rendered. It reads router-core 1.x events
-  only and has no runtime dependency on TanStack Router.
+  paint after the new route rendered. A redirect before the navigation
+  resolved starts no second view, and a location no route matches is the
+  view `$notFound`. It reads router-core 1.x events only and has no
+  runtime dependency on TanStack Router.
   `@libo11y/rum-connect` has `connectRequestNaming`, which names the fetch
   spans of Connect and gRPC-Web RPCs `<service>/<method>` with
   `rpc.system.name` and `rpc.method`, as `go/o11yconnect` names its
-  client spans.
+  client spans. A request is an RPC when its path ends in a PascalCase
+  service and method.
 - `scripts/size.ts`: a size budget entry can name `external` modules,
   such as `react` for the React adapter, which are left out of its bundle.
 - `@libo11y/rum`: app metrics export with delta temporality, as the RUM

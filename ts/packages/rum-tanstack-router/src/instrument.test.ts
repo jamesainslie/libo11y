@@ -93,7 +93,7 @@ test("a path change starts, names and completes a soft view; a search change doe
   assert.deepEqual(rum.calls, ["start", "name /settings", "rendered"]);
 });
 
-test("a navigation superseded before it resolved leaves one soft view per navigation", () => {
+test("a navigation superseded or redirected before it resolved is one soft view", () => {
   const router = fakeRouter();
   const rum = recordingRum();
   instrumentTanStackRouter(router, rum);
@@ -102,11 +102,51 @@ test("a navigation superseded before it resolved leaves one soft view per naviga
   router.emit("onRendered");
   rum.calls.length = 0;
   router.emit("onBeforeNavigate", FROM);
+  // A redirect from beforeLoad, or a newer navigation, commits another location before the first
+  // resolved; the last resolved location is unchanged, so pathChanged is true again.
+  router.matches = [{ routeId: "/login", fullPath: "/login" }];
+  router.emit("onBeforeNavigate", FROM);
+  router.emit("onResolved", FROM);
+  router.emit("onRendered", FROM);
+  assert.deepEqual(rum.calls, ["start", "name /login", "rendered"]);
+  rum.calls.length = 0;
   router.matches = [{ routeId: "/b", fullPath: "/b" }];
   router.emit("onBeforeNavigate", FROM);
   router.emit("onResolved", FROM);
   router.emit("onRendered", FROM);
-  assert.deepEqual(rum.calls, ["start", "start", "name /b", "rendered"]);
+  assert.deepEqual(rum.calls, ["start", "name /b", "rendered"]);
+});
+
+test("a navigation back to the resolved path before the first resolved still names its view", () => {
+  const router = fakeRouter();
+  const rum = recordingRum();
+  instrumentTanStackRouter(router, rum);
+  router.emit("onBeforeNavigate");
+  router.emit("onResolved");
+  router.emit("onRendered");
+  rum.calls.length = 0;
+  router.emit("onBeforeNavigate", FROM);
+  router.matches = [{ routeId: "/a", fullPath: "/a" }];
+  router.emit("onBeforeNavigate", { ...FROM, pathChanged: false });
+  router.emit("onResolved", { ...FROM, pathChanged: false });
+  router.emit("onRendered", { ...FROM, pathChanged: false });
+  assert.deepEqual(rum.calls, ["start", "name /a", "rendered"]);
+});
+
+test("a location no route matches is named $notFound, not after a parent route", () => {
+  const router = fakeRouter();
+  const rum = recordingRum();
+  instrumentTanStackRouter(router, rum);
+  router.matches = [{ routeId: "__root__", fullPath: "/", _notFound: true }];
+  router.emit("onBeforeNavigate");
+  router.emit("onResolved");
+  router.matches = [
+    { routeId: "__root__", fullPath: "/" },
+    { routeId: "/settings", fullPath: "/settings", status: "notFound" },
+  ];
+  router.emit("onBeforeNavigate", FROM);
+  router.emit("onResolved", FROM);
+  assert.deepEqual(rum.calls, ["name $notFound", "start", "name $notFound"]);
 });
 
 test("onRendered without a path change completes a view still waiting to render", () => {
@@ -193,6 +233,16 @@ test("against the real router-core, navigations call the same sequence", async (
   await router.load();
   await router.navigate({ to: "/documents/$docId", params: { docId: "42" } });
   await router.navigate({ to: "/documents/$docId", params: { docId: "42" }, search: { page: 2 } });
+  await router.navigate({ to: "/no/such/page" });
   off();
-  assert.deepEqual(rum.calls, ["name /", "rendered", "start", "name /documents/$docId", "rendered"]);
+  assert.deepEqual(rum.calls, [
+    "name /",
+    "rendered",
+    "start",
+    "name /documents/$docId",
+    "rendered",
+    "start",
+    "name $notFound",
+    "rendered",
+  ]);
 });

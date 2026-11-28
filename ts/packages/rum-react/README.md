@@ -60,8 +60,18 @@ nothing. Like every error RUM records, a boundary error counts in the
 view summary, keeps the session's detail and carries the breadcrumbs.
 Nothing is recorded while consent is not granted.
 
-React's own error reporting is unchanged. React 19 still logs a caught
-error to the console. The boundary does not install console capture.
+React's own error reporting is unchanged, so one render error can be
+recorded twice:
+
+- React 19 logs a caught error with `console.error`. With
+  `errors({ console: true })`, RUM records that call as a second error with
+  source `console`.
+- React 18 in development mode also rethrows a caught error to
+  `window.onerror`, which `errors()` records with source `uncaught`. React
+  18 production builds and React 19 do not.
+
+The boundary keeps rendering its fallback until it unmounts. To recover on
+navigation, give it a `key` that changes with the route.
 
 ## useRum
 

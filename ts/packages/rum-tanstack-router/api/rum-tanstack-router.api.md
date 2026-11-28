@@ -10,9 +10,15 @@ import type { Rum } from '@libo11y/rum';
 export function instrumentTanStackRouter(router: TanStackRouterLike, rum: Rum): () => void;
 
 // @public
+export const NOT_FOUND_VIEW_NAME = "$notFound";
+
+// @public
 export interface RouteMatchLike {
     readonly fullPath?: string;
+    readonly globalNotFound?: boolean;
+    readonly _notFound?: boolean;
     readonly routeId: string;
+    readonly status?: string;
 }
 
 // @public

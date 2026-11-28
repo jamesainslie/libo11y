@@ -9,8 +9,12 @@ import type { Rum } from "@libo11y/rum";
 const ATTR_RPC_SYSTEM_NAME = "rpc.system.name";
 const ATTR_RPC_METHOD = "rpc.method";
 
-/** The last two path segments: a package-qualified service and a method. */
-const RPC_PATH = /\/([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+)\/([A-Za-z_]\w*)$/;
+/**
+ * The last two path segments: a package-qualified service and a method. The service's own name and
+ * the method are PascalCase, as the protobuf style guide and buf lint require, so a REST path with
+ * a dotted segment, such as /users/jane.doe/follow, is not an RPC.
+ */
+const RPC_PATH = /\/((?:[A-Za-z_]\w*\.)+[A-Z]\w*)\/([A-Z]\w*)$/;
 
 /** Options for connectRequestNaming. */
 export interface ConnectNamingOptions {
@@ -30,8 +34,9 @@ export function rpcOf(pathname: string): { readonly service: string; readonly me
 
 /**
  * Names fetch and XHR spans of Connect RPCs as `<service>/<method>` with rpc.system.name and
- * rpc.method. A request is an RPC when its path ends in `/<package.Service>/<Method>` and it is a
- * POST, or a GET with the Connect protocol's connect=v1 query parameter. Returns the uninstall.
+ * rpc.method. A request is an RPC when its path ends in `/<package.Service>/<Method>`, with the
+ * service's own name and the method in PascalCase, and it is a POST, or a GET with the Connect
+ * protocol's connect=v1 query parameter. Returns the uninstall.
  */
 export function connectRequestNaming(rum: Rum, opts: ConnectNamingOptions = {}): () => void {
   const services = opts.services === undefined ? undefined : new Set(opts.services);

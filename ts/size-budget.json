@@ -16,7 +16,7 @@
     },
     "@libo11y/rum-tanstack-router instrumentTanStackRouter": {
       "code": "import { instrumentTanStackRouter } from \"@libo11y/rum-tanstack-router\"; (globalThis as Record<string, unknown>).__x = instrumentTanStackRouter;\n",
-      "budget": 512
+      "budget": 768
     },
     "@libo11y/rum-connect connectRequestNaming": {
       "code": "import { connectRequestNaming } from \"@libo11y/rum-connect\"; (globalThis as Record<string, unknown>).__x = connectRequestNaming;\n",

@@ -55,11 +55,14 @@ given its own `fetch` option must not bypass `globalThis.fetch`.
 ## What counts as an RPC
 
 A request is an RPC when its path ends in `/<package.Service>/<Method>`,
-where the service has at least one package segment, and it is a `POST`,
+where the service has at least one package segment, the service's own
+name and the method are PascalCase, as the protobuf style guide requires,
+and it is a `POST`,
 or a `GET` with the Connect protocol's `connect=v1` query parameter. Any
 base path before the service is allowed, so a transport with base URL
-`/api` is covered. Every other request keeps its span, named by its HTTP
-method.
+`/api` is covered. A REST path with a dotted segment, such as
+`/users/jane.doe/follow`, is not an RPC. Every other request keeps its
+span, named by its HTTP method.
 
 The span's name and `rpc.method` are `<service>/<method>`. RUM's
 breadcrumbs then label the request `rpc <service>/<method>` instead of

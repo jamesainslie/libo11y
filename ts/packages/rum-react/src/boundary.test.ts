@@ -37,12 +37,28 @@ test("componentDidCatch without a component stack records the boundary source al
   assert.deepEqual(rum.errors, [{ error: "x", opts: { source: "boundary" } }]);
 });
 
+/** A boundary that reports while rendering, so a server render shows which rum React gave it. */
+class ReportingBoundary extends RumErrorBoundary {
+  override render(): ReactNode {
+    this.componentDidCatch("x", {});
+    return null;
+  }
+}
+
 test("componentDidCatch uses the nearest provider's rum when no rum prop is given", () => {
   const rum = fakeRum();
-  const b = new RumErrorBoundary({});
-  b.context = rum;
-  b.componentDidCatch("x", {});
-  assert.equal(rum.errors.length, 1);
+  renderToStaticMarkup(createElement(RumProvider, { rum }, createElement(ReportingBoundary)));
+  assert.deepEqual(rum.errors, [{ error: "x", opts: { source: "boundary" } }]);
+});
+
+test("a rum prop wins over the provider's", () => {
+  const outer = fakeRum();
+  const own = fakeRum();
+  renderToStaticMarkup(
+    createElement(RumProvider, { rum: outer }, createElement(ReportingBoundary, { rum: own })),
+  );
+  assert.equal(outer.errors.length, 0);
+  assert.equal(own.errors.length, 1);
 });
 
 test("componentDidCatch with no rum at all does nothing", () => {
