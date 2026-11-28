@@ -1,6 +1,6 @@
 {
   "name": "@libo11y/rum-connect",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "Connect adapter for @libo11y/rum: names the fetch spans of Connect and gRPC-Web RPCs by service and method, with rpc.system.name and rpc.method.",
   "license": "Apache-2.0",

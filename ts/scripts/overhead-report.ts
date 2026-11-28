@@ -3,9 +3,12 @@
  * packages/rum/browser/bench/overhead.bench.ts) as a markdown table and checks it against limits.
  *
  *   bun scripts/overhead-report.ts FILE [--summary FILE] [--max-view-ms N] [--max-interaction-ms N]
+ *     [--max-replay-view-ms N] [--max-replay-interaction-ms N]
  *
  * prints the table, appends it to --summary (CI passes $GITHUB_STEP_SUMMARY), and exits 1 when a
- * measure is above its limit. The limits are a first guard against regressions, not a target.
+ * measure is above its limit. The limits are a first guard against regressions, not a target. A
+ * result with a replay run (RUM plus @libo11y/rum-replay) has two more rows, the overhead replay
+ * adds over RUM alone.
  */
 import { appendFileSync, readFileSync } from "node:fs";
 
@@ -28,12 +31,23 @@ export interface OverheadResult {
   readonly baseline: OverheadTotals;
   /** The median totals with RUM. */
   readonly withRum: OverheadTotals;
+  /** The median over runs of the extra task time replay adds per soft navigation, over RUM alone. */
+  readonly replayViewMillis?: number;
+  /** The median over runs of the extra task time replay adds per click, over RUM alone. */
+  readonly replayInteractionMillis?: number;
+  /** The median totals with RUM and replay. */
+  readonly withReplay?: OverheadTotals;
 }
 
 export interface OverheadLimits {
   readonly maxViewMillis?: number;
   readonly maxInteractionMillis?: number;
+  readonly maxReplayViewMillis?: number;
+  readonly maxReplayInteractionMillis?: number;
 }
+
+/** The replay run's fields, all of which a result with a replay run has. */
+const REPLAY_FIELDS = ["replayViewMillis", "replayInteractionMillis", "withReplay"] as const;
 
 function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -56,13 +70,22 @@ function totals(o: Record<string, unknown>, key: string): OverheadTotals {
 export function parseOverhead(value: unknown): OverheadResult {
   if (!isObject(value)) throw new Error("overhead: the result must be an object");
   if (typeof value.browser !== "string") throw new Error("overhead: browser must be a string");
-  return {
+  const result: OverheadResult = {
     browser: value.browser,
     runs: num(value, "runs", ""),
     viewMillis: num(value, "viewMillis", ""),
     interactionMillis: num(value, "interactionMillis", ""),
     baseline: totals(value, "baseline"),
     withRum: totals(value, "withRum"),
+  };
+  if (REPLAY_FIELDS.every((k) => value[k] === undefined)) return result;
+  const missing = REPLAY_FIELDS.find((k) => value[k] === undefined);
+  if (missing !== undefined) throw new Error(`overhead: a replay run needs ${missing} too`);
+  return {
+    ...result,
+    replayViewMillis: num(value, "replayViewMillis", ""),
+    replayInteractionMillis: num(value, "replayInteractionMillis", ""),
+    withReplay: totals(value, "withReplay"),
   };
 }
 
@@ -83,13 +106,20 @@ function limit(args: readonly string[], name: string): number | undefined {
 export function parseLimits(args: readonly string[]): OverheadLimits {
   const view = limit(args, "--max-view-ms");
   const interaction = limit(args, "--max-interaction-ms");
+  const replayView = limit(args, "--max-replay-view-ms");
+  const replayInteraction = limit(args, "--max-replay-interaction-ms");
   return {
     ...(view === undefined ? {} : { maxViewMillis: view }),
     ...(interaction === undefined ? {} : { maxInteractionMillis: interaction }),
+    ...(replayView === undefined ? {} : { maxReplayViewMillis: replayView }),
+    ...(replayInteraction === undefined ? {} : { maxReplayInteractionMillis: replayInteraction }),
   };
 }
 
-/** The result as a markdown table, and every measure above its limit. */
+/**
+ * The result as a markdown table, and every measure above its limit. A replay limit for a result
+ * without a replay run throws, so a benchmark that stopped measuring replay does not pass.
+ */
 export function reportOverhead(
   result: OverheadResult,
   limits: OverheadLimits,
@@ -98,6 +128,14 @@ export function reportOverhead(
     ["per view", result.viewMillis, limits.maxViewMillis],
     ["per interaction", result.interactionMillis, limits.maxInteractionMillis],
   ];
+  if (result.replayViewMillis !== undefined && result.replayInteractionMillis !== undefined) {
+    rows.push(
+      ["replay per view", result.replayViewMillis, limits.maxReplayViewMillis],
+      ["replay per interaction", result.replayInteractionMillis, limits.maxReplayInteractionMillis],
+    );
+  } else if (limits.maxReplayViewMillis !== undefined || limits.maxReplayInteractionMillis !== undefined) {
+    throw new Error("overhead: a replay limit is set but the result has no replay run");
+  }
   const over: string[] = [];
   const lines = [
     `RUM overhead on ${result.browser}, median of ${result.runs} runs (main-thread task time).`,
@@ -119,7 +157,7 @@ function main(args: readonly string[]): number {
   const file = args[0];
   if (file === undefined || file.startsWith("--")) {
     console.error(
-      "usage: overhead-report.ts FILE [--summary FILE] [--max-view-ms N] [--max-interaction-ms N]",
+      "usage: overhead-report.ts FILE [--summary FILE] [--max-view-ms N] [--max-interaction-ms N] [--max-replay-view-ms N] [--max-replay-interaction-ms N]",
     );
     return 2;
   }

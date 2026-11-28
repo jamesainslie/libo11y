@@ -106,14 +106,18 @@ ts-rn-check: ts-install
 ts-browser-test: ts-install
 	cd ts && bun run test:browser
 
-# The RUM gateway end-to-end journey: builds o11yrum-gateway and runs the
+# The RUM gateway end-to-end journeys: builds o11yrum-gateway and runs the
 # journey in ts/packages/sourcemaps/src/e2e under Node and Bun against the
-# in-process OTLP sink from @libo11y/test.
+# in-process OTLP sink from @libo11y/test, then the session replay journey
+# (ts/packages/rum-replay/browser/gateway-journey.pw.ts) in Playwright's
+# Chromium: record in a browser, store through the gateway, read back with
+# a token, replay with @rrweb/replay, erase. Needs Playwright's Chromium.
 rum-e2e: ts-install
 	@set -e; tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; \
 	(cd go/o11yrum && go build -o "$$tmp/o11yrum-gateway" ./cmd/o11yrum-gateway); \
 	cd ts && O11YRUM_GATEWAY_BIN="$$tmp/o11yrum-gateway" node --test packages/sourcemaps/src/e2e/*.test.ts \
-		&& O11YRUM_GATEWAY_BIN="$$tmp/o11yrum-gateway" bun test --timeout 60000 packages/sourcemaps/src/e2e
+		&& O11YRUM_GATEWAY_BIN="$$tmp/o11yrum-gateway" bun test --timeout 60000 packages/sourcemaps/src/e2e \
+		&& O11YRUM_GATEWAY_BIN="$$tmp/o11yrum-gateway" bun run test:browser --project=rum-chromium packages/rum-replay/browser/gateway-journey.pw.ts
 
 # Rust workspace (rust/): formatting, clippy with warnings as errors, the
 # tests, and the docs with warnings as errors (needs cargo with rustfmt and
@@ -162,7 +166,7 @@ RELEASE_VERSION ?= v0.4.0
 # validates. Like RELEASE_VERSION, it moves only in a release commit,
 # together with the packages' versions (bun scripts/release.ts version).
 # The packages stay at 0.0.0 until the first TypeScript release.
-TS_RELEASE_VERSION ?= v0.3.0
+TS_RELEASE_VERSION ?= v0.4.0
 
 # The version the Zig package manifests (build.zig.zon and zig/build.zig.zon)
 # carry, which zig-release-check.sh validates. Moves only in a release commit.
@@ -184,7 +188,7 @@ C_RELEASE_VERSION ?= v0.1.0
 # o11yrum-release-check.sh validates and the release workflow requires to
 # match the tag. Moves only in a release commit, together with the
 # script's default and a dated go/o11yrum/CHANGELOG.md section.
-O11YRUM_RELEASE_VERSION ?= v0.1.0
+O11YRUM_RELEASE_VERSION ?= v0.2.0
 
 # The ops pack version (ops/vX.Y.Z), which ops-release-check.sh validates
 # against ops/internal/version/version.go, ops/CHANGELOG.md and the

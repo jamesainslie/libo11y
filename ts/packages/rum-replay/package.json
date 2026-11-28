@@ -1,6 +1,6 @@
 {
   "name": "@libo11y/rum-replay",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "Privacy-first session replay for @libo11y/rum: text masked by default, inputs never recorded, every event scrubbed against an attribute allow-list before it is buffered.",
   "license": "Apache-2.0",

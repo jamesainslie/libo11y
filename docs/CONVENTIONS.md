@@ -93,14 +93,20 @@ every suite on Bun 1.3.13 and Node 24.
 - **Overhead benchmark.** `bun run bench:browser` (in `ts/`) measures the
   extra main-thread task time `@libo11y/rum` adds per soft navigation and
   per click in Chromium, through the DevTools protocol's `TaskDuration`,
-  as the median of five runs with and without RUM. It writes
-  `ts/dist/bench/overhead.json`, and `bun scripts/overhead-report.ts` turns
-  that into a table and fails above `--max-view-ms` and
-  `--max-interaction-ms`. The `ts-bench` workflow runs both on pushes to
-  `main` and on pull requests that touch `ts/`, puts the table in the job
-  summary and uploads the JSON as the `rum-overhead` artifact. The limits
-  (8 ms per view, 4 ms per interaction) guard against regressions and are
-  not a target. It is a benchmark: never run it on a shared machine
+  as the median of six runs with and without RUM. A third variant adds
+  `replay()` from `@libo11y/rum-replay`, and its rows ("replay per view",
+  "replay per interaction") are what replay adds over RUM alone. Every
+  variant loads the same page, `ts/packages/rum-replay/browser/fixtures/bench.ts`.
+  It writes `ts/dist/bench/overhead.json`, and `bun scripts/overhead-report.ts`
+  turns that into a table and fails above `--max-view-ms`,
+  `--max-interaction-ms`, `--max-replay-view-ms` and
+  `--max-replay-interaction-ms`. The `ts-bench` workflow runs both on
+  pushes to `main` and on pull requests that touch `ts/`, puts the table
+  in the job summary and uploads the JSON as the `rum-overhead` artifact.
+  The limits (8 ms per view and 4 ms per interaction for RUM, 12 ms per
+  view and 4 ms per interaction for replay) guard against regressions and
+  are not a target. A first measurement above a limit is reported, not
+  met by raising the limit. It is a benchmark: never run it on a shared machine
   without the owner's approval. CI runs it; elsewhere it skips itself
   unless `LIBO11Y_BENCH=1` is set.
 - **Packing.** `ts/scripts/release.ts` sets the lockstep version
@@ -285,8 +291,10 @@ container (`O11Y_PG_TEST_DSN`).
   0.2.1. `@libo11y/rum`, `@libo11y/rum-react`,
   `@libo11y/rum-tanstack-router`, `@libo11y/rum-connect` and
   `@libo11y/sourcemaps` first ship in `ts/v0.3.0`, which implements spec
-  1.3.0. They are new to npm, so they install from the tarballs attached
-  to that GitHub Release until their first npm publish. Every package keeps
+  1.3.0, and `@libo11y/rum-replay` and `@libo11y/react-native` in
+  `ts/v0.4.0`. They are new to npm, so they install from the tarballs
+  attached to the latest `ts/` GitHub Release until their first npm
+  publish. Every package keeps
   `"private": true` in the source tree, and `release.ts pack` drops it
   from each packed `package.json`, so only packed tarballs publish.
   `make release-check` also runs `scripts/ts-release-check.sh` for
@@ -508,7 +516,7 @@ install that version locally. Keep the two in step when adding a gate.
 | `make ts-check` | the TypeScript workspace: Biome, tsc, the build, the API reports, and every unit suite under Bun and Node |
 | `make ts-browser-test` | the browser suites under Playwright: `@libo11y/web` and `@libo11y/webext` in headless Chromium, and `@libo11y/rum` and its adapters in headless Chromium, Firefox and WebKit (projects `rum-chromium`, `rum-firefox` and `rum-webkit`). It needs Playwright's browsers for the pinned version, which CI installs with `bun x --no-install playwright install --with-deps chromium firefox webkit` in `ts/`. A host with only Chromium runs `bun run test:browser --project=web --project=webext --project=rum-chromium`. CI runs it in the separate `ts-browser` job |
 | `make ts-size` | the browser bundle size budgets in `ts/size-budget.json`. CI runs the same check, `bun scripts/size.ts --check --summary`, in the `ts` job and writes the table to the job summary |
-| `make rum-e2e` | builds `o11yrum-gateway` and runs the end-to-end journey in `ts/packages/sourcemaps/src/e2e` against the TS OTLP sink from `@libo11y/test`, under Node and Bun: derived metrics from a view summary, a source map upload that symbolicates an error, the 404 for an app without remote config, and the edge refusals. `make ts-check` skips the journey, because it runs only when `O11YRUM_GATEWAY_BIN` is set. CI runs it in the `rum-e2e` job |
+| `make rum-e2e` | builds `o11yrum-gateway` and runs the end-to-end journey in `ts/packages/sourcemaps/src/e2e` against the TS OTLP sink from `@libo11y/test`, under Node and Bun: derived metrics from a view summary, a source map upload that symbolicates an error, the 404 for an app without remote config, and the edge refusals. Then it runs the session replay journey, `ts/packages/rum-replay/browser/gateway-journey.pw.ts`, in Playwright's Chromium, which it needs: a recorded session stored through the gateway, read back through the read API with a token, replayed with `@rrweb/replay` and erased. `make ts-check` and `make ts-browser-test` skip both journeys, because they run only when `O11YRUM_GATEWAY_BIN` is set. CI runs it in the `rum-e2e` job |
 | `make ts-browser-bundle-test` | `scripts/ts-browser-bundle-check.sh` against fixture packages (needs bun). CI runs it in the `ts` job after `make ts-check` |
 | `make o11yrum-image` | `scripts/o11yrum-image-check.sh`: builds the `o11yrum-gateway` image from `go/o11yrum` for the local platform only, and checks the version it reports, the 40 MiB size budget, the numeric non-root user (65532), `-check-config` on the example configuration, and `/healthz` and `/readyz` from a read-only root filesystem with every capability dropped, then a clean exit on SIGTERM. It removes its container and image. CI runs it in the `o11yrum-image` job |
 | `make o11yrum-release-check` | `scripts/o11yrum-release-check.sh` at `O11YRUM_RELEASE_VERSION` against a throwaway local remote: `go.mod` has no replace directive and the parent version it requires has a `go/` tag, the module is tidy and builds, vets and tests against that release, `go install` of the command at the tag reports the version, and an external consumer builds (needs a clean tree) |

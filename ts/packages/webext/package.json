@@ -1,6 +1,6 @@
 {
   "name": "@libo11y/webext",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "The libo11y Manifest V3 extension platform for TypeScript: setup for the service worker with a queue persisted to IndexedDB on every batch, setup for content scripts and extension pages that forward their records to the worker by runtime messaging, and trace context that crosses with every message.",
   "license": "Apache-2.0",
