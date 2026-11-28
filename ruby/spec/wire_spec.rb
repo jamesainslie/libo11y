@@ -130,5 +130,21 @@ RSpec.describe "What reaches the wire and the SDK" do
         expect(exporter.instance_variable_get(:@http).verify_mode).to eq(OpenSSL::SSL::VERIFY_PEER)
       end
     end
+
+    it "do not give certificate files to an exporter built from an explicit env" do
+      ambient = { "OTEL_EXPORTER_OTLP_CERTIFICATE" => "/ambient/ca.pem", "OTEL_EXPORTER_OTLP_CLIENT_KEY" => "/ambient/key.pem" }
+      with_env(ambient) do
+        builders = %i[build_otlp_trace_exporter build_otlp_metric_exporter build_otlp_log_exporter]
+        files = builders.map do |builder|
+          http = Libo11y::Internal::Bridges.public_send(builder, { "OTEL_EXPORTER_OTLP_ENDPOINT" => "https://collector.test" })
+                                           .instance_variable_get(:@http)
+          [http.ca_file, http.key]
+        end
+
+        expect(files).to all(eq([nil, nil]))
+        expect(Libo11y::Internal::Env.signal_tls({ "OTEL_EXPORTER_OTLP_CERTIFICATE" => "/given/ca.pem" }, "OTEL_EXPORTER_OTLP_TRACES"))
+          .to eq(certificate_file: "/given/ca.pem", client_certificate_file: nil, client_key_file: nil)
+      end
+    end
   end
 end

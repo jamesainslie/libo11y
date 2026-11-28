@@ -135,12 +135,15 @@ module Libo11y
         raise UnsupportedProtocol, "o11y: unsupported OTLP compression #{val.inspect}"
       end
 
+      # The TLS files of one signal's exporter. Every key is present, as nil
+      # when unset, because an exporter reads the process environment for a
+      # keyword it is not given.
       def signal_tls(env_map, prefix)
         {
           certificate_file: value(env_map, "#{prefix}_CERTIFICATE", "OTEL_EXPORTER_OTLP_CERTIFICATE"),
           client_certificate_file: value(env_map, "#{prefix}_CLIENT_CERTIFICATE", "OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE"),
           client_key_file: value(env_map, "#{prefix}_CLIENT_KEY", "OTEL_EXPORTER_OTLP_CLIENT_KEY")
-        }.compact
+        }
       end
 
       def parse_exemplar_filter(opt_filter, env_map)

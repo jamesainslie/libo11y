@@ -45,7 +45,8 @@ Ruby (`ruby/`, `ruby/v0.2.0`) targets Ruby 3.3+ over
 OpenTelemetry Ruby (`opentelemetry-sdk`, `opentelemetry-metrics-sdk`,
 `opentelemetry-logs-sdk`), shipping Rack, `Net::HTTP`, DB, `Detached`,
 `Proc`, `Redact`, `exe/libo11y`, and `Libo11y::Testing` (`Recorder` and
-`OtlpHttpReceiver`). .NET (`dotnet/`, `dotnet/v0.1.0`)
+`OtlpHttpReceiver`). The "Ruby status" section lists its capabilities row
+by row. .NET (`dotnet/`, `dotnet/v0.1.0`)
 targets .NET 10 over `OpenTelemetry` 1.21.0 (`Activity`, `Meter`, `ILogger`),
 shipping `Libo11y.Spec`, `Libo11y`, `Libo11y.AspNetCore`, `Libo11y.Db`,
 `Libo11y.Testing`, and `Libo11y.Cli`. Both pass the full shared
@@ -192,6 +193,83 @@ These rows record where the Rust ecosystem, OpenTelemetry Rust 0.33.1, or
 | Compile-time `build_info!()` macro | idiom | Rust binaries do not embed module build metadata like Go's `debug.ReadBuildInfo`. `libo11y::build_info!()` expands in the caller's crate to read `CARGO_PKG_VERSION` and vergen's `VERGEN_GIT_SHA`, `VERGEN_GIT_COMMIT_TIMESTAMP`, and `VERGEN_GIT_DIRTY` via `option_env!` |
 | No environment-resource shadowing | idiom | Each OpenTelemetry Rust provider receives libo11y's composed resource directly on an empty builder and never merges ambient environment variables back in, so dropped resource keys cannot reappear |
 
+## Ruby status
+
+The Ruby columns describe the `libo11y` gem (`ruby/v0.2.0`) on Ruby 3.3 and
+3.4, built on OpenTelemetry Ruby (`opentelemetry-sdk` 1.13,
+`opentelemetry-metrics-sdk` 0.22 and `opentelemetry-logs-sdk` 0.8). The rows
+are the capabilities of the matrix above, in the same order.
+
+| Capability | Ruby status | Ruby form |
+|---|---|---|
+| Three OTLP signals (traces, metrics, logs) | full | all three on by default, over `http/protobuf` |
+| Explicit init returning an owned handle, typed init errors | full | `Libo11y.setup`/`Libo11y.init` -> `Libo11y::Telemetry`, and with a block the handle shuts down when the block ends. `Libo11y::Error` subclasses name the failure (`AlreadySetup`, `NoServiceName`, `NoEnvironment`, `InvalidEnvironment`, `PIIHashKey`, `InvalidAppRegistry`, `CanaryRejected`, `UnsupportedProtocol`, `ExporterError`), with Go's messages |
+| Idempotent bounded shutdown, per-signal errors | full | `Telemetry#shutdown(timeout:)` runs once, stops logs, metrics and traces on threads under one deadline (5 s default) and returns a `ShutdownReport` with one error per signal. A signal whose final export the collector rejects is in the report, and `o11y.telemetry.dropped` goes to the console and the extra sinks. Later and concurrent callers get the same report |
+| One trace identity across logs/spans/wire | full | the logger reads the active span of `OpenTelemetry::Context.current` at emission, W3C injected on egress and adopted on ingress |
+| Propagation independent of process globals | full | `init`-built handles propagate without globals. `Rack::Middleware`, `HttpClient`, `DB::Client`, `Detached` and `Proc` take `telemetry:` |
+| W3C TraceContext + Baggage default propagator | full | composite, replaceable through the `propagators` option. The baggage egress filter still wraps a replacement |
+| Baggage egress filter | full | inject-only filter around every configured propagator. It allows every key by default, and the `baggage_egress_allow` option takes a predicate. A member's metadata is kept |
+| Standard env interop (OTEL_*) | full | reads `ENV` by default or a Hash given as `env:`. Honors `OTEL_SDK_DISABLED`, `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_*_EXPORTER` (`otlp`, `console`, `none`), `OTEL_EXPORTER_OTLP_*` (protocol, endpoint, headers, timeout, compression, TLS), `OTEL_TRACES_SAMPLER` with `OTEL_TRACES_SAMPLER_ARG`, `OTEL_METRICS_EXEMPLAR_FILTER`, `OTEL_BSP_*`, `OTEL_BLRP_*`, `OTEL_METRIC_EXPORT_*` and the attribute limit variables. `OTEL_PROPAGATORS` is not read yet, so propagators are set with `propagators`. An unsupported exporter or protocol raises `UnsupportedProtocol`. No proprietary variables |
+| Hermetic mode independent of OTEL_* | idiom | `env: Libo11y::HERMETIC`: options and library defaults only, and a signal with nothing injected is off. Two reads inside the upstream metrics SDK have no override (see the Ruby-only rows) |
+| Init canary (sink-verified startup) | full | `setup` forces `o11y.telemetry.configured` through the log pipeline before it installs any global. A sink that raises, or a log exporter that answers with a failure, fails setup with `CanaryRejected`. `init` runs no canary |
+| Effective-config line | full | the startup event's `o11y.config.*` attributes (endpoints sanitized per `conformance/vectors/endpoint-sanitize.json`) and `Telemetry#effective_config` |
+| Always-emit mechanism for audit records | full | `Libo11y.force_emit { ... }` lets the records logged in the block pass the logger's level on every sink |
+| Attribute replacer across all slog sinks | full | the `attr_replacer` option, applied on the console, OTLP and extra sinks before classification. Records from the OpenTelemetry Logs API do not pass through it |
+| Capture-time redaction | idiom | `Libo11y::Redact::Secret`, `Masked`, and the `Fields` mixin with `redact_field :name, :mask` (`mask`, `redact`, `omit`, `confidential`, `secret`). An unknown tag raises `ArgumentError` when the class is defined. They guard `to_s`, `inspect`, `to_json` and the logger, and the strictest protection wins through nesting |
+| Middleware: HTTP server | full | `Libo11y::Rack::Middleware` with route-aware names, stable HTTP semconv, `http.server.request.duration` with exemplars, `public_endpoint`, `ignore_paths`, `filter`, `server_timing` (HTML responses) and `canonical_line` |
+| Middleware: HTTP client | idiom | `Libo11y::HttpClient#request` sends through `Net::HTTP` and patches nothing globally. W3C injection, URL credentials removed from `url.full`, `propagate_fn`, `peer_service`, and `http.client.request.duration` with exemplars |
+| Middleware: gRPC | planned | no gRPC instrumentation yet |
+| Middleware: alternative web framework | idiom | no per-framework package. The Rack middleware covers Rails, Sinatra, Hanami and Roda, reads the Rails and Sinatra route, and `Libo11y::Rack.set_route` sets `http.route` for any other router |
+| Middleware: Connect RPC | excluded | no Connect RPC implementation exists for Ruby |
+| Database client instrumentation | idiom | `Libo11y::DB::Client#execute(sql) { ... }` wraps one call of any driver: parent-gated client spans, `db.client.operation.duration` with exemplars, and sanitized `db.query.text` for `postgresql`, `sqlite`, `mysql` and `mariadb` with the lexer of `go/o11ysql`. No pool metrics |
+| Detached work (jobs, queues) | full | `Libo11y::Detached`: `Carrier` with Go's text form (at most 32 KiB, egress-filtered baggage), `capture`, `restore_baggage`, and `start_linked`, which starts a linked root span and merges the carrier's baggage |
+| Child-process and framed-socket propagation | full | `Libo11y::Proc`: `child_env` and `extract_env` for `TRACEPARENT`/`TRACESTATE` (never baggage), and `inject_frame`/`extract_frame` over Hashes |
+| Application attribute registry at runtime | full | the `app_registries` option (a path, YAML text or a compiled registry): strict YAML parser and Go-compatible validator passing all 46 conformance cases, keys classified like spec keys on every signal. Sensitivity only, not cardinality |
+| Ignore lists for noise endpoints | full | `ignore_paths` patterns on the Rack middleware, matched like Go `path.Match` against the decoded path, and `filter` |
+| Resource: host/process detectors | full | telemetry SDK, `process.runtime.*` (`ruby`) and `host.name`. Never the command line, the pid or `host.id` |
+| Resource: container detector | full | Linux cgroup v1/v2 `container.id` detector |
+| Resource: Kubernetes identity | idiom | via Downward API + `OTEL_RESOURCE_ATTRIBUTES`, as in Go |
+| Resource: build info | idiom | the `build_info` option takes a Hash or the path of a JSON file written at build time (`version`, `vcs_revision`, `build_time`, `build_modified`). `build_info_enabled: false` turns it off |
+| Runtime metrics | idiom | a collector with no dependency (`ruby.gc.count`, `ruby.gc.heap_live_slots`, `process.thread.count`, `process.cpu.time`, and on Linux `process.memory.usage` and `process.unix.file_descriptor.count`), on by default. `runtime_metrics: false` turns it off |
+| Histogram bucket control | full | the `histogram_buckets` and `views` options |
+| Exemplars (metric-to-trace reconciliation) | full | on by default (trace-based) through the SDK. The `exemplar_filter` option + `OTEL_METRICS_EXEMPLAR_FILTER`. `Recorder#exemplars` and `assert_triangle!` for consumer assertions |
+| Sampler configuration | full | `OTEL_TRACES_SAMPLER` / `OTEL_TRACES_SAMPLER_ARG` + the `sampler` option |
+| TLS for exporters | full | standard `OTEL_EXPORTER_OTLP_CERTIFICATE`, `OTEL_EXPORTER_OTLP_CLIENT_KEY` and `OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE` (and per-signal forms), passed to the OTLP/HTTP exporters |
+| Signal-driven shutdown helper | full | `Libo11y.shutdown_on_signals` blocks until SIGINT or SIGTERM, restores the previous handlers, and runs `before_shutdown` and the telemetry shutdown under one shared deadline |
+| Hermetic test harness | full | `Libo11y::Testing::Recorder` and `Testing.start_recorder` (always `HERMETIC`, touches no globals) with `assert_conforms!`, `assert_correlated!`, `assert_triangle!` and span, log, metric and exemplar queries |
+| OTLP wire-level verification | full | `Libo11y::Testing::OtlpHttpReceiver`, an in-process OTLP/HTTP receiver that decodes protobuf, plain or gzip. No gRPC receiver, as the Ruby exporters speak HTTP only |
+| Centralized telemetry specification | full | the same registry generates `ruby/lib/libo11y/spec/generated` (`make spec-drift` checks it). `exe/libo11y registry check` matches the Go binary |
+| Tiered resource identity enforced at init | full | tier-0 required (`service.name`, closed-set `deployment.environment.name`, `0.0.0-unknown` fallback). `environment`, `service_namespace`, `extra_environments`, `strict_identity: false` |
+| service.instance.id derivation | full | the same derivation, proven by `conformance/vectors/instance-id.json` |
+| Single schema URL per resource | idiom | `Libo11y::Spec::SCHEMA_URL` on the resource of every signal. libo11y adds it to each OTLP request (see the Ruby-only rows) |
+| Sensitivity classification: one policy | full | one key-based policy per handle, generated table. Secrets dropped, PII dropped by default (`pii_mode`), keyed HMAC tokens under `PIIMode::HASH` (`pii_hash_key`), proven by `conformance/vectors/pii-hash.json`. `o11y.schema.violations` self-metric |
+| Sensitivity: slog sinks | idiom | the libo11y logger is a `::Logger`. It classifies each record once and writes the same attributes to the console, OTLP and the extra sinks. Nested Hashes and Arrays are walked with cycle detection and a 2048-node budget, failing closed |
+| Sensitivity: OTLP log processor | full | the first processor on the logger provider classifies every record from the OpenTelemetry Logs API, in place, before any injected processor sees it. Record bodies are not classified |
+| Sensitivity: span redaction | full | exporter wrapper redacts span, event and link attributes. Each violation counted once |
+| Sensitivity: span processor wrapping | full | an injected processor gets a redacted view at `on_finish` (`attributes`, `events`, `links`, `to_span_data`). `on_start` sees the live span |
+| Sensitivity: resource classification | full | resource classified at construction. No environment shadowing is needed, because the providers get libo11y's resource and merge nothing from the environment |
+| Sensitivity: metric classification | idiom | a meter wrapper classifies the attributes of synchronous measurements and of observable instruments before the SDK records them, so every view stream and exemplar holds classified attributes. PII is dropped even under `PIIMode::HASH`. Meters taken from the raw SDK provider are not classified |
+| Event API and wide events | full | `Telemetry#event`, `Libo11y.start_record`/`current_record` wide records, and `canonical_line` on the Rack middleware |
+| Emit-time span validator | planned | as in Go |
+| Cross-language OTLP conformance (golden corpus) | planned | the shared vectors under `conformance/` cover the instance ID, the PII token, endpoint sanitizing and the application registry cases |
+| Log/span event deduplication | excluded | as in Go. The libo11y logger writes each record once per sink |
+| Config file layering (YAML/TOML) | excluded | as in Go, superseded by OTEL declarative config |
+| Metrics cardinality cap + gauge | planned | the SDK keeps its default cardinality limit, and libo11y exposes no option for it yet |
+
+## Ruby-only rows
+
+These rows record where Ruby, or the upstream OpenTelemetry Ruby gems, shape
+a deliberately different form or leave a gap.
+
+| Capability | Ruby status | Ruby form and reason |
+|---|---|---|
+| OTLP over `http/protobuf` only | idiom | `grpc` and `http/json` for any signal exported over OTLP fail `setup` and `init` with `UnsupportedProtocol`. The upstream exporter gems that libo11y depends on speak `http/protobuf` |
+| Schema URL added as the request is sent | idiom | the upstream OTLP exporters write no resource schema URL. Each builds its request and passes the bytes to one private method, and libo11y sets the URL there for all three signals. A wire test fails if an upstream release changes that method |
+| Histogram boundaries through views | idiom | `opentelemetry-metrics-sdk` 0.22 accepts the boundaries an instrument advises and does not apply them. libo11y registers a view for each of its duration histograms, and `histogram_buckets` replaces one by name |
+| Hermetic mode upstream SDK reads | gap | with `env: Libo11y::HERMETIC` or an explicit `env` libo11y passes every setting it can. Two reads inside `opentelemetry-metrics-sdk` and the metrics exporter have no constructor argument: `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE` and `OTEL_EXPORTER_OTLP_METRICS_DEFAULT_HISTOGRAM_AGGREGATION` |
+| Fiber-local scopes | idiom | `Libo11y.force_emit`, `Libo11y.start_record` and `Libo11y::Rack.set_route` keep their state in `Thread.current[]`, which Ruby scopes to the fiber, as OpenTelemetry Ruby scopes its context. A new thread or fiber starts without them. Each takes a block, so its scope always closes |
+| Test receiver on WEBrick | idiom | `OtlpHttpReceiver` serves through WEBrick, which the gem does not depend on, so a production bundle carries no web server. A consumer adds `webrick` to its test group |
+
 ## Policy-layer capabilities (out of scope for a generic library)
 
 | Policy capability | Generic mechanism in libo11y |
@@ -205,20 +283,12 @@ These rows record where the Rust ecosystem, OpenTelemetry Rust 0.33.1, or
 ## Known defects in the current releases
 
 These are places where a release breaks a rule of the design contract.
-Each one is a defect to fix, not a decision. Of the releases in the
-matrix, none has a known defect. `ts/v0.2.1` fixed the last ones, which
-[`ts/CHANGELOG.md`](../ts/CHANGELOG.md) describes.
-
-`ruby/v0.2.0` has these known defects, found by the first review of the
-Ruby implementation. `ruby/v0.1.0` has them too, and the ones that
-[`ruby/CHANGELOG.md`](../ruby/CHANGELOG.md) lists as fixed in 0.2.0.
-
-- **Environment.** With `env: Libo11y::HERMETIC` or an explicit `env`, the
-  upstream metrics SDK still reads
-  `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE` and
-  `OTEL_EXPORTER_OTLP_METRICS_DEFAULT_HISTOGRAM_AGGREGATION` from the
-  process environment, and neither has a constructor argument libo11y can
-  pass in its place.
+Each one is a defect to fix, not a decision. No current release has a
+known defect. `ts/v0.2.1` fixed the last TypeScript ones, which
+[`ts/CHANGELOG.md`](../ts/CHANGELOG.md) describes. `ruby/v0.1.0` had
+several, which the first review of the Ruby implementation found and
+`ruby/v0.2.0` fixed. [`ruby/CHANGELOG.md`](../ruby/CHANGELOG.md) lists
+them.
 
 ## Upcoming and planned clients
 

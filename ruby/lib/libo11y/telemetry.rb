@@ -341,7 +341,9 @@ module Libo11y
             raw_meter_provider.add_metric_reader(reader)
           elsif metric_exporter_mode == "console"
             reader = OpenTelemetry::SDK::Metrics::Export::PeriodicMetricReader.new(
-              exporter: OpenTelemetry::SDK::Metrics::Export::ConsoleMetricPullExporter.new
+              exporter: OpenTelemetry::SDK::Metrics::Export::ConsoleMetricPullExporter.new,
+              export_interval_millis: Internal::Env.parse_int(env_map, "OTEL_METRIC_EXPORT_INTERVAL", 60_000),
+              export_timeout_millis: Internal::Env.parse_int(env_map, "OTEL_METRIC_EXPORT_TIMEOUT", 30_000)
             )
             raw_meter_provider.add_metric_reader(reader)
           end
