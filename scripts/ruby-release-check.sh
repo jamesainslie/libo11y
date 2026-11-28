@@ -5,7 +5,7 @@
 # Usage: ruby-release-check.sh [VERSION] [--out DIR] [--from-rubygems]
 #
 # Defaults:
-#   VERSION  v0.1.0 (leading v is optional; `make ruby-release-check` passes
+#   VERSION  v0.2.0 (leading v is optional; `make ruby-release-check` passes
 #            $(RUBY_RELEASE_VERSION)). A semver prerelease such as
 #            0.2.0-rc.1 is the gem version 0.2.0.pre.rc.1.
 #
@@ -32,7 +32,7 @@
 # it runs the installed `libo11y registry check`. Needs ruby and gem.
 set -euo pipefail
 
-version="v0.1.0"
+version="v0.2.0"
 version_set=false
 from_rubygems=false
 out=""

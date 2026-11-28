@@ -190,7 +190,7 @@ DOTNET_RELEASE_VERSION ?= v0.1.0
 
 # The version ruby/lib/libo11y/version.rb carries, which
 # ruby-release-check.sh validates. Moves only in a release commit.
-RUBY_RELEASE_VERSION ?= v0.1.0
+RUBY_RELEASE_VERSION ?= v0.2.0
 
 # The version every java/ POM carries, which java-release-check.sh
 # validates. Moves only in a release commit.

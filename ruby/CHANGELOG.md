@@ -7,19 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-28
+
+This release fixes most of what the first review of 0.1.0 found. It changes an option name, a return type and the text form of a carrier, so read the "Changed" list before upgrading.
+
+### Changed
+
+- The `console_level` option is now `log_level`, as in the other libo11y implementations. It sets the level of `Telemetry#logger`, which gates the console, OTLP and the extra sinks alike. In 0.1.0 setting `level` on the logger had no effect.
+- `Telemetry#effective_config` returns one frozen line of `key=value` pairs, as Go and Python do. 0.1.0 returned a Hash.
+- The `o11y.telemetry.configured` startup event carries the attributes the registry defines: `service.name`, `service.version`, `o11y.config.traces`, `o11y.config.metrics`, `o11y.config.logs`, `o11y.config.console`, `o11y.config.level`, `o11y.config.sampler`, `o11y.config.propagators`, `o11y.config.runtime_metrics`, `o11y.config.service_version_fallback` and the sanitized endpoints. 0.1.0 wrote keys such as `o11y.config.traces.exporter` that the registry does not define.
+- `Detached::Carrier` writes and reads the URL-encoded text form of the other libo11y implementations (`baggage=...&traceparent=...&tracestate=...`), so a carrier crosses to a Go or Python worker. 0.1.0 wrote JSON, and a carrier that 0.1.0 serialized is not read. `Carrier` exposes `traceparent`, `tracestate`, `baggage`, `span_context` and `zero?` in place of `headers`. `start_linked` starts an `internal` span by default.
+- `Proc.child_env` takes an empty base environment by default and maps `TRACEPARENT` and `TRACESTATE` to `nil` when the active span does not set them, so `Process.spawn` removes a stale value from the child.
+- Explicit options and `resource_attributes` beat `OTEL_SERVICE_NAME` and `OTEL_RESOURCE_ATTRIBUTES`. In 0.1.0 the environment beat `service.name` and `deployment.environment.name` given in `resource_attributes`.
+- An injected span processor owns the export path, as an injected exporter does, so no exporter is built from the environment beside it.
+- `Libo11y::InvalidEnvironment` names the value and the allowed set, and `Libo11y::CanaryRejected` says "rejected by log pipeline", as Go's errors do.
+
+### Fixed
+
+- `shutdown` reported success when the collector rejected a signal's final export. The `ShutdownReport` now names each signal that failed, missed the deadline, or had an export rejected, and an `o11y.telemetry.dropped` event for each goes to the console and the extra sinks.
+- `shutdown` with a timeout that is not a number raised and left every later caller waiting. It now raises `ArgumentError` before it claims the shutdown.
+- `force_flush` flushed the signals one after another and always returned `true`. It flushes them concurrently under one deadline and returns `false` when one fails.
+- `Libo11y.setup` let two concurrent callers both build providers, and a start that failed left its workers running. It claims its place before it builds anything and stops what a failed start built.
+- The startup canary did not fail `setup` when the log exporter answered with a failure or raised.
+- Under `OTEL_SDK_DISABLED=true` the tracer provider recorded spans and minted trace ids. It records nothing and passes an inbound trace context through.
+- An empty per-signal `OTEL_EXPORTER_OTLP_*` variable hid the general one.
+- Percent escapes in `OTEL_RESOURCE_ATTRIBUTES` and in OTLP headers decode as UTF-8.
+- A `Float::NAN` or infinite attribute raised out of the logging call. It is written to the console as `"NaN"`, `"+Inf"` or `"-Inf"`, and a console that fails no longer stops the other sinks.
+- `Detached.capture` returns the zero carrier outside a span and drops the trace state and then the baggage to stay within 32 KiB. `Carrier.unmarshal_text` refuses text with no valid traceparent.
+- `Detached.start_linked` dropped the caller's baggage. It merges the carrier's baggage into it.
+- The baggage egress filter dropped the metadata of the members it let through.
+
 ## [0.1.0] - 2026-11-28
 
 ### Added
 
-- Core Ruby SDK (`Libo11y.setup`, `Libo11y.init`, `Options`, typed `Libo11y::Error` hierarchy, idempotent bounded concurrent shutdown, `shutdown_on_signals`). `shutdown` returns a `ShutdownReport` that names each signal that failed, missed the deadline, or had its final export rejected by the collector, and emits `o11y.telemetry.dropped` for each to the console and the extra sinks. `force_flush` flushes the three signals concurrently and returns `false` on the same failures. The `o11y.telemetry.configured` startup event carries the registry's attributes (`service.name`, `service.version`, `o11y.config.traces`, `metrics`, `logs`, `console`, `level`, `sampler`, `propagators`, `runtime_metrics`, and the sanitized endpoints), and `Telemetry#effective_config` returns them as one line. Explicit options and `resource_attributes` beat `OTEL_SERVICE_NAME` and `OTEL_RESOURCE_ATTRIBUTES`. `OTEL_SDK_DISABLED=true` installs a tracer provider that records nothing. An empty per-signal `OTEL_EXPORTER_OTLP_*` variable falls back to the general one. `Libo11y.setup` claims its place before it builds anything, stops the workers of a start that fails, and raises `CanaryRejected` when a sink raises on the startup canary or the log exporter answers it with a failure.
+- Core Ruby SDK (`Libo11y.setup`, `Libo11y.init`, `Options`, typed `Libo11y::Error` hierarchy, idempotent bounded concurrent shutdown, `shutdown_on_signals`).
 - Generated spec constants, tables, and `GoPrint` ranges (`Libo11y::Spec`, spec 1.3.0) and strict `yaml.v3`-compatible application attribute registry validator passing all 46 shared conformance cases, plus `exe/libo11y registry check`.
 - Single `SensitivityPolicy` across resource, spans, metrics (PII always dropped), and structured logs, matching all shared PII hash, instance ID, and endpoint sanitization conformance vectors. An injected span processor sees the redacted span through `attributes`, `events`, `links` and `to_span_data`. Observable instruments classify the attributes given to `add_attributes` and `observe`. A log record is classified once, so one PII value has one token on the console, on OTLP and on spans, and one violation is counted per record. The walk over nested log values drops what its depth bound, its budget of 2048 nodes or a cycle kept it from examining.
-- Capture-time redaction (`Libo11y::Redact::Secret`, `Masked`, `Fields`), where the strictest protection wins through nesting and a subclass keeps its parent's field rules, wide events (`Record`), `force_emit`, and zero-dependency Ruby/process runtime metrics.
-- Detached propagation (`Libo11y::Detached`). `Carrier` has the URL-encoded text form of the other libo11y implementations (`baggage=...&traceparent=...&tracestate=...`, at most 32 KiB), so a carrier crosses to a Go or Python worker. `capture` returns the zero carrier outside a span, and `start_linked` starts a linked root span with the carrier's baggage merged into the caller's.
-- Child-process propagation (`Libo11y::Proc`). `child_env` sets `TRACEPARENT` and `TRACESTATE` from the active span and maps the ones it does not set to `nil`, so `Process.spawn` removes a stale value from the child. Baggage never travels this way.
+- Capture-time redaction (`Libo11y::Redact::Secret`, `Masked`, `Fields`), where the strictest protection wins through nesting and a subclass keeps its parent's field rules, wide events (`Record`), `force_emit`, detached propagation (`Libo11y::Detached`), child-process propagation (`Libo11y::Proc`), and zero-dependency Ruby/process runtime metrics.
 - Integrations: `Libo11y::Rack::Middleware`, `Libo11y::HttpClient`, and `Libo11y::DB::Client`. The DB client removes literals and comments with the same dialect-aware lexer as `go/o11ysql` (PostgreSQL dollar quoting, escape strings and nested comments, MySQL backslash escapes, double-quoted strings, `#` and versioned comments, SQLite parameters), records `db.query.text` only for `postgresql`, `sqlite`, `mysql` and `mariadb`, capped at 4096 bytes, names the span after the operation and table, and never records a driver's error message.
-- `Telemetry#logger` is a `::Logger`. Its `level`, first set by the `log_level` option, gates the console, OTLP and the extra sinks alike, and `Libo11y.force_emit` and `Telemetry#event` pass it. A float that JSON cannot hold is written to the console as `"NaN"`, `"+Inf"` or `"-Inf"`.
 - Hermetic test harness (`Libo11y::Testing::Recorder` and `OtlpHttpReceiver`). `OtlpHttpReceiver` serves through WEBrick, which the gem does not depend on. A consumer adds `gem "webrick"` to its test group.
 
-[Unreleased]: https://github.com/jamesainslie/libo11y/compare/ruby/v0.1.0...HEAD
+[Unreleased]: https://github.com/jamesainslie/libo11y/compare/ruby/v0.2.0...HEAD
+[0.2.0]: https://github.com/jamesainslie/libo11y/compare/ruby/v0.1.0...ruby/v0.2.0
 [0.1.0]: https://github.com/jamesainslie/libo11y/releases/tag/ruby/v0.1.0

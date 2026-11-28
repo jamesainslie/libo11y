@@ -41,7 +41,7 @@ The Rust columns describe the eleven-crate `rust/` workspace (`rust/v0.1.0`:
 1.88; `libo11y-sqlx` requires 1.94), `tracing` 0.1.44, and OpenTelemetry Rust
 0.33.1.
 
-Ruby (`ruby/`, `ruby/v0.1.0`) targets Ruby 3.3+ over
+Ruby (`ruby/`, `ruby/v0.2.0`) targets Ruby 3.3+ over
 OpenTelemetry Ruby (`opentelemetry-sdk`, `opentelemetry-metrics-sdk`,
 `opentelemetry-logs-sdk`), shipping Rack, `Net::HTTP`, DB, `Detached`,
 `Proc`, `Redact`, `exe/libo11y`, and `Libo11y::Testing` (`Recorder` and
@@ -209,8 +209,9 @@ Each one is a defect to fix, not a decision. Of the releases in the
 matrix, none has a known defect. `ts/v0.2.1` fixed the last ones, which
 [`ts/CHANGELOG.md`](../ts/CHANGELOG.md) describes.
 
-`ruby/v0.1.0` has these known defects, found by its first review. A later
-`ruby/` release fixes them.
+`ruby/v0.2.0` has these known defects, found by the first review of the
+Ruby implementation. `ruby/v0.1.0` has them too, and the ones that
+[`ruby/CHANGELOG.md`](../ruby/CHANGELOG.md) lists as fixed in 0.2.0.
 
 - **Resource.** OTLP payloads carry no resource schema URL, because the
   upstream exporters do not write it.
