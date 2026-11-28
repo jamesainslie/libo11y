@@ -103,33 +103,56 @@ sinks:
 // a timeout it reports what the gateway wrote, such as a startup error.
 func waitForListening(t *testing.T, r io.Reader) string {
 	t.Helper()
-	const marker = "o11yrum-gateway: listening on "
-	found := make(chan string, 1)
+	return waitForAddresses(t, r, listeningMarker)[0]
+}
+
+// Lines the gateway writes when a listener is up.
+const (
+	listeningMarker     = "o11yrum-gateway: listening on "
+	readListeningMarker = "o11yrum-gateway: replay read API listening on "
+)
+
+// waitForAddresses reads the gateway's stderr until it has written a line
+// starting with each marker, and returns the rest of each line, in marker
+// order. It keeps draining stderr afterwards.
+func waitForAddresses(t *testing.T, r io.Reader, markers ...string) []string {
+	t.Helper()
+	type hit struct {
+		i    int
+		addr string
+	}
+	found := make(chan hit, len(markers))
 	var mu sync.Mutex
 	var lines []string
 	go func() {
 		sc := bufio.NewScanner(r)
+		seen := make([]bool, len(markers))
 		for sc.Scan() {
 			mu.Lock()
 			lines = append(lines, sc.Text())
 			mu.Unlock()
-			if addr, ok := strings.CutPrefix(sc.Text(), marker); ok {
-				select {
-				case found <- addr:
-				default:
+			for i, m := range markers {
+				if addr, ok := strings.CutPrefix(sc.Text(), m); ok && !seen[i] {
+					seen[i] = true
+					found <- hit{i, addr}
 				}
 			}
 		}
 	}()
-	select {
-	case addr := <-found:
-		return addr
-	case <-time.After(10 * time.Second):
-		mu.Lock()
-		defer mu.Unlock()
-		t.Fatalf("the gateway did not report its address within 10s; stderr:\n%s", strings.Join(lines, "\n"))
-		return ""
+	addrs := make([]string, len(markers))
+	timeout := time.After(10 * time.Second)
+	for range markers {
+		select {
+		case h := <-found:
+			addrs[h.i] = h.addr
+		case <-timeout:
+			mu.Lock()
+			defer mu.Unlock()
+			t.Fatalf("the gateway did not report %q within 10s; stderr:\n%s", markers, strings.Join(lines, "\n"))
+			return nil
+		}
 	}
+	return addrs
 }
 
 func quietTelemetry(t *testing.T) {
@@ -719,6 +742,121 @@ func TestCheckConfigReplay(t *testing.T) {
 			}
 			if !tc.ok && !strings.Contains(errOut.String(), "replay needs an object store") {
 				t.Fatalf("stderr %q", errOut.String())
+			}
+		})
+	}
+}
+
+func TestServeReplayReadAPI(t *testing.T) {
+	quietTelemetry(t)
+	dir := t.TempDir()
+	const token = "read-token-0123456789abcdef"
+	writeTestFile(t, filepath.Join(dir, "read-tokens"), token+"\n")
+	writeTestFile(t, filepath.Join(dir, "gateway.yaml"), `listen: 127.0.0.1:0
+environment: test
+object_store: {filesystem: {root: store}}
+replay: {read_listen: "127.0.0.1:0", read_token_file: read-tokens}
+apps:
+  - service_name: shop-web
+    origins: ["https://shop.example"]
+    replay: {enabled: true}
+`)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pr, pw := io.Pipe()
+	defer func() { _ = pw.Close() }()
+	done := make(chan int, 1)
+	go func() { done <- run(ctx, []string{"-config", filepath.Join(dir, "gateway.yaml")}, io.Discard, pw) }()
+	addrs := waitForAddresses(t, pr, listeningMarker, readListeningMarker)
+	public, read := "http://"+addrs[0], "http://"+addrs[1]
+	if public == read {
+		t.Fatalf("one address for both: %s", public)
+	}
+	const session = "0b7e5c1e-6f2a-4c55-9b1e-1f2d3c4b5a69"
+	get := func(url, auth string) int {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodGet, url, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if auth != "" {
+			req.Header.Set("Authorization", "Bearer "+auth)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+	path := "/v1/replay/shop-web/sessions/" + session
+	if code := get(read+path, ""); code != http.StatusUnauthorized {
+		t.Errorf("read API without a token: %d", code)
+	}
+	if code := get(read+path, token); code != http.StatusNotFound {
+		t.Errorf("read API with the token, unknown session: %d", code)
+	}
+	// Neither the public listener nor its /_o11y/ path serves the read API.
+	for _, p := range []string{path, "/_o11y" + path, "/_o11y/v1/replay/shop-web/sessions/" + session} {
+		if code := get(public+p, token); code != http.StatusNotFound {
+			t.Errorf("public %s: %d", p, code)
+		}
+	}
+	// The read listener serves nothing of the public gateway.
+	if code := get(read+"/healthz", token); code != http.StatusNotFound {
+		t.Errorf("read listener /healthz: %d", code)
+	}
+	cancel()
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("exit %d", code)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the gateway did not shut down")
+	}
+	for _, base := range []string{public, read} {
+		if _, err := http.Get(base + "/healthz"); err == nil {
+			t.Errorf("%s still serves after shutdown", base)
+		}
+	}
+}
+
+func TestReplayReadListenRefused(t *testing.T) {
+	quietTelemetry(t)
+	taken, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = taken.Close() }()
+	for name, tc := range map[string]struct{ listen, read, want string }{
+		"same address": {"127.0.0.1:18431", "127.0.0.1:18431", "replay.read_listen"},
+		"wildcard":     {":18431", "127.0.0.1:18431", "listen"},
+		"port taken":   {"127.0.0.1:0", taken.Addr().String(), "replay read API"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeTestFile(t, filepath.Join(dir, "read-tokens"), "read-token-0123456789abcdef\n")
+			writeTestFile(t, filepath.Join(dir, "gateway.yaml"), fmt.Sprintf(`listen: %q
+environment: test
+object_store: {filesystem: {root: store}}
+replay: {read_listen: %q, read_token_file: read-tokens}
+apps:
+  - service_name: shop-web
+    origins: ["https://shop.example"]
+    replay: {enabled: true}
+`, tc.listen, tc.read))
+			for _, args := range [][]string{{"-config"}, {"-check-config", "-config"}} {
+				if name == "port taken" && args[0] == "-check-config" {
+					continue // binding is not a configuration check
+				}
+				var errOut bytes.Buffer
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				code := run(ctx, append(args, filepath.Join(dir, "gateway.yaml")), io.Discard, &errOut)
+				cancel()
+				if code != 1 || !strings.Contains(errOut.String(), tc.want) {
+					t.Errorf("%v: code %d, stderr %q, want it to mention %q", args, code, errOut.String(), tc.want)
+				}
 			}
 		})
 	}

@@ -18,7 +18,11 @@
 // With an object_store configured, the gateway accepts source map uploads
 // at /_o11y/v1/sourcemaps and symbolicates error stacks, and stores the
 // session replay segments of apps that enable replay at
-// /_o11y/v1/replay. An s3 store
+// /_o11y/v1/replay. With replay.read_listen set, it also serves the
+// replay read API (list, read and erase a session's recording) on that
+// address, behind the bearer tokens in replay.read_token_file. That
+// listener is cluster-internal only: never route the ingress to it. An s3
+// store
 // authenticates with the AWS SDK's default credential chain, so on EKS
 // Pod Identity or IRSA supplies credentials and no static key is needed.
 package main
@@ -294,24 +298,34 @@ func serve(ctx context.Context, cfg *o11yrum.Config, sink *o11yrum.OTLPSink, sto
 		}
 		w.WriteHeader(http.StatusOK)
 	})
-	srv := &http.Server{
-		Handler:           mux,
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       120 * time.Second,
-		MaxHeaderBytes:    16 << 10,
-		ErrorLog:          serverLog(stderr),
-	}
+	srv := newServer(mux, stderr)
 	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.Listen)
 	if err != nil {
 		return err
 	}
+	servers := []*http.Server{srv}
+	serveErr := make(chan error, 2)
+	// The replay read API gets its own listener, bound before anything is
+	// served so a failure stops the command at once. It is never mounted
+	// on mux, which the public ingress routes to.
+	var readLn net.Listener
+	if cfg.Replay.ReadListen != "" {
+		if readLn, err = (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.Replay.ReadListen); err != nil {
+			_ = ln.Close()
+			return fmt.Errorf("replay read API: %w", err)
+		}
+		readSrv := newServer(h.ReplayReadHandler(), stderr)
+		servers = append(servers, readSrv)
+		go func() { serveErr <- readSrv.Serve(readLn) }()
+	}
 	_, _ = fmt.Fprintf(stderr, "o11yrum-gateway: listening on %s\n", ln.Addr())
-	serveErr := make(chan error, 1)
+	if readLn != nil {
+		_, _ = fmt.Fprintf(stderr, "o11yrum-gateway: replay read API listening on %s\n", readLn.Addr())
+	}
 	go func() { serveErr <- srv.Serve(ln) }()
 	select {
 	case err := <-serveErr:
+		_ = shutdown(ctx, servers)
 		return err
 	case <-ctx.Done():
 	}
@@ -322,16 +336,44 @@ func serve(ctx context.Context, cfg *o11yrum.Config, sink *o11yrum.OTLPSink, sto
 		select {
 		case err := <-serveErr:
 			delay.Stop()
+			_ = shutdown(ctx, servers)
 			return err
 		case <-delay.C:
 		}
 	}
+	return shutdown(ctx, servers)
+}
+
+// newServer returns an HTTP server for handler with the gateway's
+// timeouts and its redacting error log.
+func newServer(handler http.Handler, stderr io.Writer) *http.Server {
+	return &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    16 << 10,
+		ErrorLog:          serverLog(stderr),
+	}
+}
+
+// shutdown drains every server at once, within serverDrain, and returns
+// the first error.
+func shutdown(ctx context.Context, servers []*http.Server) error {
 	drainCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), serverDrain)
 	defer cancel()
-	if err := srv.Shutdown(drainCtx); err != nil {
-		return fmt.Errorf("shutdown: %w", err)
+	errs := make(chan error, len(servers))
+	for _, srv := range servers {
+		go func() { errs <- srv.Shutdown(drainCtx) }()
 	}
-	return nil
+	var first error
+	for range servers {
+		if err := <-errs; err != nil && first == nil {
+			first = fmt.Errorf("shutdown: %w", err)
+		}
+	}
+	return first
 }
 
 // peerAddress matches the client address net/http puts in its server log

@@ -58,6 +58,14 @@ apps:
 #   max_body_bytes: 1048576
 #   max_decompressed_bytes: 16777216
 #   max_events: 20000
+#   # Segments older than this are never served and are swept.
+#   retention: 720h
+#   # 0s disables the sweeper, for an S3 bucket with a lifecycle rule.
+#   sweep_interval: 1h
+#   # The read API: cluster-internal only, never the listen address and
+#   # never routed by the ingress. Bearer tokens, one per line.
+#   read_listen: 127.0.0.1:9090
+#   read_token_file: /run/secrets/o11yrum-replay-read
 # symbolication:
 #   cache_maps: 64
 #   cache_bytes: 268435456
