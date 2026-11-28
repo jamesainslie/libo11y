@@ -4,6 +4,15 @@ using System.Text.RegularExpressions;
 
 namespace Libo11y.Spec;
 
+/// <summary>
+/// One attribute an application registry declares: its type, sensitivity class,
+/// cardinality budget, enum values and description, as written in the file.
+/// </summary>
+/// <param name="Type">The semconv attribute type, such as <c>string</c> or <c>int[]</c>.</param>
+/// <param name="Sensitivity">The sensitivity class: <c>public</c>, <c>internal</c>, <c>pii</c> or <c>secret</c>.</param>
+/// <param name="Cardinality">The cardinality budget: <c>enum</c>, <c>bounded</c> or <c>unbounded</c>.</param>
+/// <param name="Values">The allowed values of an <c>enum</c> attribute, in file order, or empty.</param>
+/// <param name="Brief">The attribute's short description, or empty.</param>
 public sealed record AppRegistryAttribute(
     string Type,
     string Sensitivity,
@@ -11,30 +20,60 @@ public sealed record AppRegistryAttribute(
     IReadOnlyList<string> Values,
     string Brief);
 
+/// <summary>
+/// A parsed application registry (SPEC section 5a). Parsing does not apply the
+/// policy rules: call <see cref="AppRegistryValidator.Validate(AppRegistry)"/> for those.
+/// </summary>
+/// <param name="Schema">The registry schema, which must be <see cref="SpecTables.AppRegistrySchema"/>.</param>
+/// <param name="Namespace">The one snake_case segment every attribute name starts with.</param>
+/// <param name="Attributes">The declared attributes, keyed by attribute name.</param>
 public sealed record AppRegistry(
     string Schema,
     string Namespace,
     IReadOnlyDictionary<string, AppRegistryAttribute> Attributes);
 
+/// <summary>
+/// One policy rule an application registry breaks.
+/// </summary>
+/// <param name="RuleId">The rule ID, such as <c>libo11y_app_namespace_invalid</c>.</param>
+/// <param name="Attribute">The attribute the rule is about, or <see langword="null"/> for a rule about the registry as a whole.</param>
+/// <param name="Detail">What is wrong, in the words the Go validator uses.</param>
 public sealed record AppRegistryViolation(
     string RuleId,
     string? Attribute,
     string Detail)
 {
+    /// <summary>
+    /// Formats the violation as <c>RULE_ID: detail</c>, or
+    /// <c>RULE_ID: attribute NAME: detail</c> for an attribute rule, the line
+    /// <c>libo11y registry check</c> prints after the file name.
+    /// </summary>
+    /// <returns>The formatted violation.</returns>
     public override string ToString() =>
         Attribute is null
             ? $"{RuleId}: {Detail}"
             : $"{RuleId}: attribute {Attribute}: {Detail}";
 }
 
+/// <summary>
+/// A validated application registry reduced to what the sensitivity policy
+/// applies at runtime: the sensitivity class of each declared key.
+/// </summary>
+/// <param name="Namespace">The registry's namespace.</param>
+/// <param name="Classes">The sensitivity class of each declared attribute name.</param>
+/// <param name="Source">Where the registry came from, such as its file path, or <see langword="null"/>.</param>
 public sealed record CompiledAppRegistry(
     string Namespace,
     FrozenDictionary<string, Sensitivity> Classes,
     string? Source);
 
+/// <summary>
+/// The error an application registry that cannot be parsed raises. Its
+/// message starts with <c>parsing application registry:</c>.
+/// </summary>
 public sealed class AppRegistryParseException : Exception
 {
-    private static readonly Dictionary<string, string> Messages = new(StringComparer.Ordinal)
+    private static readonly FrozenDictionary<string, string> Messages = new Dictionary<string, string>(StringComparer.Ordinal)
     {
         ["empty"] = "the file holds no YAML document",
         ["second-document"] = "an application registry holds one YAML document, found a second",
@@ -42,21 +81,36 @@ public sealed class AppRegistryParseException : Exception
         ["unknown-key"] = "a key the schema does not define",
         ["type"] = "a value of the wrong YAML type",
         ["syntax"] = "the file is not valid YAML",
-    };
+    }.ToFrozenDictionary(StringComparer.Ordinal);
 
+    /// <summary>
+    /// The kind of parse error, the same for every implementation: <c>empty</c>,
+    /// <c>second-document</c>, <c>duplicate-key</c>, <c>unknown-key</c>,
+    /// <c>type</c> or <c>syntax</c>.
+    /// </summary>
     public string Kind { get; }
 
-    public AppRegistryParseException(string kind, string? detail = null, Exception? inner = null)
+    internal AppRegistryParseException(string kind, string? detail = null, Exception? inner = null)
         : base($"parsing application registry: {kind}: {detail ?? Messages[kind]}", inner)
     {
         Kind = kind;
     }
 }
 
+/// <summary>
+/// The error <see cref="AppRegistryValidator.Compile(AppRegistry, string?)"/> raises
+/// for a registry that breaks one or more policy rules.
+/// </summary>
 public sealed class AppRegistryValidationException : Exception
 {
+    /// <summary>Every rule the registry breaks, in the order the validator reports them.</summary>
     public IReadOnlyList<AppRegistryViolation> Violations { get; }
 
+    /// <summary>
+    /// Creates the error for <paramref name="violations"/>. Its message lists
+    /// every violation, separated by semicolons.
+    /// </summary>
+    /// <param name="violations">The rules the registry breaks.</param>
     public AppRegistryValidationException(IReadOnlyList<AppRegistryViolation> violations)
         : base("invalid application registry: " + string.Join("; ", violations.Select(v => v.ToString())))
     {
@@ -64,6 +118,11 @@ public sealed class AppRegistryValidationException : Exception
     }
 }
 
+/// <summary>
+/// Parses, validates and compiles application attribute registries (SPEC
+/// section 5a), with the same results and messages as the Go reference
+/// implementation in <c>go/internal/appregistry</c>.
+/// </summary>
 public static class AppRegistryValidator
 {
     private static readonly HashSet<string> RegistryFields = ["schema", "namespace", "attributes"];
@@ -73,8 +132,10 @@ public static class AppRegistryValidator
     private static readonly HashSet<string> Sensitivities = ["public", "internal", "pii", "secret"];
     private static readonly HashSet<string> Cardinalities = ["enum", "bounded", "unbounded"];
 
-    private static readonly Regex NamespaceRe = new(@"^[a-z][a-z0-9]*(_[a-z0-9]+)*$", RegexOptions.Compiled);
-    private static readonly Regex NameRe = new(@"^[a-z][a-z0-9]*(_[a-z0-9]+)*(\.[a-z][a-z0-9]*(_[a-z0-9]+)*)+$", RegexOptions.Compiled);
+    // Go's regexp anchors $ at the end of the text, but .NET's $ also matches
+    // before a final newline, so every pattern ends in \z instead.
+    private static readonly Regex NamespaceRe = new(@"^[a-z][a-z0-9]*(_[a-z0-9]+)*\z", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex NameRe = new(@"^[a-z][a-z0-9]*(_[a-z0-9]+)*(\.[a-z][a-z0-9]*(_[a-z0-9]+)*)+\z", RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private static readonly char[] GoWhitespaceChars =
     [
@@ -379,6 +440,14 @@ public static class AppRegistryValidator
         }
     }
 
+    /// <summary>
+    /// Parses registry YAML strictly: an unknown key, a repeated key, a value of
+    /// the wrong type, a second YAML document and an empty document are errors.
+    /// Parsing does not apply the policy rules.
+    /// </summary>
+    /// <param name="text">The registry file's text.</param>
+    /// <returns>The parsed registry.</returns>
+    /// <exception cref="AppRegistryParseException">The text is not a registry document.</exception>
     public static AppRegistry Parse(string text)
     {
         try
@@ -409,6 +478,13 @@ public static class AppRegistryValidator
         }
     }
 
+    /// <summary>
+    /// Decodes registry file bytes (UTF-8, or UTF-16 with a byte order mark) and
+    /// parses them like <see cref="Parse(string)"/>.
+    /// </summary>
+    /// <param name="raw">The registry file's bytes.</param>
+    /// <returns>The parsed registry.</returns>
+    /// <exception cref="AppRegistryParseException">The bytes are not valid text or not a registry document.</exception>
     public static AppRegistry ParseBytes(ReadOnlySpan<byte> raw)
     {
         try
@@ -422,6 +498,12 @@ public static class AppRegistryValidator
         }
     }
 
+    /// <summary>
+    /// Applies the policy rules and returns every violation: the rules about the
+    /// registry as a whole first, then each attribute in byte order of its name.
+    /// </summary>
+    /// <param name="reg">The registry to check.</param>
+    /// <returns>The violations, or an empty list for a valid registry.</returns>
     public static IReadOnlyList<AppRegistryViolation> Validate(AppRegistry reg)
     {
         var violations = new List<AppRegistryViolation>();
@@ -518,6 +600,13 @@ public static class AppRegistryValidator
         return violations;
     }
 
+    /// <summary>
+    /// Validates <paramref name="reg"/> and reduces it to the sensitivity class of each key.
+    /// </summary>
+    /// <param name="reg">The registry to compile.</param>
+    /// <param name="source">Where the registry came from, kept for diagnostics.</param>
+    /// <returns>The compiled registry.</returns>
+    /// <exception cref="AppRegistryValidationException">The registry breaks a policy rule.</exception>
     public static CompiledAppRegistry Compile(AppRegistry reg, string? source = null)
     {
         var violations = Validate(reg);
@@ -541,6 +630,15 @@ public static class AppRegistryValidator
         return new CompiledAppRegistry(reg.Namespace, classes.ToFrozenDictionary(), source);
     }
 
+    /// <summary>
+    /// Reads, parses and compiles the registry file at <paramref name="path"/>.
+    /// </summary>
+    /// <param name="path">The registry file's path.</param>
+    /// <returns>The compiled registry, with <paramref name="path"/> as its source.</returns>
+    /// <exception cref="IOException">The file cannot be read.</exception>
+    /// <exception cref="UnauthorizedAccessException">The file cannot be opened for reading.</exception>
+    /// <exception cref="AppRegistryParseException">The file is not a registry document.</exception>
+    /// <exception cref="AppRegistryValidationException">The registry breaks a policy rule.</exception>
     public static CompiledAppRegistry LoadFile(string path)
     {
         byte[] raw = File.ReadAllBytes(path);

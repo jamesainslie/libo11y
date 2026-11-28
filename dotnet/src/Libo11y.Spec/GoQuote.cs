@@ -3,10 +3,15 @@ using System.Text;
 namespace Libo11y.Spec;
 
 /// <summary>
-/// Go strconv.Quote (%q) implementation backed by specgen's GoPrintRanges table.
+/// Go's <c>strconv.Quote</c> (the <c>%q</c> verb), backed by specgen's
+/// <see cref="GoPrintRanges"/> table, so violation details quote values
+/// exactly as the Go validator does.
 /// </summary>
-public static class GoQuote
+internal static class GoQuote
 {
+    /// <summary>Reports whether Go's <c>unicode.IsPrint</c> accepts <paramref name="codepoint"/>.</summary>
+    /// <param name="codepoint">A Unicode code point.</param>
+    /// <returns><see langword="true"/> when the code point prints as itself in a quoted string.</returns>
     public static bool IsPrintable(int codepoint)
     {
         var ranges = GoPrintRanges.Ranges;
@@ -27,6 +32,9 @@ public static class GoQuote
         return lo < ranges.Length && ((lo & 1) == 1 || ranges[lo] == codepoint);
     }
 
+    /// <summary>Quotes <paramref name="s"/> as Go's <c>strconv.Quote</c> does.</summary>
+    /// <param name="s">The text to quote.</param>
+    /// <returns>The double-quoted, escaped text.</returns>
     public static string Quote(string s)
     {
         var sb = new StringBuilder(s.Length + 2);

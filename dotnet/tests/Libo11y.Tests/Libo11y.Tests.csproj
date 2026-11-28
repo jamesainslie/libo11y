@@ -5,6 +5,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\Libo11y.Spec\Libo11y.Spec.csproj" />
+    <ProjectReference Include="..\..\src\Libo11y.Cli\Libo11y.Cli.csproj" />
     <ProjectReference Include="..\..\src\Libo11y\Libo11y.csproj" />
     <ProjectReference Include="..\..\src\Libo11y.AspNetCore\Libo11y.AspNetCore.csproj" />
     <ProjectReference Include="..\..\src\Libo11y.Db\Libo11y.Db.csproj" />
