@@ -69,19 +69,6 @@ adhere to [Semantic Versioning](https://semver.org/).
   `OTEL_SDK_DISABLED=true`. It used to send an all-zero traceparent. The
   response now goes out without the entry, as in Go.
 
-### Fixed
-
-- `@libo11y/web`: a telemetry failure no longer fails the application's
-  fetch or XHR request. A propagator, tracer or meter that threw rejected
-  the caller's `fetch` before the request was made, and made an XHR's
-  `send` throw. Now a span that cannot start sends the request
-  uninstrumented, a propagator that throws sends it without the injected
-  context, and a span that cannot end changes nothing the caller sees.
-  Each failure is reported to the telemetry handle's reporter, or to the
-  OpenTelemetry global error handler without one, as `@libo11y/server`
-  does. Headers that fetch rejects still fail the request as an
-  uninstrumented fetch would.
-
 ## [0.4.0] - 2026-11-27
 
 This release adds session replay, `@libo11y/rum-replay`, and a preview of

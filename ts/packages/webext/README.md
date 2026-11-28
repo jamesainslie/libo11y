@@ -86,7 +86,10 @@ telemetry is ready are answered once it is.
 `setupWorker` takes core's `TelemetryOptions` and the
 [`@libo11y/web` export options](https://github.com/jamesainslie/libo11y/tree/main/ts/packages/web#endpoints-and-cors):
 `endpoint`, the per-signal endpoints, `headers`, `env`, `transport` and
-`userAgent`. It differs from the page `setup` in these ways:
+`userAgent`. The worker uses the same endpoint order as the page.
+Per-signal options come first, followed by `endpoint`, per-signal
+environment values, and the common environment value. The worker
+differs from the page `setup` in these ways:
 
 - Every batch is put in the IndexedDB queue, leased, before its first
   attempt. It is removed after a success or a fatal error and rescheduled

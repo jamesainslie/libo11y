@@ -476,15 +476,19 @@ test("instrumentFetchWith: internals name the scope of the span and histogram", 
 // Council round 1: no telemetry step may fail the request. A span that cannot start, a propagator
 // that throws and a span that cannot end are reported, and the request is made exactly once.
 const THROWING_INJECT: TextMapPropagator = {
-  inject() {
+  inject(_ctx, carrier, setter) {
+    setter.set(carrier, "traceparent", "partial");
     throw new Error("inject boom");
   },
   extract: (ctx) => ctx,
   fields: () => [],
 };
 
-/** rec's telemetry with a broken step: startSpan throws, spans throw on end, or the meter throws. */
-function brokenTelemetry(rec: Recorder, broken: "start" | "end" | "record" | "inject"): Telemetry {
+/** rec's telemetry with one failing instrumentation step. */
+function brokenTelemetry(
+  rec: Recorder,
+  broken: "start" | "setAttribute" | "recordException" | "end" | "record" | "inject",
+): Telemetry {
   const tracer = rec.telemetry.tracerProvider.getTracer("broken");
   const meterProvider =
     broken === "record"
@@ -504,12 +508,12 @@ function brokenTelemetry(rec: Recorder, broken: "start" | "end" | "record" | "in
         startSpan: (...args: Parameters<typeof tracer.startSpan>) => {
           if (broken === "start") throw new Error("start boom");
           const span = tracer.startSpan(...args);
-          if (broken !== "end") return span;
+          if (broken === "record" || broken === "inject") return span;
           return new Proxy(span, {
             get(target, key) {
-              if (key === "end") {
+              if (key === broken) {
                 return () => {
-                  throw new Error("end boom");
+                  throw new Error(`${broken} boom`);
                 };
               }
               const value = Reflect.get(target, key);
@@ -562,7 +566,7 @@ test("a propagator whose inject throws is reported, and the request is sent with
   });
 });
 
-for (const broken of ["end", "record"] as const) {
+for (const broken of ["setAttribute", "recordException", "end", "record"] as const) {
   test(`a finish that fails (${broken}) is reported, and neither the response nor fetch's own error is replaced`, async () => {
     await withRec(async (rec) => {
       const telemetry = brokenTelemetry(rec, broken);
@@ -572,7 +576,12 @@ for (const broken of ["end", "record"] as const) {
       );
       assert.equal(ok.result, 200);
       assert.equal(fake.calls.length, 1);
-      assert.deepEqual(ok.errors, ["o11y: instrumentFetch: ending the request's telemetry failed: Error"]);
+      assert.deepEqual(
+        ok.errors,
+        broken === "recordException"
+          ? []
+          : ["o11y: instrumentFetch: ending the request's telemetry failed: Error"],
+      );
 
       const down = new TypeError("Failed to fetch");
       let calls = 0;

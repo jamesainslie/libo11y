@@ -190,7 +190,8 @@ export function installXhrInstrumentationWith(
   const send = function (this: XMLHttpRequest, ...args: unknown[]): void {
     const opened = done || internals?.skip?.() ? undefined : requests.get(this);
     // A send the XHR will refuse (one in flight, or done without a reopen) gets no span of its own.
-    const sendable = opened?.finish === undefined && this.readyState === OPENED;
+    const stateBeforeSend = this.readyState;
+    const sendable = opened?.finish === undefined && stateBeforeSend === OPENED;
     if (
       opened === undefined ||
       opened.url === undefined ||
@@ -235,7 +236,14 @@ export function installXhrInstrumentationWith(
     // twice; the caller's context wins, and the span is still recorded.
     if (opened.callerTraceparent !== true && shouldPropagate(url, propagateTo)) {
       try {
-        resolved.propagator.inject(spanContext, this, XHR_SETTER);
+        // XHR headers cannot be removed, so wait for the propagator to finish before applying them.
+        const headers: [string, string][] = [];
+        resolved.propagator.inject(spanContext, headers, {
+          set(carrier, key, value) {
+            carrier.push([key, value]);
+          },
+        });
+        for (const [key, value] of headers) XHR_SETTER.set(this, key, value);
       } catch (err) {
         reportError(
           opts.telemetry,

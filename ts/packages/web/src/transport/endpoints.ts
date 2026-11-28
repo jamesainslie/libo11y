@@ -28,9 +28,9 @@ function pageHref(): string | undefined {
 }
 
 /**
- * Resolves each signal's URL in this order: the per-signal option (tracesEndpoint, ...) as is, then
- * env OTEL_EXPORTER_OTLP_<SIGNAL>_ENDPOINT as is, then the endpoint option joined with
- * "v1/<signal>", then env OTEL_EXPORTER_OTLP_ENDPOINT joined the same way. Joining adds a "/" when
+ * Resolves each signal's URL from the per-signal option, the endpoint option joined with
+ * "v1/<signal>", env OTEL_EXPORTER_OTLP_<SIGNAL>_ENDPOINT, then env OTEL_EXPORTER_OTLP_ENDPOINT
+ * joined the same way. Per-signal URLs are used as is. Joining adds a "/" when
  * the base lacks one. Relative URLs resolve against base (default globalThis.location?.href); a URL
  * that cannot be parsed makes that signal undefined and is reported through diag. env is skipped
  * when hermetic is true.
@@ -46,8 +46,8 @@ export function resolveEndpoints(
     const envGeneral = nonEmpty(env.OTEL_EXPORTER_OTLP_ENDPOINT);
     const raw =
       nonEmpty(opts[SIGNAL_OPTION[signal]]) ??
-      nonEmpty(env[`OTEL_EXPORTER_OTLP_${signal.toUpperCase()}_ENDPOINT`]) ??
       (general === undefined ? undefined : join(general, signal)) ??
+      nonEmpty(env[`OTEL_EXPORTER_OTLP_${signal.toUpperCase()}_ENDPOINT`]) ??
       (envGeneral === undefined ? undefined : join(envGeneral, signal));
     if (raw === undefined) return undefined;
     try {
