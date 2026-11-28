@@ -6,7 +6,7 @@ import type { LogAttributes } from "@libo11y/core";
 import type { Context, Span, SpanContext } from "@opentelemetry/api";
 import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
 import { createBus } from "../bus.ts";
-import type { EventBody, RumRuntime, RumSettings, RumSignal } from "../contracts/runtime.ts";
+import type { EventBody, RumRuntime, RumScope, RumSettings, RumSignal } from "../contracts/runtime.ts";
 import type { SessionEvent, SessionManager, SessionState } from "../contracts/session.ts";
 import type { SummaryAccumulator, SummaryCountKey } from "../contracts/summary.ts";
 import type { ViewState, ViewTracker } from "../contracts/views.ts";
@@ -215,6 +215,7 @@ function fakeEnv(clock: ManualTimers): FakeEnv {
 }
 
 export interface FakeRuntime extends RumRuntime {
+  scope?: RumScope;
   readonly counts: SummaryCountKey[];
   /** The n of each count, in step with counts. */
   readonly countValues: number[];

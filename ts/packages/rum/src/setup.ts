@@ -62,7 +62,13 @@ import type { RemoteConfigDocument } from "./config/clamp.ts";
 import type { RemoteConfigConnection } from "./config/remote.ts";
 import { rumContextManager } from "./context-manager.ts";
 import type { RetentionRouting } from "./contracts/retention.ts";
-import type { CollectorName, RequestStartHook, RumRuntime, RumSettings } from "./contracts/runtime.ts";
+import type {
+  CollectorName,
+  RequestStartHook,
+  RumRuntime,
+  RumScope,
+  RumSettings,
+} from "./contracts/runtime.ts";
 import type { SessionState, SessionStore } from "./contracts/session.ts";
 import { createBreadcrumbs } from "./errors/breadcrumbs.ts";
 import { recordError } from "./errors/record.ts";
@@ -101,13 +107,21 @@ export interface RumDeps {
   readonly install?: boolean;
   /** The fetch remote configuration uses. Default web's pristineFetch, which is never instrumented. */
   readonly fetch?: typeof fetch;
-  /** Where remote configuration is cached. Default localStorage. Called only once consent is granted. */
-  readonly storage?: () => Pick<Storage, "getItem" | "setItem" | "removeItem"> | undefined;
+  /**
+   * Where remote configuration is cached. Default localStorage. Called only once consent is granted.
+   * It may resolve later, as a cache in chrome.storage.local does once it has read the stored value.
+   */
+  readonly storage?: () => CacheStorage | undefined | Promise<CacheStorage | undefined>;
   /** The platform summaries, session starts and app_load record. Default "web". */
   readonly platform?: RUMPlatform;
   /** Runs the platform's setup with RUM's wrappers. Default webBinding(web, install). */
   readonly bind?: RumBind;
+  /** The context's limits on the collectors, for a content script. With fixedView, the one view starts when RUM does and is on screen at once. */
+  readonly scope?: RumScope;
 }
+
+/** The synchronous storage remote configuration caches in. */
+type CacheStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
 /** The real dependencies of a page. */
 export function defaultRumDeps(): RumDeps {
@@ -333,6 +347,7 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
     now: deps.perfNow,
     prerendered: deps.prerendered,
     ...(deps.window === undefined ? {} : { window: deps.window }),
+    ...(deps.scope?.fixedView === true ? { initialStart: deps.perfNow } : {}),
   });
   views.subscribe((e) => {
     if (e.type === "start") {
@@ -532,6 +547,7 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
   const bodyLogger = t.loggerProvider.getLogger("@libo11y/rum", VERSION);
   const runtime: RumRuntime = {
     platform,
+    ...(deps.scope === undefined ? {} : { scope: deps.scope }),
     telemetry: t,
     tracer: t.tracerProvider.getTracer("@libo11y/rum", VERSION),
     gate,
@@ -652,6 +668,8 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
     collecting = true;
     reconcile();
     if (r?.renderedAt !== undefined) views.rendered(r.renderedAt);
+    // A fixed view (a content script) is on screen as soon as it starts.
+    else if (deps.scope?.fixedView === true) views.rendered();
   };
   /** The kill switch acts at once; every other change waits for the next session. */
   const onRemote = (doc: RemoteConfigDocument | undefined): void => {
@@ -673,7 +691,7 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
       reconcile();
     }
   };
-  const openRemote = (): RemoteConfigConnection | undefined => {
+  const openRemote = (): RemoteConfigConnection | undefined | Promise<RemoteConfigConnection | undefined> => {
     if (rc === undefined) return undefined;
     const url = configUrl(
       rc.url,
@@ -687,29 +705,46 @@ export async function setupRumWith(options: RumSetupOptions, deps: RumDeps): Pro
       diag.warn("o11y: rum: remote configuration has no URL or no fetch; it is off");
       return undefined;
     }
-    let storage: Pick<Storage, "getItem" | "setItem" | "removeItem"> | undefined;
+    const connect = (storage: CacheStorage | undefined): RemoteConfigConnection =>
+      rc.open({
+        url,
+        fetch: f,
+        ...(storage === undefined ? {} : { storage }),
+        timers: {
+          setTimeout: (cb, ms) => setTimeout(cb, ms),
+          clearTimeout: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
+        },
+        visible: () => !hidden(),
+      });
+    let storage: ReturnType<NonNullable<RumDeps["storage"]>>;
     try {
       storage = (deps.storage ?? (() => globalThis.localStorage))();
     } catch {
       storage = undefined;
     }
-    return rc.open({
-      url,
-      fetch: f,
-      ...(storage === undefined ? {} : { storage }),
-      timers: {
-        setTimeout: (cb, ms) => setTimeout(cb, ms),
-        clearTimeout: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
-      },
-      visible: () => !hidden(),
-    });
+    return storage instanceof Promise ? storage.then(connect, () => connect(undefined)) : connect(storage);
   };
+  /** The connection being opened, while its cache storage loads. */
+  let opening: Promise<RemoteConfigConnection | undefined> | undefined;
   const startAll = (): Promise<void> => {
     everStarted = true;
     const gen = generation;
     pending.open();
     starting ??= (async () => {
-      remote ??= openRemote();
+      if (remote === undefined) {
+        const opened = opening ?? openRemote();
+        if (opened instanceof Promise) {
+          opening = opened;
+          const connection = await opened;
+          remote ??= connection;
+          if (opening === opened) opening = undefined;
+          // Revoked while the cache loaded: the revoke found no connection to clear.
+          if (gen !== generation) {
+            if (!gate.recording()) remote?.clear();
+            return;
+          }
+        } else remote = opened;
+      }
       killed = remote?.current()?.enabled === false;
       await activate(gen);
       if (gen !== generation || !gate.recording()) return;
