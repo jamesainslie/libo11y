@@ -145,7 +145,7 @@ class DetachedTest {
                 TP + "&a".repeat(10_000));
         for (String in : bad) {
             O11yException e = assertThrows(O11yException.class, () -> Carrier.unmarshal(in), "unmarshal " + in);
-            assertEquals(O11yException.ErrorCode.INVALID_OPTION, e.code());
+            assertEquals(O11yException.ErrorCode.INVALID_CARRIER, e.code());
         }
         assertTrue(Carrier.unmarshal(TP + "&a".repeat(9_998)).spanContext().isValid());
     }
