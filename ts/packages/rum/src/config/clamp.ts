@@ -2,7 +2,7 @@
  * Remote configuration against the limits code sets (decision P16). The gateway serves
  * GET /_o11y/v1/config?service=<service.name> as {"version": "...", "config": {...}}; RUM owns
  * the keys inside config: enabled, sessionSampleRate, collectors and replay, whose object
- * @libo11y/rum-replay clamps itself. Unknown keys are ignored, so
+ * `@libo11y/rum-replay` clamps itself. Unknown keys are ignored, so
  * the gateway may add fields. Remote values can move sessionSampleRate only within the limits the
  * code allows, can switch an installed collector off but never on one the app did not install, and
  * enabled false is the kill switch.
@@ -20,7 +20,7 @@ export interface RemoteConfigDocument {
   readonly sessionSampleRate?: number;
   /** false switches an installed collector off. true never switches on one the app did not install. */
   readonly collectors?: Readonly<Partial<Record<CollectorName, boolean>>>;
-  /** Replay's remote settings, kept as an object for @libo11y/rum-replay to clamp (R6b). */
+  /** Replay's remote settings, kept as an object for `@libo11y/rum-replay` to clamp (R6b). */
   readonly replay?: Readonly<Record<string, unknown>>;
 }
 
