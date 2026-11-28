@@ -34,3 +34,8 @@ ruby/*.gem
 # .NET build artifacts
 dotnet/**/bin/
 dotnet/**/obj/
+
+# The fixture Expo app's packed tarballs, Expo state and export outputs
+ts/fixtures/expo-app/.packs/
+ts/fixtures/expo-app/.expo/
+ts/fixtures/expo-app/dist-size/
