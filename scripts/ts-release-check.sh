@@ -2,8 +2,9 @@
 # ts-release-check.sh: build and pack the @libo11y/* packages the way a
 # release would, then install the tarballs into a throwaway consumer
 # outside the repository, import the server packages under Node and under
-# Bun, and bundle the browser packages for the browser with
-# scripts/ts-browser-bundle-check.sh.
+# Bun, bundle the browser packages for the browser with
+# scripts/ts-browser-bundle-check.sh and the React Native packages with
+# scripts/ts-rn-bundle-check.sh.
 #
 # Usage: ts-release-check.sh [VERSION]   (default v0.3.0; `make
 # release-check` passes TS_RELEASE_VERSION). Every package must already
@@ -129,6 +130,12 @@ printf '{ "name": "libo11y-consumer", "private": true, "type": "module" }\n' >"$
 		@libo11y/rum-react=RumErrorBoundary @libo11y/rum-tanstack-router=instrumentTanStackRouter \
 		@libo11y/rum-connect=connectRequestNaming @libo11y/rum-replay=replay,VERSION
 	echo "ts-release-check: @libo11y/web, @libo11y/webext, @libo11y/rum, the RUM adapters and @libo11y/rum-replay bundle for the browser"
+
+	# The React Native packages run on Hermes, which has no Node builtins.
+	# They must bundle with the react-native condition, React Native and
+	# Expo left external, from every entry point.
+	"$repo_root/scripts/ts-rn-bundle-check.sh" "$consumer" @libo11y/react-native=setupReactNative
+	echo "ts-release-check: @libo11y/react-native bundles for React Native"
 
 	# The published declarations must typecheck for a nodenext consumer.
 	cat >check.ts <<'TS'

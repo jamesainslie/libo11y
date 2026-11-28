@@ -1,30 +1,32 @@
 # libo11y for TypeScript
 
-The TypeScript implementation of libo11y, as a Bun workspace of twelve
+The TypeScript implementation of libo11y, as a Bun workspace of thirteen
 `@libo11y/*` packages. `@libo11y/server`, `@libo11y/test` and
 `@libo11y/sourcemaps` run on Bun 1.3.13 and Node 24. `@libo11y/web`, `@libo11y/webext`, `@libo11y/rum`, `@libo11y/rum-replay` and the
-RUM adapters run in browsers and Manifest V3 extensions. `@libo11y/spec` and `@libo11y/core` run in
-both. The packages are built on
+RUM adapters run in browsers and Manifest V3 extensions. `@libo11y/react-native` runs in React
+Native apps on Hermes. `@libo11y/spec` and `@libo11y/core` run in
+all of them. The packages are built on
 OpenTelemetry JS 3.x (`@opentelemetry/api` 1.10.0, the SDK packages at
 3.1.1, and upstream's OTLP exporter base and serializers at 0.301.1 over
 libo11y's own HTTP transport). They release together at one
 version from a `ts/vX.Y.Z` tag, and [CHANGELOG.md](CHANGELOG.md) lists
 each release.
 
-| Package                                                        | What it holds                                                                                                                                                                                                               |
-| -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`@libo11y/spec`](packages/spec)                               | the spec constants and tables generated from `spec/registry`, the application registry validator, and the `libo11y` bin. It also runs in browsers                                                                           |
-| [`@libo11y/core`](packages/core)                               | the platform-neutral core: configuration, identity, the sensitivity policy, the logger, events, exemplars and the signal pipelines                                                                                          |
-| [`@libo11y/server`](packages/server)                           | the Bun and Node platform: `setup`, the `AsyncLocalStorage` context manager, resource detection, OTLP exporters, runtime metrics, `instrumentServe` and `instrumentFetch`                                                   |
-| [`@libo11y/test`](packages/test)                               | the hermetic recorder, its assertions, and an in-process OTLP/HTTP sink                                                                                                                                                     |
-| [`@libo11y/web`](packages/web)                                 | the browser platform: `setup` with a pluggable context manager, the browser resource, the OTLP/HTTP JSON transport with an IndexedDB retry queue, the consent gate, and `fetch`, XHR and document-load spans                |
-| [`@libo11y/webext`](packages/webext)                           | the Manifest V3 extension platform: `setupWorker` for the service worker, `setupContentScript` for content scripts and extension pages, and traced runtime messaging                                                        |
-| [`@libo11y/rum`](packages/rum)                                 | browser RUM over `@libo11y/web`: `setupRum`, sessions shared across tabs, session sampling with a retention buffer, and per-view summaries                                                                                  |
-| [`@libo11y/sourcemaps`](packages/sourcemaps)                   | the `libo11y-sourcemaps` command and `uploadSourceMaps`, which upload source maps to the RUM gateway (`go/o11yrum`) for symbolication                                                                                       |
-| [`@libo11y/rum-react`](packages/rum-react)                     | the React adapter for `@libo11y/rum`: `RumProvider`, `useRum` and `RumErrorBoundary`, which records render errors with the component stack                                                                                  |
-| [`@libo11y/rum-tanstack-router`](packages/rum-tanstack-router) | the TanStack Router adapter for `@libo11y/rum`: `instrumentTanStackRouter` names views by route template and times soft navigations                                                                                         |
-| [`@libo11y/rum-connect`](packages/rum-connect)                 | the Connect adapter for `@libo11y/rum`: `connectRequestNaming` names the fetch spans of Connect RPCs by service and method                                                                                                  |
-| [`@libo11y/rum-replay`](packages/rum-replay)                   | privacy-first session replay for `@libo11y/rum`. `replay()` records with rrweb behind libo11y's own scrubber, masks text by default, never records input values and loads rrweb only when a session records. In development |
+| Package                                                        | What it holds                                                                                                                                                                                                   |
+| -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`@libo11y/spec`](packages/spec)                               | the spec constants and tables generated from `spec/registry`, the application registry validator, and the `libo11y` bin. It also runs in browsers                                                               |
+| [`@libo11y/core`](packages/core)                               | the platform-neutral core: configuration, identity, the sensitivity policy, the logger, events, exemplars and the signal pipelines                                                                              |
+| [`@libo11y/server`](packages/server)                           | the Bun and Node platform: `setup`, the `AsyncLocalStorage` context manager, resource detection, OTLP exporters, runtime metrics, `instrumentServe` and `instrumentFetch`                                       |
+| [`@libo11y/test`](packages/test)                               | the hermetic recorder, its assertions, and an in-process OTLP/HTTP sink                                                                                                                                         |
+| [`@libo11y/web`](packages/web)                                 | the browser platform: `setup` with a pluggable context manager, the browser resource, the OTLP/HTTP JSON transport with an IndexedDB retry queue, the consent gate, and `fetch`, XHR and document-load spans    |
+| [`@libo11y/webext`](packages/webext)                           | the Manifest V3 extension platform: `setupWorker` for the service worker, `setupContentScript` for content scripts and extension pages, and traced runtime messaging                                            |
+| [`@libo11y/rum`](packages/rum)                                 | browser RUM over `@libo11y/web`: `setupRum`, sessions shared across tabs, session sampling with a retention buffer, and per-view summaries                                                                      |
+| [`@libo11y/sourcemaps`](packages/sourcemaps)                   | the `libo11y-sourcemaps` command and `uploadSourceMaps`, which upload source maps to the RUM gateway (`go/o11yrum`) for symbolication                                                                           |
+| [`@libo11y/rum-react`](packages/rum-react)                     | the React adapter for `@libo11y/rum`: `RumProvider`, `useRum` and `RumErrorBoundary`, which records render errors with the component stack                                                                      |
+| [`@libo11y/rum-tanstack-router`](packages/rum-tanstack-router) | the TanStack Router adapter for `@libo11y/rum`: `instrumentTanStackRouter` names views by route template and times soft navigations                                                                             |
+| [`@libo11y/rum-connect`](packages/rum-connect)                 | the Connect adapter for `@libo11y/rum`: `connectRequestNaming` names the fetch spans of Connect RPCs by service and method                                                                                      |
+| [`@libo11y/rum-replay`](packages/rum-replay)                   | privacy-first session replay for `@libo11y/rum`. `replay()` records with rrweb behind libo11y's scrubber, masks text by default, never records input values and loads rrweb only to record. In development      |
+| [`@libo11y/react-native`](packages/react-native)               | the React Native platform: `setupReactNative`, the mobile resource, a retry queue that saves each batch on device storage before sending, AppState flushing, consent, and `fetch` and XHR spans. In development |
 
 `@libo11y/web` and `@libo11y/webext` first ship in `ts/v0.2.1`.
 `@libo11y/rum`, `@libo11y/rum-react`, `@libo11y/rum-tanstack-router`,
@@ -34,6 +36,7 @@ install from the tarballs attached to the
 [`ts/v0.3.0` GitHub Release](https://github.com/jamesainslie/libo11y/releases/tag/ts/v0.3.0),
 whose notes list the exact URLs. `@libo11y/rum-replay` is in development
 and has not shipped yet. It first ships in the next TypeScript release.
+`@libo11y/react-native` is in development and has not shipped yet.
 Every package implements spec 1.3.0.
 [docs/PARITY.md](../docs/PARITY.md) compares every capability with Go.
 
@@ -98,9 +101,10 @@ ts/
   packages/rum/        @libo11y/rum, with its Playwright specs and fixtures in browser/
   packages/rum-*/      the RUM adapters for React, TanStack Router and Connect, each with browser/ specs
   packages/sourcemaps/ @libo11y/sourcemaps, with the gateway end-to-end journey in src/e2e/
+  packages/react-native/ @libo11y/react-native, tested under Node and Bun with fakes for React Native
   examples/            bun-server and node-server, private workspace apps
   scripts/             release.ts sets the version and packs the packages; size.ts checks the bundle size budgets
-  size-budget.json     the browser bundle size budgets
+  size-budget.json     the bundle size budgets, browser and React Native
   playwright.config.ts the browser test configuration
 ```
 
@@ -118,7 +122,7 @@ Run these in `ts/`:
 | `bun run api`                           | rewrites the API reports after a deliberate API change                                                                                                    |
 | `bun run test:bun`, `bun run test:node` | every unit suite under Bun, then under Node                                                                                                               |
 | `bun run test:browser`                  | the browser suites under Playwright 1.64.1, with two workers: `web` and `webext` in headless Chromium, and `rum-chromium`, `rum-firefox` and `rum-webkit` |
-| `bun scripts/size.ts --check`           | the browser bundle size budgets in `size-budget.json`                                                                                                     |
+| `bun scripts/size.ts --check`           | the bundle size budgets in `size-budget.json`                                                                                                             |
 
 The browser specs are `packages/*/browser/**/*.pw.ts`, a suffix that
 neither `bun test` nor the Node glob picks up. Their global setup bundles

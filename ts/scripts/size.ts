@@ -3,7 +3,8 @@
  * source importing from @libo11y/* with a budget, and deltas, each a source measured against a base
  * entry, which is what installing one collector adds. A size is the minified, gzip-compressed bytes
  * of the source bundled for the browser. An entry may name external modules, such as react for an
- * adapter whose framework the app bundles anyway; they are left out of its bundle.
+ * adapter whose framework the app bundles anyway; they are left out of its bundle. An entry may name
+ * export conditions, such as react-native for a React Native package, which Metro resolves with.
  *
  * An entry or delta may set chunks, which bundles it with code splitting, as an app's bundler
  * would, and measures one part: "initial" is the entry chunk and every chunk it imports
@@ -32,6 +33,7 @@ export interface BudgetFile {
         readonly budget: number;
         readonly external?: readonly string[];
         readonly chunks?: Chunks;
+        readonly conditions?: readonly string[];
       }
     >
   >;
@@ -169,6 +171,7 @@ export function splitSizes(chunks: readonly BundleChunk[]): {
 export function buildOptions(
   file: string,
   external: readonly string[] | undefined,
+  conditions?: readonly string[],
   splitting = false,
 ): Record<string, unknown> {
   return {
@@ -179,6 +182,7 @@ export function buildOptions(
     splitting,
     plugins: [workspaceResolver()],
     ...(external === undefined ? {} : { external: [...external] }),
+    ...(conditions === undefined ? {} : { conditions: [...conditions] }),
   };
 }
 
@@ -188,11 +192,12 @@ async function measure(
   name: string,
   code: string,
   external?: readonly string[],
+  conditions?: readonly string[],
   chunks?: Chunks,
 ): Promise<number> {
   const file = join(dir, `${name.replace(/[^a-z0-9]+/gi, "-")}.ts`);
   writeFileSync(file, code);
-  const result = await bun.build(buildOptions(file, external, chunks !== undefined));
+  const result = await bun.build(buildOptions(file, external, conditions, chunks !== undefined));
   const output = result.outputs[0];
   if (!result.success || output === undefined) {
     for (const log of result.logs) console.error(log);
@@ -226,9 +231,9 @@ async function main(args: readonly string[]): Promise<number> {
   mkdirSync(dir, { recursive: true });
   const absolute: Record<string, number> = {};
   for (const [name, e] of Object.entries(file.entries))
-    absolute[name] = await measure(bun, dir, name, e.code, e.external, e.chunks);
+    absolute[name] = await measure(bun, dir, name, e.code, e.external, e.conditions, e.chunks);
   for (const [name, d] of Object.entries(file.deltas))
-    absolute[name] = await measure(bun, dir, name, d.code, undefined, d.chunks);
+    absolute[name] = await measure(bun, dir, name, d.code, undefined, undefined, d.chunks);
   const rows = compareBudgets(file, absolute);
   const table = formatTable(rows);
   process.stdout.write(table);

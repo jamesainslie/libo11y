@@ -44,8 +44,9 @@ test("buildOptions bundles for the browser and keeps an entry's externals out of
   assert.equal(plain.minify, true);
   assert.equal("external" in plain, false);
   assert.deepEqual(buildOptions("/tmp/a.ts", ["react"]).external, ["react"]);
+  assert.equal("conditions" in plain, false);
   assert.equal(plain.splitting, false);
-  assert.equal(buildOptions("/tmp/a.ts", undefined, true).splitting, true);
+  assert.equal(buildOptions("/tmp/a.ts", undefined, undefined, true).splitting, true);
 });
 
 test("splitSizes counts the entry and what it imports statically as initial, the rest as lazy", () => {
@@ -72,4 +73,11 @@ test("splitSizes counts the entry and what it imports statically as initial, the
 
 test("splitSizes refuses a build without exactly one entry", () => {
   assert.throws(() => splitSizes([{ path: "./c.js", kind: "chunk", code: "", size: 1 }]), /entry/);
+});
+
+test("buildOptions passes an entry's export conditions, as React Native's Metro resolves them", () => {
+  const rn = buildOptions("/tmp/a.ts", ["react-native"], ["react-native"]);
+  assert.deepEqual(rn.conditions, ["react-native"]);
+  assert.deepEqual(rn.external, ["react-native"]);
+  assert.equal(rn.target, "browser");
 });

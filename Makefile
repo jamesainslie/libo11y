@@ -8,7 +8,7 @@ GO_TEST_P ?= 4
 # gate runs on each module separately.
 GO_MODULES := go go/o11ygin go/o11yconnect go/o11ysql go/o11yrum ops
 
-.PHONY: spec-check spec-generate spec-drift ops-generate ops-check ops-integration-up ops-integration-down ops-integration ops-promtool-test ops-release-check ops-release-check-test test lint vet tidy-check vuln release-check zig-release-check python-release-check rust-release-check rust-release-check-test c-release-check o11yrum-release-check print-o11yrum-release-version o11yrum-image schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-npm-plan-test ts-install ts-check ts-size ts-browser-test rum-e2e rust-check rust-msrv zig-check zig-integrations-check zig-hygiene-test python-check python-hygiene-test c-check ruby-check dotnet-check ci
+.PHONY: spec-check spec-generate spec-drift ops-generate ops-check ops-integration-up ops-integration-down ops-integration ops-promtool-test ops-release-check ops-release-check-test test lint vet tidy-check vuln release-check zig-release-check python-release-check rust-release-check rust-release-check-test c-release-check o11yrum-release-check print-o11yrum-release-version o11yrum-image schema-published schema-published-test release-notes-test release-tag-test ts-browser-bundle-test ts-rn-bundle-test ts-npm-plan-test ts-install ts-check ts-size ts-browser-test rum-e2e rust-check rust-msrv zig-check zig-integrations-check zig-hygiene-test python-check python-hygiene-test c-check ruby-check dotnet-check ci
 
 # Validate the spec registry against the libo11y policy suite (naming,
 # ownership, sensitivity, cardinality, events, units).
@@ -289,6 +289,12 @@ ops-promtool-test:
 ts-browser-bundle-test:
 	scripts/ts-browser-bundle-check_test.sh
 
+# Test ts-rn-bundle-check.sh, which the release check and the release
+# workflow use to bundle the React Native packages, against fixture
+# packages (needs bun).
+ts-rn-bundle-test:
+	scripts/ts-rn-bundle-check_test.sh
+
 # Test ts-npm-plan.sh, which decides what a TypeScript release publishes to
 # npm and what stays a tarball on the GitHub Release, against fixture
 # tarballs and a fake npm (needs jq, node and npm, and no network).
@@ -374,4 +380,4 @@ dotnet-check:
 
 # vuln runs last: it depends on the advisory database and the toolchain's
 # patch level, so local runs exercise every other gate first.
-ci: lint vet test tidy-check spec-check spec-drift ops-check ops-integration ts-check ts-size ts-browser-test rum-e2e o11yrum-image rust-check rust-msrv zig-check python-check c-check ruby-check dotnet-check schema-published-test release-notes-test release-tag-test ops-promtool-test ops-release-check-test rust-release-check-test ts-browser-bundle-test ts-npm-plan-test release-check vuln
+ci: lint vet test tidy-check spec-check spec-drift ops-check ops-integration ts-check ts-size ts-browser-test rum-e2e o11yrum-image rust-check rust-msrv zig-check python-check c-check ruby-check dotnet-check schema-published-test release-notes-test release-tag-test ops-promtool-test ops-release-check-test rust-release-check-test ts-browser-bundle-test ts-rn-bundle-test ts-npm-plan-test release-check vuln

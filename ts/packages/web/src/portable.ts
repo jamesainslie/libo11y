@@ -41,10 +41,12 @@ export { randomUuid, type UuidCrypto } from "./ids.ts";
 export {
   installFetchInstrumentation,
   instrumentFetch,
+  instrumentFetchWith,
 } from "./instrumentation/fetch.ts";
+export type { HttpInternals } from "./instrumentation/http-common.ts";
 export { isIgnored, shouldPropagate } from "./instrumentation/origins.ts";
 export { remoteParentFromTraceparent } from "./instrumentation/server-timing.ts";
-export { installXhrInstrumentation } from "./instrumentation/xhr.ts";
+export { installXhrInstrumentation, installXhrInstrumentationWith } from "./instrumentation/xhr.ts";
 export type {
   BrowserExportOptions,
   HttpInstrumentationOptions,
@@ -69,6 +71,7 @@ export {
   utf8Length,
 } from "./queue/bounds.ts";
 export { createMemoryQueue } from "./queue/memory.ts";
+export { parseResourceAttributes } from "./resource-env.ts";
 export { createDelivery } from "./transport/delivery.ts";
 export { resolveEndpoints, type SignalEndpoints } from "./transport/endpoints.ts";
 export { browserEnv } from "./transport/env.ts";

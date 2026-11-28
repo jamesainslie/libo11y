@@ -844,6 +844,17 @@ jobs:
           scripts/ts-browser-bundle-check.sh "$consumer" @libo11y/web=setup @libo11y/webext @libo11y/rum=setupRum \
             @libo11y/rum-react=RumErrorBoundary @libo11y/rum-tanstack-router=instrumentTanStackRouter \
             @libo11y/rum-connect=connectRequestNaming @libo11y/rum-replay=replay,VERSION
+      # The React Native packages run on Hermes, which has no Node builtins.
+      # Bundle each entry point with the react-native condition, React
+      # Native and Expo left external, as scripts/ts-release-check.sh does.
+      - name: Install and bundle the React Native packages
+        run: |
+          specs_out="$(scripts/ts-npm-plan.sh specs "$RUNNER_TEMP/packs/plan.tsv" "$VERSION" @libo11y/react-native)"
+          mapfile -t specs <<<"$specs_out"
+          consumer="$(mktemp -d)"
+          printf '{ "name": "libo11y-react-native-smoke", "private": true, "type": "module" }\n' >"$consumer/package.json"
+          (cd "$consumer" && npm install --no-audit --no-fund --ignore-scripts "${specs[@]}")
+          scripts/ts-rn-bundle-check.sh "$consumer" @libo11y/react-native=setupReactNative
       # A package not on npm yet installs from its tarball, with its other
       # dependencies from the registry, the way a consumer installs it from
       # the GitHub Release. The check fails on an incomplete dependency tree
