@@ -776,3 +776,21 @@ func TestReplayReadReloadWithoutTokenFile(t *testing.T) {
 		t.Errorf("after the reload: %d", w.Code)
 	}
 }
+
+// TestReplayReadLimitsEachIPv6PeerAlone checks the failure budget belongs
+// to one address: pods on a cluster's IPv6 network often share a /64.
+func TestReplayReadLimitsEachIPv6PeerAlone(t *testing.T) {
+	f := newReadFixture(t, nil, "")
+	f.seed(t)
+	const noisy, player = "[2001:db8:1:2::a]:41000", "[2001:db8:1:2::b]:41000"
+	path := sessionPath("shop-web", replaySession)
+	for range readFailuresPerMinute + 1 {
+		readFrom(t, f.read, noisy, http.MethodGet, path, "Bearer not-the-token-at-all-000")
+	}
+	if w := readFrom(t, f.read, noisy, http.MethodGet, path, "Bearer "+readToken); w.Code != http.StatusTooManyRequests {
+		t.Fatalf("the noisy peer: %d", w.Code)
+	}
+	if w := readFrom(t, f.read, player, http.MethodGet, path, "Bearer "+readToken); w.Code != http.StatusOK {
+		t.Errorf("a peer in the same /64: %d", w.Code)
+	}
+}

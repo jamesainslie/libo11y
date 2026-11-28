@@ -372,7 +372,10 @@ session's recording. It is cluster-internal only:
   `SIGHUP` again. The gateway reads the file at start and again on each
   `SIGHUP`, and logs `reloaded replay.read_token_file` or, when the file
   is missing or invalid, `keeping the tokens in use` with the reason. A
-  failed reload never drops the tokens in use. A library user calls
+  failed reload never drops the tokens in use. Replace the file whole,
+  by writing a new file and renaming it over the old one, so a reload
+  never reads it half-written; a Kubernetes Secret volume does this
+  already. A library user calls
   `Handler.ReloadReplayReadTokens`. In Kubernetes, the kubelet updates a
   Secret mounted as a volume in place, but not one mounted with
   `subPath`. The image has no shell or `kill`, so the signal comes from
@@ -381,11 +384,14 @@ session's recording. It is cluster-internal only:
 - Each TCP peer may fail authentication 10 times in a burst, refilled
   evenly over a minute. Past that every request from the peer answers
   429 with `Retry-After`, before its token is compared, so guessing gains
-  nothing while it lasts. Peers are keyed by the connection's address,
-  never a forwarding header, and at most 1024 are tracked; past that a
-  new peer is not limited, so memory stays bounded and a flood of
+  nothing while it lasts. Peers are keyed by the connection's whole
+  address, never a forwarding header, and at most 1024 are tracked; past
+  that a new peer is not limited, so memory stays bounded and a flood of
   addresses cannot lock real callers out. A valid request never spends
-  the budget.
+  the budget. Callers that reach the listener from one address, such as
+  through a mesh sidecar or SNAT, share one budget, so a caller stuck on
+  a removed token locks the others out. Keep the old and the new token
+  in the file until every caller has moved.
 
 ```yaml
 replay:

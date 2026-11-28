@@ -43,9 +43,10 @@ adheres to [Semantic Versioning](https://semver.org/).
   `sweep_interval: 0s` there to skip it.
 - `Handler.ReloadReplayReadTokens` reads `replay.read_token_file` again,
   so read tokens rotate without a restart. The `o11yrum-gateway` command
-  calls it on `SIGHUP`. A failed reload keeps the tokens in use.
-- The read API limits failed authentications: each TCP peer may fail 10
-  times in a burst, refilled over a minute, and is then answered 429
+  calls it on `SIGHUP`. A failed reload keeps the tokens in use. `SIGHUP`
+  no longer ends the command, even without a token file.
+- The read API limits failed authentications: each TCP peer, keyed by its
+  whole address, may fail 10 times in a burst, refilled over a minute, and is then answered 429
   before its token is compared. `o11yrum.replay.reads` counts those with
   `o11yrum.outcome=rate_limited`.
 

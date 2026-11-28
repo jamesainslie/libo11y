@@ -232,16 +232,17 @@ func (rr *replayReader) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rr.mux.ServeHTTP(w, r)
 }
 
-// peerKey keys the request's TCP peer for the failed-token limit. The
-// read listener is cluster-internal and reached directly, so forwarding
-// headers are not consulted. ok is false when the peer address does not
+// peerKey keys the request's TCP peer for the failed-token limit, by its
+// whole address. The read listener is cluster-internal and reached
+// directly, so forwarding headers are not consulted, and an IPv6 peer is
+// not grouped with its /64 as on the public edge. ok is false when the peer address does not
 // parse, which leaves the request unlimited.
 func (rr *replayReader) peerKey(r *http.Request) (key uint64, ok bool) {
 	ap, err := netip.ParseAddrPort(r.RemoteAddr)
 	if err != nil {
 		return 0, false
 	}
-	return rr.h.keyer.key(ap.Addr().Unmap()), true
+	return rr.h.keyer.exact(ap.Addr().Unmap()), true
 }
 
 // session resolves the service and session path values to the session's

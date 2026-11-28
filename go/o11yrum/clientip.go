@@ -128,5 +128,11 @@ func (k clientKeyer) key(addr netip.Addr) uint64 {
 	if addr.Is6() {
 		addr = netip.PrefixFrom(addr, 64).Masked().Addr()
 	}
+	return k.exact(addr)
+}
+
+// exact hashes addr whole, for a cluster-internal peer: pods on an IPv6
+// network often share a /64.
+func (k clientKeyer) exact(addr netip.Addr) uint64 {
 	return maphash.Bytes(k.seed, addr.AsSlice())
 }
