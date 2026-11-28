@@ -10,6 +10,10 @@
  *   GET  /bundles/<file>                 dist/bundles/<file>
  *   ANY  /echo[?delay=ms]                JSON of the request method, headers and body text (CORS open),
  *                                        after delay milliseconds (at most 5000) when given
+ *   GET  /asset/<file>?type=js|css|png[&delay=ms][&serverTiming=tp]
+ *                                        a tiny body of that type with Timing-Allow-Origin: *, after
+ *                                        delay milliseconds (at most 5000); with serverTiming,
+ *                                        Server-Timing: traceparent;desc="tp", db;dur=12
  *   POST /sink/<id>/v1/<signal>          records an OTLP request (gzip decoded), answers from the script
  *   POST /sink/<id>/script               body {"responses":[{"status":429,"retryAfter":"1"}, ...]}:
  *                                        the next requests get these answers in order, then 200
@@ -107,6 +111,32 @@ async function recordOtlp(req: Request, sink: Sink, signal: string): Promise<Res
   return new Response("{}", { status: next?.status ?? 200, headers });
 }
 
+/** A 1x1 transparent PNG. */
+const PNG = Uint8Array.from(
+  atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="),
+  (c) => c.charCodeAt(0),
+);
+const ASSETS: Readonly<Record<string, { readonly type: string; readonly body: string | Blob }>> = {
+  js: { type: "text/javascript", body: "globalThis.__assetLoaded = true;\n" },
+  css: { type: "text/css", body: "main { margin: 0; }\n" },
+  png: { type: "image/png", body: new Blob([PNG]) },
+};
+
+async function asset(url: URL): Promise<Response> {
+  const kind = ASSETS[url.searchParams.get("type") ?? ""];
+  if (kind === undefined) return new Response("unknown type", { status: 400 });
+  const delay = Math.min(5000, Math.max(0, Number(url.searchParams.get("delay") ?? "0") || 0));
+  if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+  const headers = new Headers({
+    "Content-Type": kind.type,
+    "Cache-Control": "no-store",
+    "Timing-Allow-Origin": "*",
+  });
+  const tp = url.searchParams.get("serverTiming");
+  if (tp !== null) headers.set("Server-Timing", `traceparent;desc="${tp}", db;dur=12`);
+  return new Response(kind.body, { headers });
+}
+
 function page(name: string, serverTiming: string | null, csp: boolean): Response {
   const headers = new Headers({ "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
   if (serverTiming !== null) headers.set("Server-Timing", `traceparent;desc="${serverTiming}"`);
@@ -133,6 +163,7 @@ const server = Bun.serve({
       if (!(await f.exists())) return new Response("not found", { status: 404 });
       return new Response(f, { headers: { "Content-Type": "text/javascript", "Cache-Control": "no-store" } });
     }
+    if (parts[0] === "asset" && req.method === "GET") return asset(url);
     if (parts[0] === "echo") {
       const delay = Math.min(5000, Math.max(0, Number(url.searchParams.get("delay") ?? "0") || 0));
       if (delay > 0) await new Promise((r) => setTimeout(r, delay));
