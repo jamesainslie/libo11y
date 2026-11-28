@@ -110,21 +110,24 @@ Browsers have no process environment, so the OTLP endpoint is an option.
 Each signal resolves its URL in this order:
 
 1. `tracesEndpoint`, `metricsEndpoint` or `logsEndpoint`, used as is.
-2. `env.OTEL_EXPORTER_OTLP_<SIGNAL>_ENDPOINT`, used as is.
-3. `endpoint` joined with `v1/traces`, `v1/metrics` or `v1/logs`.
+2. `endpoint` joined with `v1/traces`, `v1/metrics` or `v1/logs`.
+3. `env.OTEL_EXPORTER_OTLP_<SIGNAL>_ENDPOINT`, used as is.
 4. `env.OTEL_EXPORTER_OTLP_ENDPOINT`, joined the same way.
 
 A relative URL resolves against the page. A signal with no URL is off. A
 URL that cannot be parsed turns its signal off and is reported through the
-OpenTelemetry diag logger. The protocol is always `http/json`. A
-per-signal protocol variable in `env` that names any other protocol fails
-setup with `UNSUPPORTED_PROTOCOL`.
+OpenTelemetry diag logger. The protocol defaults to `http/json`. An OTLP
+signal uses its per-signal protocol variable first, then the common
+`OTEL_EXPORTER_OTLP_PROTOCOL` variable. If the resolved protocol is
+anything other than `http/json`, setup fails with `UNSUPPORTED_PROTOCOL`.
 
 `env` stands in for `process.env`. It takes the same `OTEL_*` variables the
 server reads, such as `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_TRACES_SAMPLER` and
 `OTEL_BSP_*`. Options beat it, and `hermetic: true` ignores it.
 
-`headers` are sent with every export request.
+The transport sets `Content-Type` to `application/json` on every export
+request and `Content-Encoding` to `gzip` when it compresses the body.
+These values override matching keys in `headers` regardless of case.
 
 A collector on another origin must answer the CORS preflight for `POST`
 with the `Content-Type` and `Content-Encoding` request headers, plus any

@@ -1,7 +1,7 @@
 /**
  * WP3 (web platform and setup). The browser Platform, also used by @libo11y/webext.
  */
-import type { Platform, RecordingGate } from "@libo11y/core";
+import { type Platform, type RecordingGate, sha1 } from "@libo11y/core";
 import type { ContextManager } from "@opentelemetry/api";
 import { createContextManager } from "./context.ts";
 import type { Delivery, SendMode } from "./contracts/transport.ts";
@@ -42,9 +42,9 @@ export interface WebPlatformDeps {
 /**
  * A browser Platform: env from browserEnv, detectBrowserResource, the context manager,
  * createExporterSet over the delivery, console lines through the console methods captured when the
- * platform is built (so captureConsole cannot recurse), SHA-1 by crypto.subtle, UUIDs by
- * crypto.randomUUID with a getRandomValues fallback outside secure contexts, the global console for
- * captureConsole, and gate. No runtime metrics.
+ * platform is built (so captureConsole cannot recurse), the global console for captureConsole, and
+ * gate. It uses crypto.subtle for SHA-1 with a TypeScript fallback, and crypto.randomUUID with a
+ * getRandomValues fallback. No runtime metrics.
  */
 export function webPlatform(opts: WebPlatformOptions): Platform {
   return webPlatformWith(opts, { createExporterSet });
@@ -66,8 +66,11 @@ export function webPlatformWith(opts: WebPlatformOptions, deps: WebPlatformDeps)
     buildExporters: (req) => deps.createExporterSet(req, opts.delivery, opts.endpoints, { mode }),
     writeConsoleLine: (line) => log(line),
     writeDiagnosticLine: (line) => warn(line),
-    sha1: async (data) =>
-      new Uint8Array(await globalThis.crypto.subtle.digest("SHA-1", data as Uint8Array<ArrayBuffer>)),
+    sha1: async (data) => {
+      const subtle = globalThis.crypto?.subtle;
+      if (subtle === undefined) return sha1(data);
+      return new Uint8Array(await subtle.digest("SHA-1", data as Uint8Array<ArrayBuffer>));
+    },
     randomUUID: () => randomUuid(),
     console: globalThis.console,
     gate: opts.gate,

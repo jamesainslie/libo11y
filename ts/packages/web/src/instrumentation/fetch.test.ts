@@ -7,12 +7,20 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Telemetry } from "@libo11y/core";
 import { createRecorder, type Recorder } from "@libo11y/test";
-import { context, type Span, SpanKind, SpanStatusCode, trace } from "@opentelemetry/api";
+import {
+  context,
+  type Span,
+  SpanKind,
+  SpanStatusCode,
+  type TextMapPropagator,
+  trace,
+} from "@opentelemetry/api";
 import type { DataPoint, Histogram } from "@opentelemetry/sdk-metrics";
 import type { ReadableSpan } from "@opentelemetry/sdk-trace";
 import { setActiveConsent } from "../consent/active.ts";
 import type { Consent, ConsentState } from "../contracts/consent.ts";
 import type { HttpRequestInfo } from "../options.ts";
+import { capturingErrors } from "../test-support/errors.ts";
 import { installFetchInstrumentation, instrumentFetch, instrumentFetchWith } from "./fetch.ts";
 import { DURATION_BUCKETS, DURATION_METRIC } from "./http-common.ts";
 
@@ -462,5 +470,153 @@ test("instrumentFetchWith: internals name the scope of the span and histogram", 
       .filter((sm) => sm.metrics.some((m) => m.descriptor.name === DURATION_METRIC))
       .map((sm) => sm.scope.name);
     assert.deepEqual(scopes, ["@libo11y/react-native"]);
+  });
+});
+
+// Council round 1: no telemetry step may fail the request. A span that cannot start, a propagator
+// that throws and a span that cannot end are reported, and the request is made exactly once.
+const THROWING_INJECT: TextMapPropagator = {
+  inject(_ctx, carrier, setter) {
+    setter.set(carrier, "traceparent", "partial");
+    throw new Error("inject boom");
+  },
+  extract: (ctx) => ctx,
+  fields: () => [],
+};
+
+/** rec's telemetry with one failing instrumentation step. */
+function brokenTelemetry(
+  rec: Recorder,
+  broken: "start" | "setAttribute" | "recordException" | "end" | "record" | "inject",
+): Telemetry {
+  const tracer = rec.telemetry.tracerProvider.getTracer("broken");
+  const meterProvider =
+    broken === "record"
+      ? {
+          getMeter: () => ({
+            createHistogram: () => ({
+              record: () => {
+                throw new Error("record boom");
+              },
+            }),
+          }),
+        }
+      : rec.telemetry.meterProvider;
+  return {
+    tracerProvider: {
+      getTracer: () => ({
+        startSpan: (...args: Parameters<typeof tracer.startSpan>) => {
+          if (broken === "start") throw new Error("start boom");
+          const span = tracer.startSpan(...args);
+          if (broken === "record" || broken === "inject") return span;
+          return new Proxy(span, {
+            get(target, key) {
+              if (key === broken) {
+                return () => {
+                  throw new Error(`${broken} boom`);
+                };
+              }
+              const value = Reflect.get(target, key);
+              return typeof value === "function" ? value.bind(target) : value;
+            },
+          });
+        },
+      }),
+    },
+    meterProvider,
+    propagator: broken === "inject" ? THROWING_INJECT : rec.telemetry.propagator,
+  } as unknown as Telemetry;
+}
+
+test("a span that cannot start is reported, and the request is sent uninstrumented exactly once", async () => {
+  await withRec(async (rec) => {
+    const fake = fakeFetch();
+    const traced = instrumentFetch(fake.fetch, { telemetry: brokenTelemetry(rec, "start") });
+    const init = { headers: { "x-app": "1" } };
+    const { result, errors } = await capturingErrors(async () => (await traced("/x", init)).status);
+    assert.equal(result, 200);
+    assert.equal(fake.calls.length, 1);
+    assert.equal(fake.calls[0]?.init, init, "the caller's own arguments are passed on");
+    assert.deepEqual(errors, [
+      "o11y: instrumentFetch: starting the request's telemetry failed, the request is not instrumented: Error",
+    ]);
+  });
+});
+
+test("a propagator whose inject throws is reported, and the request is sent without the context", async () => {
+  await withRec(async (rec) => {
+    const fake = fakeFetch();
+    const telemetry = brokenTelemetry(rec, "inject");
+    const traced = instrumentFetch(fake.fetch, { telemetry });
+    const init = { headers: { "x-app": "1" } };
+    const { result, viaHandle, viaGlobal } = await capturingErrors(
+      async () => (await traced("/x", init)).status,
+      telemetry,
+    );
+    assert.equal(result, 200);
+    assert.equal(fake.calls.length, 1);
+    assert.equal(fake.calls[0]?.headers.has("traceparent"), false);
+    assert.equal(fake.calls[0]?.headers.get("x-app"), "1", "the caller's own headers still go out");
+    assert.deepEqual(viaHandle, [
+      "o11y: instrumentFetch: injecting the trace context failed, the request is sent without it: Error",
+    ]);
+    assert.deepEqual(viaGlobal, [], "a handle's reports go to the handle");
+    const span = onlyClient(rec);
+    assert.equal(span.attributes["http.response.status_code"], 200);
+  });
+});
+
+for (const broken of ["setAttribute", "recordException", "end", "record"] as const) {
+  test(`a finish that fails (${broken}) is reported, and neither the response nor fetch's own error is replaced`, async () => {
+    await withRec(async (rec) => {
+      const telemetry = brokenTelemetry(rec, broken);
+      const fake = fakeFetch();
+      const ok = await capturingErrors(
+        async () => (await instrumentFetch(fake.fetch, { telemetry })("/x")).status,
+      );
+      assert.equal(ok.result, 200);
+      assert.equal(fake.calls.length, 1);
+      assert.deepEqual(
+        ok.errors,
+        broken === "recordException"
+          ? []
+          : ["o11y: instrumentFetch: ending the request's telemetry failed: Error"],
+      );
+
+      const down = new TypeError("Failed to fetch");
+      let calls = 0;
+      const failing = (async () => {
+        calls++;
+        throw down;
+      }) as unknown as typeof fetch;
+      const failed = await capturingErrors(() =>
+        assert.rejects(instrumentFetch(failing, { telemetry })("/x"), (err) => err === down),
+      );
+      assert.equal(calls, 1);
+      assert.equal(failed.errors.length, 1);
+    });
+  });
+}
+
+test("headers fetch would reject fail the request as an uninstrumented fetch does, with the caller's arguments", async () => {
+  await withRec(async (rec) => {
+    let calls = 0;
+    let seen: RequestInit | undefined;
+    const strict = (async (_input: string | URL | Request, init?: RequestInit) => {
+      calls++;
+      seen = init;
+      return new Response(null, { headers: new Headers(init?.headers) });
+    }) as typeof fetch;
+    const init = { headers: [["bad header", "v"]] as [string, string][] };
+    const own = await strict("/x", init).catch((err: unknown) => err);
+    calls = 0;
+    const traced = instrumentFetch(strict, { telemetry: rec.telemetry });
+    const { result, errors } = await capturingErrors(() => traced("/x", init).catch((err: unknown) => err));
+    assert.ok(result instanceof TypeError);
+    assert.equal((result as Error).name, (own as Error).name);
+    assert.equal(calls, 1);
+    assert.equal(seen, init, "the caller's init is passed on unchanged");
+    assert.deepEqual(errors, []);
+    assert.equal(onlyClient(rec).attributes["error.type"], "TypeError");
   });
 });

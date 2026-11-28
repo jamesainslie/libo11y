@@ -7,10 +7,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Telemetry } from "@libo11y/core";
 import { createRecorder, type Recorder } from "@libo11y/test";
-import { context, SpanKind, SpanStatusCode, trace } from "@opentelemetry/api";
+import { context, SpanKind, SpanStatusCode, type TextMapPropagator, trace } from "@opentelemetry/api";
 import type { ReadableSpan } from "@opentelemetry/sdk-trace";
 import type { Consent, ConsentState } from "../contracts/consent.ts";
 import type { HttpInstrumentationOptions, HttpRequestInfo } from "../options.ts";
+import { capturingErrors } from "../test-support/errors.ts";
 import { DURATION_METRIC } from "./http-common.ts";
 import { installXhrInstrumentation, installXhrInstrumentationWith } from "./xhr.ts";
 
@@ -492,3 +493,138 @@ test("installXhrInstrumentationWith: internals name the scope, and skip passes a
     }
   });
 });
+
+// Council round 1: no telemetry step may fail the request. A span that cannot start, a propagator
+// that throws and a span that cannot end are reported, and send reaches the XHR exactly once.
+const THROWING_INJECT: TextMapPropagator = {
+  inject(_ctx, carrier, setter) {
+    setter.set(carrier, "traceparent", "partial");
+    throw new Error("inject boom");
+  },
+  extract: (ctx) => ctx,
+  fields: () => [],
+};
+
+/** rec's telemetry with one failing instrumentation step. */
+function brokenTelemetry(
+  rec: Recorder,
+  broken: "start" | "setAttribute" | "recordException" | "end" | "record" | "inject",
+): Telemetry {
+  const tracer = rec.telemetry.tracerProvider.getTracer("broken");
+  const meterProvider =
+    broken === "record"
+      ? {
+          getMeter: () => ({
+            createHistogram: () => ({
+              record: () => {
+                throw new Error("record boom");
+              },
+            }),
+          }),
+        }
+      : rec.telemetry.meterProvider;
+  return {
+    tracerProvider: {
+      getTracer: () => ({
+        startSpan: (...args: Parameters<typeof tracer.startSpan>) => {
+          if (broken === "start") throw new Error("start boom");
+          const span = tracer.startSpan(...args);
+          if (broken === "record" || broken === "inject") return span;
+          return new Proxy(span, {
+            get(target, key) {
+              if (key === broken) {
+                return () => {
+                  throw new Error(`${broken} boom`);
+                };
+              }
+              const value = Reflect.get(target, key);
+              return typeof value === "function" ? value.bind(target) : value;
+            },
+          });
+        },
+      }),
+    },
+    meterProvider,
+    propagator: broken === "inject" ? THROWING_INJECT : rec.telemetry.propagator,
+  } as unknown as Telemetry;
+}
+
+test("a span that cannot start is reported, and the request is sent uninstrumented exactly once", async () => {
+  await withXhr(async ({ rec, install }) => {
+    install({ telemetry: brokenTelemetry(rec, "start") });
+    const xhr = new FakeXhr();
+    const { errors } = await capturingErrors(() => {
+      xhr.open("GET", "/api/items");
+      xhr.send();
+    });
+    assert.equal(xhr.sends, 1);
+    assert.equal(xhr.header("traceparent"), undefined);
+    assert.deepEqual(errors, [
+      "o11y: installXhrInstrumentation: starting the request's telemetry failed, the request is not instrumented: Error",
+    ]);
+    xhr.respond(200);
+    assert.equal(xhr.status, 200);
+  });
+});
+
+test("a propagator whose inject throws is reported, and the request is sent and its span recorded", async () => {
+  await withXhr(async ({ rec, install }) => {
+    const telemetry = brokenTelemetry(rec, "inject");
+    install({ telemetry });
+    const xhr = new FakeXhr();
+    const { viaHandle, viaGlobal } = await capturingErrors(() => {
+      xhr.open("GET", "/api/items");
+      xhr.setRequestHeader("x-caller", "kept");
+      xhr.send();
+    }, telemetry);
+    assert.equal(xhr.sends, 1);
+    assert.equal(xhr.header("traceparent"), undefined);
+    assert.equal(xhr.header("x-caller"), "kept");
+    assert.deepEqual(viaHandle, [
+      "o11y: installXhrInstrumentation: injecting the trace context failed, the request is sent without it: Error",
+    ]);
+    assert.deepEqual(viaGlobal, [], "a handle's reports go to the handle");
+    xhr.respond(200);
+    const [span] = clientSpans(rec);
+    assert.equal(span?.attributes["http.response.status_code"], 200);
+  });
+});
+
+for (const broken of ["setAttribute", "recordException", "end", "record"] as const) {
+  test(`a finish that fails (${broken}) is reported, and neither the response nor the XHR's own error is replaced`, async () => {
+    await withXhr(async ({ rec, install }) => {
+      install({ telemetry: brokenTelemetry(rec, broken) });
+      const ok = new FakeXhr();
+      const loaded = await capturingErrors(() => {
+        ok.open("GET", "/api/items");
+        ok.send();
+        ok.respond(200);
+      });
+      assert.equal(ok.sends, 1);
+      assert.equal(ok.status, 200);
+      const expectedErrors =
+        broken === "recordException"
+          ? []
+          : ["o11y: installXhrInstrumentation: ending the request's telemetry failed: Error"];
+      assert.deepEqual(loaded.errors, expectedErrors);
+
+      const sync = new FakeXhr();
+      const syncRun = await capturingErrors(() => {
+        sync.open("GET", "/sync", false);
+        sync.send();
+      });
+      assert.equal(sync.sends, 1);
+      assert.equal(sync.status, 200);
+      assert.deepEqual(syncRun.errors, expectedErrors);
+
+      const failing = new FakeXhr();
+      failing.syncResult = "throw";
+      const failed = await capturingErrors(() => {
+        failing.open("GET", "/sync-fail", false);
+        assert.throws(() => failing.send(), { name: "NetworkError" });
+      });
+      assert.equal(failing.sends, 1);
+      assert.equal(failed.errors.length, 1);
+    });
+  });
+}

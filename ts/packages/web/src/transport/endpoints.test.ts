@@ -46,7 +46,8 @@ test("a per-signal option is used as is and beats everything", () => {
   assert.equal(got.metrics, "https://otel.example.com/v1/metrics");
 });
 
-test("env per-signal beats the endpoint option, which beats env OTEL_EXPORTER_OTLP_ENDPOINT", () => {
+test("the endpoint option beats env per-signal, which beats env OTEL_EXPORTER_OTLP_ENDPOINT", () => {
+  // DESIGN.md "Configuration": an explicit code option, then the standard OTEL_* variable.
   const got = resolveEndpoints(
     {
       endpoint: "https://opt.example.com",
@@ -58,8 +59,20 @@ test("env per-signal beats the endpoint option, which beats env OTEL_EXPORTER_OT
     false,
     BASE,
   );
-  assert.equal(got.metrics, "https://env-metrics.example.com/m");
+  assert.equal(got.metrics, "https://opt.example.com/v1/metrics");
   assert.equal(got.traces, "https://opt.example.com/v1/traces");
+  const envSignal = resolveEndpoints(
+    {
+      env: {
+        OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: "https://env-metrics.example.com/m",
+        OTEL_EXPORTER_OTLP_ENDPOINT: "https://env.example.com",
+      },
+    },
+    false,
+    BASE,
+  );
+  assert.equal(envSignal.metrics, "https://env-metrics.example.com/m");
+  assert.equal(envSignal.traces, "https://env.example.com/v1/traces");
   const envOnly = resolveEndpoints(
     { env: { OTEL_EXPORTER_OTLP_ENDPOINT: "https://env.example.com/" } },
     false,

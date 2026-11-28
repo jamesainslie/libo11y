@@ -94,10 +94,11 @@ export function createHttpTransport(opts: HttpTransportOptions): Transport {
     keepalive: boolean,
   ): Promise<SendResult> {
     if (fetchImpl === undefined) return { kind: "fatal", reason: "fetch is unavailable" };
-    const headers: Record<string, string> = { ...userHeaders, "Content-Type": "application/json" };
-    if (gzipped) headers["Content-Encoding"] = "gzip";
     const timeout = timeoutSignal(timeoutMillis);
     try {
+      const headers = new Headers(userHeaders);
+      headers.set("Content-Type", "application/json");
+      if (gzipped) headers.set("Content-Encoding", "gzip");
       const res = await fetchImpl(url, {
         method: "POST",
         headers,

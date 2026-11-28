@@ -29,13 +29,39 @@ function hex(bytes: Uint8Array): string {
   return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-test("browserEnv forces http/json and turns off every signal without an endpoint", () => {
-  const env = browserEnv({ env: { OTEL_EXPORTER_OTLP_PROTOCOL: "http/protobuf" } }, NO_ENDPOINTS);
+test("browserEnv defaults to http/json and turns off every signal without an endpoint", () => {
+  const env = browserEnv({}, NO_ENDPOINTS);
   assert.equal(env.OTEL_EXPORTER_OTLP_PROTOCOL, "http/json");
   assert.equal(env.OTEL_TRACES_EXPORTER, "none");
   assert.equal(env.OTEL_METRICS_EXPORTER, "none");
   assert.equal(env.OTEL_LOGS_EXPORTER, "none");
 });
+
+test("browserEnv defaults a blank common protocol to http/json", () => {
+  const env = browserEnv({ env: { OTEL_EXPORTER_OTLP_PROTOCOL: "  " } }, NO_ENDPOINTS);
+  assert.equal(env.OTEL_EXPORTER_OTLP_PROTOCOL, "http/json");
+});
+
+for (const protocol of ["grpc", "http/protobuf"]) {
+  test(`webPlatform rejects a common ${protocol} protocol for an OTLP route`, async () => {
+    const platform = webPlatform({
+      exportOptions: { env: { OTEL_EXPORTER_OTLP_PROTOCOL: protocol } },
+      endpoints: { ...NO_ENDPOINTS, traces: ALL_ENDPOINTS.traces },
+      delivery: fakeDelivery(),
+      gate: createFakeGate(),
+    });
+    await assert.rejects(
+      async () => {
+        const telemetry = await createTelemetryWith(
+          { serviceName: "shop", environment: "test", console: false },
+          platform,
+        );
+        await telemetry.shutdown();
+      },
+      { code: "UNSUPPORTED_PROTOCOL" },
+    );
+  });
+}
 
 test("browserEnv leaves a signal with an endpoint to the default otlp route", () => {
   const env = browserEnv({}, { ...NO_ENDPOINTS, traces: "https://c.example/v1/traces" });
@@ -207,6 +233,39 @@ test("sha1 digests by Web Crypto", async () => {
     "a9993e364706816aba3e25717850c26c9cd0d89d",
   );
   assert.equal(hex(await p.sha1(new Uint8Array())), "da39a3ee5e6b4b0d3255bfef95601890afd80709");
+});
+
+test("webPlatform derives the pod instance ID without crypto.subtle", async () => {
+  const cryptoDescriptor = Object.getOwnPropertyDescriptor(globalThis, "crypto");
+  assert.ok(cryptoDescriptor);
+  Object.defineProperty(globalThis, "crypto", {
+    configurable: true,
+    value: { getRandomValues: globalThis.crypto.getRandomValues.bind(globalThis.crypto) },
+  });
+  try {
+    const platform = webPlatform({
+      exportOptions: {
+        env: { OTEL_RESOURCE_ATTRIBUTES: "k8s.pod.uid=0f0c5e8e-3b8a-4c1e-9d3a-2f6b7a1c9e42" },
+      },
+      endpoints: NO_ENDPOINTS,
+      delivery: fakeDelivery(),
+      gate: createFakeGate(),
+    });
+    const telemetry = await createTelemetryWith(
+      { serviceName: "shop", environment: "test", console: false },
+      platform,
+    );
+    try {
+      assert.equal(
+        telemetry.resource.attributes["service.instance.id"],
+        "fceeac15-05b1-5132-b02a-910f70fb6aac",
+      );
+    } finally {
+      await telemetry.shutdown();
+    }
+  } finally {
+    Object.defineProperty(globalThis, "crypto", cryptoDescriptor);
+  }
 });
 
 test("randomUUID gives lowercase v4 UUIDs", () => {

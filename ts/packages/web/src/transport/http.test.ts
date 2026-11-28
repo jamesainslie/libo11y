@@ -110,6 +110,25 @@ test("gzip compresses the body and sets Content-Encoding", async () => {
   assert.equal(await gunzipText(f.calls[0]?.init.body), body);
 });
 
+test("gzip replaces caller content headers regardless of case", async () => {
+  const f = fakeFetch();
+  const t = transport({
+    fetch: f,
+    compression: "gzip",
+    headers: {
+      "content-type": "text/plain",
+      "content-encoding": "br",
+      Authorization: "Bearer x",
+    },
+  });
+  assert.deepEqual(await t.send(req("{}")), { kind: "ok" });
+  const headers = headersOf(f.calls[0]);
+  assert.equal(headers.get("content-type"), "application/json");
+  assert.equal(headers.get("content-encoding"), "gzip");
+  assert.equal(headers.get("authorization"), "Bearer x");
+  assert.equal(await gunzipText(f.calls[0]?.init.body), "{}");
+});
+
 test("compression defaults to gzip", async () => {
   const f = fakeFetch();
   const t = createHttpTransport({

@@ -7,6 +7,8 @@
  *
  * A report names the step, each failed signal and the class of its error, never the error's
  * message, which can quote an endpoint or a header. The report itself stays on the cause.
+ *
+ * reportError uses the same path for a failure of the fetch and XHR instrumentation itself.
  */
 import type { SignalReport, Telemetry } from "@libo11y/core";
 import { globalErrorHandler } from "@opentelemetry/core";
@@ -36,9 +38,9 @@ function errorClass(err: unknown): string {
   }
 }
 
-function send(telemetry: Telemetry, report: Error): void {
+function send(telemetry: Telemetry | undefined, report: Error): void {
   try {
-    const own: unknown = (telemetry as { [REPORT_KEY]?: unknown })[REPORT_KEY];
+    const own: unknown = (telemetry as { [REPORT_KEY]?: unknown } | undefined)?.[REPORT_KEY];
     if (typeof own === "function") {
       own.call(telemetry, report);
       return;
@@ -78,4 +80,13 @@ export async function flushInBackground(telemetry: Telemetry, what: string): Pro
   }
   reportFlush(telemetry, what, report);
   return report;
+}
+
+/**
+ * Reports a failure of the instrumentation itself, which must never reach the request it wraps:
+ * one error, "o11y: <what>: <class>", through telemetry's own reporter when it has one, else the
+ * global error handler. The thrown value stays on the cause, never in the message. It never throws.
+ */
+export function reportError(telemetry: Telemetry | undefined, what: string, err: unknown): void {
+  send(telemetry, new Error(`o11y: ${what}: ${errorClass(err)}`, { cause: err }));
 }
