@@ -203,7 +203,7 @@ func (rr *replayReader) refuse(w http.ResponseWriter, r *http.Request, op string
 // answers 503.
 func (rr *replayReader) storeFailed(w http.ResponseWriter, r *http.Request, op string, err error) {
 	rr.h.log.WarnContext(r.Context(), "o11yrum: replay read API store operation failed",
-		slog.String(telOperation, op), slog.String(telApp, r.PathValue("service")), slog.Any("error", err))
+		slog.String(telOperation, op), slog.String(telApp, r.PathValue("service")), replayErrorAttr(err))
 	rr.refuse(w, r, op, http.StatusServiceUnavailable, "store unavailable")
 }
 
@@ -356,7 +356,7 @@ func (rr *replayReader) erase(w http.ResponseWriter, r *http.Request) {
 	if failed != nil {
 		rr.h.log.WarnContext(ctx, "o11yrum: replay erasure incomplete",
 			slog.String(telApp, r.PathValue("service")), slog.Int("o11yrum.deleted", deleted),
-			slog.Int("o11yrum.remaining", len(keys)-deleted), slog.Any("error", failed))
+			slog.Int("o11yrum.remaining", len(keys)-deleted), replayErrorAttr(failed))
 		w.Header().Set("Retry-After", storeRetryAfter)
 		rr.writeJSON(w, r, readOpDelete, http.StatusServiceUnavailable, body)
 		return

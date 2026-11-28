@@ -463,21 +463,22 @@ type flakyStore struct {
 
 func (s flakyStore) List(ctx context.Context, prefix string, fn func(ObjectInfo) error) error {
 	if s.failList {
-		return errors.New("store unavailable")
+		// Like the S3 store's, the error names what it was asked for.
+		return fmt.Errorf("list %s: store unavailable", prefix)
 	}
 	return s.FileStore.List(ctx, prefix, fn)
 }
 
 func (s flakyStore) Delete(ctx context.Context, key string) error {
 	if s.failDelete != nil && s.failDelete(key) {
-		return errors.New("access denied")
+		return fmt.Errorf("delete %s: access denied", key)
 	}
 	return s.FileStore.Delete(ctx, key)
 }
 
 func (s flakyStore) Get(ctx context.Context, key string) ([]byte, error) {
 	if s.failGet {
-		return nil, errors.New("store unavailable")
+		return nil, fmt.Errorf("get %s: store unavailable", key)
 	}
 	return s.FileStore.Get(ctx, key)
 }

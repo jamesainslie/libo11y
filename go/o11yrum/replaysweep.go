@@ -3,6 +3,7 @@ package o11yrum
 import (
 	"context"
 	"log/slog"
+	"regexp"
 	"time"
 )
 
@@ -35,7 +36,7 @@ func (h *Handler) startSweeper(every time.Duration) {
 // sweepOnce runs one pass and logs a pass that could not finish.
 func (h *Handler) sweepOnce(ctx context.Context) {
 	if _, err := h.sweepReplay(ctx); err != nil && ctx.Err() == nil {
-		h.log.WarnContext(ctx, "o11yrum: replay retention sweep ended early", slog.Any("error", err))
+		h.log.WarnContext(ctx, "o11yrum: replay retention sweep ended early", replayErrorAttr(err))
 	}
 }
 
@@ -69,4 +70,14 @@ func (h *Handler) sweepReplay(ctx context.Context) (deleted int, err error) {
 			slog.Int("o11yrum.deleted", deleted), slog.Int("o11yrum.failed", failed))
 	}
 	return deleted, err
+}
+
+// sessionInText finds a session ID, a UUID in either case, in error text.
+var sessionInText = regexp.MustCompile(`(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)
+
+// replayErrorAttr is the error attribute of a replay log record. Store
+// errors name the object key or path they failed on, which holds the
+// session ID, so every UUID in the text is replaced.
+func replayErrorAttr(err error) slog.Attr {
+	return slog.String("error", sessionInText.ReplaceAllString(err.Error(), "[session]"))
 }
